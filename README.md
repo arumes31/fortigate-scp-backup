@@ -9,19 +9,64 @@ Web application for backing up FortiGate firewall configurations using SCP.
 - **Reverse Proxy Support**: Compatible with reverse proxies using X-Forwarded headers.
 - **Session Management**: Automatic logout after 1 hour or on IP address change.
 
+## Screenshots
+
+<img width="648" height="720" alt="image" src="https://github.com/user-attachments/assets/f6b34dc6-16ab-4c79-88cb-24231941976b" />
+<img width="1515" height="801" alt="image" src="https://github.com/user-attachments/assets/3ef6e5f3-c48a-49dd-a15e-434151df3e06" />
+<img width="1561" height="690" alt="image" src="https://github.com/user-attachments/assets/02600e20-8cce-42f8-af32-cd65466662af" />
+
+
 ## Prerequisites
 - Docker
 - Access to a FortiGate firewall with SSH and SCP enabled
-
+```
 config system global
     set admin-scp enable
-
 end
+```
+- scp profile
+```
+config system accprofile
+    edit "scp-profile"
+        set comments "https://community.fortinet.com/t5/FortiGate/Technical-Tip-Backing-Up-the-FortiGate-configuration-file-via/ta-p/367088"
+        set secfabgrp read
+        set ftviewgrp read
+        set authgrp read
+        set sysgrp custom
+        set netgrp read
+        set loggrp read
+        set fwgrp read
+        set vpngrp read
+        set utmgrp read
+        set wifi read
+        set cli-diagnose enable
+        set cli-get enable
+        set cli-show enable
+        set cli-exec enable
+        set cli-config enable
+        config sysgrp-permission
+            set admin read-write
+            set upd read
+            set cfg read
+            set mnt read
+        end
+    next
+end
+```
+- scp user
+```
+config system admin
+    edit "scpuser"
+        set accprofile "scp-profile"
+        set password xxxxxxxXCHANGEMExxxxx
+    next
+end
+```
 
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/fortigate-scp-backup.git
+   git clone https://github.com/arumes31/fortigate-scp-backup.git
    cd fortigate-scp-backup
    ```
 2. Create necessary directories and set permissions:
@@ -38,8 +83,8 @@ end
    docker run -d -p 8521:8521 \
        -v $(pwd)/data:/app/data \
        -v $(pwd)/data/backups:/app/backups \
-       -e DEFAULT_SCP_USER=test \
-       -e DEFAULT_SCP_PASSWORD=your_default_password \
+       -e DEFAULT_SCP_USER=scpuser \
+       -e DEFAULT_SCP_PASSWORD=scppassword \
        -e FORTIGATE_CONFIG_PATH=sys_config \
        -e MAIL_SERVER=smtp.yourserver.com \
        -e MAIL_PORT=587 \
