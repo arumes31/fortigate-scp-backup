@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+</head>
+<body style="background: #000000; margin: 0; padding: 0;">
+    <div id="mainContainer" style="max-width: 1200px; margin: 0 auto; padding: 20px; background: #2c2f33; text-align: center; color: #ffffff; position: relative;">
+        <img src="/static/logo.png" alt="Logo" style="height: 120px; margin-bottom: 20px;">
+        <button id="changePasswordBtn" style="position: absolute; top: 10px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="togglePasswordChange()">Change Password</button>
+        <h1 style="color: #e74c3c; margin-bottom: 20px; font-size: 2rem; font-weight: bold;">Firewalls List</h1>
+        <button id="addFirewallBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px;">Add New Firewall</button>
+        <div id="addFirewallForm" style="display: none; background: #2c3e50; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
+            <form method="POST">
+                <div style="margin-bottom: 15px;">
+                    <label><input type="checkbox" id="customUser" name="customUser" onchange="toggleCustomFields('User')"> Customize User</label>
+                    <div id="customFieldsUser" style="display: none; margin-top: 10px;">
+                        <label>Username:</label> <input type="text" name="username" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                        <label>Password:</label> <input type="password" name="password" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                    </div>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label><input type="checkbox" id="customPort" name="customPort" onchange="toggleCustomFields('Port')"> Customize SSH Port</label>
+                    <div id="customFieldsPort" style="display: none; margin-top: 10px;">
+                        <label>SSH Port:</label> <input type="number" name="ssh_port" min="1" max="65535" value="9422" required style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                    </div>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>FQDN:</label> <input type="text" name="fqdn" required style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>Interval (minutes):</label> <input type="number" name="interval_minutes" min="1" value="180" required style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>Retention (backups to keep):</label> <input type="number" name="retention_count" min="1" value="365" required style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;"><br>
+                </div>
+                <button type="submit" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Add</button>
+            </form>
+        </div>
+
+        <div style="display: flex; align-items: center; margin-bottom: 10px;">
+            <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search FQDN..." style="width: 60%; padding: 10px; margin-right: 10px; border: 1px solid #444; border-radius: 4px; box-sizing: border-box; font-size: 1rem; background: #2c3e50; color: #ffffff;">
+            <label><input type="checkbox" id="filterSuccess" onchange="filterTable()"> Success</label>
+            <label><input type="checkbox" id="filterFailed" onchange="filterTable()"> Failed</label>
+            <label><input type="checkbox" id="filterNew" onchange="filterTable()"> New</label>
+        </div>
+        <div style="background: #2c3e50; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
+            <p><a href="/errors"><button style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">View Error Log</button></a></p>
+            <table style="width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; background: #2c3e50;">
+                <tr style="background-color: #34495e;">
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">ID</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">FQDN</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Interval (min)</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Retention</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Last Backup</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Status</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Actions</th>
+                </tr>
+                {% for fw in firewalls %}
+                <tr style="border-bottom: 1px solid #444;" onmouseover="this.style.backgroundColor='#3a3f44';" onmouseout="this.style.backgroundColor='';">
+                    <td style="padding: 12px; color: #ffffff;">{{ fw[0] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ fw[1] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ fw[4] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ fw[5] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ fw[6] or 'None' }}</td>
+                    <td style="padding: 12px; color: #ffffff;">
+                        {% if fw[7] == 'Success' %}
+                            <span style="color: #2ecc71; font-weight: 500;">Success</span>
+                        {% elif fw[7] == 'New' %}
+                            <span style="color: #f39c12; font-weight: 500;">New</span>
+                        {% else %}
+                            <span style="color: #e74c3c; font-weight: 500;">{{ fw[7] }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding: 12px; display: flex; gap: 10px;">
+                        <a href="/backups/{{ fw[0] }}" style="color: #e74c3c; text-decoration: none; padding: 5px 10px;">View/Download Configs</a> |
+                        <button onclick="window.location.href='/backup_now/{{ fw[0] }}'" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Backup Now</button> |
+                        <a href="/delete/{{ fw[0] }}" onclick="return confirm('Are you sure you want to delete firewall {{ fw[1] }}?')" style="color: #e74c3c; text-decoration: none; padding: 5px 10px;">Delete</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function toggleCustomFields(type) {
+            var checkbox = document.getElementById("custom" + type);
+            var fields = document.getElementById("customFields" + type);
+            fields.style.display = checkbox.checked ? "block" : "none";
+        }
+
+        function filterTable() {
+            var input = document.getElementById("searchInput");
+            var filter = input.value.toLowerCase();
+            var successFilter = document.getElementById("filterSuccess").checked;
+            var failedFilter = document.getElementById("filterFailed").checked;
+            var newFilter = document.getElementById("filterNew").checked;
+            var table = document.querySelector("table");
+            var tr = table.getElementsByTagName("tr");
+
+            console.log("Filtering: FQDN=" + filter + ", Success=" + successFilter + ", Failed=" + failedFilter + ", New=" + newFilter);
+
+            for (var i = 1; i < tr.length; i++) {
+                var tdFQDN = tr[i].getElementsByTagName("td")[1]; // FQDN is the second column (index 1)
+                var tdStatus = tr[i].getElementsByTagName("td")[5]; // Status is the sixth column (index 5)
+                if (tdFQDN && tdStatus) {
+                    var txtValue = tdFQDN.textContent || tdFQDN.innerText;
+                    var statusSpan = tdStatus.getElementsByTagName("span")[0];
+                    var statusValue = statusSpan ? statusSpan.textContent.trim() : tdStatus.textContent.trim();
+                    var matchesFQDN = filter === "" || txtValue.toLowerCase().indexOf(filter) > -1;
+                    var matchesStatus = (!successFilter && !failedFilter && !newFilter) || // Show all if no filters
+                                       (successFilter && statusValue === "Success") ||
+                                       (failedFilter && statusValue.startsWith("Failed")) ||
+                                       (newFilter && statusValue === "New");
+                    tr[i].style.display = matchesFQDN && matchesStatus ? "" : "none";
+                } else {
+                    console.log("Error: tdFQDN or tdStatus not found for row " + i);
+                }
+            }
+        }
+
+        // Toggle Add New Firewall form visibility
+        document.getElementById("addFirewallBtn").addEventListener("click", function() {
+            var form = document.getElementById("addFirewallForm");
+            form.style.display = form.style.display === "block" ? "none" : "block";
+        });
+
+        // Toggle Change Password form visibility (redirects to change_password route)
+        function togglePasswordChange() {
+            window.location.href = "/change_password";
+        }
+    </script>
+</body>
+</html>

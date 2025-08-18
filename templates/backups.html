@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backups - FortiGate Backup App</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+</head>
+<body style="background: #000000; margin: 0; padding: 0;">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 20px; background: #2c2f33; text-align: center; color: #ffffff;">
+        <img src="/static/logo.png" alt="Logo" style="height: 120px; margin-bottom: 20px;">
+        <h2 style="color: #e74c3c; margin-bottom: 20px; font-size: 1.8rem; font-weight: bold;">Backups for Firewall ID {{ fw_id }}</h2>
+        <div style="background: #2c3e50; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
+            <p><a href="/"><button style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Back to Firewalls</button></a></p>
+            <table style="width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; background: #2c3e50; margin-top: 20px;">
+                <tr style="background-color: #34495e;">
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">ID</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Timestamp</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Filename</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Actions</th>
+                </tr>
+                {% for backup in backups %}
+                <tr style="border-bottom: 1px solid #444;" onmouseover="this.style.backgroundColor='#3a3f44';" onmouseout="this.style.backgroundColor='';">
+                    <td style="padding: 12px; color: #ffffff;">{{ backup[0] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ backup[2] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ backup[3] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">
+                        <a href="{{ url_for('download', filename=backup[3]) }}" style="color: #e74c3c; text-decoration: none; padding: 5px 10px;">Download</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+</body>
+</html>
