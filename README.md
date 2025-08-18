@@ -66,7 +66,7 @@ end
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/fortigate-scp-backup.git
+   git clone https://github.com/arumes31/fortigate-scp-backup.git
    cd fortigate-scp-backup
    ```
 2. Create necessary directories and set permissions:
