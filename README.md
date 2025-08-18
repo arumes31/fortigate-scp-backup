@@ -9,13 +9,19 @@ Web application for backing up FortiGate firewall configurations using SCP.
 - **Reverse Proxy Support**: Compatible with reverse proxies using X-Forwarded headers.
 - **Session Management**: Automatic logout after 1 hour or on IP address change.
 
+## Screenshots
+
+<img width="648" height="720" alt="image" src="https://github.com/user-attachments/assets/f6b34dc6-16ab-4c79-88cb-24231941976b" />
+<img width="1515" height="801" alt="image" src="https://github.com/user-attachments/assets/3ef6e5f3-c48a-49dd-a15e-434151df3e06" />
+<img width="1561" height="690" alt="image" src="https://github.com/user-attachments/assets/02600e20-8cce-42f8-af32-cd65466662af" />
+
+
 ## Prerequisites
 - Docker
 - Access to a FortiGate firewall with SSH and SCP enabled
 
 config system global
     set admin-scp enable
-
 end
 
 ## Installation
