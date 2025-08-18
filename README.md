@@ -24,6 +24,45 @@ config system global
     set admin-scp enable
 end
 ```
+- scp profile
+```
+config system accprofile
+    edit "scp-profile"
+        set comments "https://community.fortinet.com/t5/FortiGate/Technical-Tip-Backing-Up-the-FortiGate-configuration-file-via/ta-p/367088"
+        set secfabgrp read
+        set ftviewgrp read
+        set authgrp read
+        set sysgrp custom
+        set netgrp read
+        set loggrp read
+        set fwgrp read
+        set vpngrp read
+        set utmgrp read
+        set wifi read
+        set cli-diagnose enable
+        set cli-get enable
+        set cli-show enable
+        set cli-exec enable
+        set cli-config enable
+        config sysgrp-permission
+            set admin read-write
+            set upd read
+            set cfg read
+            set mnt read
+        end
+    next
+end
+```
+- scp user
+```
+config system admin
+    edit "scpuser"
+        set accprofile "scp-profile"
+        set password xxxxxxxXCHANGEMExxxxx
+    next
+end
+```
+
 ## Installation
 1. Clone the repository:
    ```bash
@@ -44,8 +83,8 @@ end
    docker run -d -p 8521:8521 \
        -v $(pwd)/data:/app/data \
        -v $(pwd)/data/backups:/app/backups \
-       -e DEFAULT_SCP_USER=test \
-       -e DEFAULT_SCP_PASSWORD=your_default_password \
+       -e DEFAULT_SCP_USER=scpuser \
+       -e DEFAULT_SCP_PASSWORD=scppassword \
        -e FORTIGATE_CONFIG_PATH=sys_config \
        -e MAIL_SERVER=smtp.yourserver.com \
        -e MAIL_PORT=587 \
