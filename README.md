@@ -19,11 +19,11 @@ Web application for backing up FortiGate firewall configurations using SCP.
 ## Prerequisites
 - Docker
 - Access to a FortiGate firewall with SSH and SCP enabled
-
+```
 config system global
     set admin-scp enable
 end
-
+```
 ## Installation
 1. Clone the repository:
    ```bash
