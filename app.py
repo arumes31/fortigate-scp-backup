@@ -14,6 +14,8 @@ from datetime import timedelta
 import pytz
 import pyotp
 import radius
+import csv
+import io
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)  # For session management
@@ -222,7 +224,79 @@ def activity_log():
 @login_required
 def index():
     if request.method == 'POST':
-        if 'username' in request.form and 'password' in request.form and 'new_password' in request.form and 'confirm_password' in request.form:
+        if 'csv_file' in request.files:
+            # Handle bulk firewall addition via CSV
+            csv_file = request.files['csv_file']
+            if csv_file.filename == '':
+                return render_template('index.html', error="No file selected", firewalls=[])
+            if not csv_file.filename.endswith('.csv'):
+                return render_template('index.html', error="File must be a CSV", firewalls=[])
+
+            conn = sqlite3.connect(DB)
+            c = conn.cursor()
+            errors = []
+            added_firewalls = []
+
+            try:
+                # Read CSV file
+                stream = io.StringIO(csv_file.stream.read().decode("UTF-8"), newline=None)
+                csv_reader = csv.DictReader(stream)
+                required_headers = {'fqdn', 'interval_minutes', 'retention_count'}
+                if not required_headers.issubset(csv_reader.fieldnames):
+                    return render_template('index.html', error="CSV must contain fqdn, interval_minutes, retention_count headers", firewalls=[])
+
+                for row in csv_reader:
+                    try:
+                        fqdn = row['fqdn'].strip()
+                        username = row.get('username', '').strip() or os.getenv('DEFAULT_SCP_USER', 'admin')
+                        password = row.get('password', '').strip() or os.getenv('DEFAULT_SCP_PASSWORD', '')
+                        interval_minutes = int(row['interval_minutes'])
+                        retention_count = int(row['retention_count'])
+                        ssh_port = int(row.get('ssh_port', '9422') or '9422')
+
+                        if not fqdn:
+                            errors.append(f"Missing FQDN in row: {row}")
+                            continue
+
+                        c.execute('''INSERT INTO firewalls (fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                  (fqdn, username, password, interval_minutes, retention_count, None, 'New', ssh_port))
+                        fw_id = c.lastrowid
+                        added_firewalls.append(fw_id)
+
+                        log_activity(session['username'], "Create Firewall", f"Created firewall with ID {fw_id} and FQDN {fqdn} via bulk upload")
+
+                        job_id = f"backup_firewall_{fw_id}"
+                        if not scheduler.get_job(job_id):
+                            scheduler.add_job(id=job_id, func=backup_firewall, args=[fw_id],
+                                             trigger='interval', minutes=interval_minutes,
+                                             coalesce=True, max_instances=1)
+                            logger.debug(f"Scheduled job {job_id} for fw_id {fw_id} with interval {interval_minutes} minutes")
+                        else:
+                            logger.warning(f"Job {job_id} already exists for fw_id {fw_id}, skipping scheduling")
+
+                    except (ValueError, KeyError) as e:
+                        errors.append(f"Invalid data in row {row}: {str(e)}")
+                        continue
+
+                conn.commit()
+                logger.info(f"Committed {len(added_firewalls)} new firewalls to firewalls.db via bulk upload")
+                conn.close()
+
+                if errors:
+                    error_msg = "Some firewalls were not added due to errors: " + "; ".join(errors)
+                    c.execute("SELECT * FROM firewalls")
+                    firewalls = c.fetchall()
+                    conn.close()
+                    return render_template('index.html', error=error_msg, firewalls=firewalls, first_login=False)
+                
+                return redirect(url_for('index'))
+
+            except Exception as e:
+                conn.close()
+                return render_template('index.html', error=f"Failed to process CSV: {str(e)}", firewalls=[])
+
+        elif 'username' in request.form and 'password' in request.form and 'new_password' in request.form and 'confirm_password' in request.form:
             # Handle password change
             old_password = request.form['password']
             new_password = request.form['new_password']
@@ -246,12 +320,16 @@ def index():
             conn.close()
             return "Old password incorrect or update failed", 400
         else:
+            # Handle single firewall addition
             fqdn = request.form['fqdn']
             username = request.form['username'] or os.getenv('DEFAULT_SCP_USER', 'admin')
             password = request.form['password'] or os.getenv('DEFAULT_SCP_PASSWORD', '')
-            interval_minutes = int(request.form['interval_minutes'])
-            retention_count = int(request.form['retention_count'])
-            ssh_port = int(request.form.get('ssh_port', 9422))
+            try:
+                interval_minutes = int(request.form['interval_minutes'])
+                retention_count = int(request.form['retention_count'])
+                ssh_port = int(request.form.get('ssh_port', '9422'))
+            except ValueError as e:
+                return render_template('index.html', error=f"Invalid input: {str(e)}", firewalls=[])
 
             conn = sqlite3.connect(DB)
             c = conn.cursor()
