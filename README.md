@@ -133,6 +133,13 @@ services:
 
 ## Configuration
 Environment variables can be set to customize the app:
+- `TZ`: Timezone (default: `Europe\Vienna`).
+- `TOTP_ENABLED`: Enable TOTP authentication for the admin user (default: `false`).
+- `TOTP_SECRET`: TOTP secret key for the admin user (`false` 16 characters - default: `random-not-displayed`)
+- `RADIUS_ENABLED`: Enable RADIUS authentication (default: `false`).
+- `RADIUS_SERVER`: RADIUS server address (default: `localhost`).
+- `RADIUS_PORT`: RADIUS server port (default: `1812`).
+- `RADIUS_SECRET`: RADIUS shared secret (default: `secret`).
 - `DEFAULT_SCP_USER`: Default SCP username (default: `test`).
 - `DEFAULT_SCP_PASSWORD`: Default SCP password.
 - `FORTIGATE_CONFIG_PATH`: Path to the configuration file on the FortiGate (default: `sys_config`).

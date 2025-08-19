@@ -48,6 +48,9 @@
     <div style="background: #2c3e50; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3); text-align: center; color: #ffffff; position: relative;">
         <img src="/static/logo.png" alt="Logo" style="height: 180px; margin-bottom: 20px;">
         <h2 style="color: #e74c3c; margin-bottom: 20px;">Login</h2>
+        {% if error %}
+            <p style="color: red;">{{ error }}</p>
+        {% endif %}
         <form method="POST">
             <div style="margin-bottom: 15px;">
                 <label>Username:</label><br>
@@ -57,6 +60,12 @@
                 <label>Password:</label><br>
                 <input type="password" name="password" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;">
             </div>
+            {% if totp_enabled %}
+            <div style="margin-bottom: 15px;">
+                TOTP Code:<br>
+                <input type="text" name="totp_code" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;" required>
+            </div>
+            {% endif %}
             <button type="submit" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Login</button>
         </form>
     </div>
