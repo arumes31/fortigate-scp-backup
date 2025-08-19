@@ -13,7 +13,8 @@
         <button id="activitylogBtn" style="position: absolute; top: 50px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('activity_log') }}'">Activity Log</button>
         <button id="changePasswordBtn" style="position: absolute; top: 90px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="togglePasswordChange()">Change Password</button>
         <h1 style="color: #e74c3c; margin-bottom: 20px; font-size: 2rem; font-weight: bold;">Firewalls List</h1>
-        <button id="addFirewallBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px;">Add New Firewall</button>
+        <button id="addFirewallBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px; margin-right: 10px;">Add New Firewall</button>
+        <button id="uploadCsvBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px;">Upload CSV</button>
         <div id="addFirewallForm" style="display: none; background: #2c3e50; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
             <form method="POST">
                 <div style="margin-bottom: 15px;">
@@ -41,7 +42,15 @@
                 <button type="submit" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Add</button>
             </form>
         </div>
-
+        <div id="csvUploadForm" style="display: none; background: #2c3e50; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
+            <form method="post" enctype="multipart/form-data">
+                <div style="margin-bottom: 15px;">
+                    <label>Upload CSV (fqdn,username,password,interval_minutes,retention_count,ssh_port):</label><br>
+                    <input type="file" name="csv_file" accept=".csv" required style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;">
+                </div>
+                <button type="submit" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Bulk Add</button>
+            </form>
+        </div>
         <div style="display: flex; align-items: center; margin-bottom: 10px;">
             <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search FQDN..." style="width: 60%; padding: 10px; margin-right: 10px; border: 1px solid #444; border-radius: 4px; box-sizing: border-box; font-size: 1rem; background: #2c3e50; color: #ffffff;">
             <label><input type="checkbox" id="filterSuccess" onchange="filterTable()"> Success</label>
@@ -106,14 +115,14 @@
             console.log("Filtering: FQDN=" + filter + ", Success=" + successFilter + ", Failed=" + failedFilter + ", New=" + newFilter);
 
             for (var i = 1; i < tr.length; i++) {
-                var tdFQDN = tr[i].getElementsByTagName("td")[1]; // FQDN is the second column (index 1)
-                var tdStatus = tr[i].getElementsByTagName("td")[5]; // Status is the sixth column (index 5)
+                var tdFQDN = tr[i].getElementsByTagName("td")[1];
+                var tdStatus = tr[i].getElementsByTagName("td")[5];
                 if (tdFQDN && tdStatus) {
                     var txtValue = tdFQDN.textContent || tdFQDN.innerText;
                     var statusSpan = tdStatus.getElementsByTagName("span")[0];
                     var statusValue = statusSpan ? statusSpan.textContent.trim() : tdStatus.textContent.trim();
                     var matchesFQDN = filter === "" || txtValue.toLowerCase().indexOf(filter) > -1;
-                    var matchesStatus = (!successFilter && !failedFilter && !newFilter) || // Show all if no filters
+                    var matchesStatus = (!successFilter && !failedFilter && !newFilter) ||
                                        (successFilter && statusValue === "Success") ||
                                        (failedFilter && statusValue.startsWith("Failed")) ||
                                        (newFilter && statusValue === "New");
@@ -124,13 +133,18 @@
             }
         }
 
-        // Toggle Add New Firewall form visibility
         document.getElementById("addFirewallBtn").addEventListener("click", function() {
             var form = document.getElementById("addFirewallForm");
             form.style.display = form.style.display === "block" ? "none" : "block";
+            document.getElementById("csvUploadForm").style.display = "none";
         });
 
-        // Toggle Change Password form visibility (redirects to change_password route)
+        document.getElementById("uploadCsvBtn").addEventListener("click", function() {
+            var form = document.getElementById("csvUploadForm");
+            form.style.display = form.style.display === "block" ? "none" : "block";
+            document.getElementById("addFirewallForm").style.display = "none";
+        });
+
         function togglePasswordChange() {
             window.location.href = "/change_password";
         }
