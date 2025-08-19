@@ -157,6 +157,7 @@ fqdn,username,password,interval_minutes,retention_count,ssh_port
 firewall1.example.com,username,password,180,300,9422
 firewall2.example.com,username,password,60,600,22
 ```
+`username` and `password`: Optional, default to `DEFAULT_SCP_USER` and `DEFAULT_SCP_PASSWORD` if empty.
 
 ## Troubleshooting
 - **Backup Fails**: Check logs for detailed errors (e.g., SSH/SCP issues). Ensure the FortiGate allows SCP and the config path is correct.
