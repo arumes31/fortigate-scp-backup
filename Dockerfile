@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y tzdata && pip install flask apscheduler paramiko scp pytz
+RUN apt-get update && apt-get install -y tzdata && pip install flask apscheduler paramiko scp pytz pyotp python-radius
 WORKDIR /app
 
 COPY . /app

@@ -12,6 +12,8 @@ from email.mime.text import MIMEText
 from functools import wraps
 from datetime import timedelta
 import pytz
+import pyotp
+import radius
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)  # For session management
@@ -33,6 +35,15 @@ MAIL_PORT = os.getenv('MAIL_PORT', 587)
 MAIL_USER = os.getenv('MAIL_USER', 'user@example.com')
 MAIL_PASSWORD = os.getenv('MAIL_PASSWORD', 'password')
 MAIL_RECIPIENT = os.getenv('MAIL_RECIPIENT', MAIL_USER)  # Default to MAIL_USER if not set
+TOTP_ENABLED = os.getenv('TOTP_ENABLED', 'false').lower() == 'true'
+TOTP_SECRET = os.getenv('TOTP_SECRET', pyotp.random_base32())  # Generate random secret if not provided
+RADIUS_ENABLED = os.getenv('RADIUS_ENABLED', 'false').lower() == 'true'
+RADIUS_SERVER = os.getenv('RADIUS_SERVER', 'localhost')
+RADIUS_PORT = int(os.getenv('RADIUS_PORT', 1812))
+RADIUS_SECRET = os.getenv('RADIUS_SECRET', 'secret')
+
+# Log TOTP_ENABLED value for debugging
+logger.info(f"TOTP_ENABLED set to: {TOTP_ENABLED}")
 
 # Set timezone to Europe/Vienna
 tz = pytz.timezone('Europe/Vienna')
@@ -48,7 +59,21 @@ def init_db():
                  (id INTEGER PRIMARY KEY, fw_id INTEGER, timestamp TEXT, filename TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, first_login INTEGER DEFAULT 1)''')
-    c.execute("INSERT OR IGNORE INTO users (username, password, first_login) VALUES (?, ?, ?)", ("admin", "changeme", 1))
+    # Check if totp_secret column exists and add it if not
+    c.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in c.fetchall()]
+    if 'totp_secret' not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+    # Insert or update admin user
+    c.execute("INSERT OR IGNORE INTO users (username, password, first_login) VALUES (?, ?, ?)", 
+              ("admin", "changeme", 1))
+    # Update TOTP secret for admin user if TOTP is enabled
+    if TOTP_ENABLED:
+        c.execute("UPDATE users SET totp_secret = ? WHERE username = ?", (TOTP_SECRET, "admin"))
+        logger.info(f"Updated TOTP secret for admin user to: {TOTP_SECRET}")
+    else:
+        c.execute("UPDATE users SET totp_secret = NULL WHERE username = ?", ("admin",))
+        logger.info("TOTP disabled, set admin TOTP secret to NULL")
     conn.commit()
     c.execute("PRAGMA table_info(firewalls)")
     columns = [col[1] for col in c.fetchall()]
@@ -95,6 +120,61 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def verify_radius(username, password):
+    if not RADIUS_ENABLED:
+        return False
+    try:
+        r = radius.Radius(RADIUS_SECRET.encode('utf-8'), host=RADIUS_SERVER, port=RADIUS_PORT)
+        return r.authenticate(username, password)
+    except Exception as e:
+        logger.error(f"RADIUS authentication failed: {str(e)}")
+        return False
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        totp_code = request.form.get('totp_code', '')
+        logger.debug(f"Login attempt for username: {username}, TOTP_ENABLED: {TOTP_ENABLED}")
+
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT password, first_login, totp_secret FROM users WHERE username = ?", (username,))
+        user = c.fetchone()
+        conn.close()
+
+        authenticated = False
+        if user and user[0] == password:
+            authenticated = True
+            logger.debug(f"Local authentication successful for {username}")
+        elif verify_radius(username, password):
+            authenticated = True
+            logger.debug(f"RADIUS authentication successful for {username}")
+
+        if authenticated:
+            if TOTP_ENABLED and user and user[2]:
+                totp = pyotp.TOTP(user[2])
+                if not totp.verify(totp_code):
+                    logger.debug(f"Invalid TOTP code for {username}")
+                    return render_template('login.html', error="Invalid TOTP code", totp_enabled=TOTP_ENABLED)
+                logger.debug(f"TOTP verification successful for {username}")
+            session['logged_in'] = True
+            session['username'] = username
+            session['password'] = password
+            session['last_activity'] = datetime.datetime.now(tz)
+            session['x_forwarded_for'] = request.headers.get('X-Forwarded-For')
+            session['first_login'] = user[1] if user else False
+            if session['first_login']:
+                logger.debug(f"Redirecting {username} to change_password due to first login")
+                return redirect(url_for('change_password'))
+            logger.debug(f"Login successful for {username}, redirecting to index")
+            return redirect(url_for('index'))
+        logger.debug(f"Login failed for {username}: Invalid username or password")
+        return render_template('login.html', error="Invalid username or password", totp_enabled=TOTP_ENABLED)
+    logger.debug(f"Rendering login page, TOTP_ENABLED: {TOTP_ENABLED}")
+    return render_template('login.html', totp_enabled=TOTP_ENABLED)
+
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
@@ -108,7 +188,8 @@ def index():
                 return "New passwords do not match", 400
             conn = sqlite3.connect(DB)
             c = conn.cursor()
-            c.execute("SELECT first_login FROM users WHERE username = ? AND password = ?", (session['username'], old_password if not first_login else session['password']))
+            c.execute("SELECT first_login FROM users WHERE username = ? AND password = ?", 
+                     (session['username'], old_password if not session['first_login'] else session['password']))
             result = c.fetchone()
             if result:
                 c.execute("UPDATE users SET password = ?, first_login = 0 WHERE username = ? AND password = ?",
@@ -159,54 +240,7 @@ def index():
 
     if first_login:
         return redirect(url_for('change_password'))
-
     return render_template('index.html', firewalls=firewalls, first_login=first_login)
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("SELECT password, first_login FROM users WHERE username = ?", (username,))
-        result = c.fetchone()
-        conn.close()
-        if result and result[0] == password:
-            session['logged_in'] = True
-            session['username'] = username
-            session['password'] = password
-            session['last_activity'] = datetime.datetime.now(tz)
-            session['x_forwarded_for'] = request.headers.get('X-Forwarded-For')
-            if result[1]:  # First login
-                return redirect(url_for('change_password'))
-            return redirect(url_for('index'))
-        return "Invalid credentials", 401
-    return render_template('login.html')
-
-@app.route('/change_password', methods=['GET', 'POST'])
-@login_required
-def change_password():
-    if request.method == 'POST':
-        old_password = request.form.get('old_password', '')
-        new_password = request.form['new_password']
-        confirm_password = request.form['confirm_password']
-        if new_password != confirm_password:
-            return "New passwords do not match", 400
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("SELECT first_login FROM users WHERE username = ? AND password = ?", (session['username'], old_password if not first_login else session['password']))
-        result = c.fetchone()
-        if result:
-            c.execute("UPDATE users SET password = ?, first_login = 0 WHERE username = ? AND password = ?",
-                      (new_password, session['username'], old_password if not result[0] else session['password']))
-            if c.rowcount > 0:
-                session['password'] = new_password
-                conn.commit()
-                return redirect(url_for('index'))
-        conn.close()
-        return "Old password incorrect or update failed", 400
-    return render_template('change_password.html', first_login=session.get('first_login', False))
 
 @app.route('/backups/<int:fw_id>')
 @login_required
@@ -267,6 +301,31 @@ def backup_now(fw_id):
     backup_firewall(fw_id)
     return redirect(url_for('index'))
 
+@app.route('/change_password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    if request.method == 'POST':
+        old_password = request.form['old_password'] if not session.get('first_login') else session['password']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+        if new_password != confirm_password:
+            return render_template('change_password.html', error="New passwords do not match", first_login=session.get('first_login', False))
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT password FROM users WHERE username = ? AND password = ?", 
+                 (session['username'], old_password))
+        result = c.fetchone()
+        if result:
+            c.execute("UPDATE users SET password = ?, first_login = 0 WHERE username = ? AND password = ?",
+                      (new_password, session['username'], old_password))
+            if c.rowcount > 0:
+                session['password'] = new_password
+                conn.commit()
+                return redirect(url_for('index'))
+        conn.close()
+        return render_template('change_password.html', error="Old password incorrect", first_login=session.get('first_login', False))
+    return render_template('change_password.html', first_login=session.get('first_login', False))
+
 def backup_firewall(fw_id):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -290,12 +349,11 @@ def backup_firewall(fw_id):
         logger.debug(f"Starting backup for fw_id {fw_id} on {fqdn}:{ssh_port} with username {username}")
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=30)  # Increased timeout
+        ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=30)
         transport = ssh.get_transport()
-        transport.set_keepalive(60)  # Increase keep-alive to 60 seconds
+        transport.set_keepalive(60)
         logger.debug(f"SSH connection established to {fqdn} with keep-alive")
 
-        # Note: No settimeout on Transport; rely on connect timeout and keep-alive
         stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
@@ -303,7 +361,7 @@ def backup_firewall(fw_id):
             raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
         logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
 
-        scp_client = scp.SCPClient(ssh.get_transport())  # No timeout parameter
+        scp_client = scp.SCPClient(ssh.get_transport())
         logger.debug(f"Attempting SCP transfer of {REMOTE_CONFIG_PATH} to {local_path}")
         scp_client.get(REMOTE_CONFIG_PATH, local_path)
         scp_client.close()
@@ -342,12 +400,11 @@ def backup_firewall(fw_id):
         if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
             os.remove(local_path)
 
-        # Send email notification for failed backup
         if MAIL_SERVER and MAIL_USER and MAIL_PASSWORD:
             msg = MIMEText(f"Backup failed for {fqdn} at {timestamp}: {str(e)}")
             msg['Subject'] = f"Backup Failure Notification - {fqdn}"
             msg['From'] = MAIL_USER
-            msg['To'] = MAIL_RECIPIENT  # Use MAIL_RECIPIENT from env
+            msg['To'] = MAIL_RECIPIENT
             try:
                 with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
                     server.starttls()
@@ -357,7 +414,6 @@ def backup_firewall(fw_id):
             except Exception as email_error:
                 logger.error(f"Failed to send email notification: {str(email_error)}")
 
-    # Update firewall status
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("UPDATE firewalls SET last_backup = ?, status = ? WHERE id = ?",
@@ -366,7 +422,6 @@ def backup_firewall(fw_id):
     conn.close()
 
 if __name__ == '__main__':
-    # Clear all existing jobs to prevent duplicates
     for job in scheduler.get_jobs():
         scheduler.remove_job(job.id)
         logger.debug(f"Cleared existing job {job.id}")
@@ -374,7 +429,6 @@ if __name__ == '__main__':
     init_db()
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
-    # Load existing firewalls and schedule their jobs
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("SELECT id, interval_minutes FROM firewalls")
@@ -387,7 +441,6 @@ if __name__ == '__main__':
         logger.debug(f"Scheduled job {job_id} for fw_id {fw_id} with interval {interval_minutes} minutes")
     conn.close()
 
-    # Log all scheduled jobs
     logger.info("Current scheduled jobs:")
     for job in scheduler.get_jobs():
         logger.info(f"Job ID: {job.id}, Next run: {job.next_run_time}")
