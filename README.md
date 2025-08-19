@@ -149,6 +149,15 @@ Environment variables can be set to customize the app:
 - `MAIL_PASSWORD`: SMTP password.
 - `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
 
+## Bulk Upload
+
+CSV Content:
+```fqdn,username,password,interval_minutes,retention_count,ssh_port
+fqdn,username,password,interval_minutes,retention_count,ssh_port
+firewall1.example.com,username,password,180,300,9422
+firewall2.example.com,username,password,60,600,22
+```
+
 ## Troubleshooting
 - **Backup Fails**: Check logs for detailed errors (e.g., SSH/SCP issues). Ensure the FortiGate allows SCP and the config path is correct.
 - **Timeout Issues**: Increase the keep-alive interval by modifying `app.py` if network latency is high.
