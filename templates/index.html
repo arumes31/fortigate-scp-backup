@@ -9,7 +9,9 @@
 <body style="background: #000000; margin: 0; padding: 0;">
     <div id="mainContainer" style="max-width: 1200px; margin: 0 auto; padding: 20px; background: #2c2f33; text-align: center; color: #ffffff; position: relative;">
         <img src="/static/logo.png" alt="Logo" style="height: 120px; margin-bottom: 20px;">
-        <button id="changePasswordBtn" style="position: absolute; top: 10px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="togglePasswordChange()">Change Password</button>
+        <button id="logoutBtn" style="position: absolute; top: 10px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('logout') }}'">Logout</button>
+        <button id="activitylogBtn" style="position: absolute; top: 50px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('activity_log') }}'">Activity Log</button>
+        <button id="changePasswordBtn" style="position: absolute; top: 90px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="togglePasswordChange()">Change Password</button>
         <h1 style="color: #e74c3c; margin-bottom: 20px; font-size: 2rem; font-weight: bold;">Firewalls List</h1>
         <button id="addFirewallBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px;">Add New Firewall</button>
         <div id="addFirewallForm" style="display: none; background: #2c3e50; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">

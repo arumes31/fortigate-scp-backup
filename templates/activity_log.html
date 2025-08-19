@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activity Log - FortiGate Backup App</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+</head>
+<body style="background: #000000; margin: 0; padding: 0;">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 20px; background: #2c2f33; text-align: center; color: #ffffff;">
+        <img src="/static/logo.png" alt="Logo" style="height: 120px; margin-bottom: 20px;">
+        <h2 style="color: #e74c3c; margin-bottom: 20px; font-size: 1.8rem; font-weight: bold;">Activity Log</h2>
+        <div style="background: #2c3e50; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">
+            <p>
+                <a href="{{ url_for('index') }}"><button style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Back to Firewalls</button></a>
+                <a href="{{ url_for('logout') }}"><button style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Logout</button></a>
+            </p>
+            <table style="width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; background: #2c3e50; margin-top: 20px;">
+                <tr style="background-color: #34495e;">
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Username</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Action</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Details</th>
+                    <th style="padding: 12px; text-align: left; color: #ffffff; font-weight: bold;">Timestamp</th>
+                </tr>
+                {% for log in logs %}
+                <tr style="border-bottom: 1px solid #444;" onmouseover="this.style.backgroundColor='#3a3f44';" onmouseout="this.style.backgroundColor='';">
+                    <td style="padding: 12px; color: #ffffff;">{{ log[0] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ log[1] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ log[2] }}</td>
+                    <td style="padding: 12px; color: #ffffff;">{{ log[3] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+</body>
+</html>

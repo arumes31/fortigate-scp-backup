@@ -28,6 +28,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logger = logging.getLogger(__name__)
 
 DB = '/app/data/firewalls.db'
+ACTIVITY_DB = '/app/data/activity_log.db'
 BACKUP_DIR = 'backups'
 REMOTE_CONFIG_PATH = os.getenv('FORTIGATE_CONFIG_PATH', 'sys_config')
 MAIL_SERVER = os.getenv('MAIL_SERVER', 'smtp.example.com')
@@ -49,6 +50,7 @@ logger.info(f"TOTP_ENABLED set to: {TOTP_ENABLED}")
 tz = pytz.timezone('Europe/Vienna')
 
 def init_db():
+    # Initialize firewalls.db
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS firewalls
@@ -75,6 +77,7 @@ def init_db():
         c.execute("UPDATE users SET totp_secret = NULL WHERE username = ?", ("admin",))
         logger.info("TOTP disabled, set admin TOTP secret to NULL")
     conn.commit()
+    logger.info("Committed changes to firewalls.db in init_db")
     c.execute("PRAGMA table_info(firewalls)")
     columns = [col[1] for col in c.fetchall()]
     if 'ssh_port' not in columns:
@@ -86,7 +89,17 @@ def init_db():
     logger.info("Removed duplicate backup entries to enforce unique constraint")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backups_unique ON backups (fw_id, filename)")
     conn.commit()
+    logger.info("Committed changes to firewalls.db after backups cleanup")
     clean_nonexistent_backups(conn)
+    conn.close()
+
+    # Initialize activity_log.db
+    conn = sqlite3.connect(ACTIVITY_DB)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS activity_logs
+                 (id INTEGER PRIMARY KEY, username TEXT, action TEXT, details TEXT, timestamp TEXT)''')
+    conn.commit()
+    logger.info("Committed changes to activity_log.db in init_db")
     conn.close()
 
 def clean_nonexistent_backups(conn):
@@ -99,6 +112,17 @@ def clean_nonexistent_backups(conn):
             logger.warning(f"Removing non-existent backup entry: {filename}")
             c.execute("DELETE FROM backups WHERE id = ?", (backup_id,))
     conn.commit()
+    logger.info("Committed changes to firewalls.db in clean_nonexistent_backups")
+
+def log_activity(username, action, details):
+    conn = sqlite3.connect(ACTIVITY_DB)
+    c = conn.cursor()
+    timestamp = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("INSERT INTO activity_logs (username, action, details, timestamp) VALUES (?, ?, ?, ?)",
+              (username, action, details, timestamp))
+    conn.commit()
+    logger.info(f"Logged activity and committed to activity_log.db: {username} - {action} - {details}")
+    conn.close()
 
 def login_required(f):
     @wraps(f)
@@ -165,6 +189,7 @@ def login():
             session['last_activity'] = datetime.datetime.now(tz)
             session['x_forwarded_for'] = request.headers.get('X-Forwarded-For')
             session['first_login'] = user[1] if user else False
+            log_activity(username, "Login", "Successful login")
             if session['first_login']:
                 logger.debug(f"Redirecting {username} to change_password due to first login")
                 return redirect(url_for('change_password'))
@@ -174,6 +199,24 @@ def login():
         return render_template('login.html', error="Invalid username or password", totp_enabled=TOTP_ENABLED)
     logger.debug(f"Rendering login page, TOTP_ENABLED: {TOTP_ENABLED}")
     return render_template('login.html', totp_enabled=TOTP_ENABLED)
+
+@app.route('/logout')
+@login_required
+def logout():
+    username = session.get('username', 'unknown')
+    session.clear()
+    log_activity(username, "Logout", "User logged out")
+    return redirect(url_for('login'))
+
+@app.route('/activity_log')
+@login_required
+def activity_log():
+    conn = sqlite3.connect(ACTIVITY_DB)
+    c = conn.cursor()
+    c.execute("SELECT username, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC")
+    logs = c.fetchall()
+    conn.close()
+    return render_template('activity_log.html', logs=logs)
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
@@ -197,6 +240,8 @@ def index():
                 if c.rowcount > 0:
                     session['password'] = new_password
                     conn.commit()
+                    logger.info("Committed password change to firewalls.db")
+                    log_activity(session['username'], "Change Password", "Password changed successfully")
                     return redirect(url_for('index'))
             conn.close()
             return "Old password incorrect or update failed", 400
@@ -215,7 +260,10 @@ def index():
                       (fqdn, username, password, interval_minutes, retention_count, None, 'New', ssh_port))
             fw_id = c.lastrowid
             conn.commit()
+            logger.info(f"Committed new firewall (ID: {fw_id}) to firewalls.db")
             conn.close()
+
+            log_activity(session['username'], "Create Firewall", f"Created firewall with ID {fw_id} and FQDN {fqdn}")
 
             job_id = f"backup_firewall_{fw_id}"
             if not scheduler.get_job(job_id):
@@ -255,6 +303,7 @@ def list_backups(fw_id):
 @app.route('/download/<path:filename>')
 @login_required
 def download(filename):
+    log_activity(session['username'], "Download Config", f"Downloaded configuration file: {filename}")
     return send_from_directory(BACKUP_DIR, filename)
 
 @app.route('/delete/<int:fw_id>')
@@ -262,6 +311,9 @@ def download(filename):
 def delete_firewall(fw_id):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
+    c.execute("SELECT fqdn FROM firewalls WHERE id = ?", (fw_id,))
+    fw = c.fetchone()
+    fqdn = fw[0] if fw else "unknown"
     c.execute("DELETE FROM firewalls WHERE id = ?", (fw_id,))
     c.execute("SELECT filename FROM backups WHERE fw_id = ?", (fw_id,))
     backup_files = c.fetchall()
@@ -269,7 +321,10 @@ def delete_firewall(fw_id):
     c.execute("SELECT * FROM firewalls")
     firewalls = c.fetchall()
     conn.commit()
+    logger.info(f"Committed firewall deletion (ID: {fw_id}) to firewalls.db")
     conn.close()
+
+    log_activity(session['username'], "Delete Firewall", f"Deleted firewall with ID {fw_id} and FQDN {fqdn}")
 
     job_id = f"backup_firewall_{fw_id}"
     try:
@@ -321,6 +376,8 @@ def change_password():
             if c.rowcount > 0:
                 session['password'] = new_password
                 conn.commit()
+                logger.info("Committed password change to firewalls.db")
+                log_activity(session['username'], "Change Password", "Password changed successfully")
                 return redirect(url_for('index'))
         conn.close()
         return render_template('change_password.html', error="Old password incorrect", first_login=session.get('first_login', False))
@@ -380,6 +437,7 @@ def backup_firewall(fw_id):
         c.execute("INSERT OR IGNORE INTO backups (fw_id, timestamp, filename) VALUES (?, ?, ?)",
                   (fw_id, timestamp, os.path.join(str(fw_id), filename)))
         conn.commit()
+        logger.info(f"Committed backup entry for fw_id {fw_id} to firewalls.db")
 
         c.execute("SELECT filename FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
         all_backups = c.fetchall()
@@ -392,6 +450,7 @@ def backup_firewall(fw_id):
                 c.execute("DELETE FROM backups WHERE filename = ?", (del_file[0],))
         clean_nonexistent_backups(conn)
         conn.commit()
+        logger.info(f"Committed backup cleanup for fw_id {fw_id} to firewalls.db")
         conn.close()
 
     except Exception as e:
@@ -419,6 +478,7 @@ def backup_firewall(fw_id):
     c.execute("UPDATE firewalls SET last_backup = ?, status = ? WHERE id = ?",
               (timestamp, status, fw_id))
     conn.commit()
+    logger.info(f"Committed firewall status update for fw_id {fw_id} to firewalls.db")
     conn.close()
 
 if __name__ == '__main__':
