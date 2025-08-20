@@ -16,6 +16,7 @@ import pyotp
 import radius
 import csv
 import io
+import socket
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)  # For session management
@@ -44,9 +45,11 @@ RADIUS_ENABLED = os.getenv('RADIUS_ENABLED', 'false').lower() == 'true'
 RADIUS_SERVER = os.getenv('RADIUS_SERVER', 'localhost')
 RADIUS_PORT = int(os.getenv('RADIUS_PORT', 1812))
 RADIUS_SECRET = os.getenv('RADIUS_SECRET', 'secret')
+SCP_TIMEOUT = int(os.getenv('SCP_TIMEOUT', 120))  # Default to 120 seconds for SCP transfers
 
 # Log TOTP_ENABLED value for debugging
 logger.info(f"TOTP_ENABLED set to: {TOTP_ENABLED}")
+logger.info(f"SCP_TIMEOUT set to: {SCP_TIMEOUT} seconds")
 
 # Set timezone to Europe/Vienna
 tz = pytz.timezone('Europe/Vienna')
@@ -461,7 +464,7 @@ def change_password():
         return render_template('change_password.html', error="Old password incorrect", first_login=session.get('first_login', False))
     return render_template('change_password.html', first_login=session.get('first_login', False))
 
-def backup_firewall(fw_id):
+def backup_firewall(fw_id, retries=3, timeout=SCP_TIMEOUT):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("SELECT fqdn, username, password, retention_count, ssh_port FROM firewalls WHERE id = ?", (fw_id,))
@@ -480,76 +483,95 @@ def backup_firewall(fw_id):
     local_path = os.path.join(fw_dir, filename)
     status = 'Success'
 
-    try:
-        logger.debug(f"Starting backup for fw_id {fw_id} on {fqdn}:{ssh_port} with username {username}")
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=30)
-        transport = ssh.get_transport()
-        transport.set_keepalive(60)
-        logger.debug(f"SSH connection established to {fqdn} with keep-alive")
+    for attempt in range(1, retries + 1):
+        ssh = None
+        try:
+            logger.debug(f"Starting backup for fw_id {fw_id} on {fqdn}:{ssh_port} with username {username}, attempt {attempt}/{retries}")
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=timeout, look_for_keys=False, allow_agent=False)
+            transport = ssh.get_transport()
+            transport.set_keepalive(60)
+            logger.debug(f"SSH connection established to {fqdn} with keep-alive")
 
-        stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            error = stderr.read().decode().strip()
-            raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
-        logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
+            # Check if remote file exists and is readable
+            stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                error = stderr.read().decode().strip()
+                raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
+            logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
 
-        scp_client = scp.SCPClient(ssh.get_transport())
-        logger.debug(f"Attempting SCP transfer of {REMOTE_CONFIG_PATH} to {local_path}")
-        scp_client.get(REMOTE_CONFIG_PATH, local_path)
-        scp_client.close()
-        ssh.close()
+            # Use SCP for file transfer
+            scp_client = scp.SCPClient(ssh.get_transport(), socket_timeout=timeout)
+            logger.debug(f"Attempting SCP transfer of {REMOTE_CONFIG_PATH} to {local_path}")
+            scp_client.get(REMOTE_CONFIG_PATH, local_path)
+            scp_client.close()
+            logger.debug(f"SCP transfer completed for {fqdn}")
 
-        if not os.path.exists(local_path):
-            raise Exception("Backup file was not created")
-        if os.path.getsize(local_path) == 0:
-            os.remove(local_path)
-            raise Exception("Backup file is empty")
+            if not os.path.exists(local_path):
+                raise Exception("Backup file was not created")
+            if os.path.getsize(local_path) == 0:
+                os.remove(local_path)
+                raise Exception("Backup file is empty")
 
-        logger.debug(f"Backup successful for {fqdn}, saved to {local_path}")
+            logger.debug(f"Backup successful for {fqdn}, saved to {local_path}")
 
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO backups (fw_id, timestamp, filename) VALUES (?, ?, ?)",
-                  (fw_id, timestamp, os.path.join(str(fw_id), filename)))
-        conn.commit()
-        logger.info(f"Committed backup entry for fw_id {fw_id} to firewalls.db")
+            conn = sqlite3.connect(DB)
+            c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO backups (fw_id, timestamp, filename) VALUES (?, ?, ?)",
+                      (fw_id, timestamp, os.path.join(str(fw_id), filename)))
+            conn.commit()
+            logger.info(f"Committed backup entry for fw_id {fw_id} to firewalls.db")
 
-        c.execute("SELECT filename FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
-        all_backups = c.fetchall()
-        if len(all_backups) > retention_count:
-            to_delete = all_backups[retention_count:]
-            for del_file in to_delete:
-                file_path = os.path.join(BACKUP_DIR, del_file[0])
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                c.execute("DELETE FROM backups WHERE filename = ?", (del_file[0],))
-        clean_nonexistent_backups(conn)
-        conn.commit()
-        logger.info(f"Committed backup cleanup for fw_id {fw_id} to firewalls.db")
-        conn.close()
+            c.execute("SELECT filename FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
+            all_backups = c.fetchall()
+            if len(all_backups) > retention_count:
+                to_delete = all_backups[retention_count:]
+                for del_file in to_delete:
+                    file_path = os.path.join(BACKUP_DIR, del_file[0])
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    c.execute("DELETE FROM backups WHERE filename = ?", (del_file[0],))
+            clean_nonexistent_backups(conn)
+            conn.commit()
+            logger.info(f"Committed backup cleanup for fw_id {fw_id} to firewalls.db")
+            conn.close()
+            break  # Exit retry loop on success
 
-    except Exception as e:
-        status = f'Failed: {str(e)}'
-        logger.error(f"Backup failed for {fqdn}: {str(e)}")
-        if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
-            os.remove(local_path)
+        except (socket.timeout, paramiko.SSHException, scp.SCPException) as e:
+            logger.error(f"Backup attempt {attempt}/{retries} failed for {fqdn}: {str(e)}")
+            if attempt == retries:
+                status = f'Failed: {str(e)}'
+                if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
+                    os.remove(local_path)
 
-        if MAIL_SERVER and MAIL_USER and MAIL_PASSWORD:
-            msg = MIMEText(f"Backup failed for {fqdn} at {timestamp}: {str(e)}")
-            msg['Subject'] = f"Backup Failure Notification - {fqdn}"
-            msg['From'] = MAIL_USER
-            msg['To'] = MAIL_RECIPIENT
-            try:
-                with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                    server.starttls()
-                    server.login(MAIL_USER, MAIL_PASSWORD)
-                    server.send_message(msg)
-                logger.info(f"Email notification sent for failed backup of {fqdn}")
-            except Exception as email_error:
-                logger.error(f"Failed to send email notification: {str(email_error)}")
+                if MAIL_SERVER and MAIL_USER and MAIL_PASSWORD:
+                    msg = MIMEText(f"Backup failed for {fqdn} at {timestamp}: {str(e)}")
+                    msg['Subject'] = f"Backup Failure Notification - {fqdn}"
+                    msg['From'] = MAIL_USER
+                    msg['To'] = MAIL_RECIPIENT
+                    try:
+                        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+                            server.starttls()
+                            server.login(MAIL_USER, MAIL_PASSWORD)
+                            server.send_message(msg)
+                        logger.info(f"Email notification sent for failed backup of {fqdn}")
+                    except Exception as email_error:
+                        logger.error(f"Failed to send email notification: {str(email_error)}")
+            else:
+                continue  # Retry on failure
+        except Exception as e:
+            logger.error(f"Unexpected error during backup attempt {attempt}/{retries} for {fqdn}: {str(e)}")
+            status = f'Failed: {str(e)}'
+            if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
+                os.remove(local_path)
+            break  # Do not retry on unexpected errors
+        finally:
+            if 'scp_client' in locals():
+                scp_client.close()
+            if ssh is not None:
+                ssh.close()
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
