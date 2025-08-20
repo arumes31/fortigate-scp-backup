@@ -149,6 +149,27 @@ Environment variables can be set to customize the app:
 - `MAIL_PASSWORD`: SMTP password.
 - `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
 
+## Generate TOTP SECRET
+
+Powershell:
+```
+# Define the Base32 alphabet (A-Z, 2-7)
+$base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+# Function to generate a random Base32 key
+function Generate-Base32Key {
+    $keyLength = 16  # Standard length for pyotp.random_base32()
+    $randomKey = -join (1..$keyLength | ForEach-Object {
+        $base32Alphabet[(Get-Random -Minimum 0 -Maximum $base32Alphabet.Length)]
+    })
+    return $randomKey
+}
+
+# Generate and output the key
+$key = Generate-Base32Key
+Write-Output $key
+```
+
 ## Bulk Upload
 
 CSV Content:
