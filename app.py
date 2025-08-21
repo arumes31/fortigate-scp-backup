@@ -252,15 +252,17 @@ def login():
         conn.close()
 
         authenticated = False
+        is_radius_user = False
         if user and user[0] == password:
             authenticated = True
             logger.debug(f"Local authentication successful for {username}")
         elif verify_radius(username, password):
             authenticated = True
+            is_radius_user = True
             logger.debug(f"RADIUS authentication successful for {username}")
 
         if authenticated:
-            if TOTP_ENABLED and user and user[2]:
+            if TOTP_ENABLED and user and user[2] and not is_radius_user:
                 totp = pyotp.TOTP(user[2])
                 if not totp.verify(totp_code):
                     logger.debug(f"Invalid TOTP code for {username}")
@@ -448,7 +450,12 @@ def index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("SELECT first_login FROM users WHERE username = ?", (session['username'],))
-    first_login = c.fetchone()[0]
+    result = c.fetchone()
+    if result is None:
+        logger.warning(f"User {session['username']} not found in users table, setting first_login to False")
+        first_login = False
+    else:
+        first_login = result[0]
     conn.close()
 
     if first_login:
