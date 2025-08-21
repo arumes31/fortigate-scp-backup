@@ -3,71 +3,331 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>Login</title>
     <style>
-        @-webkit-keyframes gradientAnimation {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        @-moz-keyframes gradientAnimation {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        @-o-keyframes gradientAnimation {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        @keyframes gradientAnimation {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
         body {
-            background: linear-gradient(45deg, #ff0000, #000000);
-            background-size: 200% 200%;
-            background-position: 0% 50%;
-            -webkit-animation: gradientAnimation 10s ease infinite;
-            -moz-animation: gradientAnimation 10s ease infinite;
-            -o-animation: gradientAnimation 10s ease infinite;
-            animation: gradientAnimation 10s ease infinite;
             margin: 0;
-            padding: 0;
+            font-family: "Courier New", Courier, monospace;
+            background: linear-gradient(135deg, #2c1b1b 0%, #1a0f0f 100%);
+            color: #e0e0e0;
+            position: relative;
+            overflow: hidden;
+            height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+        }
+
+        /* Animated Background */
+        .background-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
             overflow: hidden;
+        }
+
+        /* Grid Overlay with Diagonal Lines */
+        .grid-overlay {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: 
+                repeating-linear-gradient(
+                    45deg,
+                    rgba(133, 1, 1, 0.1) 0px,
+                    rgba(133, 1, 1, 0.1) 1px,
+                    transparent 1px,
+                    transparent 25px
+                ),
+                repeating-linear-gradient(
+                    -45deg,
+                    rgba(133, 1, 1, 0.1) 0px,
+                    rgba(133, 1, 1, 0.1) 1px,
+                    transparent 1px,
+                    transparent 25px
+                );
+            opacity: 0.4;
+            animation: pulse-grid 8s infinite ease-in-out;
+        }
+
+        /* Scan Effect */
+        .scan-effect {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+                to bottom,
+                transparent 0%,
+                rgba(133, 1, 1, 0.2) 50%,
+                transparent 100%
+            );
+            animation: scan 5s infinite linear;
+        }
+
+        /* Radar Pulse Circles */
+        .pulse-circle {
+            position: absolute;
+            width: 0;
+            height: 0;
+            border: 2px solid rgba(133, 1, 1, 0.7);
+            border-radius: 50%;
+            animation: pulse-circle 4s infinite ease-out;
+            transform: translate(-50%, -50%);
+        }
+
+        .pulse-circle:nth-child(1) {
+            top: 50%;
+            left: 50%;
+            animation-delay: 0s;
+        }
+
+        .pulse-circle:nth-child(2) {
+            top: 20%;
+            left: 20%;
+            animation-delay: -0.8s;
+        }
+
+        .pulse-circle:nth-child(3) {
+            top: 20%;
+            left: 80%;
+            animation-delay: -1.6s;
+        }
+
+        .pulse-circle:nth-child(4) {
+            top: 80%;
+            left: 20%;
+            animation-delay: -2.4s;
+        }
+
+        .pulse-circle:nth-child(5) {
+            top: 80%;
+            left: 80%;
+            animation-delay: -3.2s;
+        }
+
+        .pulse-circle:nth-child(6) {
+            top: 30%;
+            left: 30%;
+            animation-delay: -0.4s;
+        }
+
+        .pulse-circle:nth-child(7) {
+            top: 30%;
+            left: 70%;
+            animation-delay: -1.2s;
+        }
+
+        .pulse-circle:nth-child(8) {
+            top: 70%;
+            left: 30%;
+            animation-delay: -2.0s;
+        }
+
+        .pulse-circle:nth-child(9) {
+            top: 70%;
+            left: 70%;
+            animation-delay: -2.8s;
+        }
+
+        .pulse-circle:nth-child(10) {
+            top: 40%;
+            left: 60%;
+            animation-delay: -3.6s;
+        }
+
+        @keyframes pulse-circle {
+            0% {
+                transform: translate(-50%, -50%) scale(0);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(15);
+                opacity: 0;
+            }
+        }
+
+        /* Matrix Animated Text Logo */
+        .logo-text {
+            position: absolute;
+            top: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: "Courier New", Courier, monospace;
+            font-size: 5.4em;
+            color: #850101;
+            text-align: center;
+            text-transform: uppercase;
+            text-shadow: 0 0 10px rgba(133, 1, 1, 0.6);
+            z-index: 0;
+            white-space: nowrap;
+        }
+
+        @keyframes pulse-grid {
+            0% { opacity: 0.4; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.02); }
+            100% { opacity: 0.4; transform: scale(1); }
+        }
+
+        @keyframes scan {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 400px;
+            padding: 30px;
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 12px;
+            box-shadow: 0 0 25px rgba(133, 1, 1, 0.3);
+            text-align: center;
+        }
+
+        h1 {
+            color: #850101;
+            margin-bottom: 25px;
+            font-size: 2em;
+            text-shadow: 0 0 10px rgba(133, 1, 1, 0.5);
+        }
+
+        .error {
+            color: #ff9999; /* Kept as secondary red for contrast */
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            margin: 12px 0 6px;
+            text-align: left;
+            color: #e0e0e0;
+            font-size: 1.1em;
+        }
+
+        input[type="text"], input[type="password"] {
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #850101;
+            border-radius: 6px;
+            background: #2a1b1b;
+            color: #e0e0e0;
+            width: 100%;
+            box-sizing: border-box;
+            transition: border-color 0.3s ease;
+        }
+
+        input[type="text"]:focus, input[type="password"]:focus {
+            border-color: #ff9999;
+            outline: none;
+            box-shadow: 0 0 8px rgba(133, 1, 1, 0.5);
+        }
+
+        input[type="submit"] {
+            padding: 12px;
+            background: #850101;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1.1em;
+            transition: background 0.3s ease;
+        }
+
+        input[type="submit"]:hover {
+            background: #4d0001; /* Darker shade for hover */
+        }
+
+        #totp-section {
+            display: none; /* Hidden by default */
         }
     </style>
 </head>
 <body>
-    <div style="background: #2c3e50; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3); text-align: center; color: #ffffff; position: relative;">
-        <img src="/static/logo.png" alt="Logo" style="height: 180px; margin-bottom: 20px;">
-        <h2 style="color: #e74c3c; margin-bottom: 20px;">Login</h2>
+    <div class="background-animation">
+        <div class="grid-overlay"></div>
+        <div class="scan-effect"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+    </div>
+    <div class="logo-text" id="logo-text"></div>
+    <div class="container">
+        <h1>FortiSafe Login</h1>
         {% if error %}
-            <p style="color: red;">{{ error }}</p>
+            <p class="error">{{ error }}</p>
         {% endif %}
-        <form method="POST">
-            <div style="margin-bottom: 15px;">
-                <label>Username:</label><br>
-                <input type="text" name="username" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;">
-            </div>
-            <div style="margin-bottom: 15px;">
-                <label>Password:</label><br>
-                <input type="password" name="password" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;">
-            </div>
+        <form method="post" action="/login">
+            <label>Username: <input type="text" name="username" id="username"></label>
+            <label>Password: <input type="password" name="password"></label>
             {% if totp_enabled %}
-            <div style="margin-bottom: 15px;">
-                TOTP Code:<br>
-                <input type="text" name="totp_code" style="padding: 8px; border: 1px solid #444; border-radius: 4px; width: 200px; background: #2c3e50; color: #ffffff;">
-            </div>
+                <div id="totp-section">
+                    <label>TOTP Code: <input type="text" name="totp_code"></label>
+                </div>
             {% endif %}
-            <button type="submit" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px;">Login</button>
+            <input type="submit" value="Login">
         </form>
     </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const logoText = document.getElementById('logo-text');
+            const usernameInput = document.getElementById('username');
+            const totpSection = document.getElementById('totp-section');
+            const originalText = 'FortiSafe';
+            const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$%';
+
+            // Matrix rain animation for logo, starting with "FGT"
+            function matrixRain() {
+                let displayText = 'FGT'; // Start with "FGT"
+                const speed = 100; // ms per character drop
+                let charIndex = 3; // Start after "FGT" (index 0, 1, 2)
+
+                function dropNextChar() {
+                    if (charIndex < originalText.length) {
+                        displayText += characters.charAt(Math.floor(Math.random() * characters.length));
+                        logoText.textContent = displayText;
+                        charIndex++;
+                        setTimeout(dropNextChar, speed);
+                    } else {
+                        // After all characters drop, stabilize to original text
+                        setTimeout(() => {
+                            logoText.textContent = originalText;
+                            setTimeout(matrixRain, 4000); // Restart after 4s
+                        }, 1000); // Hold random chars for 1s before stabilizing
+                    }
+                }
+                dropNextChar();
+            }
+
+            // Start the matrix rain animation
+            matrixRain();
+
+            // TOTP conditional display
+            if (totpSection) {
+                usernameInput.addEventListener('input', function() {
+                    if (usernameInput.value.trim().toLowerCase() === 'admin') {
+                        totpSection.style.display = 'block';
+                    } else {
+                        totpSection.style.display = 'none';
+                    }
+                });
+            }
+        });
+    </script>
 </body>
 </html>
