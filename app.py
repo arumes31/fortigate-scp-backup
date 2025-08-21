@@ -14,11 +14,18 @@ from functools import wraps
 from datetime import timedelta
 import pytz
 import pyotp
-import radius
+from pyrad.client import Client
+from pyrad.dictionary import Dictionary
+from pyrad.packet import AuthPacket
 import csv
 import io
 import socket
 import threading
+import random
+try:
+    import pkg_resources
+except ImportError:
+    pkg_resources = None
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)  # For session management
@@ -28,7 +35,7 @@ app.config['PREFERRED_URL_SCHEME'] = 'https'  # Support reverse proxy with HTTPS
 
 # Configure scheduler with ThreadPoolExecutor to limit parallel tasks
 executors = {
-    'default': ThreadPoolExecutor(max_workers=2000)  # Limit to 2 concurrent backup tasks
+    'default': ThreadPoolExecutor(max_workers=2)  # Limit to 2 concurrent backup tasks
 }
 scheduler = BackgroundScheduler(job_defaults={'coalesce': True, 'max_instances': 1}, executors=executors)
 scheduler.start()
@@ -53,10 +60,33 @@ RADIUS_SERVER = os.getenv('RADIUS_SERVER', 'localhost')
 RADIUS_PORT = int(os.getenv('RADIUS_PORT', 1812))
 RADIUS_SECRET = os.getenv('RADIUS_SECRET', 'secret')
 SCP_TIMEOUT = int(os.getenv('SCP_TIMEOUT', 120))  # Default to 120 seconds for SCP transfers
+DICTIONARY_PATH = '/app/dictionary'
 
-# Log environment variables for debugging
+# Log environment variables and library version for debugging
 logger.info(f"TOTP_ENABLED set to: {TOTP_ENABLED}")
 logger.info(f"SCP_TIMEOUT set to: {SCP_TIMEOUT} seconds")
+logger.info(f"RADIUS_ENABLED set to: {RADIUS_ENABLED}")
+logger.info(f"RADIUS_SERVER set to: {RADIUS_SERVER}")
+logger.info(f"RADIUS_PORT set to: {RADIUS_PORT}")
+logger.info(f"RADIUS_SECRET set to: {RADIUS_SECRET}")
+logger.info(f"DICTIONARY_PATH set to: {DICTIONARY_PATH}")
+if os.path.exists(DICTIONARY_PATH):
+    try:
+        with open(DICTIONARY_PATH, 'r') as f:
+            dictionary_content = f.read()
+        logger.debug(f"RADIUS dictionary file content: {dictionary_content}")
+    except Exception as e:
+        logger.error(f"Failed to read RADIUS dictionary file at {DICTIONARY_PATH}: {str(e)}")
+else:
+    logger.error(f"RADIUS dictionary file not found at {DICTIONARY_PATH}")
+if pkg_resources:
+    try:
+        pyrad_version = pkg_resources.get_distribution("pyrad").version
+        logger.info(f"Using pyrad version: {pyrad_version}")
+    except pkg_resources.DistributionNotFound:
+        logger.error("pyrad library not found")
+else:
+    logger.warning("pkg_resources not available, cannot log pyrad version")
 
 # Set timezone to Europe/Vienna
 tz = pytz.timezone('Europe/Vienna')
@@ -182,10 +212,29 @@ def verify_radius(username, password):
     if not RADIUS_ENABLED:
         return False
     try:
-        r = radius.Radius(RADIUS_SECRET.encode('utf-8'), host=RADIUS_SERVER, port=RADIUS_PORT)
-        return r.authenticate(username, password)
+        # Initialize dictionary
+        dictionary = Dictionary(DICTIONARY_PATH)
+        logger.debug(f"RADIUS dictionary initialized from {DICTIONARY_PATH}")
+        # Initialize RADIUS client
+        client = Client(server=RADIUS_SERVER, authport=RADIUS_PORT, secret=RADIUS_SECRET.encode('utf-8'))
+        client.dictionary = dictionary
+        logger.debug(f"RADIUS client initialized for server {RADIUS_SERVER}:{RADIUS_PORT}")
+        # Create authentication packet with random ID
+        pkt_id = random.randint(0, 255)  # RADIUS packet IDs are 0-255
+        pkt = AuthPacket(code=1, id=pkt_id, secret=RADIUS_SECRET.encode('utf-8'), dict=dictionary)
+        pkt["User-Name"] = username
+        pkt["User-Password"] = pkt.PwCrypt(password)
+        logger.debug(f"RADIUS authentication packet created for {username} with ID {pkt_id}")
+        # Send packet and check response
+        reply = client.SendPacket(pkt)
+        if reply.code == 2:  # Access-Accept
+            logger.debug(f"RADIUS authentication successful for {username}")
+            return True
+        else:
+            logger.debug(f"RADIUS authentication rejected for {username}, reply code: {reply.code}")
+            return False
     except Exception as e:
-        logger.error(f"RADIUS authentication failed: {str(e)}")
+        logger.error(f"RADIUS authentication failed for {username}: {str(e)}")
         return False
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -560,12 +609,16 @@ def backup_firewall(fw_id, retries=3, timeout=SCP_TIMEOUT):
                 logger.debug(f"SSH connection established to {fqdn} with keep-alive")
 
                 # Check if remote file exists and is readable
-                stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
-                exit_status = stdout.channel.recv_exit_status()
-                if exit_status != 0:
-                    error = stderr.read().decode().strip()
-                    raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
-                logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
+                try:
+                    stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
+                    exit_status = stdout.channel.recv_exit_status()
+                    if exit_status != 0:
+                        error = stderr.read().decode().strip()
+                        logger.warning(f"Remote file check failed for {REMOTE_CONFIG_PATH} on {fqdn}: {error}. Proceeding with SCP transfer.")
+                    else:
+                        logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
+                except Exception as e:
+                    logger.warning(f"Failed to check remote file {REMOTE_CONFIG_PATH} on {fqdn}: {str(e)}. Proceeding with SCP transfer.")
 
                 # Use SCP for file transfer
                 scp_client = scp.SCPClient(ssh.get_transport(), socket_timeout=timeout)
