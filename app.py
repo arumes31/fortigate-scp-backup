@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template, send_from_directory, redirect, url_for, session, abort
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
 import paramiko
 import scp
 import os
@@ -17,13 +18,19 @@ import radius
 import csv
 import io
 import socket
+import threading
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)  # For session management
 app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)  # 1-hour session timeout
 app.config['PREFERRED_URL_SCHEME'] = 'https'  # Support reverse proxy with HTTPS
-scheduler = BackgroundScheduler(job_defaults={'coalesce': True, 'max_instances': 1})
+
+# Configure scheduler with ThreadPoolExecutor to limit parallel tasks
+executors = {
+    'default': ThreadPoolExecutor(max_workers=2000)  # Limit to 2 concurrent backup tasks
+}
+scheduler = BackgroundScheduler(job_defaults={'coalesce': True, 'max_instances': 1}, executors=executors)
 scheduler.start()
 
 # Configure logging
@@ -35,7 +42,7 @@ ACTIVITY_DB = '/app/data/activity_log.db'
 BACKUP_DIR = 'backups'
 REMOTE_CONFIG_PATH = os.getenv('FORTIGATE_CONFIG_PATH', 'sys_config')
 MAIL_SERVER = os.getenv('MAIL_SERVER', 'smtp.example.com')
-MAIL_PORT = os.getenv('MAIL_PORT', 587)
+MAIL_PORT = int(os.getenv('MAIL_PORT', 587))
 MAIL_USER = os.getenv('MAIL_USER', 'user@example.com')
 MAIL_PASSWORD = os.getenv('MAIL_PASSWORD', 'password')
 MAIL_RECIPIENT = os.getenv('MAIL_RECIPIENT', MAIL_USER)  # Default to MAIL_USER if not set
@@ -47,12 +54,30 @@ RADIUS_PORT = int(os.getenv('RADIUS_PORT', 1812))
 RADIUS_SECRET = os.getenv('RADIUS_SECRET', 'secret')
 SCP_TIMEOUT = int(os.getenv('SCP_TIMEOUT', 120))  # Default to 120 seconds for SCP transfers
 
-# Log TOTP_ENABLED value for debugging
+# Log environment variables for debugging
 logger.info(f"TOTP_ENABLED set to: {TOTP_ENABLED}")
 logger.info(f"SCP_TIMEOUT set to: {SCP_TIMEOUT} seconds")
 
 # Set timezone to Europe/Vienna
 tz = pytz.timezone('Europe/Vienna')
+
+def send_email(subject, body, to_addr):
+    """Thread-safe function to send email notifications."""
+    if not (MAIL_SERVER and MAIL_USER and MAIL_PASSWORD):
+        logger.error("Email configuration missing: MAIL_SERVER, MAIL_USER, or MAIL_PASSWORD not set")
+        return
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = MAIL_USER
+        msg['To'] = to_addr
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(MAIL_USER, MAIL_PASSWORD)
+            server.send_message(msg)
+        logger.info(f"Email notification sent to {to_addr}: {subject}")
+    except Exception as email_error:
+        logger.error(f"Failed to send email notification: {str(email_error)}")
 
 def init_db():
     # Initialize firewalls.db
@@ -120,14 +145,18 @@ def clean_nonexistent_backups(conn):
     logger.info("Committed changes to firewalls.db in clean_nonexistent_backups")
 
 def log_activity(username, action, details):
-    conn = sqlite3.connect(ACTIVITY_DB)
-    c = conn.cursor()
-    timestamp = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
-    c.execute("INSERT INTO activity_logs (username, action, details, timestamp) VALUES (?, ?, ?, ?)",
-              (username, action, details, timestamp))
-    conn.commit()
-    logger.info(f"Logged activity and committed to activity_log.db: {username} - {action} - {details}")
-    conn.close()
+    try:
+        conn = sqlite3.connect(ACTIVITY_DB)
+        c = conn.cursor()
+        timestamp = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("INSERT INTO activity_logs (username, action, details, timestamp) VALUES (?, ?, ?, ?)",
+                  (username, action, details, timestamp))
+        conn.commit()
+        logger.info(f"Logged activity and committed to activity_log.db: {username} - {action} - {details}")
+    except Exception as e:
+        logger.error(f"Failed to log activity: {str(e)}")
+    finally:
+        conn.close()
 
 def login_required(f):
     @wraps(f)
@@ -216,12 +245,16 @@ def logout():
 @app.route('/activity_log')
 @login_required
 def activity_log():
-    conn = sqlite3.connect(ACTIVITY_DB)
-    c = conn.cursor()
-    c.execute("SELECT username, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC")
-    logs = c.fetchall()
-    conn.close()
-    return render_template('activity_log.html', logs=logs)
+    try:
+        conn = sqlite3.connect(ACTIVITY_DB)
+        c = conn.cursor()
+        c.execute("SELECT username, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC")
+        logs = c.fetchall()
+        conn.close()
+        return render_template('activity_log.html', logs=logs)
+    except Exception as e:
+        logger.error(f"Failed to retrieve activity logs: {str(e)}")
+        return render_template('activity_log.html', logs=[], error="Failed to load activity logs")
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
@@ -288,6 +321,8 @@ def index():
 
                 if errors:
                     error_msg = "Some firewalls were not added due to errors: " + "; ".join(errors)
+                    conn = sqlite3.connect(DB)
+                    c = conn.cursor()
                     c.execute("SELECT * FROM firewalls")
                     firewalls = c.fetchall()
                     conn.close()
@@ -374,61 +409,77 @@ def index():
 @app.route('/backups/<int:fw_id>')
 @login_required
 def list_backups(fw_id):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT * FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
-    backups = c.fetchall()
-    conn.close()
-    return render_template('backups.html', backups=backups, fw_id=fw_id)
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT * FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
+        backups = c.fetchall()
+        conn.close()
+        return render_template('backups.html', backups=backups, fw_id=fw_id)
+    except Exception as e:
+        logger.error(f"Failed to retrieve backups for fw_id {fw_id}: {str(e)}")
+        return render_template('backups.html', backups=[], fw_id=fw_id, error="Failed to load backups")
 
 @app.route('/download/<path:filename>')
 @login_required
 def download(filename):
-    log_activity(session['username'], "Download Config", f"Downloaded configuration file: {filename}")
-    return send_from_directory(BACKUP_DIR, filename)
+    try:
+        log_activity(session['username'], "Download Config", f"Downloaded configuration file: {filename}")
+        return send_from_directory(BACKUP_DIR, filename)
+    except Exception as e:
+        logger.error(f"Failed to download file {filename}: {str(e)}")
+        return render_template('index.html', error=f"Failed to download file: {str(e)}", firewalls=[])
 
 @app.route('/delete/<int:fw_id>')
 @login_required
 def delete_firewall(fw_id):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT fqdn FROM firewalls WHERE id = ?", (fw_id,))
-    fw = c.fetchone()
-    fqdn = fw[0] if fw else "unknown"
-    c.execute("DELETE FROM firewalls WHERE id = ?", (fw_id,))
-    c.execute("SELECT filename FROM backups WHERE fw_id = ?", (fw_id,))
-    backup_files = c.fetchall()
-    c.execute("DELETE FROM backups WHERE fw_id = ?", (fw_id,))
-    c.execute("SELECT * FROM firewalls")
-    firewalls = c.fetchall()
-    conn.commit()
-    logger.info(f"Committed firewall deletion (ID: {fw_id}) to firewalls.db")
-    conn.close()
-
-    log_activity(session['username'], "Delete Firewall", f"Deleted firewall with ID {fw_id} and FQDN {fqdn}")
-
-    job_id = f"backup_firewall_{fw_id}"
     try:
-        scheduler.remove_job(job_id)
-        logger.debug(f"Removed job {job_id} for fw_id {fw_id}")
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT fqdn FROM firewalls WHERE id = ?", (fw_id,))
+        fw = c.fetchone()
+        fqdn = fw[0] if fw else "unknown"
+        c.execute("DELETE FROM firewalls WHERE id = ?", (fw_id,))
+        c.execute("SELECT filename FROM backups WHERE fw_id = ?", (fw_id,))
+        backup_files = c.fetchall()
+        c.execute("DELETE FROM backups WHERE fw_id = ?", (fw_id,))
+        c.execute("SELECT * FROM firewalls")
+        firewalls = c.fetchall()
+        conn.commit()
+        logger.info(f"Committed firewall deletion (ID: {fw_id}) to firewalls.db")
+        conn.close()
+
+        log_activity(session['username'], "Delete Firewall", f"Deleted firewall with ID {fw_id} and FQDN {fqdn}")
+
+        job_id = f"backup_firewall_{fw_id}"
+        try:
+            scheduler.remove_job(job_id)
+            logger.debug(f"Removed job {job_id} for fw_id {fw_id}")
+        except Exception as e:
+            logger.warning(f"Failed to remove scheduler job {job_id} for fw_id {fw_id}: {str(e)}")
+
+        fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
+        if os.path.exists(fw_dir):
+            shutil.rmtree(fw_dir)
+
+        return render_template('index.html', firewalls=firewalls, first_login=False)
     except Exception as e:
-        logger.warning(f"Failed to remove scheduler job {job_id} for fw_id {fw_id}: {str(e)}")
-
-    fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
-    if os.path.exists(fw_dir):
-        shutil.rmtree(fw_dir)
-
-    return render_template('index.html', firewalls=firewalls, first_login=False)
+        logger.error(f"Failed to delete firewall {fw_id}: {str(e)}")
+        return render_template('index.html', error=f"Failed to delete firewall: {str(e)}", firewalls=[])
 
 @app.route('/errors')
 @login_required
 def view_errors():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT id, fqdn, last_backup, status FROM firewalls WHERE status LIKE 'Failed:%'")
-    errors = c.fetchall()
-    conn.close()
-    return render_template('errors.html', errors=errors)
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT id, fqdn, last_backup, status FROM firewalls WHERE status LIKE 'Failed:%'")
+        errors = c.fetchall()
+        conn.close()
+        return render_template('errors.html', errors=errors)
+    except Exception as e:
+        logger.error(f"Failed to retrieve errors: {str(e)}")
+        return render_template('errors.html', errors=[], error="Failed to load errors")
 
 @app.route('/backup_now/<int:fw_id>')
 @login_required
@@ -446,140 +497,145 @@ def change_password():
         confirm_password = request.form['confirm_password']
         if new_password != confirm_password:
             return render_template('change_password.html', error="New passwords do not match", first_login=session.get('first_login', False))
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("SELECT password FROM users WHERE username = ? AND password = ?", 
-                 (session['username'], old_password))
-        result = c.fetchone()
-        if result:
-            c.execute("UPDATE users SET password = ?, first_login = 0 WHERE username = ? AND password = ?",
-                      (new_password, session['username'], old_password))
-            if c.rowcount > 0:
-                session['password'] = new_password
-                conn.commit()
-                logger.info("Committed password change to firewalls.db")
-                log_activity(session['username'], "Change Password", "Password changed successfully")
-                return redirect(url_for('index'))
-        conn.close()
-        return render_template('change_password.html', error="Old password incorrect", first_login=session.get('first_login', False))
+        try:
+            conn = sqlite3.connect(DB)
+            c = conn.cursor()
+            c.execute("SELECT password FROM users WHERE username = ? AND password = ?", 
+                     (session['username'], old_password))
+            result = c.fetchone()
+            if result:
+                c.execute("UPDATE users SET password = ?, first_login = 0 WHERE username = ? AND password = ?",
+                          (new_password, session['username'], old_password))
+                if c.rowcount > 0:
+                    session['password'] = new_password
+                    conn.commit()
+                    logger.info("Committed password change to firewalls.db")
+                    log_activity(session['username'], "Change Password", "Password changed successfully")
+                    return redirect(url_for('index'))
+            conn.close()
+            return render_template('change_password.html', error="Old password incorrect", first_login=session.get('first_login', False))
+        except Exception as e:
+            logger.error(f"Failed to change password: {str(e)}")
+            return render_template('change_password.html', error=f"Failed to change password: {str(e)}", first_login=session.get('first_login', False))
     return render_template('change_password.html', first_login=session.get('first_login', False))
 
 def backup_firewall(fw_id, retries=3, timeout=SCP_TIMEOUT):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT fqdn, username, password, retention_count, ssh_port FROM firewalls WHERE id = ?", (fw_id,))
-    fw = c.fetchone()
-    conn.close()
+    try:
+        logger.info(f"Starting backup job for fw_id {fw_id}")
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT fqdn, username, password, retention_count, ssh_port FROM firewalls WHERE id = ?", (fw_id,))
+        fw = c.fetchone()
+        conn.close()
 
-    if not fw:
-        logger.warning(f"No firewall found for fw_id {fw_id}")
-        return
+        if not fw:
+            logger.warning(f"No firewall found for fw_id {fw_id}")
+            return
 
-    fqdn, username, password, retention_count, ssh_port = fw
-    timestamp = datetime.datetime.now(tz).strftime('%Y%m%d_%H%M%S')
-    fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
-    os.makedirs(fw_dir, exist_ok=True)
-    filename = f"{timestamp}.conf"
-    local_path = os.path.join(fw_dir, filename)
-    status = 'Success'
+        fqdn, username, password, retention_count, ssh_port = fw
+        timestamp = datetime.datetime.now(tz).strftime('%Y%m%d_%H%M%S')
+        fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
+        os.makedirs(fw_dir, exist_ok=True)
+        filename = f"{timestamp}.conf"
+        local_path = os.path.join(fw_dir, filename)
+        status = 'Success'
 
-    for attempt in range(1, retries + 1):
-        ssh = None
+        # Check directory permissions
         try:
-            logger.debug(f"Starting backup for fw_id {fw_id} on {fqdn}:{ssh_port} with username {username}, attempt {attempt}/{retries}")
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=timeout, look_for_keys=False, allow_agent=False)
-            transport = ssh.get_transport()
-            transport.set_keepalive(60)
-            logger.debug(f"SSH connection established to {fqdn} with keep-alive")
+            perms = oct(os.stat(BACKUP_DIR).st_mode & 0o777)
+            logger.debug(f"Backup directory permissions: {perms}")
+        except Exception as e:
+            logger.error(f"Failed to check backup directory permissions: {str(e)}")
 
-            # Check if remote file exists and is readable
-            stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
-            exit_status = stdout.channel.recv_exit_status()
-            if exit_status != 0:
-                error = stderr.read().decode().strip()
-                raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
-            logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
+        for attempt in range(1, retries + 1):
+            ssh = None
+            scp_client = None
+            try:
+                logger.debug(f"Starting backup for fw_id {fw_id} on {fqdn}:{ssh_port} with username {username}, attempt {attempt}/{retries}")
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(fqdn, username=username, password=password, port=ssh_port, timeout=timeout, look_for_keys=False, allow_agent=False)
+                transport = ssh.get_transport()
+                transport.set_keepalive(60)
+                logger.debug(f"SSH connection established to {fqdn} with keep-alive")
 
-            # Use SCP for file transfer
-            scp_client = scp.SCPClient(ssh.get_transport(), socket_timeout=timeout)
-            logger.debug(f"Attempting SCP transfer of {REMOTE_CONFIG_PATH} to {local_path}")
-            scp_client.get(REMOTE_CONFIG_PATH, local_path)
-            scp_client.close()
-            logger.debug(f"SCP transfer completed for {fqdn}")
+                # Check if remote file exists and is readable
+                stdin, stdout, stderr = ssh.exec_command(f"ls {REMOTE_CONFIG_PATH}")
+                exit_status = stdout.channel.recv_exit_status()
+                if exit_status != 0:
+                    error = stderr.read().decode().strip()
+                    raise Exception(f"Remote file {REMOTE_CONFIG_PATH} does not exist: {error}")
+                logger.debug(f"Remote file {REMOTE_CONFIG_PATH} exists on {fqdn}")
 
-            if not os.path.exists(local_path):
-                raise Exception("Backup file was not created")
-            if os.path.getsize(local_path) == 0:
-                os.remove(local_path)
-                raise Exception("Backup file is empty")
+                # Use SCP for file transfer
+                scp_client = scp.SCPClient(ssh.get_transport(), socket_timeout=timeout)
+                logger.debug(f"Attempting SCP transfer of {REMOTE_CONFIG_PATH} to {local_path}")
+                scp_client.get(REMOTE_CONFIG_PATH, local_path)
+                scp_client.close()
+                logger.debug(f"SCP transfer completed for {fqdn}")
 
-            logger.debug(f"Backup successful for {fqdn}, saved to {local_path}")
+                if not os.path.exists(local_path):
+                    raise Exception("Backup file was not created")
+                if os.path.getsize(local_path) == 0:
+                    os.remove(local_path)
+                    raise Exception("Backup file is empty")
 
-            conn = sqlite3.connect(DB)
-            c = conn.cursor()
-            c.execute("INSERT OR IGNORE INTO backups (fw_id, timestamp, filename) VALUES (?, ?, ?)",
-                      (fw_id, timestamp, os.path.join(str(fw_id), filename)))
-            conn.commit()
-            logger.info(f"Committed backup entry for fw_id {fw_id} to firewalls.db")
+                logger.debug(f"Backup successful for {fqdn}, saved to {local_path}")
 
-            c.execute("SELECT filename FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
-            all_backups = c.fetchall()
-            if len(all_backups) > retention_count:
-                to_delete = all_backups[retention_count:]
-                for del_file in to_delete:
-                    file_path = os.path.join(BACKUP_DIR, del_file[0])
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    c.execute("DELETE FROM backups WHERE filename = ?", (del_file[0],))
-            clean_nonexistent_backups(conn)
-            conn.commit()
-            logger.info(f"Committed backup cleanup for fw_id {fw_id} to firewalls.db")
-            conn.close()
-            break  # Exit retry loop on success
+                conn = sqlite3.connect(DB)
+                c = conn.cursor()
+                c.execute("INSERT OR IGNORE INTO backups (fw_id, timestamp, filename) VALUES (?, ?, ?)",
+                          (fw_id, timestamp, os.path.join(str(fw_id), filename)))
+                conn.commit()
+                logger.info(f"Committed backup entry for fw_id {fw_id} to firewalls.db")
 
-        except (socket.timeout, paramiko.SSHException, scp.SCPException) as e:
-            logger.error(f"Backup attempt {attempt}/{retries} failed for {fqdn}: {str(e)}")
-            if attempt == retries:
+                c.execute("SELECT filename FROM backups WHERE fw_id = ? ORDER BY timestamp DESC", (fw_id,))
+                all_backups = c.fetchall()
+                if len(all_backups) > retention_count:
+                    to_delete = all_backups[retention_count:]
+                    for del_file in to_delete:
+                        file_path = os.path.join(BACKUP_DIR, del_file[0])
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        c.execute("DELETE FROM backups WHERE filename = ?", (del_file[0],))
+                clean_nonexistent_backups(conn)
+                conn.commit()
+                logger.info(f"Committed backup cleanup for fw_id {fw_id} to firewalls.db")
+                conn.close()
+                break  # Exit retry loop on success
+
+            except (socket.timeout, paramiko.SSHException, scp.SCPException) as e:
+                logger.error(f"Backup attempt {attempt}/{retries} failed for {fqdn}: {str(e)}")
+                if attempt == retries:
+                    status = f'Failed: {str(e)}'
+                    if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
+                        os.remove(local_path)
+                    send_email(f"Backup Failure Notification - {fqdn}", f"Backup failed for {fqdn} at {timestamp}: {str(e)}", MAIL_RECIPIENT)
+                else:
+                    continue  # Retry on failure
+            except Exception as e:
+                logger.error(f"Unexpected error during backup attempt {attempt}/{retries} for {fqdn}: {str(e)}")
                 status = f'Failed: {str(e)}'
                 if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
                     os.remove(local_path)
+                send_email(f"Backup Failure Notification - {fqdn}", f"Backup failed for {fqdn} at {timestamp}: {str(e)}", MAIL_RECIPIENT)
+                break  # Do not retry on unexpected errors
+            finally:
+                if 'scp_client' in locals() and scp_client:
+                    scp_client.close()
+                if ssh:
+                    ssh.close()
 
-                if MAIL_SERVER and MAIL_USER and MAIL_PASSWORD:
-                    msg = MIMEText(f"Backup failed for {fqdn} at {timestamp}: {str(e)}")
-                    msg['Subject'] = f"Backup Failure Notification - {fqdn}"
-                    msg['From'] = MAIL_USER
-                    msg['To'] = MAIL_RECIPIENT
-                    try:
-                        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                            server.starttls()
-                            server.login(MAIL_USER, MAIL_PASSWORD)
-                            server.send_message(msg)
-                        logger.info(f"Email notification sent for failed backup of {fqdn}")
-                    except Exception as email_error:
-                        logger.error(f"Failed to send email notification: {str(email_error)}")
-            else:
-                continue  # Retry on failure
-        except Exception as e:
-            logger.error(f"Unexpected error during backup attempt {attempt}/{retries} for {fqdn}: {str(e)}")
-            status = f'Failed: {str(e)}'
-            if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
-                os.remove(local_path)
-            break  # Do not retry on unexpected errors
-        finally:
-            if 'scp_client' in locals():
-                scp_client.close()
-            if ssh is not None:
-                ssh.close()
-
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("UPDATE firewalls SET last_backup = ?, status = ? WHERE id = ?",
-              (timestamp, status, fw_id))
-    conn.commit()
-    logger.info(f"Committed firewall status update for fw_id {fw_id} to firewalls.db")
-    conn.close()
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("UPDATE firewalls SET last_backup = ?, status = ? WHERE id = ?",
+                  (timestamp, status, fw_id))
+        conn.commit()
+        logger.info(f"Committed firewall status update for fw_id {fw_id} to firewalls.db")
+        conn.close()
+    except Exception as e:
+        logger.error(f"Backup job for fw_id {fw_id} failed: {str(e)}")
+        send_email(f"Backup Failure Notification - fw_id {fw_id}", f"Backup job failed for fw_id {fw_id}: {str(e)}", MAIL_RECIPIENT)
 
 if __name__ == '__main__':
     for job in scheduler.get_jobs():
@@ -589,17 +645,20 @@ if __name__ == '__main__':
     init_db()
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT id, interval_minutes FROM firewalls")
-    for row in c.fetchall():
-        fw_id, interval_minutes = row
-        job_id = f"backup_firewall_{fw_id}"
-        scheduler.add_job(id=job_id, func=backup_firewall, args=[fw_id],
-                         trigger='interval', minutes=interval_minutes,
-                         coalesce=True, max_instances=1)
-        logger.debug(f"Scheduled job {job_id} for fw_id {fw_id} with interval {interval_minutes} minutes")
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT id, interval_minutes FROM firewalls")
+        for row in c.fetchall():
+            fw_id, interval_minutes = row
+            job_id = f"backup_firewall_{fw_id}"
+            scheduler.add_job(id=job_id, func=backup_firewall, args=[fw_id],
+                             trigger='interval', minutes=interval_minutes,
+                             coalesce=True, max_instances=1)
+            logger.debug(f"Scheduled job {job_id} for fw_id {fw_id} with interval {interval_minutes} minutes")
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to schedule backup jobs: {str(e)}")
 
     logger.info("Current scheduled jobs:")
     for job in scheduler.get_jobs():
