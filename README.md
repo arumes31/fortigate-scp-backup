@@ -11,7 +11,7 @@ Web application for backing up FortiGate firewall configurations using SCP.
 
 ## Screenshots
 
-<img width="648" height="720" alt="image" src="https://github.com/user-attachments/assets/f6b34dc6-16ab-4c79-88cb-24231941976b" />
+![login](https://github.com/user-attachments/assets/5929f9ae-e4e2-4b25-911d-c5e102bc5f06)
 <img width="1515" height="801" alt="image" src="https://github.com/user-attachments/assets/3ef6e5f3-c48a-49dd-a15e-434151df3e06" />
 <img width="1561" height="690" alt="image" src="https://github.com/user-attachments/assets/02600e20-8cce-42f8-af32-cd65466662af" />
 
@@ -63,61 +63,60 @@ config system admin
 end
 ```
 
-## Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/arumes31/fortigate-scp-backup.git
-   cd fortigate-scp-backup
-   ```
-2. Create necessary directories and set permissions:
-   ```bash
-   mkdir -p data backups
-   chmod -R u+rwX data backups
-   ```
-3. Build the Docker image:
-   ```bash
-   docker build -t fortigate-scp-backup .
-   ```
-4. Run the container with environment variables:
-   ```bash
-   docker run -d -p 8521:8521 \
-       -v $(pwd)/data:/app/data \
-       -v $(pwd)/data/backups:/app/backups \
-       -e DEFAULT_SCP_USER=scpuser \
-       -e DEFAULT_SCP_PASSWORD=scppassword \
-       -e FORTIGATE_CONFIG_PATH=sys_config \
-       -e MAIL_SERVER=smtp.yourserver.com \
-       -e MAIL_PORT=587 \
-       -e MAIL_USER=your@email.com \
-       -e MAIL_PASSWORD=your_password \
-       -e MAIL_RECIPIENT=recipient@example.com \
-       --name fortisafe fortigate-scp-backup
-   ```
-   - Replace `your_default_password`, `smtp.yourserver.com`, `your@email.com`, `your_password`, and `recipient@example.com` with your actual values.
-   
+## Installation   
 ### Using Docker Compose
 Alternatively, use the following `docker-compose.yml` configuration to run the app:
 
 ```yaml
 services:
-  fortisafe:
-    container_name: "fortisafe"
+  fortisafe-app:
+    container_name: "fortisafe-app"
     environment:
-      - "DEFAULT_SCP_USER=scpuser"
-      - "DEFAULT_SCP_PASSWORD=xxxx"  # Replace with your SCP password
-      - "MAIL_SERVER=mail.xxx.com"
+      - "DEFAULT_SCP_USER=fortisafe"
+      - "DEFAULT_SCP_PASSWORD=XXXXXX"
+      - "TOTP_ENABLED=true"
+      - "TOTP_SECRET=XXXXXX"
+      - "MAIL_SERVER=smtp.test.com"
       - "MAIL_PORT=25"
-      - "MAIL_USER=fortisafe@xxx.com"  # Replace with your mail user
-      - "MAIL_PASSWORD=xxxx"  # Replace with your mail password
-      - "MAIL_RECIPIENT=xxx@xxx.com"  # Replace with your recipient email
+      - "MAIL_USER=fortisafe@test.com"
+      - "MAIL_PASSWORD=XXXXXX"
+      - "MAIL_RECIPIENT=user1@test.com"
       - "TZ=Europe/Vienna"
+      - "RADIUS_ENABLED=true"
+      - "RADIUS_PORT=1812"
+      - "RADIUS_SECRET=fortisafe-XXXXXX" 
+      - "RADIUS_SERVER=192.168.0.100"
+      - "PG_HOST=fortisafe-db"
+      - "PG_PORT=5432"
+      - "PG_USER=postgre"
+      - "PG_PASSWORD=XXXXXXTDB"
+      - "PG_DATABASE=firewall_backups"
     image: "registry.reitetschlaeger.com/fortisafe:latest"
     ports:
       - "8521:8521/tcp"
     volumes:
-      - "/container/fortisafe/backups:/app/backups"
-      - "/container/fortisafe/data:/app/data"
+      - "/mnt/.../backups:/app/backups"
     restart: unless-stopped
+    depends_on:
+      fortisafe-db:
+        condition: service_healthy
+        restart: true
+
+  fortisafe-db:
+    container_name: "fortisafe-db"
+    image: postgres:latest
+    environment:
+      - "POSTGRES_USER=postgre"
+      - "POSTGRES_PASSWORD=XXXXXXTDB"
+      - "POSTGRES_DB=firewall_backups"
+    restart: unless-stopped
+    volumes:
+      - "/mnt/.../data:/var/lib/postgresql/data"
+    healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
+          interval: 5s
+          timeout: 5s
+          retries: 5
 ```
 
 ## Usage
@@ -132,6 +131,7 @@ services:
 6. Change your password via the "Change Password" button in the top-right corner.
 
 ## Configuration
+APP:
 Environment variables can be set to customize the app:
 - `TZ`: Timezone (default: `Europe\Vienna`).
 - `TOTP_ENABLED`: Enable TOTP authentication for the admin user (default: `false`).
@@ -148,6 +148,16 @@ Environment variables can be set to customize the app:
 - `MAIL_USER`: SMTP username (default: `user@example.com`).
 - `MAIL_PASSWORD`: SMTP password.
 - `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
+- `PG_HOST`: fortisafe-db
+- `PG_PORT`: 5432
+- `PG_USER`: postgre
+- `PG_PASSWORD`: XXXXXXTDB
+- `PG_DATABASE`: firewall_backups
+
+DB: 
+- `POSTGRES_USER`: postgre
+- `POSTGRES_PASSWORD`: XXXXXXTDB
+- `POSTGRES_DB`: firewall_backups
 
 ## Generate TOTP SECRET
 
