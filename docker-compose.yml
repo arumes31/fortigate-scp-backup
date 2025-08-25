@@ -1,0 +1,49 @@
+services:
+  fortisafe-app:
+    container_name: "fortisafe-app"
+    environment:
+      - "DEFAULT_SCP_USER=fortisafe"
+      - "DEFAULT_SCP_PASSWORD=XXXXXX"
+      - "TOTP_ENABLED=true"
+      - "TOTP_SECRET=XXXXXX"
+      - "MAIL_SERVER=smtp.test.com"
+      - "MAIL_PORT=25"
+      - "MAIL_USER=fortisafe@test.com"
+      - "MAIL_PASSWORD=XXXXXX"
+      - "MAIL_RECIPIENT=user1@test.com"
+      - "TZ=Europe/Vienna"
+      - "RADIUS_ENABLED=true"
+      - "RADIUS_PORT=1812"
+      - "RADIUS_SECRET=fortisafe-XXXXXX" 
+      - "RADIUS_SERVER=192.168.0.100"
+      - "PG_HOST=fortisafe-db"
+      - "PG_PORT=5432"
+      - "PG_USER=postgre"
+      - "PG_PASSWORD=XXXXXXTDB"
+      - "PG_DATABASE=firewall_backups"
+    image: "registry.reitetschlaeger.com/fortisafe:latest"
+    ports:
+      - "8521:8521/tcp"
+    volumes:
+      - "/mnt/...//backups:/app/backups"
+    restart: unless-stopped
+    depends_on:
+      fortisafe-db:
+        condition: service_healthy
+        restart: true
+
+  fortisafe-db:
+    container_name: "fortisafe-db"
+    image: postgres:latest
+    environment:
+      - "POSTGRES_USER=postgre"
+      - "POSTGRES_PASSWORD=XXXXXXTDB"
+      - "POSTGRES_DB=firewall_backups"
+    restart: unless-stopped
+    volumes:
+      - "/mnt/.../data:/var/lib/postgresql/data"
+    healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
+          interval: 5s
+          timeout: 5s
+          retries: 5
