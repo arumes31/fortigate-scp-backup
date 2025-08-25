@@ -151,7 +151,7 @@ def init_db():
                 fqdn TEXT,
                 username TEXT,
                 password TEXT,
-                interval_minutes INTEGER,
+                interval_minutes INTEGER CHECK (interval_minutes > 0),
                 retention_count INTEGER,
                 last_backup TEXT,
                 status TEXT,
@@ -169,7 +169,8 @@ def init_db():
                 username TEXT UNIQUE,
                 password TEXT,
                 first_login INTEGER DEFAULT 1,
-                totp_secret TEXT
+                totp_secret TEXT,
+                is_radius_user BOOLEAN DEFAULT FALSE
             )''')
             c.execute('''CREATE TABLE IF NOT EXISTS activity_logs (
                 id SERIAL PRIMARY KEY,
@@ -179,8 +180,8 @@ def init_db():
                 timestamp TEXT
             )''')
             logger.info("Tables created or verified.")
-            c.execute("INSERT INTO users (username, password, first_login) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                      ("admin", "changeme", 1))
+            c.execute("INSERT INTO users (username, password, first_login, is_radius_user) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                      ("admin", "changeme", 1, False))
             logger.info("Admin user inserted or exists.")
             if TOTP_ENABLED:
                 c.execute("UPDATE users SET totp_secret = %s WHERE username = %s", (TOTP_SECRET, "admin"))
@@ -193,7 +194,7 @@ def init_db():
             if not c.fetchone():
                 c.execute("ALTER TABLE firewalls ADD COLUMN ssh_port INTEGER DEFAULT 9422")
                 logger.info("Added ssh_port column to firewalls table.")
-            c.execute("UPDATE firewalls SET interval_minutes = 180 WHERE interval_minutes IS NULL")
+            c.execute("UPDATE firewalls SET interval_minutes = 180 WHERE interval_minutes IS NULL OR interval_minutes <= 0")
             logger.info("Updated interval_minutes in firewalls table.")
             c.execute('''DELETE FROM backups WHERE id NOT IN (
                 SELECT MIN(id) FROM backups GROUP BY fw_id, filename
@@ -307,7 +308,7 @@ def login():
         with db_lock:
             conn = db_pool.getconn()
             c = conn.cursor()
-            c.execute("SELECT password, first_login, totp_secret FROM users WHERE username = %s", (username,))
+            c.execute("SELECT password, first_login, totp_secret, is_radius_user FROM users WHERE username = %s", (username,))
             user = c.fetchone()
             conn.close()
             db_pool.putconn(conn)
@@ -320,41 +321,46 @@ def login():
         elif verify_radius(username, password):
             authenticated = True
             is_radius_user = True
-            # Create user entry for RADIUS users
             with db_lock:
                 conn = db_pool.getconn()
                 c = conn.cursor()
                 c.execute("SELECT id FROM users WHERE username = %s", (username,))
                 if not c.fetchone():
-                    execute_with_retry(c, "INSERT INTO users (username, password, first_login, totp_secret) VALUES (%s, %s, %s, %s)",
-                                      (username, '', 1, pyotp.random_base32() if TOTP_ENABLED else None))
+                    execute_with_retry(c, "INSERT INTO users (username, password, first_login, is_radius_user) VALUES (%s, %s, %s, %s)",
+                                      (username, '', 0, True))  # Set first_login to 0 for RADIUS users
                     conn.commit()
-                    logger.info(f"Created new user entry for {username} after RADIUS authentication")
+                    logger.info(f"Created user entry for RADIUS user: {username}")
+                else:
+                    execute_with_retry(c, "UPDATE users SET is_radius_user = %s, first_login = %s WHERE username = %s", 
+                                      (True, 0, username))  # Set first_login to 0 for existing RADIUS users
+                    conn.commit()
+                    logger.info(f"Updated user entry to mark {username} as RADIUS user")
                 conn.close()
                 db_pool.putconn(conn)
-
-        if authenticated:
-            if TOTP_ENABLED and user and user[2] and not is_radius_user:
+                
+        if authenticated and TOTP_ENABLED and not is_radius_user:
+            if user and user[2]:
                 totp = pyotp.TOTP(user[2])
                 if not totp.verify(totp_code):
-                    logger.debug(f"Invalid TOTP code for {username}")
+                    log_activity(username, "Login Failed", "Invalid TOTP code")
                     return render_template('login.html', error="Invalid TOTP code", totp_enabled=TOTP_ENABLED)
-                logger.debug(f"TOTP verification successful for {username}")
+            else:
+                log_activity(username, "Login Failed", "TOTP required but no secret found")
+                return render_template('login.html', error="TOTP required but no secret found", totp_enabled=TOTP_ENABLED)
+
+        if authenticated:
             session['logged_in'] = True
             session['username'] = username
-            session['password'] = password
+            session['is_radius_user'] = is_radius_user  # Store RADIUS status in session
             session['last_activity'] = datetime.datetime.now(tz)
             session['x_forwarded_for'] = request.headers.get('X-Forwarded-For')
-            session['first_login'] = user[1] if user else False
-            log_activity(username, "Login", "Successful login")
-            if session['first_login']:
-                logger.debug(f"Redirecting {username} to change_password due to first login")
+            log_activity(username, "Login Success", "User logged in")
+            if user and user[1] == 1 and not is_radius_user:  # Only redirect non-RADIUS users on first login
                 return redirect(url_for('change_password'))
-            logger.debug(f"Login successful for {username}, redirecting to index")
             return redirect(url_for('index'))
-        logger.debug(f"Login failed for {username}: Invalid username or password")
-        return render_template('login.html', error="Invalid username or password", totp_enabled=TOTP_ENABLED)
-    logger.debug(f"Rendering login page, TOTP_ENABLED: {TOTP_ENABLED}")
+        else:
+            log_activity(username, "Login Failed", "Invalid credentials")
+            return render_template('login.html', error="Invalid credentials", totp_enabled=TOTP_ENABLED)
     return render_template('login.html', totp_enabled=TOTP_ENABLED)
 
 @app.route('/logout')
@@ -541,7 +547,7 @@ def index():
         conn.close()
         db_pool.putconn(conn)
 
-    if first_login:
+    if first_login and not session.get('is_radius_user', False):
         return redirect(url_for('change_password'))
     return render_template('index.html', firewalls=firewalls, first_login=first_login)
 
@@ -580,35 +586,34 @@ def delete_firewall(fw_id):
             c = conn.cursor()
             c.execute("SELECT fqdn FROM firewalls WHERE id = %s", (fw_id,))
             fw = c.fetchone()
-            fqdn = fw[0] if fw else "unknown"
-            execute_with_retry(c, "DELETE FROM firewalls WHERE id = %s", (fw_id,))
-            c.execute("SELECT filename FROM backups WHERE fw_id = %s", (fw_id,))
-            backup_files = c.fetchall()
+            if not fw:
+                conn.close()
+                db_pool.putconn(conn)
+                log_activity(session['username'], "Delete Firewall Failed", f"Firewall not found: fw_id {fw_id}")
+                return redirect(url_for('index', error="Firewall not found"))
+            fqdn = fw[0]
             execute_with_retry(c, "DELETE FROM backups WHERE fw_id = %s", (fw_id,))
-            c.execute("SELECT * FROM firewalls")
-            firewalls = c.fetchall()
+            execute_with_retry(c, "DELETE FROM firewalls WHERE id = %s", (fw_id,))
             conn.commit()
-            logger.info(f"Committed firewall deletion (ID: {fw_id}) to PostgreSQL")
+            logger.info(f"Deleted firewall: {fqdn} with ID {fw_id}")
             conn.close()
             db_pool.putconn(conn)
-
-        log_activity(session['username'], "Delete Firewall", f"Deleted firewall with ID {fw_id} and FQDN {fqdn}")
-
-        job_id = f"backup_firewall_{fw_id}"
-        try:
-            scheduler.remove_job(job_id)
-            logger.debug(f"Removed job {job_id} for fw_id {fw_id}")
-        except Exception as e:
-            logger.warning(f"Failed to remove scheduler job {job_id} for fw_id {fw_id}: {str(e)}")
 
         fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
         if os.path.exists(fw_dir):
             shutil.rmtree(fw_dir)
+            logger.info(f"Deleted backup directory for fw_id {fw_id}")
 
-        return render_template('index.html', firewalls=firewalls, first_login=False)
+        job_id = f"backup_firewall_{fw_id}"
+        if job_id in [job.id for job in scheduler.get_jobs()]:
+            scheduler.remove_job(job_id)
+            logger.debug(f"Removed scheduled job {job_id}")
+        log_activity(session['username'], "Delete Firewall", f"Deleted firewall {fqdn} with ID {fw_id}")
     except Exception as e:
-        logger.error(f"Failed to delete firewall {fw_id}: {str(e)}")
-        return render_template('index.html', error=f"Failed to delete firewall: {str(e)}", firewalls=[])
+        logger.error(f"Failed to delete firewall fw_id {fw_id}: {str(e)}")
+        log_activity(session['username'], "Delete Firewall Failed", f"Failed to delete firewall fw_id {fw_id}: {str(e)}")
+        return redirect(url_for('index', error=str(e)))
+    return redirect(url_for('index'))
 
 @app.route('/errors')
 @login_required
@@ -636,6 +641,12 @@ def backup_now(fw_id):
 @app.route('/change_password', methods=['GET', 'POST'])
 @login_required
 def change_password():
+    # Disable password change for RADIUS users
+    if session.get('is_radius_user', False):
+        log_activity(session['username'], "Password Change Attempt", "Password change denied for RADIUS user")
+        return redirect(url_for('index', error="Password change is not allowed for RADIUS users"))
+
+    #
     if request.method == 'POST':
         old_password = request.form['old_password'] if not session.get('first_login') else session['password']
         new_password = request.form['new_password']
