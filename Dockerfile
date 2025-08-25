@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install flask apscheduler paramiko scp pytz pyotp pyrad setuptools psycopg2-binary sqlalchemy
 #Debug
-RUN apt install net-tools
+RUN apt install net-tools inetutils-ping
 WORKDIR /app
 
 COPY . /app
