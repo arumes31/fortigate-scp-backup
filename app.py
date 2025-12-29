@@ -25,6 +25,7 @@ import socket
 import threading
 import random
 import time
+import re
 try:
     import pkg_resources
 except ImportError:
@@ -886,6 +887,67 @@ def backup_firewall(fw_id, retries=3, timeout=SCP_TIMEOUT):
             send_email(f"Backup Failure Notification - fw_id {fw_id}", f"Backup job failed for fw_id {fw_id}: {str(e)}", MAIL_RECIPIENT)
         else:
             logger.info(f"Skipping email notification for fw_id {fw_id} as last successful backup is recent")
+
+@app.route('/search', methods=['GET', 'POST'])
+@login_required
+def search():
+    results = []
+    query = ""
+    if request.method == 'POST':
+        query = request.form.get('query', '')
+        if query:
+            log_activity(session['username'], "Search", f"Performed search for: {query}")
+            # Convert wildcard to regex
+            regex_query = '.*'.join(map(re.escape, query.split('*')))
+            try:
+                pattern = re.compile(regex_query, re.IGNORECASE)
+            except re.error as e:
+                logger.error(f"Invalid regex pattern '{regex_query}': {e}")
+                return render_template('search.html', error=f"Invalid search pattern: {e}", query=query)
+
+            try:
+                with db_lock:
+                    conn = db_pool.getconn()
+                    c = conn.cursor()
+                    c.execute("SELECT id, fqdn FROM firewalls")
+                    firewalls = c.fetchall()
+                    conn.close()
+                    db_pool.putconn(conn)
+
+                for fw_id, fqdn in firewalls:
+                    fw_dir = os.path.join(BACKUP_DIR, str(fw_id))
+                    if not os.path.exists(fw_dir):
+                        continue
+
+                    latest_backup = None
+                    latest_mtime = 0
+                    for filename in os.listdir(fw_dir):
+                        if filename.endswith('.conf'):
+                            filepath = os.path.join(fw_dir, filename)
+                            mtime = os.path.getmtime(filepath)
+                            if mtime > latest_mtime:
+                                latest_mtime = mtime
+                                latest_backup = filename
+
+                    if latest_backup:
+                        filepath = os.path.join(fw_dir, latest_backup)
+                        try:
+                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                for line in f:
+                                    if pattern.search(line):
+                                        results.append({
+                                            'fqdn': fqdn,
+                                            'filename': os.path.join(str(fw_id), latest_backup),
+                                            'line': line.strip()
+                                        })
+                        except Exception as e:
+                            logger.error(f"Error reading file {filepath}: {e}")
+
+            except Exception as e:
+                logger.error(f"An error occurred during search: {e}")
+                return render_template('search.html', error=f"An error occurred during search: {e}", query=query)
+
+    return render_template('search.html', results=results, query=query)
 
 if __name__ == '__main__':
     try:
