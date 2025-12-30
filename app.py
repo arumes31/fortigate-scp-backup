@@ -257,6 +257,7 @@ def log_activity(username, action, details):
     except Exception as e:
         logger.error(f"Failed to log activity: {str(e)}", exc_info=True)
 
+app.log_activity = log_activity
 
 
 def verify_radius(username, password):
