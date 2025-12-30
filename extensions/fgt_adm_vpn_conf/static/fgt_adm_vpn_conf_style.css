@@ -165,3 +165,22 @@ body {
         .toggle-button:hover {
             background-color: #5a6268;
         }
+        .return-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #3498db;
+            color: white !important;
+            border: none;
+            padding: 8px 15px;
+            cursor: pointer;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+        .return-button:hover {
+            background-color: #2980b9;
+            text-decoration: none;
+        }

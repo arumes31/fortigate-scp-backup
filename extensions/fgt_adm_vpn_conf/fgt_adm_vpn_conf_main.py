@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, render_template, request, redirect, url_for, send_file, make_response, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, send_file, make_response, current_app, session
 from flask_sqlalchemy import SQLAlchemy
 from utils import login_required # Import login_required from the main app
 import csv
@@ -12,6 +12,11 @@ import ipaddress
 fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'), static_folder='static')
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
+
+def log_action(action, details):
+    username = session.get('username', 'Unknown')
+    if hasattr(current_app, 'log_activity'):
+        current_app.log_activity(username, action, details)
 
 class VpnConfig(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -128,6 +133,7 @@ def add():
     )
     db.session.add(new_config)
     db.session.commit()
+    log_action("FGT ADM VPN - Add", f"Added config for {kundenname} - {standort} ({remoteip_full})")
     return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/import', methods=['POST'])
@@ -137,32 +143,34 @@ def import_csv():
     if not file:
         return "No file uploaded."
 
-    stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
+    stream = io.StringIO(file.stream.read().decode("utf-8-sig"), newline=None)
     csv_input = csv.reader(stream)
     
     header = [h.strip() for h in next(csv_input)]
     
-    col_map = {col_name: i for i, col_name in enumerate(header)}
+    # Create a normalized map (lowercase) for easier matching
+    header_lower = [h.lower() for h in header]
+    col_map = {h.lower(): i for i, h in enumerate(header)}
 
     expected_cols = {
-        'Kundenname', 'Standort', 'REMOTEIP-FULL', 'REMOTEIP-FULL-1st',
-        'IPSEC-PSK-RO', 'IPSEC-PSK-HCI', 'RadiusMgt', 'WAN-Interface', 'LAN-Interface', 'Firewallname'
+        'kundenname', 'standort', 'remoteip-full', 'remoteip-full-1st',
+        'ipsec-psk-ro', 'ipsec-psk-hci', 'radiusmgt', 'wan-interface', 'lan-interface', 'firewallname'
     }
 
-    if not expected_cols.issubset(set(header)):
-        missing_cols = expected_cols - set(header)
+    if not expected_cols.issubset(set(header_lower)):
+        missing_cols = expected_cols - set(header_lower)
         return f"Missing required CSV columns: {', '.join(missing_cols)}"
 
     errors = []
     for i, row in enumerate(csv_input):
-        if not row or row[col_map['Kundenname']].strip() == 'xxxx':
+        if not row or row[col_map['kundenname']].strip() == 'xxxx':
             continue
 
         try:
-            kundenname = row[col_map['Kundenname']].strip()
-            standort = row[col_map['Standort']].strip()
+            kundenname = row[col_map['kundenname']].strip()
+            standort = row[col_map['standort']].strip()
 
-            firewallname = row[col_map['Firewallname']].strip() if 'Firewallname' in col_map and row[col_map['Firewallname']].strip() else None
+            firewallname = row[col_map['firewallname']].strip() if 'firewallname' in col_map and row[col_map['firewallname']].strip() else None
             if not firewallname:
                 firewallname = f"{kundenname}-{standort}"
             
@@ -170,23 +178,23 @@ def import_csv():
             dns_name_full = f"{dns_name}.adm.eworx.at"
             ike2_username = f"vpn-adm-{kundenname}-{standort}"
             
-            remoteip_full = row[col_map['REMOTEIP-FULL']].strip() if 'REMOTEIP-FULL' in col_map and row[col_map['REMOTEIP-FULL']].strip() else None
+            remoteip_full = row[col_map['remoteip-full']].strip() if 'remoteip-full' in col_map and row[col_map['remoteip-full']].strip() else None
             if not remoteip_full:
                 remoteip_full = get_next_available_ip()
                 if not remoteip_full:
                     errors.append(f"Row {i+2}: No available IP in the pool during import.")
                     continue
             
-            remoteip_full_1st = row[col_map['REMOTEIP-FULL-1st']].strip() if 'REMOTEIP-FULL-1st' in col_map and row[col_map['REMOTEIP-FULL-1st']].strip() else None
+            remoteip_full_1st = row[col_map['remoteip-full-1st']].strip() if 'remoteip-full-1st' in col_map and row[col_map['remoteip-full-1st']].strip() else None
             if not remoteip_full_1st:
                 last_octet = remoteip_full.split('.')[-1]
                 remoteip_full_1st = f"10.150.11.{last_octet}"
 
-            ipsec_psk_ro = row[col_map['IPSEC-PSK-RO']].strip() if 'IPSEC-PSK-RO' in col_map and row[col_map['IPSEC-PSK-RO']].strip() else 'psauto'
-            ipsec_psk_hci = row[col_map['IPSEC-PSK-HCI']].strip() if 'IPSEC-PSK-HCI' in col_map and row[col_map['IPSEC-PSK-HCI']].strip() else 'psauto'
-            radiusmgt = row[col_map['RadiusMgt']].strip() if 'RadiusMgt' in col_map and row[col_map['RadiusMgt']].strip() else 'YES'
-            wan_interface = row[col_map['WAN-Interface']].strip() if 'WAN-Interface' in col_map and row[col_map['WAN-Interface']].strip() else 'wan1'
-            lan_interface = row[col_map['LAN-Interface']].strip() if 'LAN-Interface' in col_map and row[col_map['LAN-Interface']].strip() else 'loopback'
+            ipsec_psk_ro = row[col_map['ipsec-psk-ro']].strip() if 'ipsec-psk-ro' in col_map and row[col_map['ipsec-psk-ro']].strip() else 'psauto'
+            ipsec_psk_hci = row[col_map['ipsec-psk-hci']].strip() if 'ipsec-psk-hci' in col_map and row[col_map['ipsec-psk-hci']].strip() else 'psauto'
+            radiusmgt = row[col_map['radiusmgt']].strip() if 'radiusmgt' in col_map and row[col_map['radiusmgt']].strip() else 'YES'
+            wan_interface = row[col_map['wan-interface']].strip() if 'wan-interface' in col_map and row[col_map['wan-interface']].strip() else 'wan1'
+            lan_interface = row[col_map['lan-interface']].strip() if 'lan-interface' in col_map and row[col_map['lan-interface']].strip() else 'loopback'
 
             existing_config_by_firewallname = VpnConfig.query.filter_by(firewallname=firewallname).first()
             existing_config_by_remoteip = VpnConfig.query.filter_by(remoteip_full=remoteip_full).first()
@@ -235,8 +243,10 @@ def import_csv():
             errors.append(f"Row {i+2}: An unexpected error occurred: {e}")
 
     if errors:
+        log_action("FGT ADM VPN - Import Failed", f"Import finished with errors: {len(errors)} errors")
         return "<br>".join(errors)
     else:
+        log_action("FGT ADM VPN - Import Success", "Imported configs from CSV")
         return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/edit/<int:id>', methods=['GET', 'POST'])
@@ -279,6 +289,7 @@ def edit(id):
         config.ike2_username=f"vpn-adm-{config.kundenname}-{config.standort}"
 
         db.session.commit()
+        log_action("FGT ADM VPN - Edit", f"Edited config for {config.kundenname} - {config.standort} (ID: {config.id})")
         return redirect(url_for('fgt_adm_vpn_conf.index'))
     return render_template('fgt_adm_vpn_conf_edit_form.html', config=config)
 
@@ -288,8 +299,11 @@ def edit(id):
 @login_required
 def delete(id):
     config = VpnConfig.query.get_or_404(id)
+    kname = config.kundenname
+    sname = config.standort
     db.session.delete(config)
     db.session.commit()
+    log_action("FGT ADM VPN - Delete", f"Deleted config for {kname} - {sname} (ID: {id})")
     return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/generate_single/<int:id>')
@@ -797,6 +811,7 @@ end
         zf.writestr(f"{e.kundenname}.{e.standort}.finalconfig.txt", configfinal)
 
 
+    log_action("FGT ADM VPN - Download", f"Generated and downloaded config for {e.kundenname} - {e.standort} (ID: {id})")
     memory_file.seek(0)
     return send_file(memory_file,
                      download_name=f'fgt_adm_config_{e.kundenname}-{e.standort}.zip',
@@ -834,6 +849,7 @@ def export_csv():
             config.firewallname
         ])
     
+    log_action("FGT ADM VPN - Export", "Exported all configs to CSV")
     output = make_response(si.getvalue())
     output.headers["Content-Disposition"] = "attachment; filename=vpn_configs_backup.csv"
     output.headers["Content-type"] = "text/csv"
