@@ -27,6 +27,7 @@ services:
       - "8521:8521/tcp"
     volumes:
       - "/mnt/...//backups:/app/backups"
+      - "/mnt/...//data_fgt-adm-vpn-conf:/app/data"
     restart: unless-stopped
     depends_on:
       fortisafe-db:

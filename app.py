@@ -1016,7 +1016,7 @@ if __name__ == '__main__':
         # Step 4.5: Conditionally register FGT ADM VPN Conf blueprint
         if EXT_ADM_VPN_CONF:
             logger.info("FGT ADM VPN Conf module is enabled. Registering blueprint.")
-            app.config['SQLALCHEMY_DATABASE_URI_FGT_ADM_VPN_CONF'] = 'sqlite:////app/data/fgt_adm_vpn_conf.db' # Ensure path is writable in Docker
+            app.config['SQLALCHEMY_DATABASE_URI_FGT_ADM_VPN_CONF'] = 'sqlite:////app/data/fgt-adm-vpn-conf-db.db' # Ensure path is writable in Docker
             fgt_adm_vpn_conf_db.init_app(app)
             with app.app_context():
                 fgt_adm_vpn_conf_db.create_all()
