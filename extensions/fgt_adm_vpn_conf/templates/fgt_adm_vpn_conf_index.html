@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FGT ADM VPN Config</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_style.css') }}">
 </head>
 <body>
     <h1>FGT ADM VPN Config</h1>
@@ -14,7 +14,7 @@
     <div class="collapsible-section">
         <h2 class="collapsible-header">Add New Entry <button type="button" class="toggle-button">Show/Hide</button></h2>
         <div class="collapsible-content">
-            <form action="/add" method="post">
+            <form action="{{ url_for('fgt_adm_vpn_conf.add') }}" method="post">
                 <table>
                     <tbody>
                         <tr>
@@ -107,18 +107,18 @@
                     <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
                     <td>
                         <a href="#" class="open-edit-modal" data-id="{{ config.id }}">Edit</a>
-                        <a href="{{ url_for('delete', id=config.id) }}" onclick="return confirm('Are you sure you want to remove this entry?');">Remove</a>
-                        <a href="{{ url_for('generate_single', id=config.id) }}">Download</a>
+                        <a href="{{ url_for('fgt_adm_vpn_conf.delete', id=config.id) }}" onclick="return confirm('Are you sure you want to remove this entry?');">Remove</a>
+                        <a href="{{ url_for('fgt_adm_vpn_conf.generate_single', id=config.id) }}">Download</a>
                     </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     <h2>Import/Export</h2>
-    <form action="/import" method="post" enctype="multipart/form-data">
+    <form action="{{ url_for('fgt_adm_vpn_conf.import_csv') }}" method="post" enctype="multipart/form-data">
         <input type="file" name="file" accept=".csv">
         <input type="submit" value="Import">
-        <a href="{{ url_for('export_csv') }}" class="submit">Export All to CSV (Backup)</a>
+        <a href="{{ url_for('fgt_adm_vpn_conf.export_csv') }}" class="submit">Export All to CSV (Backup)</a>
     </form>
 
     <hr>
@@ -133,6 +133,6 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_script.js') }}"></script>
 </body>
 </html>

@@ -12,9 +12,9 @@ import shutil
 import logging
 import smtplib
 from email.mime.text import MIMEText
-from functools import wraps
-from datetime import timedelta
-import pytz
+
+
+
 import pyotp
 from pyrad.client import Client
 from pyrad.dictionary import Dictionary
@@ -26,7 +26,8 @@ import threading
 import random
 import time
 import re
-from extensions.fgt_adm_vpn_conf.main import fgt_adm_vpn_conf_bp, db as fgt_adm_vpn_conf_db, VpnConfig
+from utils import login_required, tz
+from extensions.fgt_adm_vpn_conf.fgt_adm_vpn_conf_main import fgt_adm_vpn_conf_bp, db as fgt_adm_vpn_conf_db, VpnConfig
 try:
     import pkg_resources
 except ImportError:
@@ -107,8 +108,7 @@ if pkg_resources:
 else:
     logger.warning("pkg_resources not available, cannot log pyrad version")
 
-# Set timezone to Europe/Vienna
-tz = pytz.timezone('Europe/Vienna')
+
 
 def send_email(subject, body, to_addr):
     """Thread-safe function to send email notifications."""
@@ -256,24 +256,7 @@ def log_activity(username, action, details):
     except Exception as e:
         logger.error(f"Failed to log activity: {str(e)}", exc_info=True)
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'logged_in' not in session or not session['logged_in']:
-            return redirect(url_for('login'))
-        if 'last_activity' in session:
-            last_activity = tz.localize(session['last_activity']) if not session['last_activity'].tzinfo else session['last_activity']
-            if datetime.datetime.now(tz) - last_activity > timedelta(hours=1):
-                session.pop('logged_in', None)
-                return redirect(url_for('login'))
-        x_forwarded_for = request.headers.get('X-Forwarded-For')
-        if 'x_forwarded_for' in session and session['x_forwarded_for'] != x_forwarded_for:
-            session.pop('logged_in', None)
-            return redirect(url_for('login'))
-        session['last_activity'] = datetime.datetime.now(tz)
-        session['x_forwarded_for'] = x_forwarded_for
-        return f(*args, **kwargs)
-    return decorated_function
+
 
 def verify_radius(username, password):
     if not RADIUS_ENABLED:
@@ -552,6 +535,11 @@ def index():
 
     if first_login and not session.get('is_radius_user', False):
         return redirect(url_for('change_password'))
+    logger.debug(f"modules_adm_vpn_conf value before rendering index.html: {EXT_ADM_VPN_CONF}")
+    # Adding debug log for the URL generated for ADM VPN Config button
+    with app.test_request_context(): # url_for needs a request context
+        adm_vpn_url = url_for('fgt_adm_vpn_conf.index')
+    logger.debug(f"Generated URL for ADM VPN Config button: {adm_vpn_url}")
     return render_template('index.html', firewalls=firewalls, first_login=first_login, modules_adm_vpn_conf=EXT_ADM_VPN_CONF)
 
 @app.route('/backups/<int:fw_id>')
@@ -1016,7 +1004,7 @@ if __name__ == '__main__':
         # Step 4.5: Conditionally register FGT ADM VPN Conf blueprint
         if EXT_ADM_VPN_CONF:
             logger.info("FGT ADM VPN Conf module is enabled. Registering blueprint.")
-            app.config['SQLALCHEMY_DATABASE_URI_FGT_ADM_VPN_CONF'] = 'sqlite:////app/data/fgt-adm-vpn-conf-db.db' # Ensure path is writable in Docker
+            app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////app/data/fgt-adm-vpn-conf-db.db' # Ensure path is writable in Docker
             fgt_adm_vpn_conf_db.init_app(app)
             with app.app_context():
                 fgt_adm_vpn_conf_db.create_all()

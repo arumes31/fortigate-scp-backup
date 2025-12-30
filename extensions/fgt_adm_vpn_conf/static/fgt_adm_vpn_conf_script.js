@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
         link.addEventListener('click', function(event) {
             event.preventDefault();
             const configId = this.dataset.id;
-            const editUrl = `/edit/${configId}`; // This is the new endpoint for the form
+            const editUrl = `/fgt-adm-vpn-conf/edit/${configId}`; // This is the new endpoint for the form
 
             fetch(editUrl)
                 .then(response => {
