@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FGT ADM VPN Config</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_style.css') }}">
 </head>
 <body>
     <h1>FGT ADM VPN Config</h1>
-    <form action="{{ url_for('edit', id=config.id) }}" method="post">
+    <form action="{{ url_for('fgt_adm_vpn_conf.edit', id=config.id) }}" method="post">
         <table>
             <tbody>
                 <tr>

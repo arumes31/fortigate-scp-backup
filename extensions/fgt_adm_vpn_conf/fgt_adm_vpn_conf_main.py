@@ -1,6 +1,7 @@
 import os
-from flask import Blueprint, render_template, request, redirect, url_for, send_file, make_response
+from flask import Blueprint, render_template, request, redirect, url_for, send_file, make_response, current_app
 from flask_sqlalchemy import SQLAlchemy
+from utils import login_required # Import login_required from the main app
 import csv
 import io
 import random
@@ -8,7 +9,7 @@ import string
 import zipfile
 import ipaddress
 
-fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder='templates', static_folder='static')
+fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'), static_folder='static')
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
 
@@ -72,19 +73,25 @@ def get_all_available_ips():
     return available_ips, ip_network.num_addresses - 2 # Subtract network and broadcast addresses
 
 @fgt_adm_vpn_conf_bp.route('/')
+@login_required
 def index():
-    configs = VpnConfig.query.all()
-    available_ips, total_ips_in_pool = get_all_available_ips()
-    
-    available_ips_count = len(available_ips)
-    available_ips_percentage = (available_ips_count / total_ips_in_pool) * 100 if total_ips_in_pool > 0 else 0
+    try:
+        configs = VpnConfig.query.all()
+        available_ips, total_ips_in_pool = get_all_available_ips()
+        
+        available_ips_count = len(available_ips)
+        available_ips_percentage = (available_ips_count / total_ips_in_pool) * 100 if total_ips_in_pool > 0 else 0
 
-    return render_template('index.html', 
-                           configs=configs, 
-                           available_ips_count=available_ips_count,
-                           available_ips_percentage=available_ips_percentage)
+        return render_template('fgt_adm_vpn_conf_index.html', 
+                               configs=configs, 
+                               available_ips_count=available_ips_count,
+                               available_ips_percentage=available_ips_percentage)
+    except Exception as e:
+        current_app.logger.error(f"Error in fgt_adm_vpn_conf blueprint index() function: {str(e)}", exc_info=True)
+        return "An error occurred in the FGT ADM VPN Config page. Check logs for details.", 500
 
 @fgt_adm_vpn_conf_bp.route('/add', methods=['POST'])
+@login_required
 def add():
     kundenname = request.form['kundenname']
     standort = request.form['standort']
@@ -124,6 +131,7 @@ def add():
     return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/import', methods=['POST'])
+@login_required
 def import_csv():
     file = request.files['file']
     if not file:
@@ -232,6 +240,7 @@ def import_csv():
         return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/edit/<int:id>', methods=['GET', 'POST'])
+@login_required
 def edit(id):
     config = VpnConfig.query.get_or_404(id)
     if request.method == 'POST':
@@ -271,11 +280,12 @@ def edit(id):
 
         db.session.commit()
         return redirect(url_for('fgt_adm_vpn_conf.index'))
-    return render_template('_edit_form.html', config=config)
+    return render_template('fgt_adm_vpn_conf_edit_form.html', config=config)
 
 
 
 @fgt_adm_vpn_conf_bp.route('/delete/<int:id>')
+@login_required
 def delete(id):
     config = VpnConfig.query.get_or_404(id)
     db.session.delete(config)
@@ -283,6 +293,7 @@ def delete(id):
     return redirect(url_for('fgt_adm_vpn_conf.index'))
 
 @fgt_adm_vpn_conf_bp.route('/generate_single/<int:id>')
+@login_required
 def generate_single(id):
     e = VpnConfig.query.get(id)
     if not e:
@@ -792,6 +803,7 @@ end
                      as_attachment=True)
 
 @fgt_adm_vpn_conf_bp.route('/export')
+@login_required
 def export_csv():
     si = io.StringIO()
     cw = csv.writer(si)
