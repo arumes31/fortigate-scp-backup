@@ -1,10 +1,11 @@
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install flask apscheduler paramiko scp pytz pyotp pyrad setuptools psycopg2-binary sqlalchemy
+RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install flask apscheduler paramiko scp pytz pyotp pyrad setuptools psycopg2-binary sqlalchemy Flask-SQLAlchemy
 #Debug
 RUN apt install net-tools inetutils-ping
 WORKDIR /app
 
+COPY modules/fgt-adm-vpn-conf /app/modules/fgt-adm-vpn-conf
 COPY . /app
 
 RUN mkdir -p /app/data /app/backups /app/static && \

@@ -26,6 +26,7 @@ import threading
 import random
 import time
 import re
+from modules.fgt_adm_vpn_conf.main import fgt_adm_vpn_conf_bp, db as fgt_adm_vpn_conf_db, VpnConfig
 try:
     import pkg_resources
 except ImportError:
@@ -73,6 +74,7 @@ MAIL_RECIPIENT = os.getenv('MAIL_RECIPIENT', MAIL_USER)
 TOTP_ENABLED = os.getenv('TOTP_ENABLED', 'false').lower() == 'true'
 TOTP_SECRET = os.getenv('TOTP_SECRET', pyotp.random_base32())
 RADIUS_ENABLED = os.getenv('RADIUS_ENABLED', 'false').lower() == 'true'
+MODULES_ADM_VPN_CONF = os.getenv('MODULES_ADM_VPN_CONF', 'false').lower() == 'true'
 RADIUS_SERVER = os.getenv('RADIUS_SERVER', 'localhost')
 RADIUS_PORT = int(os.getenv('RADIUS_PORT', 1812))
 RADIUS_SECRET = os.getenv('RADIUS_SECRET', 'secret')
@@ -395,9 +397,9 @@ def index():
         if 'csv_file' in request.files:
             csv_file = request.files['csv_file']
             if csv_file.filename == '':
-                return render_template('index.html', error="No file selected", firewalls=[])
+                return render_template('index.html', error="No file selected", firewalls=[], modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
             if not csv_file.filename.endswith('.csv'):
-                return render_template('index.html', error="File must be a CSV", firewalls=[])
+                return render_template('index.html', error="File must be a CSV", firewalls=[], modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
 
             with db_lock:
                 conn = db_pool.getconn()
@@ -409,7 +411,7 @@ def index():
                     csv_reader = csv.DictReader(stream)
                     required_headers = {'fqdn', 'interval_minutes', 'retention_count'}
                     if not required_headers.issubset(csv_reader.fieldnames):
-                        return render_template('index.html', error="CSV must contain fqdn, interval_minutes, retention_count headers", firewalls=[])
+                        return render_template('index.html', error="CSV must contain fqdn, interval_minutes, retention_count headers", firewalls=[], modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
 
                     for row in csv_reader:
                         try:
@@ -460,14 +462,14 @@ def index():
                             firewalls = c.fetchall()
                             conn.close()
                             db_pool.putconn(conn)
-                        return render_template('index.html', error=error_msg, firewalls=firewalls, first_login=False)
+                        return render_template('index.html', error=error_msg, firewalls=firewalls, first_login=False, modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
                     
                     return redirect(url_for('index'))
 
                 except Exception as e:
                     conn.close()
                     db_pool.putconn(conn)
-                    return render_template('index.html', error=f"Failed to process CSV: {str(e)}", firewalls=[])
+                    return render_template('index.html', error=f"Failed to process CSV: {str(e)}", firewalls=[], modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
 
         elif 'username' in request.form and 'password' in request.form and 'new_password' in request.form and 'confirm_password' in request.form:
             old_password = request.form['password']
@@ -502,7 +504,7 @@ def index():
                 retention_count = int(request.form['retention_count'])
                 ssh_port = int(request.form.get('ssh_port', '9422'))
             except ValueError as e:
-                return render_template('index.html', error=f"Invalid input: {str(e)}", firewalls=[])
+                return render_template('index.html', error=f"Invalid input: {str(e)}", firewalls=[], modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
 
             with db_lock:
                 conn = db_pool.getconn()
@@ -550,7 +552,7 @@ def index():
 
     if first_login and not session.get('is_radius_user', False):
         return redirect(url_for('change_password'))
-    return render_template('index.html', firewalls=firewalls, first_login=first_login)
+    return render_template('index.html', firewalls=firewalls, first_login=first_login, modules_adm_vpn_conf=MODULES_ADM_VPN_CONF)
 
 @app.route('/backups/<int:fw_id>')
 @login_required
@@ -1010,6 +1012,18 @@ if __name__ == '__main__':
         logger.info("Current scheduled jobs:")
         for job in scheduler.get_jobs():
             logger.info(f"Job ID: {job.id}, Next run: {job.next_run_time}")
+
+        # Step 4.5: Conditionally register FGT ADM VPN Conf blueprint
+        if MODULES_ADM_VPN_CONF:
+            logger.info("FGT ADM VPN Conf module is enabled. Registering blueprint.")
+            app.config['SQLALCHEMY_DATABASE_URI_FGT_ADM_VPN_CONF'] = 'sqlite:////app/data/fgt_adm_vpn_conf.db' # Ensure path is writable in Docker
+            fgt_adm_vpn_conf_db.init_app(app)
+            with app.app_context():
+                fgt_adm_vpn_conf_db.create_all()
+            app.register_blueprint(fgt_adm_vpn_conf_bp, url_prefix='/fgt-adm-vpn-conf')
+            logger.info("FGT ADM VPN Conf blueprint registered and database initialized.")
+        else:
+            logger.info("FGT ADM VPN Conf module is disabled. Not registering blueprint.")
 
         # Step 5: Start Flask server
         logger.info("Starting Flask server on 0.0.0.0:8521...")
