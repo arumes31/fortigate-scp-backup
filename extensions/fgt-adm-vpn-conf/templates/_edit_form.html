@@ -1,0 +1,44 @@
+<form action="{{ url_for('edit', id=config.id) }}" method="post">
+    <table>
+        <tbody>
+            <tr>
+                <td>Kundenname</td>
+                <td><input type="text" name="kundenname" value="{{ config.kundenname }}"></td>
+            </tr>
+            <tr>
+                <td>Standort</td>
+                <td><input type="text" name="standort" value="{{ config.standort }}"></td>
+            </tr>
+            <tr>
+                <td>Firewallname</td>
+                <td><input type="text" name="firewallname" value="{{ config.firewallname }}"></td>
+            </tr>
+            <tr>
+                <td>REMOTEIP-FULL</td>
+                <td><input type="text" name="remoteip_full" value="{{ config.remoteip_full }}"></td>
+            </tr>
+            <tr>
+                <td>WAN-Interface</td>
+                <td><input type="text" name="wan_interface" value="{{ config.wan_interface }}"></td>
+            </tr>
+            <tr>
+                <td>LAN-Interface</td>
+                <td><input type="text" name="lan_interface" value="{{ config.lan_interface }}"></td>
+            </tr>
+            <tr>
+                <td>IPSEC-PSK-RO</td>
+                <td><input type="text" name="ipsec_psk_ro" value="{{ config.ipsec_psk_ro }}"></td>
+            </tr>
+            <tr>
+                <td>IPSEC-PSK-HCI</td>
+                <td><input type="text" name="ipsec_psk_hci" value="{{ config.ipsec_psk_hci }}"></td>
+            </tr>
+            <tr>
+                <td>RADIUSMGT (YES/NO)</td>
+                <td><input type="text" name="radiusmgt" value="{{ config.radiusmgt }}"></td>
+            </tr>
+        </tbody>
+    </table>
+    <br>
+    <input type="submit" value="Update Entry">
+</form>
