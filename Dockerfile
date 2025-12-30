@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install 
 RUN apt install net-tools inetutils-ping
 WORKDIR /app
 
-COPY modules/fgt-adm-vpn-conf /app/modules/fgt-adm-vpn-conf
+COPY extensions/fgt-adm-vpn-conf /app/extensions/fgt-adm-vpn-conf
 COPY . /app
 
 RUN mkdir -p /app/data /app/backups /app/static && \

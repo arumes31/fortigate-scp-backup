@@ -21,7 +21,7 @@ services:
       - "PG_USER=postgre"
       - "PG_PASSWORD=XXXXXXTDB"
       - "PG_DATABASE=firewall_backups"
-      - "MODULES_ADM_VPN_CONF=true"
+      - "EXT_ADM_VPN_CONF=true"
     image: "registry.reitetschlaeger.com/fortisafe:latest"
     ports:
       - "8521:8521/tcp"
