@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FGT ADM VPN Config</title>
+    <link rel="stylesheet" href="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_style.css') }}">
+</head>
+<body>
+    <a href="{{ url_for('index') }}" class="return-button">Return to Dashboard</a>
+    <h1>FGT ADM VPN Config</h1>
+
+    <hr>
+
+    <div class="collapsible-section">
+        <h2 class="collapsible-header">Add New Entry <button type="button" class="toggle-button">Show/Hide</button></h2>
+        <div class="collapsible-content">
+            <form action="{{ url_for('fgt_adm_vpn_conf.add') }}" method="post">
+                <table>
+                    <tbody>
+                        <tr>
+                            <td>Firewallname</td>
+                            <td><input type="text" name="firewallname" required></td>
+                        </tr>
+                        <tr>
+                            <td>Kundenname</td>
+                            <td><input type="text" name="kundenname" required></td>
+                        </tr>
+                        <tr>
+                            <td>Standort</td>
+                            <td><input type="text" name="standort" required></td>
+                        </tr>
+                        <tr>
+                            <td>WAN-Interface</td>
+                            <td><input type="text" name="wan_interface" value="wan1" required></td>
+                        </tr>
+                        <tr>
+                            <td>LAN-Interface</td>
+                            <td><input type="text" name="lan_interface" value="loopback" required></td>
+                        </tr>
+                        <tr>
+                            <td>IPSEC-PSK-RO</td>
+                            <td><input type="text" name="ipsec_psk_ro" value="psauto" required></td>
+                        </tr>
+                        <tr>
+                            <td>IPSEC-PSK-HCI</td>
+                            <td><input type="text" name="ipsec_psk_hci" value="psauto" required></td>
+                        </tr>
+                        <tr>
+                            <td>RADIUSMGT (YES/NO)</td>
+                            <td><input type="text" name="radiusmgt" value="YES" required></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <br>
+                <input type="submit" value="Add Entry">
+            </form>
+        </div>
+    </div>
+
+    <hr>
+
+    <h2>Existing Entries</h2>
+
+    <div class="available-ips-section">
+        <h3>Available IPs (10.105.1.0/24): 
+        {% if available_ips_count is not none and available_ips_percentage is not none %}
+            <span>{{ available_ips_count }} IPs available ({{ "%.2f" | format(available_ips_percentage) }}%)</span>
+        {% else %}
+            <span>Information on available IPs not currently available.</span>
+        {% endif %}
+        </h3>
+    </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Firewallname</th>
+                    <th>Kundenname</th>
+                    <th>Standort</th>
+                    <th>REMOTEIP-FULL</th>
+                    <th>REMOTEIP-FULL-1st</th>
+                    <th>ike2-username</th>
+                    <th>WAN-Interface</th>
+                    <th>LAN-Interface</th>
+                    <th>DNS-Name</th>
+                    <th>IPSEC-PSK-RO</th>
+                    <th>IPSEC-PSK-HCI</th>
+                    <th>RADIUSMGT</th>
+                    <th>DNS-Name-Full</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for config in configs %}
+                <tr>
+                    <td>{{ config.firewallname }}</td>
+                    <td>{{ config.kundenname }}</td>
+                    <td>{{ config.standort }}</td>
+                    <td>{{ config.remoteip_full }}</td>
+                    <td>{{ config.remoteip_full_1st }}</td>
+                    <td>{{ config.ike2_username }}</td>
+                    <td>{{ config.wan_interface }}</td>
+                    <td>{{ config.lan_interface }}</td>
+                    <td>{{ config.dns_name }}</td>
+                    <td>{{ config.ipsec_psk_ro }}</td>
+                    <td>{{ config.ipsec_psk_hci }}</td>
+                    <td>{{ config.radiusmgt }}</td>
+                    <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
+                    <td>
+                        <a href="#" class="open-edit-modal" data-id="{{ config.id }}">Edit</a>
+                        <a href="{{ url_for('fgt_adm_vpn_conf.delete', id=config.id) }}" onclick="return confirm('Are you sure you want to remove this entry?');">Remove</a>
+                        <a href="{{ url_for('fgt_adm_vpn_conf.generate_single', id=config.id) }}">Download</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    <h2>Import/Export</h2>
+    <form action="{{ url_for('fgt_adm_vpn_conf.import_csv') }}" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv">
+        <input type="submit" value="Import">
+        <a href="{{ url_for('fgt_adm_vpn_conf.export_csv') }}" class="submit">Export All to CSV (Backup)</a>
+    </form>
+
+    <hr>
+    
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h2>Edit Configuration</h2>
+            <div id="modal-body-content">
+                <!-- Edit form will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_script.js') }}"></script>
+</body>
+</html>

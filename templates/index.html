@@ -13,6 +13,9 @@
         <button id="activitylogBtn" style="position: absolute; top: 50px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('activity_log') }}'">Activity Log</button>
         <button id="searchConfigsBtn" style="position: absolute; top: 90px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('search') }}'">Search Configs</button>
         <button id="changePasswordBtn" style="position: absolute; top: 130px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="togglePasswordChange()">Change Password</button>
+        {% if modules_adm_vpn_conf %}
+        <button id="admVpnConfBtn" style="position: absolute; top: 170px; right: 10px; background-color: #e74c3c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 4px;" onclick="window.location.href='{{ url_for('fgt_adm_vpn_conf.index') }}'">ADM VPN Config</button>
+        {% endif %}
         <h1 style="color: #e74c3c; margin-bottom: 20px; font-size: 2rem; font-weight: bold;">Firewalls List</h1>
         <button id="addFirewallBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px; margin-right: 10px;">Add New Firewall</button>
         <button id="uploadCsvBtn" style="background-color: #e74c3c; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; margin-bottom: 20px;">Upload CSV</button>
