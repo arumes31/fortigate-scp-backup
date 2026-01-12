@@ -108,7 +108,7 @@ def add():
     last_octet = remoteip_full.split('.')[-1]
     remoteip_full_1st = f"10.150.11.{last_octet}"
     
-    dns_name = f"{kundenname}-{standort}"
+    dns_name = f"fgt-{kundenname}-{standort}"
     dns_name_full = f"{dns_name}.adm.eworx.at"
     
     # Allow firewallname to be provided, otherwise derive it
@@ -174,7 +174,7 @@ def import_csv():
             if not firewallname:
                 firewallname = f"{kundenname}-{standort}"
             
-            dns_name = f"{kundenname}-{standort}"
+            dns_name = f"fgt-{kundenname}-{standort}"
             dns_name_full = f"{dns_name}.adm.eworx.at"
             ike2_username = f"vpn-adm-{kundenname}-{standort}"
             
@@ -284,7 +284,7 @@ def edit(id):
             config.firewallname = f"{config.kundenname}-{config.standort}"
         
         #Re-generate derived fields
-        config.dns_name = f"{config.kundenname}-{config.standort}"
+        config.dns_name = f"fgt-{config.kundenname}-{config.standort}"
         config.dns_name_full = f"{config.dns_name}.adm.eworx.at"
         config.ike2_username=f"vpn-adm-{config.kundenname}-{config.standort}"
 
@@ -779,15 +779,15 @@ Restart-Service IAS
 #~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #RUN ON ANY DC
 Invoke-Command -ComputerName ADM-DC01.adm.eworx.at -ScriptBlock {{
-Add-DnsServerResourceRecordA -Name "{e.dns_name}" -ZoneName "adm.eworx.at" -IPv4Address "{e.remoteip_full}"
+Add-DnsServerResourceRecordA -Name "{e.dns_name_full}" -ZoneName "adm.eworx.at" -IPv4Address "{e.remoteip_full}"
 }} -Credential $CustomCred
 Invoke-Command -ComputerName ADM-DC02.adm.eworx.at -ScriptBlock {{
-Add-DnsServerResourceRecordA -Name "{e.dns_name}" -ZoneName "adm.eworx.at" -IPv4Address "{e.remoteip_full}"
+Add-DnsServerResourceRecordA -Name "{e.dns_name_full}" -ZoneName "adm.eworx.at" -IPv4Address "{e.remoteip_full}"
 }} -Credential $CustomCred
 
 #~~~~~~~~~ACCESS-URLs~~~~~~#
 https://{e.remoteip_full}:9443
-https://{e.dns_name_full}
+https://{e.dns_name_full}:9443
 """
         else:
             radiuscfg = "RADIUS CONFIG DISABLED"
