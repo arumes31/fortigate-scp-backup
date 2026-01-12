@@ -91,7 +91,7 @@ services:
       - "PG_USER=postgre"
       - "PG_PASSWORD=XXXXXXTDB"
       - "PG_DATABASE=firewall_backups"
-    image: "registry.reitetschlaeger.com/fortisafe:latest"
+    image: "ghcr.io/arumes31/fortigate-scp-backup:latest"
     ports:
       - "8521:8521/tcp"
     volumes:
