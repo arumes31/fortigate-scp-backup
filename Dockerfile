@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install flask apscheduler paramiko scp pytz pyotp pyrad setuptools psycopg2-binary sqlalchemy Flask-SQLAlchemy
 #Debug
