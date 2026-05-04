@@ -866,13 +866,17 @@ def export_bookmarks():
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
+    <DT><H3 ADD_DATE="0" LAST_MODIFIED="0">FGT ADM VPN</H3>
+    <DL><p>
 """
     for config in VpnConfig.query.all():
         url = f"https://{config.dns_name_full}:9443"
         name = f"FGT ADM - {config.kundenname} - {config.standort}"
-        bookmarks_html += f'    <DT><A HREF="{url}">{name}</A>\n'
+        bookmarks_html += f'        <DT><A HREF="{url}" ADD_DATE="0">{name}</A></DT>\n'
     
-    bookmarks_html += "</DL><p>"
+    bookmarks_html += """    </DL><p>
+</DL><p>
+"""
     
     log_action("FGT ADM VPN - Export Bookmarks", "Exported all DNS names to browser bookmarks")
     
