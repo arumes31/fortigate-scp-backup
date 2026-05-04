@@ -854,3 +854,29 @@ def export_csv():
     output.headers["Content-Disposition"] = "attachment; filename=vpn_configs_backup.csv"
     output.headers["Content-type"] = "text/csv"
     return output
+
+@fgt_adm_vpn_conf_bp.route('/export_bookmarks')
+@login_required
+def export_bookmarks():
+    bookmarks_html = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<!-- This is an automatically generated file.
+     It will be read and overwritten.
+     DO NOT EDIT! -->
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+"""
+    for config in VpnConfig.query.all():
+        url = f"https://{config.dns_name_full}:9443"
+        name = f"FGT ADM - {config.kundenname} - {config.standort}"
+        bookmarks_html += f'    <DT><A HREF="{url}">{name}</A>\n'
+    
+    bookmarks_html += "</DL><p>"
+    
+    log_action("FGT ADM VPN - Export Bookmarks", "Exported all DNS names to browser bookmarks")
+    
+    response = make_response(bookmarks_html)
+    response.headers["Content-Disposition"] = "attachment; filename=fgt_adm_bookmarks.html"
+    response.headers["Content-type"] = "text/html"
+    return response
