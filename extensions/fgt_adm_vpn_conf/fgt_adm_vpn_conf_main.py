@@ -858,7 +858,10 @@ def export_csv():
 @fgt_adm_vpn_conf_bp.route('/export_bookmarks')
 @login_required
 def export_bookmarks():
-    bookmarks_html = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+    import time
+    timestamp = int(time.time())
+    
+    bookmarks_html = f"""<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <!-- This is an automatically generated file.
      It will be read and overwritten.
      DO NOT EDIT! -->
@@ -866,13 +869,13 @@ def export_bookmarks():
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
-    <DT><H3 ADD_DATE="0" LAST_MODIFIED="0">FGT ADM VPN</H3>
+    <DT><H3 ADD_DATE="{timestamp}" LAST_MODIFIED="{timestamp}">FGT ADM VPN</H3>
     <DL><p>
 """
     for config in VpnConfig.query.all():
         url = f"https://{config.dns_name_full}:9443"
         name = f"FGT ADM - {config.kundenname} - {config.standort}"
-        bookmarks_html += f'        <DT><A HREF="{url}" ADD_DATE="0">{name}</A></DT>\n'
+        bookmarks_html += f'        <DT><A HREF="{url}" ADD_DATE="{timestamp}">{name}</A>\n'
     
     bookmarks_html += """    </DL><p>
 </DL><p>
