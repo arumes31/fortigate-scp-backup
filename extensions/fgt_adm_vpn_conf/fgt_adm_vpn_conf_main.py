@@ -8,10 +8,62 @@ import random
 import string
 import zipfile
 import ipaddress
+import urllib.request
+import urllib.parse
+import base64
+import json
+import time
 
 fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'), static_folder='static')
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
+
+# Global cache for Graylog statuses to avoid extreme latency
+graylog_status_cache = {}
+CACHE_TTL = 300 # 5 minutes
+
+def get_graylog_status(hostname):
+    now = time.time()
+    if hostname in graylog_status_cache:
+        status, ts = graylog_status_cache[hostname]
+        if now - ts < CACHE_TTL:
+            return status
+
+    graylog_url = os.getenv('GRAYLOG_URL', '').rstrip('/')
+    graylog_token = os.getenv('GRAYLOG_TOKEN', '')
+    timeframe = os.getenv('GRAYLOG_SEARCH_TIMEFRAME', '86400')
+    base_query = os.getenv('GRAYLOG_SEARCH_QUERY', 'fw_inventory_status:online')
+
+    if not graylog_url or not graylog_token:
+        return "config_missing"
+
+    query = f'source:"{hostname}" AND {base_query}'
+    params = urllib.parse.urlencode({
+        'query': query,
+        'range': timeframe,
+        'limit': 1
+    })
+    
+    api_url = f"{graylog_url}/api/search/universal/relative?{params}"
+    
+    try:
+        auth_str = f"{graylog_token}:token"
+        auth_bytes = auth_str.encode('ascii')
+        auth_header = base64.b64encode(auth_bytes).decode('ascii')
+        
+        req = urllib.request.Request(api_url)
+        req.add_header('Authorization', f'Basic {auth_header}')
+        req.add_header('Accept', 'application/json')
+        
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            status = data.get('total_results', 0) > 0
+            graylog_status_cache[hostname] = (status, now)
+            return status
+    except Exception as e:
+        if hasattr(current_app, 'logger'):
+            current_app.logger.error(f"Graylog API error for {hostname}: {str(e)}")
+        return False
 
 def log_action(action, details):
     username = session.get('username', 'Unknown')
@@ -102,6 +154,32 @@ def index():
             log_action("Database Migration", "Added cluster_hostnames column to vpn_config table")
 
         configs = VpnConfig.query.all()
+        
+        # Parallel Graylog Status Check to speed up page load
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def resolve_status(config):
+            if not config.graylog_enabled:
+                return "disabled"
+            
+            if config.cluster_hostnames:
+                hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
+                statuses = [get_graylog_status(h) for h in hostnames]
+                if "config_missing" in statuses:
+                    return "config_missing"
+                return all(statuses)
+            else:
+                return get_graylog_status(config.firewallname)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            status_map = {config.id: executor.submit(resolve_status, config) for config in configs}
+            
+        for config in configs:
+            try:
+                config.graylog_status = status_map[config.id].result(timeout=10)
+            except Exception:
+                config.graylog_status = False
+
         available_ips, total_ips_in_pool = get_all_available_ips()
         
         available_ips_count = len(available_ips)
@@ -112,7 +190,8 @@ def index():
                                available_ips_count=available_ips_count,
                                available_ips_percentage=available_ips_percentage)
     except Exception as e:
-        current_app.logger.error(f"Error in fgt_adm_vpn_conf blueprint index() function: {str(e)}", exc_info=True)
+        if hasattr(current_app, 'logger'):
+            current_app.logger.error(f"Error in fgt_adm_vpn_conf blueprint index() function: {str(e)}", exc_info=True)
         return "An error occurred in the FGT ADM VPN Config page. Check logs for details.", 500
 
 @fgt_adm_vpn_conf_bp.route('/add', methods=['POST'])
