@@ -18,17 +18,7 @@ fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
 
-# Global cache for Graylog statuses to avoid extreme latency
-graylog_status_cache = {}
-CACHE_TTL = 300 # 5 minutes
-
 def get_graylog_status(hostname):
-    now = time.time()
-    if hostname in graylog_status_cache:
-        status, ts = graylog_status_cache[hostname]
-        if now - ts < CACHE_TTL:
-            return status
-
     graylog_url = os.getenv('GRAYLOG_URL', '').rstrip('/')
     graylog_token = os.getenv('GRAYLOG_TOKEN', '')
     timeframe = os.getenv('GRAYLOG_SEARCH_TIMEFRAME', '86400')
@@ -55,15 +45,60 @@ def get_graylog_status(hostname):
         req.add_header('Authorization', f'Basic {auth_header}')
         req.add_header('Accept', 'application/json')
         
-        with urllib.request.urlopen(req, timeout=3) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-            status = data.get('total_results', 0) > 0
-            graylog_status_cache[hostname] = (status, now)
-            return status
+            return "online" if data.get('total_results', 0) > 0 else "offline"
     except Exception as e:
-        if hasattr(current_app, 'logger'):
-            current_app.logger.error(f"Graylog API error for {hostname}: {str(e)}")
-        return False
+        return "error"
+
+def graylog_status_worker(app):
+    with app.app_context():
+        # Sleep initially to let the app start up completely
+        time.sleep(10)
+        while True:
+            try:
+                configs = VpnConfig.query.filter_by(graylog_enabled=True).all()
+                if not configs:
+                    time.sleep(60)
+                    continue
+                
+                # Check over a 15-minute (900s) window.
+                # Delay between each firewall check so they don't overlap or burst
+                delay_between_checks = 900.0 / len(configs)
+                
+                for config in configs:
+                    if config.cluster_hostnames:
+                        hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
+                        statuses = [get_graylog_status(h) for h in hostnames]
+                        if "config_missing" in statuses:
+                            config.last_graylog_status = "config_missing"
+                        elif "error" in statuses or "offline" in statuses:
+                            config.last_graylog_status = "offline"
+                        else:
+                            config.last_graylog_status = "online"
+                    else:
+                        config.last_graylog_status = get_graylog_status(config.firewallname)
+                    
+                    db.session.commit()
+                    time.sleep(delay_between_checks)
+            except Exception as e:
+                app.logger.error(f"Error in graylog_status_worker loop: {e}")
+                time.sleep(60)
+
+import threading
+worker_started = False
+worker_lock = threading.Lock()
+
+@fgt_adm_vpn_conf_bp.before_app_request
+def start_worker():
+    global worker_started
+    if not worker_started:
+        with worker_lock:
+            if not worker_started:
+                worker_started = True
+                app = current_app._get_current_object()
+                t = threading.Thread(target=graylog_status_worker, args=(app,), daemon=True)
+                t.start()
 
 def log_action(action, details):
     username = session.get('username', 'Unknown')
@@ -87,6 +122,7 @@ class VpnConfig(db.Model):
     dns_name_full = db.Column(db.String(100))
     graylog_enabled = db.Column(db.Boolean, default=True)
     cluster_hostnames = db.Column(db.String(255))
+    last_graylog_status = db.Column(db.String(20), default="unknown")
 
     def __repr__(self):
         return f'<VpnConfig {self.kundenname}>'
@@ -153,33 +189,17 @@ def index():
             db.session.commit()
             log_action("Database Migration", "Added cluster_hostnames column to vpn_config table")
 
+        # Simple auto-migration for last_graylog_status column
+        try:
+            db.session.execute(db.text("SELECT last_graylog_status FROM vpn_config LIMIT 1"))
+        except Exception:
+            db.session.rollback()
+            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN last_graylog_status VARCHAR(20) DEFAULT 'unknown'"))
+            db.session.commit()
+            log_action("Database Migration", "Added last_graylog_status column to vpn_config table")
+
         configs = VpnConfig.query.all()
         
-        # Parallel Graylog Status Check to speed up page load
-        from concurrent.futures import ThreadPoolExecutor
-        
-        def resolve_status(config):
-            if not config.graylog_enabled:
-                return "disabled"
-            
-            if config.cluster_hostnames:
-                hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
-                statuses = [get_graylog_status(h) for h in hostnames]
-                if "config_missing" in statuses:
-                    return "config_missing"
-                return all(statuses)
-            else:
-                return get_graylog_status(config.firewallname)
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            status_map = {config.id: executor.submit(resolve_status, config) for config in configs}
-            
-        for config in configs:
-            try:
-                config.graylog_status = status_map[config.id].result(timeout=10)
-            except Exception:
-                config.graylog_status = False
-
         available_ips, total_ips_in_pool = get_all_available_ips()
         
         available_ips_count = len(available_ips)
