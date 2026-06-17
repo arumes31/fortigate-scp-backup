@@ -34,6 +34,7 @@ class VpnConfig(db.Model):
     radiusmgt = db.Column(db.String(10))
     dns_name_full = db.Column(db.String(100))
     graylog_enabled = db.Column(db.Boolean, default=True)
+    cluster_hostnames = db.Column(db.String(255))
 
     def __repr__(self):
         return f'<VpnConfig {self.kundenname}>'
@@ -91,6 +92,15 @@ def index():
             db.session.commit()
             log_action("Database Migration", "Added graylog_enabled column to vpn_config table")
 
+        # Simple auto-migration for cluster_hostnames column
+        try:
+            db.session.execute(db.text("SELECT cluster_hostnames FROM vpn_config LIMIT 1"))
+        except Exception:
+            db.session.rollback()
+            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN cluster_hostnames VARCHAR(255)"))
+            db.session.commit()
+            log_action("Database Migration", "Added cluster_hostnames column to vpn_config table")
+
         configs = VpnConfig.query.all()
         available_ips, total_ips_in_pool = get_all_available_ips()
         
@@ -140,7 +150,8 @@ def add():
         ipsec_psk_hci=request.form.get('ipsec_psk_hci', 'psauto'),
         radiusmgt=request.form.get('radiusmgt', 'YES'),
         dns_name_full=dns_name_full,
-        graylog_enabled='graylog_enabled' in request.form
+        graylog_enabled='graylog_enabled' in request.form,
+        cluster_hostnames=request.form.get('cluster_hostnames', '')
     )
     db.session.add(new_config)
     db.session.commit()
@@ -207,6 +218,7 @@ def import_csv():
             wan_interface = row[col_map['wan-interface']].strip() if 'wan-interface' in col_map and row[col_map['wan-interface']].strip() else 'wan1'
             lan_interface = row[col_map['lan-interface']].strip() if 'lan-interface' in col_map and row[col_map['lan-interface']].strip() else 'loopback'
             graylog_enabled = row[col_map['graylog_enabled']].strip().upper() == 'YES' if 'graylog_enabled' in col_map else True
+            cluster_hostnames = row[col_map['cluster_hostnames']].strip() if 'cluster_hostnames' in col_map else ''
 
             existing_config_by_firewallname = VpnConfig.query.filter_by(firewallname=firewallname).first()
             existing_config_by_remoteip = VpnConfig.query.filter_by(remoteip_full=remoteip_full).first()
@@ -229,6 +241,7 @@ def import_csv():
                 existing_config_by_firewallname.radiusmgt = radiusmgt
                 existing_config_by_firewallname.dns_name_full = dns_name_full
                 existing_config_by_firewallname.graylog_enabled = graylog_enabled
+                existing_config_by_firewallname.cluster_hostnames = cluster_hostnames
             else:
                 if existing_config_by_remoteip:
                     errors.append(f"Row {i+2}: Skipping insert for firewallname '{firewallname}': remoteip_full '{remoteip_full}' is already in use by an existing entry (ID: {existing_config_by_remoteip.id}).")
@@ -248,7 +261,8 @@ def import_csv():
                     ipsec_psk_hci=ipsec_psk_hci,
                     radiusmgt=radiusmgt,
                     dns_name_full=dns_name_full,
-                    graylog_enabled=graylog_enabled
+                    graylog_enabled=graylog_enabled,
+                    cluster_hostnames=cluster_hostnames
                 )
                 db.session.add(new_config)
             db.session.commit()
@@ -273,6 +287,7 @@ def edit(id):
         config.wan_interface = request.form['wan_interface']
         config.lan_interface = request.form['lan_interface']
         config.graylog_enabled = 'graylog_enabled' in request.form
+        config.cluster_hostnames = request.form.get('cluster_hostnames', '')
         
         new_remoteip_full = request.form['remoteip_full']
         # Validate if new_remoteip_full is unique (excluding current config)
@@ -842,7 +857,7 @@ def export_csv():
     header = [
         "Kundenname", "Standort", "REMOTEIP-FULL", "REMOTEIP-FULL-1st",
         "ike2_username", "WAN-Interface", "LAN-Interface", "DNS-Name",
-        "IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full", "Firewallname", "graylog_enabled"
+        "IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full", "Firewallname", "graylog_enabled", "cluster_hostnames"
     ]
     cw.writerow(header)
 
@@ -862,7 +877,8 @@ def export_csv():
             config.radiusmgt,
             config.dns_name_full,
             config.firewallname,
-            "YES" if config.graylog_enabled else "NO"
+            "YES" if config.graylog_enabled else "NO",
+            config.cluster_hostnames
         ])
     
     log_action("FGT ADM VPN - Export", "Exported all configs to CSV")
@@ -907,10 +923,16 @@ def export_bookmarks():
 @fgt_adm_vpn_conf_bp.route('/graylog_dsv')
 def graylog_dsv():
     configs = VpnConfig.query.filter_by(graylog_enabled=True).all()
-    output = ["remote_ip;status"]
+    output = ["Firewallname;Remote_IP;Status"]
     for config in configs:
         if config.remoteip_full:
-            output.append(f"{config.remoteip_full};active")
+            if config.cluster_hostnames:
+                # Split comma-separated hostnames and add a row for each
+                hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
+                for hostname in hostnames:
+                    output.append(f"{hostname};{config.remoteip_full};active")
+            elif config.firewallname:
+                output.append(f"{config.firewallname};{config.remoteip_full};active")
     
     log_action("FGT ADM VPN - Graylog DSV Access", f"Served {len(output)-1} records")
     response = make_response("\n".join(output))

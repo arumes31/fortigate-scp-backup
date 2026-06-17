@@ -123,7 +123,7 @@ services:
 ### FGT ADM VPN Config
 This module provides a way to manage and generate VPN configurations for FortiGate firewalls.
 - **Enabled via**: `EXT_ADM_VPN_CONF=true` environment variable.
-- **Public Graylog Endpoint**: `/fgt-adm-vpn-conf/graylog_dsv` - Serves DSV data (DNS-Name-Full;REMOTEIP-FULL) without authentication for Graylog integration.
+- **Public Graylog Endpoint**: `/fgt-adm-vpn-conf/graylog_dsv` - Serves DSV data (`Firewallname;Remote_IP;Status`) without authentication for Graylog integration. Supports cluster hostnames (multiple entries per VPN config if `cluster_hostnames` is set).
 
 ## Usage
 1. Access the app at `http://localhost:8521` (or your reverse proxy URL).
