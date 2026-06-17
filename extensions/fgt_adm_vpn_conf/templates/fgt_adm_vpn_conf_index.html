@@ -95,6 +95,7 @@
                     <th>IPSEC-PSK-HCI</th>
                     <th>RADIUSMGT</th>
                     <th>Graylog</th>
+                    <th>GL Status</th>
                     <th>Cluster Hostnames</th>
                     <th>DNS-Name-Full</th>
                     <th>Actions</th>
@@ -116,6 +117,19 @@
                     <td>{{ config.ipsec_psk_hci }}</td>
                     <td>{{ config.radiusmgt }}</td>
                     <td>{{ 'YES' if config.graylog_enabled else 'NO' }}</td>
+                    <td>
+                        {% if config.graylog_status == 'config_missing' %}
+                            <span title="Graylog not configured">⚠️</span>
+                        {% elif config.graylog_status == 'disabled' %}
+                            <span title="Disabled">-</span>
+                        {% elif config.graylog_status == True %}
+                            <span title="Online" style="color: green;">✅</span>
+                        {% elif config.graylog_status == False %}
+                            <span title="Offline" style="color: red;">❌</span>
+                        {% else %}
+                            <span title="Unknown">❓</span>
+                        {% endif %}
+                    </td>
                     <td>{{ config.cluster_hostnames or '-' }}</td>
                     <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
                     <td>

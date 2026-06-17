@@ -154,6 +154,10 @@ Environment variables can be set to customize the app:
 - `MAIL_USER`: SMTP username (default: `user@example.com`).
 - `MAIL_PASSWORD`: SMTP password.
 - `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
+- `GRAYLOG_URL`: Graylog API URL for status checks (e.g., `https://graylog.example.com`).
+- `GRAYLOG_TOKEN`: Graylog API token for authentication.
+- `GRAYLOG_SEARCH_TIMEFRAME`: Time in seconds to check for recent logs (default: `86400`).
+- `GRAYLOG_SEARCH_QUERY`: Query to identify online status (default: `fw_inventory_status:online`).
 - `PG_HOST`: fortisafe-db
 - `PG_PORT`: 5432
 - `PG_USER`: postgre
