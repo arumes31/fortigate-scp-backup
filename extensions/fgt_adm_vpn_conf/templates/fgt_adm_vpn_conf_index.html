@@ -118,13 +118,13 @@
                     <td>{{ config.radiusmgt }}</td>
                     <td>{{ 'YES' if config.graylog_enabled else 'NO' }}</td>
                     <td>
-                        {% if config.graylog_status == 'config_missing' %}
+                        {% if config.last_graylog_status == 'config_missing' %}
                             <span title="Graylog not configured">⚠️</span>
-                        {% elif config.graylog_status == 'disabled' %}
+                        {% elif config.graylog_enabled == False or config.last_graylog_status == 'disabled' %}
                             <span title="Disabled">-</span>
-                        {% elif config.graylog_status == True %}
+                        {% elif config.last_graylog_status == 'online' %}
                             <span title="Online" style="color: green;">✅</span>
-                        {% elif config.graylog_status == False %}
+                        {% elif config.last_graylog_status == 'offline' %}
                             <span title="Offline" style="color: red;">❌</span>
                         {% else %}
                             <span title="Unknown">❓</span>
