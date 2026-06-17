@@ -907,10 +907,10 @@ def export_bookmarks():
 @fgt_adm_vpn_conf_bp.route('/graylog_dsv')
 def graylog_dsv():
     configs = VpnConfig.query.filter_by(graylog_enabled=True).all()
-    output = ["DNS-Name-Full;REMOTEIP-FULL"]
+    output = ["remote_ip;status"]
     for config in configs:
-        if config.dns_name_full and config.remoteip_full:
-            output.append(f"{config.dns_name_full};{config.remoteip_full}")
+        if config.remoteip_full:
+            output.append(f"{config.remoteip_full};active")
     
     log_action("FGT ADM VPN - Graylog DSV Access", f"Served {len(output)-1} records")
     response = make_response("\n".join(output))
