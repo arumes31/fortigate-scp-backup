@@ -50,6 +50,10 @@
                             <td>RADIUSMGT (YES/NO)</td>
                             <td><input type="text" name="radiusmgt" value="YES" required></td>
                         </tr>
+                        <tr>
+                            <td>Graylog Enabled</td>
+                            <td><input type="checkbox" name="graylog_enabled" checked></td>
+                        </tr>
                     </tbody>
                 </table>
                 <br>
@@ -86,6 +90,7 @@
                     <th>IPSEC-PSK-RO</th>
                     <th>IPSEC-PSK-HCI</th>
                     <th>RADIUSMGT</th>
+                    <th>Graylog</th>
                     <th>DNS-Name-Full</th>
                     <th>Actions</th>
                 </tr>
@@ -105,6 +110,7 @@
                     <td>{{ config.ipsec_psk_ro }}</td>
                     <td>{{ config.ipsec_psk_hci }}</td>
                     <td>{{ config.radiusmgt }}</td>
+                    <td>{{ 'YES' if config.graylog_enabled else 'NO' }}</td>
                     <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
                     <td>
                         <a href="#" class="open-edit-modal" data-id="{{ config.id }}">Edit</a>
