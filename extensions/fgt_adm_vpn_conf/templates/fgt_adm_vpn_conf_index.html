@@ -54,6 +54,10 @@
                             <td>Graylog Enabled</td>
                             <td><input type="checkbox" name="graylog_enabled" checked></td>
                         </tr>
+                        <tr>
+                            <td>Cluster Hostnames (comma separated)</td>
+                            <td><input type="text" name="cluster_hostnames" placeholder="FW1,FW2"></td>
+                        </tr>
                     </tbody>
                 </table>
                 <br>
@@ -91,6 +95,7 @@
                     <th>IPSEC-PSK-HCI</th>
                     <th>RADIUSMGT</th>
                     <th>Graylog</th>
+                    <th>Cluster Hostnames</th>
                     <th>DNS-Name-Full</th>
                     <th>Actions</th>
                 </tr>
@@ -111,6 +116,7 @@
                     <td>{{ config.ipsec_psk_hci }}</td>
                     <td>{{ config.radiusmgt }}</td>
                     <td>{{ 'YES' if config.graylog_enabled else 'NO' }}</td>
+                    <td>{{ config.cluster_hostnames or '-' }}</td>
                     <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
                     <td>
                         <a href="#" class="open-edit-modal" data-id="{{ config.id }}">Edit</a>

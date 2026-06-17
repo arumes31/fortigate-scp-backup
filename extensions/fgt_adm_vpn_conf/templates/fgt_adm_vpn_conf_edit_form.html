@@ -41,6 +41,10 @@
                 <td>Graylog Enabled</td>
                 <td><input type="checkbox" name="graylog_enabled" {{ 'checked' if config.graylog_enabled else '' }}></td>
             </tr>
+            <tr>
+                <td>Cluster Hostnames (comma separated)</td>
+                <td><input type="text" name="cluster_hostnames" value="{{ config.cluster_hostnames or '' }}" placeholder="FW1,FW2"></td>
+            </tr>
         </tbody>
     </table>
     <br>
