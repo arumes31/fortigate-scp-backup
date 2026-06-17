@@ -37,6 +37,10 @@
                 <td>RADIUSMGT (YES/NO)</td>
                 <td><input type="text" name="radiusmgt" value="{{ config.radiusmgt }}"></td>
             </tr>
+            <tr>
+                <td>Graylog Enabled</td>
+                <td><input type="checkbox" name="graylog_enabled" {{ 'checked' if config.graylog_enabled else '' }}></td>
+            </tr>
         </tbody>
     </table>
     <br>
