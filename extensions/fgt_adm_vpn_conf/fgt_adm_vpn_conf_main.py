@@ -887,3 +887,16 @@ def export_bookmarks():
     response.headers["Content-Disposition"] = "attachment; filename=fgt_adm_bookmarks.html"
     response.headers["Content-type"] = "text/html"
     return response
+
+@fgt_adm_vpn_conf_bp.route('/graylog_dsv')
+def graylog_dsv():
+    configs = VpnConfig.query.all()
+    output = ["DNS-Name-Full;REMOTEIP-FULL"]
+    for config in configs:
+        if config.dns_name_full and config.remoteip_full:
+            output.append(f"{config.dns_name_full};{config.remoteip_full}")
+    
+    log_action("FGT ADM VPN - Graylog DSV Access", f"Served {len(output)-1} records")
+    response = make_response("\n".join(output))
+    response.headers["Content-Type"] = "text/plain"
+    return response
