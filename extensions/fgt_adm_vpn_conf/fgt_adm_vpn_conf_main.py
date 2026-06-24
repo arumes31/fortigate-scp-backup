@@ -18,16 +18,20 @@ fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
 
+def escape_graylog_value(value):
+    """Escape backslashes and double quotes so a value stays inside the quoted
+    phrase and cannot break out into query operators."""
+    return str(value).replace('\\', '\\\\').replace('"', '\\"')
+
 def get_graylog_status(hostname):
     graylog_url = os.getenv('GRAYLOG_URL', '').rstrip('/')
     graylog_token = os.getenv('GRAYLOG_TOKEN', '')
     timeframe = os.getenv('GRAYLOG_SEARCH_TIMEFRAME', '86400')
-    base_query = os.getenv('GRAYLOG_SEARCH_QUERY', 'fw_inventory_status:online')
 
     if not graylog_url or not graylog_token:
         return "config_missing"
 
-    query = f'source:"{hostname}" AND {base_query}'
+    query = f'source:"{escape_graylog_value(hostname)}"'
     params = urllib.parse.urlencode({
         'query': query,
         'range': timeframe,
@@ -51,6 +55,46 @@ def get_graylog_status(hostname):
     except Exception as e:
         return "error"
 
+def send_hookwise_event(app, config, status):
+    """Send an up/down event for a device to HookWise.
+    status is the new graylog status ("online" -> UP, "offline" -> DOWN).
+
+    Returns True if the event was delivered or no delivery was required (HookWise
+    not configured). Returns False only when a configured delivery attempt failed,
+    so the caller can avoid persisting the transition and retry next cycle."""
+    hookwise_url = os.getenv('HOOKWISE_URL', '').rstrip('/')
+    hookwise_token = os.getenv('HOOKWISE_TOKEN', '')
+
+    if not hookwise_url or not hookwise_token:
+        return True
+
+    if not (config.cid and config.cid.strip()):
+        app.logger.error(f"Skipping HookWise event for {config.firewallname}: missing CID")
+        return True
+
+    event_status = "UP" if status == "online" else "DOWN"
+    payload = {
+        "status": event_status,
+        "monitor": config.firewallname,
+        "device": config.firewallname,
+        "cid": config.cid,
+        "remote_ip": config.remoteip_full,
+        "message": f"FGT ADM VPN {config.firewallname} is {event_status}",
+    }
+
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(hookwise_url, data=data, method='POST')
+        req.add_header('Authorization', f'Bearer {hookwise_token}')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('Accept', 'application/json')
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+        return True
+    except Exception as e:
+        app.logger.error(f"Failed to send HookWise {event_status} event for {config.firewallname}: {e}")
+        return False
+
 def graylog_status_worker(app):
     with app.app_context():
         # Sleep initially to let the app start up completely
@@ -67,19 +111,43 @@ def graylog_status_worker(app):
                 delay_between_checks = 900.0 / len(configs)
                 
                 for config in configs:
+                    old_status = config.last_graylog_status
                     if config.cluster_hostnames:
                         hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
-                        statuses = [get_graylog_status(h) for h in hostnames]
-                        if "config_missing" in statuses:
-                            config.last_graylog_status = "config_missing"
-                        elif "error" in statuses or "offline" in statuses:
-                            config.last_graylog_status = "offline"
+                        if not hostnames:
+                            # cluster_hostnames set but parses to nothing -> misconfig,
+                            # treat as error rather than defaulting to online.
+                            new_status = "error"
                         else:
-                            config.last_graylog_status = "online"
+                            statuses = [get_graylog_status(h) for h in hostnames]
+                            if "config_missing" in statuses:
+                                new_status = "config_missing"
+                            elif "error" in statuses or "offline" in statuses:
+                                new_status = "offline"
+                            else:
+                                new_status = "online"
                     else:
-                        config.last_graylog_status = get_graylog_status(config.firewallname)
-                    
-                    db.session.commit()
+                        new_status = get_graylog_status(config.firewallname)
+
+                    # A real transition between known online/offline states fires an
+                    # up/down event (other states avoid startup noise).
+                    is_transition = (new_status in ("online", "offline")
+                                     and old_status in ("online", "offline")
+                                     and new_status != old_status)
+
+                    if is_transition:
+                        # Deliver to HookWise first; only persist the new status once
+                        # delivery is confirmed so a failed POST is retried next cycle
+                        # instead of being silently dropped.
+                        if send_hookwise_event(app, config, new_status):
+                            config.last_graylog_status = new_status
+                            db.session.commit()
+                        else:
+                            db.session.rollback()
+                    else:
+                        config.last_graylog_status = new_status
+                        db.session.commit()
+
                     time.sleep(delay_between_checks)
             except Exception as e:
                 app.logger.error(f"Error in graylog_status_worker loop: {e}")
@@ -116,6 +184,7 @@ class VpnConfig(db.Model):
     lan_interface = db.Column(db.String(100))
     dns_name = db.Column(db.String(100))
     firewallname = db.Column(db.String(100), unique=True)
+    cid = db.Column(db.String(100), nullable=False)
     ipsec_psk_ro = db.Column(db.String(100))
     ipsec_psk_hci = db.Column(db.String(100))
     radiusmgt = db.Column(db.String(10))
@@ -198,6 +267,15 @@ def index():
             db.session.commit()
             log_action("Database Migration", "Added last_graylog_status column to vpn_config table")
 
+        # Simple auto-migration for cid column
+        try:
+            db.session.execute(db.text("SELECT cid FROM vpn_config LIMIT 1"))
+        except Exception:
+            db.session.rollback()
+            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"))
+            db.session.commit()
+            log_action("Database Migration", "Added cid column to vpn_config table")
+
         configs = VpnConfig.query.all()
         
         available_ips, total_ips_in_pool = get_all_available_ips()
@@ -234,7 +312,11 @@ def add():
     firewallname = request.form.get('firewallname')
     if not firewallname:
         firewallname = f"{kundenname}-{standort}"
-    
+
+    cid = request.form.get('cid', '').strip()
+    if not cid:
+        return "Error: CID is required.", 400
+
     new_config = VpnConfig(
         kundenname=kundenname,
         standort=standort,
@@ -245,6 +327,7 @@ def add():
         lan_interface=request.form.get('lan_interface', 'loopback'),
         dns_name=dns_name,
         firewallname=firewallname,
+        cid=cid,
         ipsec_psk_ro=request.form.get('ipsec_psk_ro', 'psauto'),
         ipsec_psk_hci=request.form.get('ipsec_psk_hci', 'psauto'),
         radiusmgt=request.form.get('radiusmgt', 'YES'),
@@ -318,6 +401,10 @@ def import_csv():
             lan_interface = row[col_map['lan-interface']].strip() if 'lan-interface' in col_map and row[col_map['lan-interface']].strip() else 'loopback'
             graylog_enabled = row[col_map['graylog_enabled']].strip().upper() == 'YES' if 'graylog_enabled' in col_map else True
             cluster_hostnames = row[col_map['cluster_hostnames']].strip() if 'cluster_hostnames' in col_map else ''
+            cid = row[col_map['cid']].strip() if 'cid' in col_map and row[col_map['cid']].strip() else ''
+            if not cid:
+                errors.append(f"Row {i+2}: CID is required.")
+                continue
 
             existing_config_by_firewallname = VpnConfig.query.filter_by(firewallname=firewallname).first()
             existing_config_by_remoteip = VpnConfig.query.filter_by(remoteip_full=remoteip_full).first()
@@ -341,6 +428,7 @@ def import_csv():
                 existing_config_by_firewallname.dns_name_full = dns_name_full
                 existing_config_by_firewallname.graylog_enabled = graylog_enabled
                 existing_config_by_firewallname.cluster_hostnames = cluster_hostnames
+                existing_config_by_firewallname.cid = cid
             else:
                 if existing_config_by_remoteip:
                     errors.append(f"Row {i+2}: Skipping insert for firewallname '{firewallname}': remoteip_full '{remoteip_full}' is already in use by an existing entry (ID: {existing_config_by_remoteip.id}).")
@@ -356,6 +444,7 @@ def import_csv():
                     lan_interface=lan_interface,
                     dns_name=dns_name,
                     firewallname=firewallname,
+                    cid=cid,
                     ipsec_psk_ro=ipsec_psk_ro,
                     ipsec_psk_hci=ipsec_psk_hci,
                     radiusmgt=radiusmgt,
@@ -411,7 +500,12 @@ def edit(id):
             config.firewallname = firewallname
         else:
             config.firewallname = f"{config.kundenname}-{config.standort}"
-        
+
+        cid = request.form.get('cid', '').strip()
+        if not cid:
+            return "Error: CID is required.", 400
+        config.cid = cid
+
         #Re-generate derived fields
         config.dns_name = f"fgt-{config.kundenname}-{config.standort}"
         config.dns_name_full = f"{config.dns_name}.adm.eworx.at"
@@ -956,7 +1050,7 @@ def export_csv():
     header = [
         "Kundenname", "Standort", "REMOTEIP-FULL", "REMOTEIP-FULL-1st",
         "ike2_username", "WAN-Interface", "LAN-Interface", "DNS-Name",
-        "IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full", "Firewallname", "graylog_enabled", "cluster_hostnames"
+        "IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full", "Firewallname", "CID", "graylog_enabled", "cluster_hostnames"
     ]
     cw.writerow(header)
 
@@ -976,6 +1070,7 @@ def export_csv():
             config.radiusmgt,
             config.dns_name_full,
             config.firewallname,
+            config.cid,
             "YES" if config.graylog_enabled else "NO",
             config.cluster_hostnames
         ])
@@ -1033,7 +1128,6 @@ def graylog_dsv():
             elif config.firewallname:
                 output.append(f"{config.firewallname};{config.remoteip_full};active")
     
-    log_action("FGT ADM VPN - Graylog DSV Access", f"Served {len(output)-1} records")
     response = make_response("\n".join(output))
     response.headers["Content-Type"] = "text/plain"
     return response
