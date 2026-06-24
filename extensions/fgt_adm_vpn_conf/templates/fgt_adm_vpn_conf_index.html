@@ -23,6 +23,10 @@
                             <td><input type="text" name="firewallname" required></td>
                         </tr>
                         <tr>
+                            <td>CID</td>
+                            <td><input type="text" name="cid" required></td>
+                        </tr>
+                        <tr>
                             <td>Kundenname</td>
                             <td><input type="text" name="kundenname" required></td>
                         </tr>
@@ -83,6 +87,7 @@
             <thead>
                 <tr>
                     <th>Firewallname</th>
+                    <th>CID</th>
                     <th>Kundenname</th>
                     <th>Standort</th>
                     <th>REMOTEIP-FULL</th>
@@ -105,6 +110,7 @@
                 {% for config in configs %}
                 <tr>
                     <td>{{ config.firewallname }}</td>
+                    <td>{{ config.cid }}</td>
                     <td>{{ config.kundenname }}</td>
                     <td>{{ config.standort }}</td>
                     <td>{{ config.remoteip_full }}</td>
