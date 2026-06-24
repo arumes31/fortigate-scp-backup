@@ -962,7 +962,6 @@ def initialize_app():
     with _init_lock:
         if _initialized:
             return
-        _initialized = True
 
         logger.info("Starting application initialization...")
 
@@ -1036,6 +1035,9 @@ def initialize_app():
         else:
             logger.info("FGT ADM VPN Conf module is disabled. Not registering blueprint.")
 
+        # Mark initialized only after every step succeeded, so a partial failure
+        # (raised above) leaves the flag unset and the next call can retry.
+        _initialized = True
         logger.info("Application initialization complete.")
 
 

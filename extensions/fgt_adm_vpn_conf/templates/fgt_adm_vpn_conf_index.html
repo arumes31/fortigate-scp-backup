@@ -98,6 +98,7 @@
                     <th>RADIUSMGT</th>
                     <th>Graylog</th>
                     <th>GL Status</th>
+                    <th>Next Check</th>
                     <th>Cluster Hostnames</th>
                     <th>DNS-Name-Full</th>
                     <th>Actions</th>
@@ -129,6 +130,11 @@
                         {% else %}
                             <span title="Unknown">❓</span>
                         {% endif %}
+                    </td>
+                    <td>
+                        {% if config.graylog_enabled and config.next_graylog_check %}
+                            <span class="next-graylog-check" data-next="{{ config.next_graylog_check.strftime('%Y-%m-%dT%H:%M:%SZ') }}">…</span>
+                        {% else %}-{% endif %}
                     </td>
                     <td>{{ config.cluster_hostnames or '-' }}</td>
                     <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
@@ -162,5 +168,21 @@
     </div>
 
     <script src="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_script.js') }}"></script>
+    <script>
+        function updateGraylogCheckTimers() {
+            var now = Date.now();
+            document.querySelectorAll('.next-graylog-check').forEach(function (el) {
+                var target = new Date(el.dataset.next).getTime();
+                var diff = Math.round((target - now) / 1000);
+                if (isNaN(target)) { el.textContent = '-'; return; }
+                if (diff <= 0) { el.textContent = 'due'; return; }
+                var m = Math.floor(diff / 60);
+                var s = diff % 60;
+                el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
+            });
+        }
+        updateGraylogCheckTimers();
+        setInterval(updateGraylogCheckTimers, 1000);
+    </script>
 </body>
 </html>

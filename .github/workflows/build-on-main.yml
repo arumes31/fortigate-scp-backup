@@ -30,9 +30,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get current date for tagging
-        id: date
-        run: echo "IMAGE_DATE=$(date +'%d%m%Y')" >> $GITHUB_ENV
+      - name: Prepare image reference and date tag
+        id: prep
+        run: |
+          echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "IMAGE_DATE=$(date +'%d%m%Y')" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         id: build_and_push
@@ -41,6 +43,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}:${{ env.IMAGE_DATE }}
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:${{ env.IMAGE_DATE }}
