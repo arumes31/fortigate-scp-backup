@@ -1,0 +1,46 @@
+name: Build and Push on main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-on-main-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_push:
+    name: Build and push Docker image to GHCR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current date for tagging
+        id: date
+        run: echo "IMAGE_DATE=$(date +'%d%m%Y')" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        id: build_and_push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ env.IMAGE_DATE }}

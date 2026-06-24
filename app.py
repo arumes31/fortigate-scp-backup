@@ -941,8 +941,29 @@ def search():
 
     return render_template('search.html', results=results, query=query)
 
-if __name__ == '__main__':
-    try:
+_initialized = False
+_init_lock = threading.Lock()
+
+def initialize_app():
+    """Run all one-time startup work (DB init, backup dir, job scheduling,
+    blueprint registration).
+
+    This is called at import time so it executes under a WSGI server such as
+    gunicorn, which imports ``app:app`` and never runs the ``__main__`` block.
+    It is guarded so it runs exactly once per process.
+
+    IMPORTANT: the app uses an in-process APScheduler (see ``scheduler`` above)
+    and a background Graylog/HookWise worker thread. These must run in a SINGLE
+    process, otherwise backups and Graylog lookups get duplicated. Run gunicorn
+    with ``--workers 1`` (use ``--threads`` for concurrency); do NOT increase the
+    worker count.
+    """
+    global _initialized
+    with _init_lock:
+        if _initialized:
+            return
+        _initialized = True
+
         logger.info("Starting application initialization...")
 
         # Step 1: Initialize database
@@ -1015,17 +1036,21 @@ if __name__ == '__main__':
         else:
             logger.info("FGT ADM VPN Conf module is disabled. Not registering blueprint.")
 
-        # Step 5: Start Flask server
-        logger.info("Starting Flask server on 0.0.0.0:8521...")
-        app.run(host='0.0.0.0', port=8521, debug=True, use_reloader=False)
-    except Exception as e:
-        logger.error(f"Application startup failed: {str(e)}", exc_info=True)
-        raise
-    except KeyboardInterrupt:
-        logger.info("Received KeyboardInterrupt, shutting down...")
-        scheduler.shutdown()
-    except SystemExit:
-        logger.info("Received SystemExit, shutting down...")
+        logger.info("Application initialization complete.")
+
+
+# Run initialization on import so it executes under gunicorn (which imports
+# `app:app` and never runs the __main__ block below).
+initialize_app()
+
+if __name__ == '__main__':
+    # Local development only: use Flask's built-in server. In production the
+    # container runs gunicorn (see Dockerfile) with a single worker.
+    try:
+        logger.info("Starting Flask development server on 0.0.0.0:8521...")
+        app.run(host='0.0.0.0', port=8521, debug=False, use_reloader=False)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Received shutdown signal, shutting down scheduler...")
         scheduler.shutdown()
     finally:
         logger.info("Application shutdown complete.")
