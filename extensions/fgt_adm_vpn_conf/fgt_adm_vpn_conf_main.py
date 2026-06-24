@@ -13,6 +13,11 @@ import urllib.parse
 import base64
 import json
 import time
+import datetime
+
+# The worker re-checks every enabled device once per ~15-minute (900s) sweep,
+# so a device's next check is roughly this many seconds after its last one.
+GRAYLOG_CHECK_CYCLE_SECONDS = 900
 
 fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'), static_folder='static')
 # This db instance is for the blueprint, it will be initialized by the main app
@@ -129,6 +134,10 @@ def graylog_status_worker(app):
                     else:
                         new_status = get_graylog_status(config.firewallname)
 
+                    # Record when this device was checked (UTC), so the UI can show
+                    # last/next check times. Persisted with the status below.
+                    config.last_graylog_check = datetime.datetime.utcnow()
+
                     # A real transition between known online/offline states fires an
                     # up/down event (other states avoid startup noise).
                     is_transition = (new_status in ("online", "offline")
@@ -192,6 +201,15 @@ class VpnConfig(db.Model):
     graylog_enabled = db.Column(db.Boolean, default=True)
     cluster_hostnames = db.Column(db.String(255))
     last_graylog_status = db.Column(db.String(20), default="unknown")
+    last_graylog_check = db.Column(db.DateTime)
+
+    @property
+    def next_graylog_check(self):
+        """Approximate UTC time of this device's next Graylog check, or None if
+        it has not been checked yet."""
+        if not self.last_graylog_check:
+            return None
+        return self.last_graylog_check + datetime.timedelta(seconds=GRAYLOG_CHECK_CYCLE_SECONDS)
 
     def __repr__(self):
         return f'<VpnConfig {self.kundenname}>'
@@ -275,6 +293,15 @@ def index():
             db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"))
             db.session.commit()
             log_action("Database Migration", "Added cid column to vpn_config table")
+
+        # Simple auto-migration for last_graylog_check column
+        try:
+            db.session.execute(db.text("SELECT last_graylog_check FROM vpn_config LIMIT 1"))
+        except Exception:
+            db.session.rollback()
+            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"))
+            db.session.commit()
+            log_action("Database Migration", "Added last_graylog_check column to vpn_config table")
 
         configs = VpnConfig.query.all()
         
