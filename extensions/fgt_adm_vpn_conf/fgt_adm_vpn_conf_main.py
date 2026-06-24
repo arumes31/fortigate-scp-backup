@@ -18,6 +18,11 @@ fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
 
+def escape_graylog_value(value):
+    """Escape backslashes and double quotes so a value stays inside the quoted
+    phrase and cannot break out into query operators."""
+    return str(value).replace('\\', '\\\\').replace('"', '\\"')
+
 def get_graylog_status(hostname):
     graylog_url = os.getenv('GRAYLOG_URL', '').rstrip('/')
     graylog_token = os.getenv('GRAYLOG_TOKEN', '')
@@ -26,7 +31,7 @@ def get_graylog_status(hostname):
     if not graylog_url or not graylog_token:
         return "config_missing"
 
-    query = f'source:"{hostname}"'
+    query = f'source:"{escape_graylog_value(hostname)}"'
     params = urllib.parse.urlencode({
         'query': query,
         'range': timeframe,
@@ -52,12 +57,20 @@ def get_graylog_status(hostname):
 
 def send_hookwise_event(app, config, status):
     """Send an up/down event for a device to HookWise.
-    status is the new graylog status ("online" -> UP, "offline" -> DOWN)."""
+    status is the new graylog status ("online" -> UP, "offline" -> DOWN).
+
+    Returns True if the event was delivered or no delivery was required (HookWise
+    not configured). Returns False only when a configured delivery attempt failed,
+    so the caller can avoid persisting the transition and retry next cycle."""
     hookwise_url = os.getenv('HOOKWISE_URL', '').rstrip('/')
     hookwise_token = os.getenv('HOOKWISE_TOKEN', '')
 
     if not hookwise_url or not hookwise_token:
-        return
+        return True
+
+    if not (config.cid and config.cid.strip()):
+        app.logger.error(f"Skipping HookWise event for {config.firewallname}: missing CID")
+        return True
 
     event_status = "UP" if status == "online" else "DOWN"
     payload = {
@@ -77,8 +90,10 @@ def send_hookwise_event(app, config, status):
         req.add_header('Accept', 'application/json')
         with urllib.request.urlopen(req, timeout=5) as response:
             response.read()
+        return True
     except Exception as e:
         app.logger.error(f"Failed to send HookWise {event_status} event for {config.firewallname}: {e}")
+        return False
 
 def graylog_status_worker(app):
     with app.app_context():
@@ -99,25 +114,39 @@ def graylog_status_worker(app):
                     old_status = config.last_graylog_status
                     if config.cluster_hostnames:
                         hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
-                        statuses = [get_graylog_status(h) for h in hostnames]
-                        if "config_missing" in statuses:
-                            new_status = "config_missing"
-                        elif "error" in statuses or "offline" in statuses:
-                            new_status = "offline"
+                        if not hostnames:
+                            # cluster_hostnames set but parses to nothing -> misconfig,
+                            # treat as error rather than defaulting to online.
+                            new_status = "error"
                         else:
-                            new_status = "online"
+                            statuses = [get_graylog_status(h) for h in hostnames]
+                            if "config_missing" in statuses:
+                                new_status = "config_missing"
+                            elif "error" in statuses or "offline" in statuses:
+                                new_status = "offline"
+                            else:
+                                new_status = "online"
                     else:
                         new_status = get_graylog_status(config.firewallname)
 
-                    config.last_graylog_status = new_status
-                    db.session.commit()
+                    # A real transition between known online/offline states fires an
+                    # up/down event (other states avoid startup noise).
+                    is_transition = (new_status in ("online", "offline")
+                                     and old_status in ("online", "offline")
+                                     and new_status != old_status)
 
-                    # Send up/down event to HookWise only on a real transition
-                    # between known online/offline states (avoids startup noise).
-                    if (new_status in ("online", "offline")
-                            and old_status in ("online", "offline")
-                            and new_status != old_status):
-                        send_hookwise_event(app, config, new_status)
+                    if is_transition:
+                        # Deliver to HookWise first; only persist the new status once
+                        # delivery is confirmed so a failed POST is retried next cycle
+                        # instead of being silently dropped.
+                        if send_hookwise_event(app, config, new_status):
+                            config.last_graylog_status = new_status
+                            db.session.commit()
+                        else:
+                            db.session.rollback()
+                    else:
+                        config.last_graylog_status = new_status
+                        db.session.commit()
 
                     time.sleep(delay_between_checks)
             except Exception as e:
@@ -155,7 +184,7 @@ class VpnConfig(db.Model):
     lan_interface = db.Column(db.String(100))
     dns_name = db.Column(db.String(100))
     firewallname = db.Column(db.String(100), unique=True)
-    cid = db.Column(db.String(100))
+    cid = db.Column(db.String(100), nullable=False)
     ipsec_psk_ro = db.Column(db.String(100))
     ipsec_psk_hci = db.Column(db.String(100))
     radiusmgt = db.Column(db.String(10))
@@ -283,7 +312,11 @@ def add():
     firewallname = request.form.get('firewallname')
     if not firewallname:
         firewallname = f"{kundenname}-{standort}"
-    
+
+    cid = request.form.get('cid', '').strip()
+    if not cid:
+        return "Error: CID is required.", 400
+
     new_config = VpnConfig(
         kundenname=kundenname,
         standort=standort,
@@ -294,7 +327,7 @@ def add():
         lan_interface=request.form.get('lan_interface', 'loopback'),
         dns_name=dns_name,
         firewallname=firewallname,
-        cid=request.form['cid'],
+        cid=cid,
         ipsec_psk_ro=request.form.get('ipsec_psk_ro', 'psauto'),
         ipsec_psk_hci=request.form.get('ipsec_psk_hci', 'psauto'),
         radiusmgt=request.form.get('radiusmgt', 'YES'),
@@ -369,6 +402,9 @@ def import_csv():
             graylog_enabled = row[col_map['graylog_enabled']].strip().upper() == 'YES' if 'graylog_enabled' in col_map else True
             cluster_hostnames = row[col_map['cluster_hostnames']].strip() if 'cluster_hostnames' in col_map else ''
             cid = row[col_map['cid']].strip() if 'cid' in col_map and row[col_map['cid']].strip() else ''
+            if not cid:
+                errors.append(f"Row {i+2}: CID is required.")
+                continue
 
             existing_config_by_firewallname = VpnConfig.query.filter_by(firewallname=firewallname).first()
             existing_config_by_remoteip = VpnConfig.query.filter_by(remoteip_full=remoteip_full).first()
@@ -465,7 +501,10 @@ def edit(id):
         else:
             config.firewallname = f"{config.kundenname}-{config.standort}"
 
-        config.cid = request.form['cid']
+        cid = request.form.get('cid', '').strip()
+        if not cid:
+            return "Error: CID is required.", 400
+        config.cid = cid
 
         #Re-generate derived fields
         config.dns_name = f"fgt-{config.kundenname}-{config.standort}"
