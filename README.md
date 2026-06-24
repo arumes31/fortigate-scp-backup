@@ -123,7 +123,10 @@ services:
 ### FGT ADM VPN Config
 This module provides a way to manage and generate VPN configurations for FortiGate firewalls.
 - **Enabled via**: `EXT_ADM_VPN_CONF=true` environment variable.
+- **CID**: Each VPN config requires a `CID` (customer/contract identifier) field.
 - **Public Graylog Endpoint**: `/fgt-adm-vpn-conf/graylog_dsv` - Serves DSV data (`Firewallname;Remote_IP;Status`) without authentication for Graylog integration. Supports cluster hostnames (multiple entries per VPN config if `cluster_hostnames` is set).
+- **Graylog Status Monitoring**: A background worker periodically checks Graylog for recent logs from each device (a device is `online` if any log exists for its hostname within `GRAYLOG_SEARCH_TIMEFRAME`).
+- **HookWise Up/Down Events**: When a device transitions between `online` and `offline`, an UP/DOWN event is sent to [HookWise](https://github.com/arumes31/hookwise). Configured via `HOOKWISE_URL` and `HOOKWISE_TOKEN`; if unset, event sending is skipped.
 
 ## Usage
 1. Access the app at `http://localhost:8521` (or your reverse proxy URL).
@@ -156,8 +159,9 @@ Environment variables can be set to customize the app:
 - `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
 - `GRAYLOG_URL`: Graylog API URL for status checks (e.g., `https://graylog.example.com`).
 - `GRAYLOG_TOKEN`: Graylog API token for authentication.
-- `GRAYLOG_SEARCH_TIMEFRAME`: Time in seconds to check for recent logs (default: `86400`).
-- `GRAYLOG_SEARCH_QUERY`: Query to identify online status (default: `fw_inventory_status:online`).
+- `GRAYLOG_SEARCH_TIMEFRAME`: Time in seconds to check for recent logs (default: `86400`). A device is considered `online` if any log exists for its hostname within this timeframe.
+- `HOOKWISE_URL`: Full HookWise webhook URL (e.g., `https://hookwise.example.com/webhook/<endpoint_id>`). Up/down events are sent here on device status transitions. Leave unset to disable.
+- `HOOKWISE_TOKEN`: HookWise bearer token for authentication.
 - `PG_HOST`: fortisafe-db
 - `PG_PORT`: 5432
 - `PG_USER`: postgre
