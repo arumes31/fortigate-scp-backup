@@ -74,8 +74,8 @@ def send_hookwise_event(app, config, status):
         return True
 
     if not (config.cid and config.cid.strip()):
-        app.logger.error(f"Skipping HookWise event for {config.firewallname}: missing CID")
-        return True
+        app.logger.error(f"Cannot send HookWise event for {config.firewallname}: missing CID")
+        return False
 
     event_status = "UP" if status == "online" else "DOWN"
     payload = {
@@ -104,6 +104,8 @@ def graylog_status_worker(app):
     with app.app_context():
         # Sleep initially to let the app start up completely
         time.sleep(10)
+        # Ensure schema is migrated before the worker queries the newer columns.
+        run_migrations()
         while True:
             try:
                 configs = VpnConfig.query.filter_by(graylog_enabled=True).all()
@@ -127,7 +129,11 @@ def graylog_status_worker(app):
                             statuses = [get_graylog_status(h) for h in hostnames]
                             if "config_missing" in statuses:
                                 new_status = "config_missing"
-                            elif "error" in statuses or "offline" in statuses:
+                            elif "error" in statuses:
+                                # Keep error distinct from offline (matches single-host
+                                # behavior) so a query failure can't trigger a false DOWN.
+                                new_status = "error"
+                            elif "offline" in statuses:
                                 new_status = "offline"
                             else:
                                 new_status = "online"
@@ -135,7 +141,8 @@ def graylog_status_worker(app):
                         new_status = get_graylog_status(config.firewallname)
 
                     # Record when this device was checked (UTC), so the UI can show
-                    # last/next check times. Persisted with the status below.
+                    # last/next check times. This is persisted below regardless of
+                    # HookWise delivery so the timer stays accurate.
                     config.last_graylog_check = datetime.datetime.utcnow()
 
                     # A real transition between known online/offline states fires an
@@ -144,22 +151,25 @@ def graylog_status_worker(app):
                                      and old_status in ("online", "offline")
                                      and new_status != old_status)
 
-                    if is_transition:
-                        # Deliver to HookWise first; only persist the new status once
-                        # delivery is confirmed so a failed POST is retried next cycle
-                        # instead of being silently dropped.
-                        if send_hookwise_event(app, config, new_status):
-                            config.last_graylog_status = new_status
-                            db.session.commit()
-                        else:
-                            db.session.rollback()
+                    # Gate only the status change on successful HookWise delivery, so a
+                    # failed POST is retried next cycle instead of being silently dropped.
+                    # The check timestamp is committed either way.
+                    if is_transition and not send_hookwise_event(app, config, new_status):
+                        app.logger.warning(
+                            f"Deferring status update for {config.firewallname}: HookWise delivery failed")
                     else:
                         config.last_graylog_status = new_status
-                        db.session.commit()
+
+                    db.session.commit()
 
                     time.sleep(delay_between_checks)
             except Exception as e:
                 app.logger.error(f"Error in graylog_status_worker loop: {e}")
+                # Clear any failed transaction so the next iteration starts clean.
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
                 time.sleep(60)
 
 import threading
@@ -181,6 +191,43 @@ def log_action(action, details):
     username = session.get('username', 'Unknown')
     if hasattr(current_app, 'log_activity'):
         current_app.log_activity(username, action, details)
+
+migrations_done = False
+migrations_lock = threading.Lock()
+
+def run_migrations():
+    """Apply idempotent schema migrations for the vpn_config table.
+
+    Safe to call from any request or the background worker; the actual ALTERs run
+    only once per process. This must run before any VpnConfig query touches the
+    newer columns, so it is invoked from a before_app_request hook and at worker
+    startup rather than only from the index view."""
+    global migrations_done
+    if migrations_done:
+        return
+    with migrations_lock:
+        if migrations_done:
+            return
+        migrations = [
+            ("graylog_enabled", "ALTER TABLE vpn_config ADD COLUMN graylog_enabled BOOLEAN DEFAULT 1"),
+            ("cluster_hostnames", "ALTER TABLE vpn_config ADD COLUMN cluster_hostnames VARCHAR(255)"),
+            ("last_graylog_status", "ALTER TABLE vpn_config ADD COLUMN last_graylog_status VARCHAR(20) DEFAULT 'unknown'"),
+            ("cid", "ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"),
+            ("last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"),
+        ]
+        for column, alter_sql in migrations:
+            try:
+                db.session.execute(db.text(f"SELECT {column} FROM vpn_config LIMIT 1"))
+            except Exception:
+                db.session.rollback()
+                db.session.execute(db.text(alter_sql))
+                db.session.commit()
+                log_action("Database Migration", f"Added {column} column to vpn_config table")
+        migrations_done = True
+
+@fgt_adm_vpn_conf_bp.before_app_request
+def ensure_migrations():
+    run_migrations()
 
 class VpnConfig(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -258,51 +305,8 @@ def get_all_available_ips():
 @login_required
 def index():
     try:
-        # Simple auto-migration for graylog_enabled column
-        try:
-            db.session.execute(db.text("SELECT graylog_enabled FROM vpn_config LIMIT 1"))
-        except Exception:
-            db.session.rollback()
-            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN graylog_enabled BOOLEAN DEFAULT 1"))
-            db.session.commit()
-            log_action("Database Migration", "Added graylog_enabled column to vpn_config table")
-
-        # Simple auto-migration for cluster_hostnames column
-        try:
-            db.session.execute(db.text("SELECT cluster_hostnames FROM vpn_config LIMIT 1"))
-        except Exception:
-            db.session.rollback()
-            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN cluster_hostnames VARCHAR(255)"))
-            db.session.commit()
-            log_action("Database Migration", "Added cluster_hostnames column to vpn_config table")
-
-        # Simple auto-migration for last_graylog_status column
-        try:
-            db.session.execute(db.text("SELECT last_graylog_status FROM vpn_config LIMIT 1"))
-        except Exception:
-            db.session.rollback()
-            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN last_graylog_status VARCHAR(20) DEFAULT 'unknown'"))
-            db.session.commit()
-            log_action("Database Migration", "Added last_graylog_status column to vpn_config table")
-
-        # Simple auto-migration for cid column
-        try:
-            db.session.execute(db.text("SELECT cid FROM vpn_config LIMIT 1"))
-        except Exception:
-            db.session.rollback()
-            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"))
-            db.session.commit()
-            log_action("Database Migration", "Added cid column to vpn_config table")
-
-        # Simple auto-migration for last_graylog_check column
-        try:
-            db.session.execute(db.text("SELECT last_graylog_check FROM vpn_config LIMIT 1"))
-        except Exception:
-            db.session.rollback()
-            db.session.execute(db.text("ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"))
-            db.session.commit()
-            log_action("Database Migration", "Added last_graylog_check column to vpn_config table")
-
+        # Schema migrations run via the before_app_request hook (ensure_migrations)
+        # so the newer columns exist before any VpnConfig query in any code path.
         configs = VpnConfig.query.all()
         
         available_ips, total_ips_in_pool = get_all_available_ips()
