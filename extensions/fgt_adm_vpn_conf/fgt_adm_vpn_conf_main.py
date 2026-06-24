@@ -22,12 +22,11 @@ def get_graylog_status(hostname):
     graylog_url = os.getenv('GRAYLOG_URL', '').rstrip('/')
     graylog_token = os.getenv('GRAYLOG_TOKEN', '')
     timeframe = os.getenv('GRAYLOG_SEARCH_TIMEFRAME', '86400')
-    base_query = os.getenv('GRAYLOG_SEARCH_QUERY', 'fw_inventory_status:online')
 
     if not graylog_url or not graylog_token:
         return "config_missing"
 
-    query = f'source:"{hostname}" AND {base_query}'
+    query = f'source:"{hostname}"'
     params = urllib.parse.urlencode({
         'query': query,
         'range': timeframe,
@@ -1033,7 +1032,6 @@ def graylog_dsv():
             elif config.firewallname:
                 output.append(f"{config.firewallname};{config.remoteip_full};active")
     
-    log_action("FGT ADM VPN - Graylog DSV Access", f"Served {len(output)-1} records")
     response = make_response("\n".join(output))
     response.headers["Content-Type"] = "text/plain"
     return response
