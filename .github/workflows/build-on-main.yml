@@ -18,6 +18,9 @@ jobs:
   build_and_push:
     name: Build and push Docker image to GHCR
     runs-on: ubuntu-latest
+    # Only ever publish from main, even when started manually via workflow_dispatch
+    # from another branch (prevents overwriting :latest / date tag from a non-main ref).
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository

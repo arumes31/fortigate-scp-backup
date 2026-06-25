@@ -64,9 +64,13 @@ def send_hookwise_event(app, config, status):
     """Send an up/down event for a device to HookWise.
     status is the new graylog status ("online" -> UP, "offline" -> DOWN).
 
-    Returns True if the event was delivered or no delivery was required (HookWise
-    not configured). Returns False only when a configured delivery attempt failed,
-    so the caller can avoid persisting the transition and retry next cycle."""
+    Returns:
+      True  - delivered, or no delivery required (HookWise not configured).
+      False - a delivery attempt failed (e.g. network/HTTP error); the caller
+              should defer the status change and retry next cycle.
+      None  - a configuration error (missing CID) prevents sending. This is a
+              config problem, not a transient delivery failure, so the caller
+              should still persist the status rather than block it forever."""
     hookwise_url = os.getenv('HOOKWISE_URL', '').rstrip('/')
     hookwise_token = os.getenv('HOOKWISE_TOKEN', '')
 
@@ -75,7 +79,7 @@ def send_hookwise_event(app, config, status):
 
     if not (config.cid and config.cid.strip()):
         app.logger.error(f"Cannot send HookWise event for {config.firewallname}: missing CID")
-        return False
+        return None
 
     event_status = "UP" if status == "online" else "DOWN"
     payload = {
@@ -151,10 +155,13 @@ def graylog_status_worker(app):
                                      and old_status in ("online", "offline")
                                      and new_status != old_status)
 
-                    # Gate only the status change on successful HookWise delivery, so a
-                    # failed POST is retried next cycle instead of being silently dropped.
-                    # The check timestamp is committed either way.
-                    if is_transition and not send_hookwise_event(app, config, new_status):
+                    # Only a real delivery failure (False) defers the status change so it
+                    # is retried next cycle. A config error (None, e.g. missing CID) is a
+                    # HookWise problem that must not block firewall-state persistence, and
+                    # is surfaced via send_hookwise_event's own logging. The check
+                    # timestamp is committed either way.
+                    delivered = send_hookwise_event(app, config, new_status) if is_transition else True
+                    if delivered is False:
                         app.logger.warning(
                             f"Deferring status update for {config.firewallname}: HookWise delivery failed")
                     else:
@@ -215,14 +222,35 @@ def run_migrations():
             ("cid", "ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"),
             ("last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"),
         ]
-        for column, alter_sql in migrations:
+        def column_exists(column):
             try:
                 db.session.execute(db.text(f"SELECT {column} FROM vpn_config LIMIT 1"))
+                return True
             except Exception:
                 db.session.rollback()
+                return False
+
+        for column, alter_sql in migrations:
+            if column_exists(column):
+                continue
+            try:
                 db.session.execute(db.text(alter_sql))
                 db.session.commit()
                 log_action("Database Migration", f"Added {column} column to vpn_config table")
+            except Exception:
+                # Another process/worker may have added the column concurrently
+                # (duplicate column). Treat as success if it now exists; else re-raise.
+                db.session.rollback()
+                if not column_exists(column):
+                    raise
+
+        # Backfill cid for rows migrated before cid became required, so HookWise
+        # events (which need a cid) aren't permanently blocked for legacy rows.
+        db.session.execute(db.text(
+            "UPDATE vpn_config SET cid = COALESCE(NULLIF(firewallname, ''), 'UNKNOWN') "
+            "WHERE cid IS NULL OR cid = ''"))
+        db.session.commit()
+
         migrations_done = True
 
 @fgt_adm_vpn_conf_bp.before_app_request
