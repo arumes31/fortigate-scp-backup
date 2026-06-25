@@ -19,6 +19,10 @@ import datetime
 # so a device's next check is roughly this many seconds after its last one.
 GRAYLOG_CHECK_CYCLE_SECONDS = 900
 
+# Sentinel CID that disables HookWise up/down alerts for a device while still
+# tracking its Graylog status normally.
+HOOKWISE_DISABLED_CID = "000000"
+
 fgt_adm_vpn_conf_bp = Blueprint('fgt_adm_vpn_conf', __name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'), static_folder='static')
 # This db instance is for the blueprint, it will be initialized by the main app
 db = SQLAlchemy()
@@ -80,6 +84,10 @@ def send_hookwise_event(app, config, status):
     if not (config.cid and config.cid.strip()):
         app.logger.error(f"Cannot send HookWise event for {config.firewallname}: missing CID")
         return None
+
+    if config.cid.strip() == HOOKWISE_DISABLED_CID:
+        app.logger.info(f"HookWise alerts disabled for {config.firewallname} (CID {HOOKWISE_DISABLED_CID})")
+        return True
 
     event_status = "UP" if status == "online" else "DOWN"
     payload = {
