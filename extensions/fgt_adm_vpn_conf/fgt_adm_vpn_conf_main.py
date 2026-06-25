@@ -375,6 +375,8 @@ def add():
     cid = request.form.get('cid', '').strip()
     if not cid:
         return "Error: CID is required.", 400
+    if not cid.isdigit():
+        return "Error: CID must be a number.", 400
 
     new_config = VpnConfig(
         kundenname=kundenname,
@@ -463,6 +465,9 @@ def import_csv():
             cid = row[col_map['cid']].strip() if 'cid' in col_map and row[col_map['cid']].strip() else ''
             if not cid:
                 errors.append(f"Row {i+2}: CID is required.")
+                continue
+            if not cid.isdigit():
+                errors.append(f"Row {i+2}: CID must be a number.")
                 continue
 
             existing_config_by_firewallname = VpnConfig.query.filter_by(firewallname=firewallname).first()
@@ -563,6 +568,8 @@ def edit(id):
         cid = request.form.get('cid', '').strip()
         if not cid:
             return "Error: CID is required.", 400
+        if not cid.isdigit():
+            return "Error: CID must be a number.", 400
         config.cid = cid
 
         #Re-generate derived fields

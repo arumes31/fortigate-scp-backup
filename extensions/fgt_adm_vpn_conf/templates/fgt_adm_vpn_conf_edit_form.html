@@ -15,7 +15,7 @@
             </tr>
             <tr>
                 <td>CID</td>
-                <td><input type="text" name="cid" value="{{ config.cid or '' }}" required></td>
+                <td><input type="text" name="cid" value="{{ config.cid or '' }}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required></td>
             </tr>
             <tr>
                 <td>REMOTEIP-FULL</td>
