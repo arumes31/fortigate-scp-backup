@@ -89,7 +89,7 @@ logger.info(f"SCP_TIMEOUT set to: {SCP_TIMEOUT} seconds")
 logger.info(f"RADIUS_ENABLED set to: {RADIUS_ENABLED}")
 logger.info(f"RADIUS_SERVER set to: {RADIUS_SERVER}")
 logger.info(f"RADIUS_PORT set to: {RADIUS_PORT}")
-logger.info(f"RADIUS_SECRET set to: {RADIUS_SECRET}")
+logger.info(f"RADIUS_SECRET set to: {'(set)' if RADIUS_SECRET else '(empty)'}")
 logger.info(f"DICTIONARY_PATH set to: {DICTIONARY_PATH}")
 if os.path.exists(DICTIONARY_PATH):
     try:
@@ -189,7 +189,7 @@ def init_db():
             logger.info("Admin user inserted or exists.")
             if TOTP_ENABLED:
                 c.execute("UPDATE users SET totp_secret = %s WHERE username = %s", (TOTP_SECRET, "admin"))
-                logger.info(f"Updated TOTP secret for admin user to: {TOTP_SECRET}")
+                logger.info("Updated TOTP secret for admin user (value redacted)")
             else:
                 c.execute("UPDATE users SET totp_secret = NULL WHERE username = %s", ("admin",))
                 logger.info("TOTP disabled, set admin TOTP secret to NULL")

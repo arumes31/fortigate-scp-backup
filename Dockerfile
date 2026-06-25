@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install 
     setuptools==75.6.0 \
     psycopg2-binary==2.9.12 \
     sqlalchemy==2.0.36 \
-    Flask-SQLAlchemy==3.1.1
+    Flask-SQLAlchemy==3.1.1 \
+    && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem
 #Debug
 RUN apt install net-tools inetutils-ping
 WORKDIR /app
