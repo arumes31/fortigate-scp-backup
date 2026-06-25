@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install --no-cache-dir \
     flask==3.0.3 \
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y tzdata freeradius-utils && pip install 
     pyotp==2.9.0 \
     pyrad==2.4 \
     setuptools==75.6.0 \
-    psycopg2-binary==2.9.10 \
+    psycopg2-binary==2.9.12 \
     sqlalchemy==2.0.36 \
     Flask-SQLAlchemy==3.1.1
 #Debug
