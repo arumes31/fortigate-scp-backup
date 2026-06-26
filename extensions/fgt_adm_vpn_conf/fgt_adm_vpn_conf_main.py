@@ -130,7 +130,6 @@ def graylog_status_worker(app):
                 delay_between_checks = 900.0 / len(configs)
                 
                 for config in configs:
-                    old_status = config.last_graylog_status
                     if config.cluster_hostnames:
                         hostnames = [h.strip() for h in config.cluster_hostnames.split(',') if h.strip()]
                         if not hostnames:
@@ -153,28 +152,17 @@ def graylog_status_worker(app):
                         new_status = get_graylog_status(config.firewallname)
 
                     # Record when this device was checked (UTC), so the UI can show
-                    # last/next check times. This is persisted below regardless of
-                    # HookWise delivery so the timer stays accurate.
+                    # last/next check times.
                     config.last_graylog_check = datetime.datetime.utcnow()
 
-                    # A real transition between known online/offline states fires an
-                    # up/down event (other states avoid startup noise).
-                    is_transition = (new_status in ("online", "offline")
-                                     and old_status in ("online", "offline")
-                                     and new_status != old_status)
+                    # Send an up/down event to HookWise on every check (not only on
+                    # transitions), so HookWise always reflects the current device state.
+                    # A failed send is naturally retried on the next cycle. Only online/
+                    # offline map to UP/DOWN; error/config_missing states are not sent.
+                    if new_status in ("online", "offline"):
+                        send_hookwise_event(app, config, new_status)
 
-                    # Only a real delivery failure (False) defers the status change so it
-                    # is retried next cycle. A config error (None, e.g. missing CID) is a
-                    # HookWise problem that must not block firewall-state persistence, and
-                    # is surfaced via send_hookwise_event's own logging. The check
-                    # timestamp is committed either way.
-                    delivered = send_hookwise_event(app, config, new_status) if is_transition else True
-                    if delivered is False:
-                        app.logger.warning(
-                            f"Deferring status update for {config.firewallname}: HookWise delivery failed")
-                    else:
-                        config.last_graylog_status = new_status
-
+                    config.last_graylog_status = new_status
                     db.session.commit()
 
                     time.sleep(delay_between_checks)
