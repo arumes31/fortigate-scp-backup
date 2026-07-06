@@ -224,6 +224,31 @@ Environment variables can be set to customize the app:
 - `PG_USER`: PostgreSQL user (e.g., `postgre`).
 - `PG_PASSWORD`: PostgreSQL password.
 - `PG_DATABASE`: PostgreSQL database name (e.g., `firewall_backups`).
+- `PGSSLMODE`: PostgreSQL SSL mode (default: `prefer`).
+- `PG_MAX_CONNS`: Max pooled connections (default: `50`).
+- `PG_CONNECT_RETRIES`: Startup DB connection attempts (default: `10`).
+- `PG_CONNECT_BACKOFF_SECONDS`: Delay between connection attempts (default: `3`).
+
+Security / hardening:
+- `ENCRYPTION_KEY`: 32-byte key (base64 or hex) enabling AES-256-GCM encryption at rest for
+  firewall SSH passwords and backup files. Unset = no encryption (existing plaintext data still works;
+  new data is encrypted only when set). Downloads/search transparently decrypt.
+- `SESSION_KEY`: Stable secret for signing session cookies. Unset = a random key per start
+  (sessions do not survive a restart, matching the original behavior).
+- `COOKIE_SECURE`: Set the `Secure` flag on the session cookie (default: `false`; enable behind HTTPS).
+- `ENABLE_HSTS`: Emit a `Strict-Transport-Security` header (default: `false`).
+- `LOGIN_MAX_ATTEMPTS`: Failed logins per client/username before lockout (default: `5`).
+- `LOGIN_LOCKOUT_MINUTES`: Lockout duration after too many failures (default: `15`).
+
+Operations:
+- `MAX_CONCURRENT_BACKUPS`: Global cap on simultaneous backups (default: `10`).
+- `CSV_MAX_BYTES`: Max size of an uploaded CSV (default: `5242880`).
+- `ACTIVITY_LOG_RETENTION_DAYS`: Prune activity rows older than N days (default: `0` = keep all).
+- `LOG_LEVEL`: `debug` | `info` | `warn` | `error` (default: `info`).
+
+Firewalls also accept an optional **cron expression** (5-field) in the Add form, which overrides the
+interval-minutes schedule. User passwords are stored as bcrypt hashes (legacy plaintext is upgraded on
+next login). Health probes: `GET /healthz` (liveness), `GET /readyz` (DB reachable).
 
 DB:
 - `POSTGRES_USER`: postgre

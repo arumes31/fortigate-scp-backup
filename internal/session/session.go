@@ -6,6 +6,8 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/sha512"
 	"net/http"
 	"time"
 
@@ -36,16 +38,27 @@ type Manager struct {
 	store *sessions.CookieStore
 }
 
-// New creates a Manager with random keys generated per process start (matching
-// the original os.urandom secret key: sessions do not survive a restart).
-func New() *Manager {
-	hashKey := randomBytes(64)
-	blockKey := randomBytes(32)
+// New creates a Manager. When key is non-empty it is used to derive stable
+// signing/encryption keys, so sessions survive restarts and are consistent
+// across instances; otherwise random keys are generated per process start
+// (matching the original behaviour). secure sets the cookie Secure flag.
+func New(key []byte, secure bool) *Manager {
+	var hashKey, blockKey []byte
+	if len(key) > 0 {
+		h := sha512.Sum512(key)
+		b := sha256.Sum256(key)
+		hashKey = h[:]
+		blockKey = b[:]
+	} else {
+		hashKey = randomBytes(64)
+		blockKey = randomBytes(32)
+	}
 	store := sessions.NewCookieStore(hashKey, blockKey)
 	store.Options = &sessions.Options{
 		Path:     "/",
 		MaxAge:   int(idleTimeout.Seconds()),
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	}
 	return &Manager{store: store}

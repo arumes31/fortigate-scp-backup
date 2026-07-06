@@ -16,6 +16,7 @@
                 <span>Forti<b>Safe</b></span>
             </a>
             <nav class="nav">
+                <a href="/dashboard" class="{{if eq .Base.Active "dashboard"}}active{{end}}">Dashboard</a>
                 <a href="/" class="{{if eq .Base.Active "firewalls"}}active{{end}}">Firewalls</a>
                 <a href="/search" class="{{if eq .Base.Active "search"}}active{{end}}">Search</a>
                 <a href="/activity_log" class="{{if eq .Base.Active "activity"}}active{{end}}">Activity Log</a>

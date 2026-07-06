@@ -2,8 +2,11 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,26 +16,29 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 )
 
-// dbOpTimeout bounds each individual store operation. The Python version relied
-// on a connection pool without explicit per-statement timeouts; here we use a
-// generous bound so a wedged database cannot block a worker forever.
+// dbOpTimeout bounds each individual store operation.
 const dbOpTimeout = 30 * time.Second
 
-// retries mirrors the default `retries=3` argument of backup_firewall.
+// retries mirrors the default retries=3 of the original backup_firewall.
 const retries = 3
 
-// backup performs a single backup cycle for the given firewall id. It is a
-// faithful port of the Python backup_firewall(fw_id, retries=3, timeout=SCP_TIMEOUT):
-// it pulls the configuration over SCP, enforces retention, prunes stale rows and
-// files, updates firewall status, and emails on failure (subject to a 24h
-// "recent success" suppression window).
+// backoff returns the delay before retry attempt n (1-based), with jitter, so a
+// flapping device is not hammered on immediate retries (#29).
+func backoff(attempt int) time.Duration {
+	base := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s, ...
+	if base > 30*time.Second {
+		base = 30 * time.Second
+	}
+	return base + time.Duration(rand.Int63n(int64(time.Second)))
+}
+
+// backup performs a single backup cycle for the given firewall id: it pulls the
+// configuration over SCP, optionally encrypts it at rest, enforces retention,
+// prunes stale rows/files, updates firewall status, and emails on failure
+// (subject to a 24h "recent success" suppression window).
 func (s *Service) backup(fwID int) {
-	// shouldNotify defaults to true so an early/unexpected failure (mirrored by
-	// Python's outer try/except) still attempts a notification.
 	shouldNotify := true
 
-	// Outer recovery: mirror the top-level try/except which emails on an
-	// otherwise-unhandled failure. Panics are logged and never propagate.
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("Backup job failed", "fw_id", fwID, "panic", r)
@@ -42,15 +48,12 @@ func (s *Service) backup(fwID int) {
 					fmt.Sprintf("Backup job failed for fw_id %d: %v", fwID, r),
 					s.cfg.MailRecipient,
 				)
-			} else {
-				s.logger.Info("Skipping email notification, last successful backup is recent", "fw_id", fwID)
 			}
 		}
 	}()
 
 	s.logger.Info("Starting backup job", "fw_id", fwID)
 
-	// 1. Look up the firewall.
 	lookupCtx, lookupCancel := context.WithTimeout(context.Background(), dbOpTimeout)
 	fw, err := s.store.GetFirewall(lookupCtx, fwID)
 	lookupCancel()
@@ -63,7 +66,9 @@ func (s *Service) backup(fwID int) {
 		return
 	}
 
-	// 2. Compute timestamp, paths and ensure the firewall directory exists.
+	// Mark in-progress so the list/SSE reflect the running backup.
+	s.emit(fwID, "In Progress")
+
 	now := s.store.Now()
 	timestamp := now.Format(database.BackupTimeLayout)
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
@@ -72,37 +77,22 @@ func (s *Service) backup(fwID int) {
 	}
 	filename := timestamp + ".conf"
 	localPath := filepath.Join(fwDir, filename)
-	// The stored DB filename must use forward slashes: "<fwID>/<timestamp>.conf",
-	// matching the Linux os.path.join the Python code produced.
+	// Stored DB filename uses forward slashes: "<fwID>/<timestamp>.conf".
 	dbFilename := path.Join(strconv.Itoa(fwID), filename)
 	status := "Success"
 
-	// 3. Determine whether we should notify on failure: only if the most recent
-	// backup is older than 24h (or there is none / it is unparseable).
+	// Notify on failure only if the most recent backup is older than 24h.
 	lbCtx, lbCancel := context.WithTimeout(context.Background(), dbOpTimeout)
-	lastTS, hasLast, lbErr := s.store.LastBackupTimestamp(lbCtx, fwID)
+	lastTime, hasLast, lbErr := s.store.LastBackupTime(lbCtx, fwID)
 	lbCancel()
 	switch {
 	case lbErr != nil:
-		s.logger.Error("Failed to query last backup timestamp, will notify", "fw_id", fwID, "err", lbErr)
-		shouldNotify = true
+		s.logger.Error("Failed to query last backup time, will notify", "fw_id", fwID, "err", lbErr)
 	case hasLast:
-		if lastTime, perr := time.ParseInLocation(database.BackupTimeLayout, lastTS, now.Location()); perr == nil {
-			shouldNotify = now.Sub(lastTime) > 24*time.Hour
-			s.logger.Debug("Evaluated last backup recency", "fw_id", fwID, "last_backup", lastTS, "notify", shouldNotify)
-		} else {
-			s.logger.Warn("Invalid timestamp format, will notify", "fw_id", fwID, "value", lastTS)
-			shouldNotify = true
-		}
+		shouldNotify = now.Sub(lastTime) > 24*time.Hour
+		s.logger.Debug("Evaluated last backup recency", "fw_id", fwID, "notify", shouldNotify)
 	default:
 		s.logger.Debug("No previous backups found, will notify", "fw_id", fwID)
-	}
-
-	// 4. Best-effort permissions log, matching the Python debug line.
-	if info, statErr := os.Stat(s.cfg.BackupDir); statErr == nil {
-		s.logger.Debug("Backup directory permissions", "dir", s.cfg.BackupDir, "mode", info.Mode().Perm().String())
-	} else {
-		s.logger.Error("Failed to check backup directory permissions", "err", statErr)
 	}
 
 	notify := func(subject, body string) {
@@ -119,100 +109,112 @@ func (s *Service) backup(fwID int) {
 		)
 	}
 
-	// 5. Retry loop.
 	for attempt := 1; attempt <= retries; attempt++ {
 		s.logger.Debug("Starting backup attempt",
-			"fw_id", fwID, "fqdn", fw.FQDN, "port", fw.SSHPort, "user", fw.Username, "attempt", attempt, "retries", retries)
+			"fw_id", fwID, "fqdn", fw.FQDN, "port", fw.SSHPort, "attempt", attempt, "retries", retries)
 
-		// Connection + SCP transfer. Errors here are retryable, mirroring the
-		// Python (socket.timeout, SSHException, SCPException) branch.
 		if tErr := s.transfer(fw.FQDN, fw.Username, fw.Password, fw.SSHPort, s.cfg.FortigateConfigPath, localPath, s.cfg.SCPTimeout); tErr != nil {
 			s.logger.Error("Backup attempt failed", "attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", tErr)
 			if attempt == retries {
 				status = "Failed: " + tErr.Error()
 				removeIfEmpty(localPath)
 				failureEmail(tErr.Error())
+			} else {
+				time.Sleep(backoff(attempt))
 			}
 			continue
 		}
 
-		// From here on, any error mirrors Python's generic `except Exception`
-		// branch: mark failed, notify, and break (no further retries).
-
-		// Verify the file was created and is non-empty.
+		// From here, errors mirror Python's generic except: mark failed and break.
 		info, statErr := os.Stat(localPath)
 		if statErr != nil {
-			errMsg := "Backup file was not created"
-			s.logger.Error("Unexpected error during backup attempt",
-				"attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", errMsg)
-			status = "Failed: " + errMsg
+			status = "Failed: Backup file was not created"
 			removeIfEmpty(localPath)
-			failureEmail(errMsg)
+			failureEmail("Backup file was not created")
 			break
 		}
 		if info.Size() == 0 {
 			_ = os.Remove(localPath)
-			errMsg := "Backup file is empty"
-			s.logger.Error("Unexpected error during backup attempt",
-				"attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", errMsg)
-			status = "Failed: " + errMsg
-			failureEmail(errMsg)
+			status = "Failed: Backup file is empty"
+			failureEmail("Backup file is empty")
 			break
 		}
-		s.logger.Debug("Backup successful", "fqdn", fw.FQDN, "local", localPath)
 
-		// Record the backup, enforce retention, clean up and mark success.
-		if dbErr := s.recordSuccess(fwID, fw.RetentionCount, timestamp, dbFilename, fwDir); dbErr != nil {
-			s.logger.Error("Unexpected error during backup attempt",
-				"attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", dbErr)
+		// Compute size/checksum on the plaintext config, then encrypt at rest.
+		size, checksum, finErr := s.finalizeFile(localPath)
+		if finErr != nil {
+			status = "Failed: " + finErr.Error()
+			failureEmail(finErr.Error())
+			break
+		}
+
+		if dbErr := s.recordSuccess(fwID, fw.RetentionCount, now, dbFilename, fwDir, size, checksum); dbErr != nil {
 			status = "Failed: " + dbErr.Error()
 			removeIfEmpty(localPath)
 			failureEmail(dbErr.Error())
 			break
 		}
 
-		s.logger.Info("Committed backup and status update", "fw_id", fwID)
+		s.logger.Info("Committed backup and status update", "fw_id", fwID, "size", size)
+		s.emit(fwID, "Success")
 		break
 	}
 
-	// 6. Persist a non-success status, matching the trailing Python UPDATE.
 	if status != "Success" {
 		ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
 		if err := s.store.UpdateFirewallStatus(ctx, fwID, status); err != nil {
 			s.logger.Error("Failed to update firewall status", "fw_id", fwID, "err", err)
 		}
 		cancel()
+		s.emit(fwID, status)
 		s.logger.Info("Committed firewall status update", "fw_id", fwID, "status", status)
 	}
 }
 
-// recordSuccess inserts the new backup row, prunes retention overflow from disk
-// and the database, runs the orphan/stale cleanup routine and finally records the
-// successful backup time and status. It mirrors the success path of the Python
-// try block; a returned error corresponds to Python's generic-exception branch.
-func (s *Service) recordSuccess(fwID, retentionCount int, timestamp, dbFilename, fwDir string) error {
+// finalizeFile computes the size and SHA-256 checksum of the plaintext backup,
+// then, if encryption is enabled, replaces the file on disk with ciphertext.
+// The returned size/checksum always describe the plaintext config.
+func (s *Service) finalizeFile(localPath string) (int64, string, error) {
+	plain, err := os.ReadFile(localPath)
+	if err != nil {
+		return 0, "", fmt.Errorf("read backup: %w", err)
+	}
+	sum := sha256.Sum256(plain)
+	checksum := hex.EncodeToString(sum[:])
+	size := int64(len(plain))
+
+	if s.cipher.Enabled() {
+		enc, err := s.cipher.Encrypt(plain)
+		if err != nil {
+			return 0, "", fmt.Errorf("encrypt backup: %w", err)
+		}
+		if err := os.WriteFile(localPath, enc, 0o600); err != nil {
+			return 0, "", fmt.Errorf("write encrypted backup: %w", err)
+		}
+	}
+	return size, checksum, nil
+}
+
+// recordSuccess inserts the backup row, prunes retention overflow, runs cleanup
+// and records the successful backup time and status.
+func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilename, fwDir string, size int64, checksum string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
 	defer cancel()
 
-	s.logger.Info("Inserting backup entry", "fw_id", fwID)
-	if err := s.store.InsertBackup(ctx, fwID, timestamp, dbFilename); err != nil {
+	if err := s.store.InsertBackup(ctx, fwID, ts, dbFilename, size, checksum); err != nil {
 		return err
 	}
 
-	s.logger.Info("Querying existing backups", "fw_id", fwID)
 	all, err := s.store.ListBackupFilenames(ctx, fwID)
 	if err != nil {
 		return err
 	}
-	s.logger.Info("Retrieved backups", "fw_id", fwID, "count", len(all))
 
 	if len(all) > retentionCount {
 		for _, dbName := range all[retentionCount:] {
 			diskPath := filepath.FromSlash(filepath.Join(s.cfg.BackupDir, dbName))
 			if _, statErr := os.Stat(diskPath); statErr == nil {
-				if rmErr := os.Remove(diskPath); rmErr == nil {
-					s.logger.Debug("Deleted file", "path", diskPath)
-				} else {
+				if rmErr := os.Remove(diskPath); rmErr != nil {
 					s.logger.Warn("Failed to delete retention file", "path", diskPath, "err", rmErr)
 				}
 			}
@@ -222,36 +224,28 @@ func (s *Service) recordSuccess(fwID, retentionCount int, timestamp, dbFilename,
 		}
 	}
 
-	s.logger.Info("Cleaning non-existent backups", "fw_id", fwID)
 	s.cleanNonexistentBackups(ctx, fwID, fwDir)
-	s.logger.Info("Non-existent backups cleaned", "fw_id", fwID)
 
-	s.logger.Info("Updating firewall status", "fw_id", fwID)
-	if err := s.store.UpdateFirewallSuccess(ctx, fwID, timestamp, "Success"); err != nil {
+	if err := s.store.UpdateFirewallSuccess(ctx, fwID, ts, "Success"); err != nil {
 		return err
 	}
 	return nil
 }
 
-// cleanNonexistentBackups removes database rows whose file no longer exists and
-// deletes files on disk that have no corresponding database row. It mirrors the
-// Python clean_nonexistent_backups helper and, like it, never fails the caller:
-// all errors are logged and swallowed.
+// cleanNonexistentBackups removes database rows whose file is gone and deletes
+// files on disk with no database row. Never fails the caller.
 func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir string) {
-	s.logger.Info("Querying backups table", "fw_id", fwID)
 	backups, err := s.store.ListBackupIDFilenames(ctx, fwID, 100)
 	if err != nil {
 		s.logger.Error("Failed to clean non-existent backups", "fw_id", fwID, "err", err)
 		return
 	}
-	s.logger.Info("Retrieved backup entries", "fw_id", fwID, "count", len(backups))
 
 	dbFilenames := make(map[string]struct{}, len(backups))
 	for _, b := range backups {
 		dbFilenames[b.Filename] = struct{}{}
 	}
 
-	// Remove database rows whose backing file is gone.
 	for _, b := range backups {
 		diskPath := filepath.FromSlash(filepath.Join(s.cfg.BackupDir, b.Filename))
 		if _, statErr := os.Stat(diskPath); errors.Is(statErr, os.ErrNotExist) {
@@ -262,8 +256,6 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir s
 		}
 	}
 
-	// Remove orphaned files that have no database row.
-	s.logger.Info("Checking for orphaned files", "dir", fwDir)
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -275,8 +267,6 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir s
 		if entry.IsDir() {
 			continue
 		}
-		// The DB stores filenames with forward slashes, so build the relative
-		// key the same way to compare.
 		rel := path.Join(strconv.Itoa(fwID), entry.Name())
 		if _, ok := dbFilenames[rel]; !ok {
 			orphan := filepath.Join(fwDir, entry.Name())
@@ -288,8 +278,7 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir s
 	}
 }
 
-// removeIfEmpty deletes the file at p only if it exists and is zero bytes,
-// mirroring `if os.path.exists(p) and os.path.getsize(p) == 0: os.remove(p)`.
+// removeIfEmpty deletes the file at p only if it exists and is zero bytes.
 func removeIfEmpty(p string) {
 	if info, err := os.Stat(p); err == nil && info.Size() == 0 {
 		_ = os.Remove(p)

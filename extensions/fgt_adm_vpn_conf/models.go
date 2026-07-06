@@ -102,6 +102,19 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// WAL improves read/write concurrency between the web handlers and the
+	// background Graylog worker; busy_timeout avoids "database is locked" errors
+	// under contention (#50).
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return db, nil
 }
 

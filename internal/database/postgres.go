@@ -8,12 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	"github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // Timestamp layouts, kept byte-identical to the Python strftime formats.
@@ -29,25 +33,81 @@ var ErrNotFound = errors.New("not found")
 type Store struct {
 	pool   *pgxpool.Pool
 	tz     *time.Location
+	cipher *crypto.Cipher
 	logger *slog.Logger
 }
 
-// NewStore opens a pooled connection to PostgreSQL.
-func NewStore(ctx context.Context, dsn string, tz *time.Location, logger *slog.Logger) (*Store, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+// NewStore opens a pooled connection to PostgreSQL. The connection parameters
+// are set field-by-field (not concatenated into a DSN), so passwords containing
+// URL-special characters are handled correctly. It retries the initial
+// connection with a fixed backoff so a briefly-unavailable database at startup
+// does not crash the process.
+func NewStore(ctx context.Context, cfg *config.Config, cipher *crypto.Cipher, logger *slog.Logger) (*Store, error) {
+	// Build a libpq keyword/value DSN with each value quoted and escaped, so a
+	// password containing spaces or special characters is handled correctly and
+	// pgx computes the right connection fallbacks (which enable sslmode=prefer).
+	dsn := keywordDSN(map[string]string{
+		"host":     cfg.PGHost,
+		"port":     cfg.PGPort,
+		"user":     cfg.PGUser,
+		"password": cfg.PGPassword,
+		"dbname":   cfg.PGDatabase,
+		"sslmode":  cfg.PGSSLMode,
+	})
+	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse dsn: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	cfg.MaxConns = 50
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+	poolCfg.MaxConns = int32(cfg.PGMaxConns)
+
+	var pool *pgxpool.Pool
+	attempts := cfg.PGConnectRetries
+	if attempts < 1 {
+		attempts = 1
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping: %w", err)
+	for attempt := 1; ; attempt++ {
+		pool, err = pgxpool.NewWithConfig(ctx, poolCfg)
+		if err == nil {
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err = pool.Ping(pingCtx)
+			cancel()
+			if err == nil {
+				break
+			}
+			pool.Close()
+		}
+		if attempt >= attempts {
+			return nil, fmt.Errorf("connect after %d attempts: %w", attempt, err)
+		}
+		logger.Warn("database not ready, retrying", "attempt", attempt, "max", attempts, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(cfg.PGConnectBackoff):
+		}
 	}
-	return &Store{pool: pool, tz: tz, logger: logger}, nil
+	return &Store{pool: pool, tz: cfg.TZ, cipher: cipher, logger: logger}, nil
+}
+
+// keywordDSN builds a libpq keyword/value connection string with every value
+// single-quoted and backslash/quote escaped, so special characters (including
+// URL-reserved ones) in the password are handled correctly.
+func keywordDSN(params map[string]string) string {
+	esc := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	// Deterministic ordering keeps logs/tests stable.
+	order := []string{"host", "port", "user", "password", "dbname", "sslmode"}
+	var b strings.Builder
+	for _, k := range order {
+		v, ok := params[k]
+		if !ok {
+			continue
+		}
+		b.WriteString(k)
+		b.WriteString("='")
+		b.WriteString(esc.Replace(v))
+		b.WriteString("' ")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // Pool exposes the underlying pool (used by extensions that share the store).
@@ -55,6 +115,9 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Close releases all pooled connections.
 func (s *Store) Close() { s.pool.Close() }
+
+// Ping verifies the database is reachable (used by the readiness probe).
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // Now returns the current time in the configured timezone.
 func (s *Store) Now() time.Time { return time.Now().In(s.tz) }
@@ -104,9 +167,13 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 		}
 	}
 
+	adminHash, err := security.HashPassword("changeme")
+	if err != nil {
+		return fmt.Errorf("hash admin password: %w", err)
+	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO users (username, password, first_login, is_radius_user)
-		 VALUES ('admin', 'changeme', 1, FALSE) ON CONFLICT DO NOTHING`); err != nil {
+		 VALUES ('admin', $1, 1, FALSE) ON CONFLICT DO NOTHING`, adminHash); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
 
@@ -124,7 +191,7 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 
 	// ssh_port column back-compat (older databases may lack it).
 	var col string
-	err := s.pool.QueryRow(ctx,
+	err = s.pool.QueryRow(ctx,
 		`SELECT column_name FROM information_schema.columns
 		 WHERE table_name = 'firewalls' AND column_name = 'ssh_port'`).Scan(&col)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -155,10 +222,9 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 func (s *Store) LogActivity(username, action, details string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ts := s.Now().Format(ActivityTimeLayout)
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO activity_logs (username, action, details, timestamp) VALUES ($1, $2, $3, $4)`,
-		username, action, details, ts); err != nil {
+		username, action, details, s.Now()); err != nil {
 		s.logger.Error("failed to log activity", "user", username, "action", action, "err", err)
 	}
 }
@@ -216,40 +282,80 @@ func (s *Store) GetFirstLogin(ctx context.Context, username string) (firstLogin 
 	return firstLogin, true, nil
 }
 
-// ChangePassword verifies the current password and sets a new one, clearing the
-// first_login flag. Returns false when the current password does not match.
+// ChangePassword verifies the current password (accepting a legacy plaintext or
+// a bcrypt hash) and stores a new bcrypt hash, clearing the first_login flag.
+// Returns false when the current password does not match.
 func (s *Store) ChangePassword(ctx context.Context, username, oldPassword, newPassword string) (bool, error) {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE users SET password = $1, first_login = 0 WHERE username = $2 AND password = $3`,
-		newPassword, username, oldPassword)
+	var stored string
+	err := s.pool.QueryRow(ctx, `SELECT password FROM users WHERE username = $1`, username).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() > 0, nil
+	if !security.VerifyPassword(stored, oldPassword) {
+		return false, nil
+	}
+	hash, err := security.HashPassword(newPassword)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET password = $1, first_login = 0 WHERE username = $2`, hash, username); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// AuthenticateLocal verifies local credentials. On success it returns the user
+// and, if the stored password was still legacy plaintext, transparently
+// upgrades it to a bcrypt hash. Returns (user, false, nil) when the user exists
+// but the password is wrong, and (nil, false, nil) when the user is unknown.
+func (s *Store) AuthenticateLocal(ctx context.Context, username, password string) (*models.User, bool, error) {
+	u, err := s.GetUserForLogin(ctx, username)
+	if err != nil {
+		return nil, false, err
+	}
+	if u == nil {
+		return nil, false, nil
+	}
+	if !security.VerifyPassword(u.Password, password) {
+		return u, false, nil
+	}
+	if security.NeedsUpgrade(u.Password) {
+		if hash, herr := security.HashPassword(password); herr == nil {
+			if _, uerr := s.pool.Exec(ctx,
+				`UPDATE users SET password = $1 WHERE username = $2`, hash, username); uerr != nil {
+				s.logger.Warn("failed to upgrade password hash", "user", username, "err", uerr)
+			}
+		}
+	}
+	return u, true, nil
 }
 
 // ListFirewalls returns all firewalls ordered by id.
 func (s *Store) ListFirewalls(ctx context.Context) ([]models.Firewall, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port
+		`SELECT id, fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port, cron_expr
 		 FROM firewalls ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanFirewalls(rows)
+	return s.scanFirewalls(rows)
 }
 
 // GetFirewall returns a single firewall or ErrNotFound.
 func (s *Store) GetFirewall(ctx context.Context, id int) (*models.Firewall, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port
+		`SELECT id, fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port, cron_expr
 		 FROM firewalls WHERE id = $1`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	fws, err := scanFirewalls(rows)
+	fws, err := s.scanFirewalls(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -259,30 +365,49 @@ func (s *Store) GetFirewall(ctx context.Context, id int) (*models.Firewall, erro
 	return &fws[0], nil
 }
 
-// AddFirewall inserts a firewall and returns its new id.
+// AddFirewall inserts a firewall (encrypting the SSH password at rest when a key
+// is configured) and returns its new id.
 func (s *Store) AddFirewall(ctx context.Context, fw models.Firewall) (int, error) {
+	pw, err := s.cipher.EncryptString(fw.Password)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt password: %w", err)
+	}
+	var cron *string
+	if fw.CronExpr != "" {
+		cron = &fw.CronExpr
+	}
 	var id int
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO firewalls (fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port)
-		 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7) RETURNING id`,
-		fw.FQDN, fw.Username, fw.Password, fw.IntervalMin, fw.RetentionCount, fw.Status, fw.SSHPort).Scan(&id)
+	err = s.pool.QueryRow(ctx,
+		`INSERT INTO firewalls (fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port, cron_expr)
+		 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8) RETURNING id`,
+		fw.FQDN, fw.Username, pw, fw.IntervalMin, fw.RetentionCount, fw.Status, fw.SSHPort, cron).Scan(&id)
 	return id, err
 }
 
-// DeleteFirewall removes a firewall and its backup rows, returning its FQDN.
+// DeleteFirewall removes a firewall and its backup rows in a single
+// transaction, returning its FQDN.
 func (s *Store) DeleteFirewall(ctx context.Context, id int) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
 	var fqdn string
-	err := s.pool.QueryRow(ctx, `SELECT fqdn FROM firewalls WHERE id = $1`, id).Scan(&fqdn)
+	err = tx.QueryRow(ctx, `SELECT fqdn FROM firewalls WHERE id = $1`, id).Scan(&fqdn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM backups WHERE fw_id = $1`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM backups WHERE fw_id = $1`, id); err != nil {
 		return "", err
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM firewalls WHERE id = $1`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM firewalls WHERE id = $1`, id); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return fqdn, nil
@@ -291,12 +416,31 @@ func (s *Store) DeleteFirewall(ctx context.Context, id int) (string, error) {
 // ListBackups returns the distinct backups for a firewall, newest first.
 func (s *Store) ListBackups(ctx context.Context, fwID int) ([]models.Backup, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT id, fw_id, timestamp, filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`, fwID)
+		`SELECT DISTINCT id, fw_id, timestamp, filename, size_bytes, checksum
+		 FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`, fwID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanBackups(rows)
+	var out []models.Backup
+	for rows.Next() {
+		var (
+			b    models.Backup
+			size *int64
+			sum  *string
+		)
+		if err := rows.Scan(&b.ID, &b.FwID, &b.Timestamp, &b.Filename, &size, &sum); err != nil {
+			return nil, err
+		}
+		if size != nil {
+			b.SizeBytes = *size
+		}
+		if sum != nil {
+			b.Checksum = *sum
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // ListErrors returns firewalls whose status marks a failed backup.
@@ -310,7 +454,7 @@ func (s *Store) ListErrors(ctx context.Context) ([]models.Firewall, error) {
 	var out []models.Firewall
 	for rows.Next() {
 		var fw models.Firewall
-		var lastBackup *string
+		var lastBackup *time.Time
 		if err := rows.Scan(&fw.ID, &fw.FQDN, &lastBackup, &fw.Status); err != nil {
 			return nil, err
 		}
@@ -322,10 +466,14 @@ func (s *Store) ListErrors(ctx context.Context) ([]models.Firewall, error) {
 	return out, rows.Err()
 }
 
-// ListActivityLogs returns all activity, newest first.
-func (s *Store) ListActivityLogs(ctx context.Context) ([]models.ActivityLog, error) {
+// ListActivityLogs returns a page of activity, newest first.
+func (s *Store) ListActivityLogs(ctx context.Context, limit, offset int) ([]models.ActivityLog, error) {
+	if limit <= 0 {
+		limit = 100
+	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT username, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC`)
+		`SELECT username, action, details, timestamp FROM activity_logs
+		 ORDER BY timestamp DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +487,51 @@ func (s *Store) ListActivityLogs(ctx context.Context) ([]models.ActivityLog, err
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// CountActivityLogs returns the total number of activity rows.
+func (s *Store) CountActivityLogs(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs`).Scan(&n)
+	return n, err
+}
+
+// PruneActivityLogs deletes activity rows older than the retention window.
+// A retention of 0 keeps everything.
+func (s *Store) PruneActivityLogs(ctx context.Context, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := s.Now().AddDate(0, 0, -days)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM activity_logs WHERE timestamp < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DashboardStats returns aggregate counts for the overview page.
+func (s *Store) DashboardStats(ctx context.Context) (models.DashboardStats, error) {
+	var st models.DashboardStats
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			count(*),
+			count(*) FILTER (WHERE status = 'Success'),
+			count(*) FILTER (WHERE status LIKE 'Failed:%'),
+			count(*) FILTER (WHERE status = 'New')
+		FROM firewalls`).Scan(&st.TotalFirewalls, &st.Healthy, &st.Failed, &st.New)
+	if err != nil {
+		return st, err
+	}
+	cutoff := s.Now().Add(-24 * time.Hour)
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM backups WHERE timestamp >= $1`, cutoff).Scan(&st.BackupsLast24h); err != nil {
+		return st, err
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM backups`).Scan(&st.TotalBackups); err != nil {
+		return st, err
+	}
+	return st, nil
 }
 
 // ListFirewallRefs returns id/fqdn pairs for config search.
@@ -359,9 +552,9 @@ func (s *Store) ListFirewallRefs(ctx context.Context) ([]models.FirewallRef, err
 	return out, rows.Err()
 }
 
-// ListSchedules returns id/interval pairs used to (re)build backup jobs.
+// ListSchedules returns id/interval/cron rows used to (re)build backup jobs.
 func (s *Store) ListSchedules(ctx context.Context) ([]models.FirewallSchedule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, interval_minutes FROM firewalls`)
+	rows, err := s.pool.Query(ctx, `SELECT id, interval_minutes, cron_expr FROM firewalls`)
 	if err != nil {
 		return nil, err
 	}
@@ -370,11 +563,15 @@ func (s *Store) ListSchedules(ctx context.Context) ([]models.FirewallSchedule, e
 	for rows.Next() {
 		var sc models.FirewallSchedule
 		var interval *int
-		if err := rows.Scan(&sc.ID, &interval); err != nil {
+		var cron *string
+		if err := rows.Scan(&sc.ID, &interval, &cron); err != nil {
 			return nil, err
 		}
 		if interval != nil {
 			sc.IntervalMin = *interval
+		}
+		if cron != nil {
+			sc.CronExpr = *cron
 		}
 		out = append(out, sc)
 	}
@@ -383,25 +580,27 @@ func (s *Store) ListSchedules(ctx context.Context) ([]models.FirewallSchedule, e
 
 // ---- backup engine helpers ----
 
-// LastBackupTimestamp returns the newest backup timestamp for a firewall.
-func (s *Store) LastBackupTimestamp(ctx context.Context, fwID int) (string, bool, error) {
-	var ts string
+// LastBackupTime returns the newest backup time for a firewall.
+func (s *Store) LastBackupTime(ctx context.Context, fwID int) (time.Time, bool, error) {
+	var ts time.Time
 	err := s.pool.QueryRow(ctx,
 		`SELECT timestamp FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC LIMIT 1`, fwID).Scan(&ts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return time.Time{}, false, err
 	}
 	return ts, true, nil
 }
 
-// InsertBackup records a new backup file (idempotent on the unique constraint).
-func (s *Store) InsertBackup(ctx context.Context, fwID int, timestamp, filename string) error {
+// InsertBackup records a new backup file, its size and checksum (idempotent on
+// the unique constraint).
+func (s *Store) InsertBackup(ctx context.Context, fwID int, ts time.Time, filename string, size int64, checksum string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO backups (fw_id, timestamp, filename) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-		fwID, timestamp, filename)
+		`INSERT INTO backups (fw_id, timestamp, filename, size_bytes, checksum)
+		 VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+		fwID, ts, filename, size, checksum)
 	return err
 }
 
@@ -457,31 +656,34 @@ func (s *Store) DeleteBackupByID(ctx context.Context, id int) error {
 }
 
 // UpdateFirewallSuccess records a successful backup time and status.
-func (s *Store) UpdateFirewallSuccess(ctx context.Context, id int, lastBackup, status string) error {
+func (s *Store) UpdateFirewallSuccess(ctx context.Context, id int, lastBackup time.Time, status string) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE firewalls SET last_backup = $1, status = $2 WHERE id = $3`, lastBackup, status, id)
+		`UPDATE firewalls SET last_backup = $1, status = $2, updated_at = now() WHERE id = $3`,
+		lastBackup, status, id)
 	return err
 }
 
-// UpdateFirewallStatus records only a status change (used for failures).
+// UpdateFirewallStatus records only a status change (used for failures / in-progress).
 func (s *Store) UpdateFirewallStatus(ctx context.Context, id int, status string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE firewalls SET status = $1 WHERE id = $2`, status, id)
+	_, err := s.pool.Exec(ctx,
+		`UPDATE firewalls SET status = $1, updated_at = now() WHERE id = $2`, status, id)
 	return err
 }
 
-func scanFirewalls(rows pgx.Rows) ([]models.Firewall, error) {
+func (s *Store) scanFirewalls(rows pgx.Rows) ([]models.Firewall, error) {
 	var out []models.Firewall
 	for rows.Next() {
 		var (
 			fw         models.Firewall
-			lastBackup *string
+			lastBackup *time.Time
 			status     *string
 			sshPort    *int
 			interval   *int
 			retention  *int
+			cronExpr   *string
 		)
 		if err := rows.Scan(&fw.ID, &fw.FQDN, &fw.Username, &fw.Password,
-			&interval, &retention, &lastBackup, &status, &sshPort); err != nil {
+			&interval, &retention, &lastBackup, &status, &sshPort, &cronExpr); err != nil {
 			return nil, err
 		}
 		if interval != nil {
@@ -499,19 +701,15 @@ func scanFirewalls(rows pgx.Rows) ([]models.Firewall, error) {
 		if sshPort != nil {
 			fw.SSHPort = *sshPort
 		}
-		out = append(out, fw)
-	}
-	return out, rows.Err()
-}
-
-func scanBackups(rows pgx.Rows) ([]models.Backup, error) {
-	var out []models.Backup
-	for rows.Next() {
-		var b models.Backup
-		if err := rows.Scan(&b.ID, &b.FwID, &b.Timestamp, &b.Filename); err != nil {
-			return nil, err
+		if cronExpr != nil {
+			fw.CronExpr = *cronExpr
 		}
-		out = append(out, b)
+		if pw, err := s.cipher.DecryptString(fw.Password); err == nil {
+			fw.Password = pw
+		} else {
+			s.logger.Error("failed to decrypt firewall password", "fw_id", fw.ID, "err", err)
+		}
+		out = append(out, fw)
 	}
 	return out, rows.Err()
 }
