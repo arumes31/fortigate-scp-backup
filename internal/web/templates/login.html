@@ -35,7 +35,7 @@
             position: absolute;
             width: 100%;
             height: 100%;
-            background: 
+            background:
                 repeating-linear-gradient(
                     45deg,
                     rgba(133, 1, 1, 0.1) 0px,
@@ -269,17 +269,17 @@
     <div class="logo-text" id="logo-text"></div>
     <div class="container">
         <h1>Login</h1>
-        {% if error %}
-            <p class="error">{{ error }}</p>
-        {% endif %}
+        {{if .Error}}
+            <p class="error">{{.Error}}</p>
+        {{end}}
         <form method="post" action="/login">
             <label>Username: <input type="text" name="username" id="username"></label>
             <label>Password: <input type="password" name="password"></label>
-            {% if totp_enabled %}
+            {{if .TOTPEnabled}}
                 <div id="totp-section">
                     <label>TOTP Code: <input type="text" name="totp_code"></label>
                 </div>
-            {% endif %}
+            {{end}}
             <input type="submit" value="Login">
         </form>
     </div>

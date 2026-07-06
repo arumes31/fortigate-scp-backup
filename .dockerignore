@@ -1,49 +1,42 @@
-  # Git files
+# Keep the build context small. Go source (main.go, internal/, extensions/*.go,
+# internal/web/templates, internal/web/static), go.mod and go.sum are NOT
+# ignored — they are required by the build.
+
+# VCS / CI / meta
 .git
 .gitignore
-.gitmodules
 .gitattributes
+.gitmodules
+.github
+.gemini
 
-# Node.js
-node_modules
-npm-debug.log
-yarn-error.log
-yarn-debug.log
+# Docs (not needed inside the image)
+*.md
 
-# Python
-__pycache__
-*.pyc
-.env
-venv/
-env/
-.venv
-
-# Docker
-Dockerfile
-dockerfile
-.dockerignore
-.docker
-
-# Logs and temp files
-*.log
-tmp/
+# Knowledge-graph output and temp dirs
+graphify-out/
 temp/
+tmp/
 
-# IDEs and editors
+# Legacy Python sources & caches (the app is Go now)
+**/__pycache__/
+**/*.py
+**/*.pyc
+**/*.pyo
+
+# Runtime data — never bake into the image
+backups/
+data/
+
+# Local build artifacts
+/fortisafe
+*.exe
+dist/
+build/
+
+# Editor / OS cruft
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# Build artifacts
-dist/
-build/
-target/
-
-# Local environment files
-.env.local
-.env
-#
-autobuild.sh
-README.md
-.gemini
+.DS_Store

@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Backup Errors</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Firewalls With Failed Backups</h2>
+        <a href="/" class="btn btn-sm">Back to Firewalls</a>
+    </div>
+    {{if .Errors}}
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr><th>ID</th><th>FQDN</th><th>Last Backup</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+            {{range .Errors}}
+                <tr>
+                    <td>{{.ID}}</td>
+                    <td>{{.FQDN}}</td>
+                    <td class="muted">{{if .LastBackup}}{{.LastBackup}}{{else}}—{{end}}</td>
+                    <td><span class="pill pill-failed" title="{{.Status}}">{{.Status}}</span></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">No backup errors. Everything is healthy.</div>
+    {{end}}
+</div>
+{{end}}
