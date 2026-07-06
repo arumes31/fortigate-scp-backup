@@ -123,22 +123,25 @@ type hookwisePayload struct {
 	Message  string `json:"message"`
 }
 
-// sendHookwiseEvent sends an up/down event for a device to HookWise. If HookWise
-// isn't configured, or the CID is the disabled sentinel, it silently skips.
-func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) {
+// sendHookwiseEvent sends an up/down event for a device to HookWise. It returns
+// true when the event was delivered or intentionally skipped (HookWise not
+// configured, missing/disabled CID), and false only when a delivery attempt was
+// made and failed, so the caller can retry on the next sweep rather than losing
+// the alert.
+func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) bool {
 	hookwiseURL := strings.TrimRight(e.cfg.HookwiseURL, "/")
 	hookwiseToken := e.cfg.HookwiseToken
 	if hookwiseURL == "" || hookwiseToken == "" {
-		return
+		return true
 	}
 
 	if strings.TrimSpace(c.Cid) == "" {
 		e.logger.Error("cannot send HookWise event: missing CID", "firewall", c.Firewallname)
-		return
+		return true
 	}
 	if strings.TrimSpace(c.Cid) == hookwiseDisabledCID {
 		e.logger.Info("HookWise alerts disabled", "firewall", c.Firewallname, "cid", hookwiseDisabledCID)
-		return
+		return true
 	}
 
 	eventStatus := "DOWN"
@@ -156,13 +159,13 @@ func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		e.logger.Error("failed to encode HookWise payload", "firewall", c.Firewallname, "err", err)
-		return
+		return true
 	}
 
 	req, err := http.NewRequest(http.MethodPost, hookwiseURL, bytes.NewReader(data))
 	if err != nil {
 		e.logger.Error("failed to build HookWise request", "firewall", c.Firewallname, "err", err)
-		return
+		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+hookwiseToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -172,10 +175,15 @@ func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) {
 	resp, err := client.Do(req)
 	if err != nil {
 		e.logger.Error("failed to send HookWise event", "firewall", c.Firewallname, "status", eventStatus, "err", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		e.logger.Error("HookWise returned an error status", "firewall", c.Firewallname, "status", eventStatus, "code", resp.StatusCode)
+		return false
+	}
+	return true
 }
 
 // graylogWorker re-checks every enabled device once per ~15-minute sweep and
@@ -221,12 +229,18 @@ func (e *Extension) graylogSweep() error {
 		// transition detection is correct across application restarts and we do
 		// not re-alert for a device whose state is unchanged. Only online/offline
 		// map to UP/DOWN; error/config_missing states are never sent.
+		persistStatus := newStatus
 		if (newStatus == "online" || newStatus == "offline") && newStatus != c.LastGraylogStatus {
 			e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
-			e.sendHookwiseEvent(c, newStatus)
+			if !e.sendHookwiseEvent(c, newStatus) {
+				// Delivery failed: keep the old status so the next sweep re-detects
+				// the transition and retries the alert instead of losing it.
+				e.logger.Warn("HookWise delivery failed; will retry next sweep", "firewall", c.Firewallname, "status", newStatus)
+				persistStatus = c.LastGraylogStatus
+			}
 		}
 
-		if err := e.updateGraylogStatus(c.ID, now, newStatus); err != nil {
+		if err := e.updateGraylogStatus(c.ID, now, persistStatus); err != nil {
 			return err
 		}
 

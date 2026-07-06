@@ -26,7 +26,15 @@ func IsHashed(stored string) bool {
 
 // VerifyPassword checks a provided plaintext against a stored value that may be
 // either a bcrypt hash or legacy plaintext.
+//
+// An empty stored or provided password never authenticates: RADIUS users are
+// seeded with an empty local password (they authenticate via RADIUS, not the
+// local check), and an empty-vs-empty comparison would otherwise let anyone log
+// in as such a user with a blank password, bypassing RADIUS entirely.
 func VerifyPassword(stored, provided string) bool {
+	if stored == "" || provided == "" {
+		return false
+	}
 	if IsHashed(stored) {
 		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
 	}

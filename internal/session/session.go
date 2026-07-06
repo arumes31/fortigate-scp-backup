@@ -61,6 +61,11 @@ func New(key []byte, secure bool) *Manager {
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	}
+	// NewCookieStore seeds the securecookie codec with a 30-day MaxAge; assigning
+	// Options above only changes the cookie's browser Max-Age attribute, not the
+	// codec's cryptographic expiry. Call MaxAge so a captured cookie stops
+	// validating server-side after the idle window, not 30 days later.
+	store.MaxAge(int(idleTimeout.Seconds()))
 	return &Manager{store: store}
 }
 

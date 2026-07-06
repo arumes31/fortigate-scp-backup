@@ -60,22 +60,32 @@ type Scheduler struct {
 	jobs   map[string]*job
 	logger *slog.Logger
 	parser cron.Parser
+	tz     *time.Location
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-// New creates an empty scheduler.
-func New(logger *slog.Logger) *Scheduler {
+// New creates an empty scheduler. tz is the wall clock cron expressions are
+// evaluated against; a nil tz falls back to the process local time.
+func New(logger *slog.Logger, tz *time.Location) *Scheduler {
+	if tz == nil {
+		tz = time.Local
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		jobs:   make(map[string]*job),
 		logger: logger,
 		parser: cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		tz:     tz,
 		ctx:    ctx,
 		cancel: cancel,
 	}
 }
+
+// now returns the current time in the scheduler's configured timezone, so cron
+// expressions fire on the intended wall clock regardless of the host's TZ.
+func (s *Scheduler) now() time.Time { return time.Now().In(s.tz) }
 
 // Schedule registers an interval job (first run after firstDelay, then every
 // interval). Existing ids are left untouched.
@@ -110,7 +120,7 @@ func (s *Scheduler) ScheduleCron(id, spec string, fn func()) error {
 	}
 	jctx, jcancel := context.WithCancel(s.ctx)
 	j := &job{id: id, schedule: sched, cronExpr: spec, fn: fn, cancel: jcancel}
-	j.setNext(sched.Next(time.Now()))
+	j.setNext(sched.Next(s.now()))
 	s.jobs[id] = j
 	s.wg.Add(1)
 	go s.runCron(jctx, j)
@@ -192,7 +202,7 @@ func (s *Scheduler) runInterval(ctx context.Context, j *job, firstDelay time.Dur
 func (s *Scheduler) runCron(ctx context.Context, j *job) {
 	defer s.wg.Done()
 	for {
-		next := j.schedule.Next(time.Now())
+		next := j.schedule.Next(s.now())
 		j.setNext(next)
 		wait := time.Until(next)
 		if wait < 0 {

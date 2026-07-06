@@ -8,6 +8,8 @@ package backup
 import (
 	"context"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
@@ -28,8 +30,9 @@ type Service struct {
 	cipher *crypto.Cipher
 	logger *slog.Logger
 
-	sem  chan struct{} // bounds concurrent backups (#28)
-	hook StatusHook
+	sem  chan struct{}              // bounds concurrent backups (#28)
+	hook atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
+	fwMu sync.Map                   // fwID(int) -> *sync.Mutex: serialises runs per firewall
 }
 
 // New constructs a backup Service with a concurrency limit.
@@ -48,12 +51,28 @@ func New(store *database.Store, m *mailer.Mailer, cfg *config.Config, cipher *cr
 	}
 }
 
-// SetStatusHook registers a callback invoked on every status transition.
-func (s *Service) SetStatusHook(h StatusHook) { s.hook = h }
+// SetStatusHook registers a callback invoked on every status transition. It is
+// stored atomically because backup jobs (which read it via emit) may already be
+// running by the time the web server wires up the hook.
+func (s *Service) SetStatusHook(h StatusHook) { s.hook.Store(&h) }
+
+// fwLock returns the per-firewall mutex, creating it on first use.
+func (s *Service) fwLock(fwID int) *sync.Mutex {
+	m, _ := s.fwMu.LoadOrStore(fwID, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
 
 // Backup runs a single backup cycle for the firewall, blocking until a worker
-// slot is free. Safe to call from the scheduler (already in its own goroutine).
+// slot is free. Runs for the same firewall are serialised so a manual "Backup
+// Now" cannot collide with a scheduled run on the same timestamped file. Safe to
+// call from the scheduler (already in its own goroutine).
 func (s *Service) Backup(fwID int) {
+	// Serialise per firewall first (a duplicate request then waits here without
+	// occupying a worker slot), then take a worker slot. All callers acquire in
+	// this order, so there is no deadlock.
+	l := s.fwLock(fwID)
+	l.Lock()
+	defer l.Unlock()
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
 	s.backup(fwID)
@@ -78,7 +97,7 @@ func (s *Service) persistStatus(fwID int, status string) {
 
 // emit notifies the status hook (if any).
 func (s *Service) emit(fwID int, status string) {
-	if s.hook != nil {
-		s.hook(fwID, status)
+	if h := s.hook.Load(); h != nil {
+		(*h)(fwID, status)
 	}
 }
