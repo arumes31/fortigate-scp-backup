@@ -1,6 +1,11 @@
 services:
   fortisafe-app:
     container_name: "fortisafe-app"
+    # Use the pre-built image from GitHub Container Registry...
+    image: "ghcr.io/arumes31/fortigate-scp-backup:latest"
+    # ...or build the Go binary locally instead (comment out `image:` above
+    # and uncomment the line below):
+    # build: .
     environment:
       - "DEFAULT_SCP_USER=fortisafe"
       - "DEFAULT_SCP_PASSWORD=XXXXXX"
@@ -14,7 +19,7 @@ services:
       - "TZ=Europe/Vienna"
       - "RADIUS_ENABLED=true"
       - "RADIUS_PORT=1812"
-      - "RADIUS_SECRET=fortisafe-XXXXXX" 
+      - "RADIUS_SECRET=fortisafe-XXXXXX"
       - "RADIUS_SERVER=192.168.0.100"
       - "PG_HOST=fortisafe-db"
       - "PG_PORT=5432"
@@ -22,12 +27,23 @@ services:
       - "PG_PASSWORD=XXXXXXTDB"
       - "PG_DATABASE=firewall_backups"
       - "EXT_ADM_VPN_CONF=true"
-    image: "registry.reitetschlaeger.com/fortisafe:latest"
+      # Optional extension / status-monitoring settings:
+      # - "GRAYLOG_URL=https://graylog.example.com"
+      # - "GRAYLOG_TOKEN=XXXXXX"
+      # - "GRAYLOG_SEARCH_TIMEFRAME=86400"
+      # - "HOOKWISE_URL=https://hookwise.example.com/webhook/xxxxxxxx"
+      # - "HOOKWISE_TOKEN=XXXXXX"
+      # Optional runtime overrides (defaults shown):
+      # - "PORT=8521"
+      # - "BACKUP_DIR=backups"
+      # - "DATA_DIR=/app/data"
+      # - "SCP_TIMEOUT=60"
+      # - "FORTIGATE_CONFIG_PATH=sys_config"
     ports:
       - "8521:8521/tcp"
     volumes:
-      - "/mnt/...//backups:/app/backups"
-      - "/mnt/...//data_fgt-adm-vpn-conf:/app/data"
+      - "/mnt/.../backups:/app/backups"
+      - "/mnt/.../data_fgt-adm-vpn-conf:/app/data"
     restart: unless-stopped
     depends_on:
       fortisafe-db:
@@ -45,7 +61,7 @@ services:
     volumes:
       - "/mnt/.../data:/var/lib/postgresql/data"
     healthcheck:
-          test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
-          interval: 5s
-          timeout: 5s
-          retries: 5
+      test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

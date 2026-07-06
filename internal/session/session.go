@@ -1,0 +1,147 @@
+// Package session manages authenticated sessions using signed cookies and
+// reproduces the original login_required middleware: a one-hour idle timeout
+// and X-Forwarded-For pinning that logs the user out on IP change.
+package session
+
+import (
+	"context"
+	"crypto/rand"
+	"net/http"
+	"time"
+
+	"github.com/gorilla/sessions"
+)
+
+const (
+	sessionName   = "fortisafe"
+	idleTimeout   = time.Hour
+	keyLoggedIn   = "logged_in"
+	keyUsername   = "username"
+	keyIsRadius   = "is_radius_user"
+	keyLastActive = "last_activity"
+	keyXForwarded = "x_forwarded_for"
+)
+
+type ctxKey struct{}
+
+// Data is the authenticated session snapshot exposed to handlers.
+type Data struct {
+	LoggedIn     bool
+	Username     string
+	IsRadiusUser bool
+}
+
+// Manager wraps the cookie store.
+type Manager struct {
+	store *sessions.CookieStore
+}
+
+// New creates a Manager with random keys generated per process start (matching
+// the original os.urandom secret key: sessions do not survive a restart).
+func New() *Manager {
+	hashKey := randomBytes(64)
+	blockKey := randomBytes(32)
+	store := sessions.NewCookieStore(hashKey, blockKey)
+	store.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   int(idleTimeout.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	return &Manager{store: store}
+}
+
+// Login establishes an authenticated session.
+func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool) error {
+	sess, _ := m.store.Get(r, sessionName)
+	sess.Values[keyLoggedIn] = true
+	sess.Values[keyUsername] = username
+	sess.Values[keyIsRadius] = isRadius
+	sess.Values[keyLastActive] = time.Now().Unix()
+	sess.Values[keyXForwarded] = r.Header.Get("X-Forwarded-For")
+	return sess.Save(r, w)
+}
+
+// Logout clears the session.
+func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
+	sess, _ := m.store.Get(r, sessionName)
+	sess.Options.MaxAge = -1
+	sess.Values = map[interface{}]interface{}{}
+	return sess.Save(r, w)
+}
+
+// Current reads the session directly (used by unauthenticated handlers such as
+// login to check existing state).
+func (m *Manager) Current(r *http.Request) Data {
+	sess, _ := m.store.Get(r, sessionName)
+	return dataFrom(sess)
+}
+
+// User returns the authenticated session placed in context by LoginRequired.
+func (m *Manager) User(r *http.Request) Data {
+	if d, ok := r.Context().Value(ctxKey{}).(Data); ok {
+		return d
+	}
+	return m.Current(r)
+}
+
+// LoginRequired guards a handler. It enforces the idle timeout and IP pinning,
+// refreshes the activity marker, and stores the session snapshot in context.
+func (m *Manager) LoginRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess, _ := m.store.Get(r, sessionName)
+		d := dataFrom(sess)
+		if !d.LoggedIn {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+
+		// Idle timeout.
+		if last, ok := sess.Values[keyLastActive].(int64); ok {
+			if time.Since(time.Unix(last, 0)) > idleTimeout {
+				delete(sess.Values, keyLoggedIn)
+				_ = sess.Save(r, w)
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+		}
+
+		// X-Forwarded-For pinning.
+		xff := r.Header.Get("X-Forwarded-For")
+		if stored, ok := sess.Values[keyXForwarded].(string); ok && stored != xff {
+			delete(sess.Values, keyLoggedIn)
+			_ = sess.Save(r, w)
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+
+		sess.Values[keyLastActive] = time.Now().Unix()
+		sess.Values[keyXForwarded] = xff
+		_ = sess.Save(r, w)
+
+		ctx := context.WithValue(r.Context(), ctxKey{}, d)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func dataFrom(sess *sessions.Session) Data {
+	d := Data{}
+	if v, ok := sess.Values[keyLoggedIn].(bool); ok {
+		d.LoggedIn = v
+	}
+	if v, ok := sess.Values[keyUsername].(string); ok {
+		d.Username = v
+	}
+	if v, ok := sess.Values[keyIsRadius].(bool); ok {
+		d.IsRadiusUser = v
+	}
+	return d
+}
+
+func randomBytes(n int) []byte {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic("session: unable to read random bytes: " + err.Error())
+	}
+	return b
+}

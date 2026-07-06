@@ -1,11 +1,23 @@
-example.conf
-.gemini/settings.json
-example.csv
+# Go build artifacts
+/fortisafe
+*.exe
+*.test
+*.out
+coverage.out
 
-# Python bytecode cache
+# Runtime data
+backups/
+data/
+
+# Python bytecode cache (legacy)
 __pycache__/
 *.py[cod]
+*.pyc
+
+# Project-specific / local files
+example.conf
+example.csv
+.gemini/settings.json
 graphify-out/
 temp/
-
 .claudeignore
