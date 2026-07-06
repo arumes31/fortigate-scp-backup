@@ -91,9 +91,13 @@
                     <td>
                         <div class="actions">
                             <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
-                            <a class="btn btn-sm" href="/backup_now/{{.ID}}">Backup Now</a>
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline">
+                                <button type="submit" class="btn btn-sm">Backup Now</button>
+                            </form>
                             <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
-                            <a class="btn btn-sm btn-danger" href="/delete/{{.ID}}" onclick="return confirm('Delete firewall {{.FQDN}}?');">Delete</a>
+                            <form method="post" action="/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Delete firewall {{.FQDN}}?');">
+                                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                            </form>
                         </div>
                     </td>
                 </tr>

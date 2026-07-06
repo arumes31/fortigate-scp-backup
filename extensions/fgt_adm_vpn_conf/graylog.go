@@ -228,9 +228,13 @@ func (e *Extension) graylogSweep() error {
 		// previous status is read from the persisted LastGraylogStatus, so
 		// transition detection is correct across application restarts and we do
 		// not re-alert for a device whose state is unchanged. Only online/offline
-		// map to UP/DOWN; error/config_missing states are never sent.
+		// map to UP/DOWN; error/config_missing states are never sent. We also only
+		// fire when the PREVIOUS state was itself alertable (online/offline), so a
+		// recovery out of error/config_missing/unknown does not raise a spurious
+		// up/down alert for a state change we never reported the other side of.
 		persistStatus := newStatus
-		if (newStatus == "online" || newStatus == "offline") && newStatus != c.LastGraylogStatus {
+		prevAlertable := c.LastGraylogStatus == "online" || c.LastGraylogStatus == "offline"
+		if (newStatus == "online" || newStatus == "offline") && prevAlertable && newStatus != c.LastGraylogStatus {
 			e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
 			if !e.sendHookwiseEvent(c, newStatus) {
 				// Delivery failed: keep the old status so the next sweep re-detects

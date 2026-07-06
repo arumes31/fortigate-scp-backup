@@ -146,11 +146,12 @@ func (e *Extension) runMigrations() error {
 		}
 		e.logAction("Database Migration", "Added "+m.col+" column to vpn_config table")
 	}
-	// Backfill cid for rows migrated before cid became required so HookWise
-	// events (which need a cid) aren't permanently blocked for legacy rows.
+	// Backfill missing cid (NOT NULL now) with the HookWise "disabled" sentinel
+	// rather than inventing one from firewallname/UNKNOWN: a fabricated cid would
+	// make sendHookwiseEvent fire real alerts with a wrong CID. The sentinel keeps
+	// alerts off until an operator sets a genuine cid.
 	_, err := e.db.Exec(
-		"UPDATE vpn_config SET cid = COALESCE(NULLIF(firewallname, ''), 'UNKNOWN') " +
-			"WHERE cid IS NULL OR cid = ''")
+		"UPDATE vpn_config SET cid = ? WHERE cid IS NULL OR cid = ''", hookwiseDisabledCID)
 	return err
 }
 

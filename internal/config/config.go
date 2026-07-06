@@ -43,6 +43,11 @@ type Config struct {
 	SessionKey   []byte // derived from SESSION_KEY; nil => random per start
 	CookieSecure bool
 	EnableHSTS   bool
+	// TrustProxyHeaders lets the client-IP lookup honour X-Forwarded-For. Enable
+	// it only when the app sits behind a trusted reverse proxy that sets the
+	// header; otherwise a direct client can spoof it (e.g. to defeat the login
+	// rate limiter).
+	TrustProxyHeaders bool
 
 	// Encryption at rest (firewall credentials + backup files). Nil => disabled,
 	// preserving drop-in behaviour with existing plaintext data.
@@ -117,9 +122,10 @@ func Load(logger *slog.Logger) *Config {
 		LoginMaxAttempts:    intenv("LOGIN_MAX_ATTEMPTS", 5),
 		LoginLockoutMinutes: intenv("LOGIN_LOCKOUT_MINUTES", 15),
 
-		SessionKey:   deriveOrNil(os.Getenv("SESSION_KEY")),
-		CookieSecure: boolenv("COOKIE_SECURE", false),
-		EnableHSTS:   boolenv("ENABLE_HSTS", false),
+		SessionKey:        deriveOrNil(os.Getenv("SESSION_KEY")),
+		CookieSecure:      boolenv("COOKIE_SECURE", false),
+		EnableHSTS:        boolenv("ENABLE_HSTS", false),
+		TrustProxyHeaders: boolenv("TRUST_PROXY_HEADERS", false),
 
 		EncryptionKey: decodeKey(os.Getenv("ENCRYPTION_KEY"), logger),
 
@@ -196,7 +202,9 @@ const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 func randomBase32(length int) string {
 	buf := make([]byte, length)
 	if _, err := rand.Read(buf); err != nil {
-		return "AAAAAAAAAAAAAAAA"[:length]
+		// Fail closed: never fall back to a predictable constant secret, which
+		// would silently weaken TOTP for anyone who did not set TOTP_SECRET.
+		panic("config: crypto/rand unavailable for TOTP secret: " + err.Error())
 	}
 	out := make([]byte, length)
 	for i, b := range buf {

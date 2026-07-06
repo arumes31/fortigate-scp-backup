@@ -60,7 +60,8 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		e.tz = time.UTC
 	}
 
-	if err := os.MkdirAll(d.DataDir, 0o777); err != nil {
+	// 0o700: the private SQLite DB holds VPN config incl. PSKs; keep it owner-only.
+	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err
 	}
 	db, err := openDB(filepath.Join(d.DataDir, "fgt-adm-vpn-conf-db.db"))
@@ -87,7 +88,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Post("/import", e.importCSV)
 		pr.Get("/edit/{id}", e.editForm)
 		pr.Post("/edit/{id}", e.editSubmit)
-		pr.Get("/delete/{id}", e.delete)
+		// Delete is state-changing: POST only, so it cannot be triggered by a
+		// simple GET navigation/prefetch/<img>.
+		pr.Post("/delete/{id}", e.delete)
 		pr.Get("/generate_single/{id}", e.generateSingle)
 		pr.Get("/export", e.exportCSV)
 		pr.Get("/export_bookmarks", e.exportBookmarks)

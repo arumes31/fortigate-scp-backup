@@ -232,10 +232,12 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	c.ClusterHostnames = formGet(r, "cluster_hostnames", "")
 
 	newRemote := strings.TrimSpace(r.PostForm.Get("remoteip_full"))
-	// Reject an empty/invalid IP: otherwise RemoteipFull1st is derived as the
-	// broken "10.150.11." and the row drops out of IP-pool accounting.
-	if net.ParseIP(newRemote) == nil {
-		http.Error(w, "Error: A valid remote IP address is required.", http.StatusBadRequest)
+	// Require a valid IPv4: RemoteipFull1st is derived from the last octet, so an
+	// empty or IPv6 value would produce a broken "10.150.11." and drop the row
+	// out of IP-pool accounting.
+	ip4 := net.ParseIP(newRemote).To4()
+	if ip4 == nil {
+		http.Error(w, "Error: A valid IPv4 remote address is required.", http.StatusBadRequest)
 		return
 	}
 	if newRemote != c.RemoteipFull {
@@ -250,8 +252,7 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	c.RemoteipFull = newRemote
-	lastOctet := c.RemoteipFull[strings.LastIndex(c.RemoteipFull, ".")+1:]
-	c.RemoteipFull1st = "10.150.11." + lastOctet
+	c.RemoteipFull1st = fmt.Sprintf("10.150.11.%d", ip4[3])
 
 	c.IpsecPskRo = r.PostForm.Get("ipsec_psk_ro")
 	c.IpsecPskHci = r.PostForm.Get("ipsec_psk_hci")
@@ -438,6 +439,9 @@ func (e *Extension) graylogDSV(w http.ResponseWriter, r *http.Request) {
 // ---- CSV import -------------------------------------------------------------
 
 func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
+	// Cap the upload so an oversized multipart body is rejected up front rather
+	// than being read entirely into memory by FormFile/io.ReadAll below.
+	r.Body = http.MaxBytesReader(w, r.Body, e.cfg.CSVMaxBytes)
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		_, _ = w.Write([]byte("No file uploaded."))
@@ -526,6 +530,11 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 				errorsList = append(errorsList, fmt.Sprintf("Row %d: No available IP in the pool during import.", rowNo))
 				continue
 			}
+		}
+		// Require IPv4 so the remoteip_full_1st derivation below stays well-formed.
+		if net.ParseIP(remoteip).To4() == nil {
+			errorsList = append(errorsList, fmt.Sprintf("Row %d: remoteip_full '%s' is not a valid IPv4 address.", rowNo, remoteip))
+			continue
 		}
 
 		remoteip1st := cell(row, "remoteip-full-1st")

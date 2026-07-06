@@ -87,7 +87,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	totpCode := r.FormValue("totp_code")
 
 	// Brute-force guard keyed by client IP + username.
-	rlKey := clientIP(r) + "|" + username
+	rlKey := clientIP(r, s.cfg.TrustProxyHeaders) + "|" + username
 	if !s.limiter.allowed(rlKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
 		s.render(w, "login.html", loginData{Error: "Too many failed attempts. Please try again later.", TOTPEnabled: s.cfg.TOTPEnabled})
@@ -138,7 +138,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	s.limiter.reset(rlKey)
 	if err := s.sess.Login(w, r, username, isRadius); err != nil {
+		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
+		s.render(w, "login.html", loginData{Error: "Failed to establish session. Please try again.", TOTPEnabled: s.cfg.TOTPEnabled})
+		return
 	}
 	s.store.LogActivity(username, "Login Success", "User logged in")
 
@@ -287,7 +290,7 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 		renderErr("No file selected", nil)
 		return
 	}
-	if !strings.HasSuffix(header.Filename, ".csv") {
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".csv") {
 		renderErr("File must be a CSV", nil)
 		return
 	}

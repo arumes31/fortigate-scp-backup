@@ -57,10 +57,14 @@ func (m *Mailer) send(subject, body, to string) error {
 	}
 	defer client.Close()
 
+	// Fail closed: never fall back to plaintext transport or unauthenticated
+	// delivery, which would expose the message and the SMTP credentials.
 	if ok, _ := client.Extension("STARTTLS"); ok {
 		if err := client.StartTLS(&tls.Config{ServerName: c.MailServer}); err != nil {
 			return fmt.Errorf("starttls: %w", err)
 		}
+	} else {
+		return fmt.Errorf("smtp: server does not advertise STARTTLS; refusing to send over plaintext")
 	}
 
 	if ok, _ := client.Extension("AUTH"); ok {
@@ -68,6 +72,8 @@ func (m *Mailer) send(subject, body, to string) error {
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("auth: %w", err)
 		}
+	} else {
+		return fmt.Errorf("smtp: server does not advertise AUTH; refusing to send unauthenticated")
 	}
 
 	if err := client.Mail(c.MailUser); err != nil {

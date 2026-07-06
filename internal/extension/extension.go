@@ -5,6 +5,7 @@
 package extension
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -55,8 +56,10 @@ func NewRegistry() *Registry { return &Registry{} }
 // Register adds an extension (mounted later only if Enabled reports true).
 func (reg *Registry) Register(e Extension) { reg.exts = append(reg.exts, e) }
 
-// MountEnabled mounts every enabled extension under its prefix.
-func (reg *Registry) MountEnabled(r chi.Router, d Deps) {
+// MountEnabled mounts every enabled extension under its prefix. It returns an
+// error if any enabled extension fails to mount, so startup can fail loudly
+// rather than silently running without a feature the operator turned on.
+func (reg *Registry) MountEnabled(r chi.Router, d Deps) error {
 	for _, e := range reg.exts {
 		if !e.Enabled() {
 			d.Logger.Info("extension disabled, not mounting", "name", e.Name())
@@ -64,10 +67,10 @@ func (reg *Registry) MountEnabled(r chi.Router, d Deps) {
 		}
 		sub := chi.NewRouter()
 		if err := e.Mount(sub, d); err != nil {
-			d.Logger.Error("failed to mount extension", "name", e.Name(), "err", err)
-			continue
+			return fmt.Errorf("mount extension %q: %w", e.Name(), err)
 		}
 		r.Mount(e.Prefix(), sub)
 		d.Logger.Info("extension mounted", "name", e.Name(), "prefix", e.Prefix())
 	}
+	return nil
 }

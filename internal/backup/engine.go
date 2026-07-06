@@ -42,6 +42,15 @@ func (s *Service) backup(fwID int) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("Backup job failed", "fw_id", fwID, "panic", r)
+			// Persist a failed status so a panic after the "In Progress" emit does
+			// not leave the firewall stuck showing an in-progress backup.
+			panicStatus := fmt.Sprintf("Failed: panic: %v", r)
+			failCtx, failCancel := context.WithTimeout(context.Background(), dbOpTimeout)
+			if err := s.store.UpdateFirewallStatus(failCtx, fwID, panicStatus); err != nil {
+				s.logger.Error("Failed to persist panic status", "fw_id", fwID, "err", err)
+			}
+			failCancel()
+			s.emit(fwID, panicStatus)
 			if shouldNotify {
 				s.mailer.Send(
 					fmt.Sprintf("Backup Failure Notification - fw_id %d", fwID),
@@ -72,7 +81,9 @@ func (s *Service) backup(fwID int) {
 	now := s.store.Now()
 	timestamp := now.Format(database.BackupTimeLayout)
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
-	if mkErr := os.MkdirAll(fwDir, 0o777); mkErr != nil {
+	// 0o750: keep per-firewall backup dirs (potentially plaintext configs) off
+	// world-readable paths.
+	if mkErr := os.MkdirAll(fwDir, 0o750); mkErr != nil {
 		s.logger.Error("Failed to create backup directory", "dir", fwDir, "err", mkErr)
 	}
 	filename := timestamp + ".conf"
@@ -115,9 +126,13 @@ func (s *Service) backup(fwID int) {
 
 		if tErr := s.transfer(fw.FQDN, fw.Username, fw.Password, fw.SSHPort, s.cfg.FortigateConfigPath, localPath, s.cfg.SCPTimeout); tErr != nil {
 			s.logger.Error("Backup attempt failed", "attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", tErr)
+			// Always discard a partially written config before retrying or failing,
+			// so a truncated (non-empty) file never lingers on disk.
+			if rmErr := os.Remove(localPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				s.logger.Warn("Failed to remove partial backup file", "path", localPath, "err", rmErr)
+			}
 			if attempt == retries {
 				status = "Failed: " + tErr.Error()
-				removeIfEmpty(localPath)
 				failureEmail(tErr.Error())
 			} else {
 				time.Sleep(backoff(attempt))

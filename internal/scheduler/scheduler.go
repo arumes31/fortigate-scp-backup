@@ -90,6 +90,12 @@ func (s *Scheduler) now() time.Time { return time.Now().In(s.tz) }
 // Schedule registers an interval job (first run after firstDelay, then every
 // interval). Existing ids are left untouched.
 func (s *Scheduler) Schedule(id string, interval, firstDelay time.Duration, fn func()) {
+	if interval <= 0 {
+		// time.NewTicker in runInterval panics on a non-positive interval, and that
+		// panic is outside the per-fire recover, so reject it up front.
+		s.logger.Warn("invalid interval, not scheduling job", "job", id, "interval", interval)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.jobs[id]; ok {
