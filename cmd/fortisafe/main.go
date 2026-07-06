@@ -47,6 +47,12 @@ func main() {
 
 	ctx := context.Background()
 
+	// Bound all startup database work (connect+retry, schema init, migrations,
+	// schedule load) so a slow or unreachable database cannot block boot forever.
+	// The window comfortably exceeds the default connect retry/backoff budget.
+	startupCtx, startupCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer startupCancel()
+
 	cipher, err := crypto.New(cfg.EncryptionKey)
 	if err != nil {
 		logger.Error("failed to initialize cipher", "err", err)
@@ -57,17 +63,17 @@ func main() {
 	}
 
 	// Shared PostgreSQL store + schema init/migrations.
-	store, err := database.NewStore(ctx, cfg, cipher, logger)
+	store, err := database.NewStore(startupCtx, cfg, cipher, logger)
 	if err != nil {
 		logger.Error("failed to connect to database", "err", err)
 		os.Exit(1)
 	}
 	defer store.Close()
-	if err := store.InitSchema(ctx, cfg.TOTPEnabled, cfg.TOTPSecret); err != nil {
+	if err := store.InitSchema(startupCtx, cfg.TOTPEnabled, cfg.TOTPSecret); err != nil {
 		logger.Error("failed to initialize database schema", "err", err)
 		os.Exit(1)
 	}
-	if err := store.Migrate(ctx); err != nil {
+	if err := store.Migrate(startupCtx); err != nil {
 		logger.Error("failed to run database migrations", "err", err)
 		os.Exit(1)
 	}
@@ -75,8 +81,9 @@ func main() {
 		go pruneActivityLogs(store, cfg.ActivityLogRetentionDays, logger)
 	}
 
-	// Backup storage directory.
-	if err := os.MkdirAll(cfg.BackupDir, 0o777); err != nil {
+	// Backup storage directory. 0o750 keeps the FortiGate configs (potentially
+	// plaintext when encryption at rest is disabled) off world-readable paths.
+	if err := os.MkdirAll(cfg.BackupDir, 0o750); err != nil {
 		logger.Error("failed to create backup directory", "dir", cfg.BackupDir, "err", err)
 		os.Exit(1)
 	}
@@ -91,7 +98,7 @@ func main() {
 	// Rebuild recurring backup jobs from the firewalls table (replaces the
 	// APScheduler job store). Stagger startup by 10s per firewall. A cron
 	// expression, when present, takes precedence over the interval.
-	schedules, err := store.ListSchedules(ctx)
+	schedules, err := store.ListSchedules(startupCtx)
 	if err != nil {
 		logger.Error("failed to load firewall schedules", "err", err)
 		os.Exit(1)
@@ -130,7 +137,7 @@ func main() {
 	// Extensions: register, then mount the enabled ones.
 	registry := extension.NewRegistry()
 	registry.Register(fgtadmvpnconf.New(cfg, logger))
-	registry.MountEnabled(router, extension.Deps{
+	if err := registry.MountEnabled(router, extension.Deps{
 		DB:            store.Pool(),
 		LogActivity:   store.LogActivity,
 		LoginRequired: sess.LoginRequired,
@@ -138,7 +145,10 @@ func main() {
 		Logger:        logger,
 		TZ:            cfg.TZ,
 		DataDir:       cfg.DataDir,
-	})
+	}); err != nil {
+		logger.Error("failed to mount extensions", "err", err)
+		os.Exit(1)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.Port,

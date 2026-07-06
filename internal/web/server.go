@@ -217,14 +217,17 @@ func (s *Server) Routes() chi.Router {
 	// Authenticated.
 	r.Group(func(pr chi.Router) {
 		pr.Use(s.sess.LoginRequired)
-		pr.Get("/logout", s.handleLogout)
+		// State-changing actions are POST-only so they cannot be triggered by a
+		// plain GET navigation/prefetch/<img> (SameSite=Lax then blocks the
+		// cross-site POST). The templates submit these via forms.
+		pr.Post("/logout", s.handleLogout)
 		pr.HandleFunc("/", s.handleIndex)
 		pr.Get("/dashboard", s.handleDashboard)
 		pr.Get("/backups/{fwID}", s.handleListBackups)
 		pr.Get("/download/*", s.handleDownload)
-		pr.Get("/delete/{fwID}", s.handleDeleteFirewall)
+		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)
-		pr.Get("/backup_now/{fwID}", s.handleBackupNow)
+		pr.Post("/backup_now/{fwID}", s.handleBackupNow)
 		pr.Get("/test_connection/{fwID}", s.handleTestConnection)
 		pr.HandleFunc("/change_password", s.handleChangePassword)
 		pr.HandleFunc("/search", s.handleSearch)

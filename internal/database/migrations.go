@@ -41,6 +41,16 @@ var migrations = []migration{
 		)
 	}},
 	{5, "timestamps_to_timestamptz", migrateTimestampsToTZ},
+	{6, "backups_unique_fw_filename", func(ctx context.Context, s *Store) error {
+		// Fresh installs get UNIQUE(fw_id, filename) from InitSchema, but a table
+		// created by the old Python app may lack it, so InsertBackup's
+		// ON CONFLICT DO NOTHING could not dedupe there. InitSchema already
+		// removes duplicate (fw_id, filename) rows before migrations run, so this
+		// index can be created safely on upgraded databases too.
+		return s.execAll(ctx,
+			`CREATE UNIQUE INDEX IF NOT EXISTS backups_fw_id_filename_uidx ON backups (fw_id, filename)`,
+		)
+	}},
 }
 
 // Migrate applies any pending migrations in order.

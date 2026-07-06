@@ -9,13 +9,17 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// clientIP returns the best-guess client address, honouring X-Forwarded-For.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+// clientIP returns the best-guess client address. X-Forwarded-For is honoured
+// only when trustProxy is set (the app is behind a trusted reverse proxy);
+// otherwise the header is ignored so a direct client cannot spoof its address.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
 		}
-		return strings.TrimSpace(xff)
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

@@ -38,7 +38,10 @@ jobs:
           fi
 
           # Use an if statement to handle the expected failure when the package doesn't exist.
-          if ! VERSIONS=$(gh api "$API_BASE/packages/container/$PACKAGE_NAME/versions" --jq '[.[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}]' 2>&1); then
+          # --paginate follows the Link headers so ALL version pages are fetched (not just the
+          # first 30). With --paginate the --jq emits one object per line across every page;
+          # we re-slurp into a single array below to keep the downstream jq shaping unchanged.
+          if ! VERSIONS=$(gh api --paginate "$API_BASE/packages/container/$PACKAGE_NAME/versions?per_page=100" --jq '.[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}' 2>&1); then
             if echo "$VERSIONS" | grep -q "Package not found"; then
               echo "Package '$PACKAGE_NAME' not found. This is expected if it has not been published yet. Nothing to clean up."
               exit 0
@@ -48,6 +51,10 @@ jobs:
               exit 1
             fi
           fi
+
+          # Collapse the per-page object stream back into a single JSON array so the
+          # existing empty-check and jq filtering below work as before.
+          VERSIONS=$(echo "$VERSIONS" | jq -s '.')
 
           if [ -z "$VERSIONS" ] || [ "$VERSIONS" == "[]" ]; then
             echo "No versions found for package. Nothing to clean up."

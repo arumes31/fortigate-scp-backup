@@ -248,7 +248,9 @@
         }
 
         #totp-section {
-            display: none; /* Hidden by default */
+            /* Shown whenever the server renders it (TOTP enabled). Visibility is
+               driven by the .TOTPEnabled flag, not the username. */
+            display: block;
         }
     </style>
 </head>
@@ -317,16 +319,9 @@
             // Start the matrix rain animation
             matrixRain();
 
-            // TOTP conditional display
-            if (totpSection) {
-                usernameInput.addEventListener('input', function() {
-                    if (usernameInput.value.trim().toLowerCase() === 'admin') {
-                        totpSection.style.display = 'block';
-                    } else {
-                        totpSection.style.display = 'none';
-                    }
-                });
-            }
+            // TOTP visibility is decided server-side via .TOTPEnabled (the section
+            // is only rendered when TOTP is enabled) and applies to every user, so
+            // there is no username-based show/hide here.
         });
     </script>
 </body>

@@ -18,7 +18,11 @@ func TestScheduleAndRemove(t *testing.T) {
 	if !s.Has("job1") {
 		t.Fatal("job should exist")
 	}
-	time.Sleep(60 * time.Millisecond)
+	// Poll rather than sleeping a fixed interval so the test stays reliable under load.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&runs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if atomic.LoadInt32(&runs) == 0 {
 		t.Fatal("job should have fired after the first delay")
 	}

@@ -149,7 +149,9 @@
                             <td><a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a></td>
                             <td class="actions">
                                 <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
-                                <a href="/fgt-adm-vpn-conf/delete/{{.ID}}" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to remove this entry?');">Remove</a>
+                                <form method="post" action="/fgt-adm-vpn-conf/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Are you sure you want to remove this entry?');">
+                                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                                </form>
                                 <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
                             </td>
                         </tr>

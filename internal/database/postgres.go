@@ -384,11 +384,17 @@ func (s *Store) AddFirewall(ctx context.Context, fw models.Firewall) (int, error
 	if fw.IntervalMin > 0 {
 		interval = &fw.IntervalMin
 	}
+	// An unset (<=0) SSH port would otherwise be stored as 0; coerce it to the
+	// same default the column uses so backups target the right port.
+	sshPort := fw.SSHPort
+	if sshPort <= 0 {
+		sshPort = 9422
+	}
 	var id int
 	err = s.pool.QueryRow(ctx,
 		`INSERT INTO firewalls (fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port, cron_expr)
 		 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8) RETURNING id`,
-		fw.FQDN, fw.Username, pw, interval, fw.RetentionCount, fw.Status, fw.SSHPort, cron).Scan(&id)
+		fw.FQDN, fw.Username, pw, interval, fw.RetentionCount, fw.Status, sshPort, cron).Scan(&id)
 	return id, err
 }
 
@@ -723,7 +729,10 @@ func (s *Store) scanFirewalls(rows pgx.Rows) ([]models.Firewall, error) {
 		if pw, err := s.cipher.DecryptString(fw.Password); err == nil {
 			fw.Password = pw
 		} else {
+			// Do not return the still-encrypted value: an SSH auth with ciphertext
+			// as the password is worse (and more confusing) than an empty one.
 			s.logger.Error("failed to decrypt firewall password", "fw_id", fw.ID, "err", err)
+			fw.Password = ""
 		}
 		out = append(out, fw)
 	}

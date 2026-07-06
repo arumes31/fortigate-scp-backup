@@ -9,7 +9,13 @@ import (
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("PG_HOST", "")
+	// Clear every env var the assertions below depend on so an ambient value in
+	// CI or a developer shell cannot influence the default-path behavior.
+	for _, k := range []string{
+		"PG_HOST", "PORT", "SCP_TIMEOUT", "ENCRYPTION_KEY", "MAX_CONCURRENT_BACKUPS",
+	} {
+		t.Setenv(k, "")
+	}
 	c := Load(discard())
 	if c.Port != "8521" {
 		t.Errorf("default port = %q", c.Port)

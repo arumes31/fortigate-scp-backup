@@ -62,7 +62,9 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	}
 	defer client.Close()
 
-	file, err := os.Create(localPath)
+	// 0o600: the pulled config can be plaintext (when encryption at rest is off),
+	// so avoid the world-readable default of os.Create.
+	file, err := os.OpenFile(localPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create local file: %w", err)
 	}
