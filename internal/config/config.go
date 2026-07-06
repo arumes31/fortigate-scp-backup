@@ -1,10 +1,13 @@
 // Package config loads all runtime configuration from environment variables,
 // preserving the exact variable names, defaults and semantics of the original
-// Python application so an existing deployment can be swapped in place.
+// Python application so an existing deployment can be swapped in place, plus a
+// set of newer optional settings (session/crypto keys, pool tuning, limits).
 package config
 
 import (
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"strconv"
@@ -19,6 +22,11 @@ type Config struct {
 	PGUser     string
 	PGPassword string
 	PGDatabase string
+	PGSSLMode  string
+	// Pool / connection tuning.
+	PGMaxConns       int
+	PGConnectRetries int
+	PGConnectBackoff time.Duration
 
 	// Authentication
 	TOTPEnabled   bool
@@ -27,12 +35,26 @@ type Config struct {
 	RadiusServer  string
 	RadiusPort    int
 	RadiusSecret  string
+	// Brute-force protection.
+	LoginMaxAttempts    int
+	LoginLockoutMinutes int
+
+	// Sessions / cookies
+	SessionKey   []byte // derived from SESSION_KEY; nil => random per start
+	CookieSecure bool
+	EnableHSTS   bool
+
+	// Encryption at rest (firewall credentials + backup files). Nil => disabled,
+	// preserving drop-in behaviour with existing plaintext data.
+	EncryptionKey []byte
 
 	// SCP / backup defaults
-	DefaultSCPUser      string
-	DefaultSCPPassword  string
-	FortigateConfigPath string
-	SCPTimeout          int // seconds
+	DefaultSCPUser       string
+	DefaultSCPPassword   string
+	FortigateConfigPath  string
+	SCPTimeout           int // seconds
+	MaxConcurrentBackups int
+	CSVMaxBytes          int64
 
 	// Mail
 	MailServer    string
@@ -49,11 +71,15 @@ type Config struct {
 	HookwiseURL            string
 	HookwiseToken          string
 
+	// Housekeeping
+	ActivityLogRetentionDays int
+
 	// General
 	TZ        *time.Location
 	BackupDir string
 	DataDir   string
 	Port      string
+	LogLevel  string
 }
 
 // Load reads the environment and returns a populated Config. It never fails;
@@ -72,23 +98,37 @@ func Load(logger *slog.Logger) *Config {
 	}
 
 	c := &Config{
-		PGHost:     getenv("PG_HOST", "localhost"),
-		PGPort:     getenv("PG_PORT", "5432"),
-		PGUser:     getenv("PG_USER", "your_user"),
-		PGPassword: getenv("PG_PASSWORD", "your_password"),
-		PGDatabase: getenv("PG_DATABASE", "firewall_backups"),
+		PGHost:           getenv("PG_HOST", "localhost"),
+		PGPort:           getenv("PG_PORT", "5432"),
+		PGUser:           getenv("PG_USER", "your_user"),
+		PGPassword:       getenv("PG_PASSWORD", "your_password"),
+		PGDatabase:       getenv("PG_DATABASE", "firewall_backups"),
+		PGSSLMode:        getenv("PGSSLMODE", "prefer"),
+		PGMaxConns:       intenv("PG_MAX_CONNS", 50),
+		PGConnectRetries: intenv("PG_CONNECT_RETRIES", 10),
+		PGConnectBackoff: time.Duration(intenv("PG_CONNECT_BACKOFF_SECONDS", 3)) * time.Second,
 
-		TOTPEnabled:   boolenv("TOTP_ENABLED", false),
-		TOTPSecret:    totpSecret,
-		RadiusEnabled: boolenv("RADIUS_ENABLED", false),
-		RadiusServer:  getenv("RADIUS_SERVER", "localhost"),
-		RadiusPort:    intenv("RADIUS_PORT", 1812),
-		RadiusSecret:  getenv("RADIUS_SECRET", "secret"),
+		TOTPEnabled:         boolenv("TOTP_ENABLED", false),
+		TOTPSecret:          totpSecret,
+		RadiusEnabled:       boolenv("RADIUS_ENABLED", false),
+		RadiusServer:        getenv("RADIUS_SERVER", "localhost"),
+		RadiusPort:          intenv("RADIUS_PORT", 1812),
+		RadiusSecret:        getenv("RADIUS_SECRET", "secret"),
+		LoginMaxAttempts:    intenv("LOGIN_MAX_ATTEMPTS", 5),
+		LoginLockoutMinutes: intenv("LOGIN_LOCKOUT_MINUTES", 15),
 
-		DefaultSCPUser:      getenv("DEFAULT_SCP_USER", "test"),
-		DefaultSCPPassword:  getenv("DEFAULT_SCP_PASSWORD", ""),
-		FortigateConfigPath: getenv("FORTIGATE_CONFIG_PATH", "sys_config"),
-		SCPTimeout:          intenv("SCP_TIMEOUT", 60),
+		SessionKey:   deriveOrNil(os.Getenv("SESSION_KEY")),
+		CookieSecure: boolenv("COOKIE_SECURE", false),
+		EnableHSTS:   boolenv("ENABLE_HSTS", false),
+
+		EncryptionKey: decodeKey(os.Getenv("ENCRYPTION_KEY"), logger),
+
+		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "test"),
+		DefaultSCPPassword:   getenv("DEFAULT_SCP_PASSWORD", ""),
+		FortigateConfigPath:  getenv("FORTIGATE_CONFIG_PATH", "sys_config"),
+		SCPTimeout:           intenv("SCP_TIMEOUT", 60),
+		MaxConcurrentBackups: intenv("MAX_CONCURRENT_BACKUPS", 10),
+		CSVMaxBytes:          int64(intenv("CSV_MAX_BYTES", 5<<20)),
 
 		MailServer:    getenv("MAIL_SERVER", "smtp.example.com"),
 		MailPort:      intenv("MAIL_PORT", 587),
@@ -103,17 +143,21 @@ func Load(logger *slog.Logger) *Config {
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
 		HookwiseToken:          os.Getenv("HOOKWISE_TOKEN"),
 
+		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
+
 		TZ:        tz,
 		BackupDir: getenv("BACKUP_DIR", "backups"),
 		DataDir:   getenv("DATA_DIR", "/app/data"),
 		Port:      getenv("PORT", "8521"),
+		LogLevel:  getenv("LOG_LEVEL", "info"),
+	}
+	if c.MaxConcurrentBackups < 1 {
+		c.MaxConcurrentBackups = 1
+	}
+	if c.PGMaxConns < 1 {
+		c.PGMaxConns = 1
 	}
 	return c
-}
-
-// PostgresDSN builds the connection string for the shared store.
-func (c *Config) PostgresDSN() string {
-	return "postgres://" + c.PGUser + ":" + c.PGPassword + "@" + c.PGHost + ":" + c.PGPort + "/" + c.PGDatabase
 }
 
 func getenv(key, def string) string {
@@ -152,7 +196,6 @@ const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 func randomBase32(length int) string {
 	buf := make([]byte, length)
 	if _, err := rand.Read(buf); err != nil {
-		// Extremely unlikely; fall back to a fixed but valid secret.
 		return "AAAAAAAAAAAAAAAA"[:length]
 	}
 	out := make([]byte, length)
@@ -160,4 +203,29 @@ func randomBase32(length int) string {
 		out[i] = base32Alphabet[int(b)%len(base32Alphabet)]
 	}
 	return string(out)
+}
+
+// deriveOrNil returns the raw bytes of a session secret, or nil when unset so
+// the session manager falls back to a per-process random key.
+func deriveOrNil(v string) []byte {
+	if v == "" {
+		return nil
+	}
+	return []byte(v)
+}
+
+// decodeKey parses ENCRYPTION_KEY as base64 or hex and requires exactly 32 bytes
+// (AES-256). Anything else disables encryption (returns nil) with a warning.
+func decodeKey(v string, logger *slog.Logger) []byte {
+	if v == "" {
+		return nil
+	}
+	if b, err := base64.StdEncoding.DecodeString(v); err == nil && len(b) == 32 {
+		return b
+	}
+	if b, err := hex.DecodeString(v); err == nil && len(b) == 32 {
+		return b
+	}
+	logger.Warn("ENCRYPTION_KEY is not a valid 32-byte base64/hex key; encryption at rest disabled")
+	return nil
 }
