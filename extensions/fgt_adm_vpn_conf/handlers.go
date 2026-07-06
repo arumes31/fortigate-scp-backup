@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -230,7 +231,13 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	c.GraylogEnabled = formHas(r, "graylog_enabled")
 	c.ClusterHostnames = formGet(r, "cluster_hostnames", "")
 
-	newRemote := r.PostForm.Get("remoteip_full")
+	newRemote := strings.TrimSpace(r.PostForm.Get("remoteip_full"))
+	// Reject an empty/invalid IP: otherwise RemoteipFull1st is derived as the
+	// broken "10.150.11." and the row drops out of IP-pool accounting.
+	if net.ParseIP(newRemote) == nil {
+		http.Error(w, "Error: A valid remote IP address is required.", http.StatusBadRequest)
+		return
+	}
 	if newRemote != c.RemoteipFull {
 		taken, err := e.remoteIPTaken(newRemote, c.ID)
 		if err != nil {
@@ -606,7 +613,14 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 	if len(errorsList) > 0 {
 		e.log(r, "FGT ADM VPN - Import Failed", fmt.Sprintf("Import finished with errors: %d errors", len(errorsList)))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, strings.Join(errorsList, "<br>"))
+		// The messages embed user-supplied CSV values (firewallname, remoteip);
+		// escape each before writing into the HTML response so a crafted cell
+		// cannot inject markup/script. "<br>" is our own trusted separator.
+		escaped := make([]string, len(errorsList))
+		for i, msg := range errorsList {
+			escaped[i] = template.HTMLEscapeString(msg)
+		}
+		_, _ = io.WriteString(w, strings.Join(escaped, "<br>"))
 		return
 	}
 	e.log(r, "FGT ADM VPN - Import Success", "Imported configs from CSV")

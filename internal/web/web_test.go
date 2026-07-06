@@ -67,7 +67,7 @@ func testServer(t *testing.T) *Server {
 	cfg := config.Load(logger)
 	cfg.LoginMaxAttempts = 3
 	cipher, _ := crypto.New(nil)
-	srv, err := New(cfg, fakeStore{}, scheduler.New(logger),
+	srv, err := New(cfg, fakeStore{}, scheduler.New(logger, time.UTC),
 		backup.New(nil, mailer.New(cfg, logger), cfg, cipher, logger),
 		session.New(nil, false), fakeAuth{}, cipher, logger)
 	if err != nil {

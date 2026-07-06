@@ -85,7 +85,7 @@ func main() {
 	mail := mailer.New(cfg, logger)
 	authn := auth.New(cfg, logger)
 	sess := session.New(cfg.SessionKey, cfg.CookieSecure)
-	sched := scheduler.New(logger)
+	sched := scheduler.New(logger, cfg.TZ)
 	backupSvc := backup.New(store, mail, cfg, cipher, logger)
 
 	// Rebuild recurring backup jobs from the firewalls table (replaces the

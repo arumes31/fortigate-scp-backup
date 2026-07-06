@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func testScheduler() *Scheduler { return New(slog.New(slog.DiscardHandler)) }
+func testScheduler() *Scheduler { return New(slog.New(slog.DiscardHandler), time.UTC) }
 
 func TestScheduleAndRemove(t *testing.T) {
 	s := testScheduler()

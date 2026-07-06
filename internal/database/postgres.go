@@ -376,11 +376,19 @@ func (s *Store) AddFirewall(ctx context.Context, fw models.Firewall) (int, error
 	if fw.CronExpr != "" {
 		cron = &fw.CronExpr
 	}
+	// Store a non-positive interval as NULL: the firewalls table has a
+	// CHECK (interval_minutes > 0), so a 0 would be rejected. NULL passes the
+	// check and is treated as "use the cron expression / default interval" by the
+	// scheduler, which is what a cron-only firewall needs.
+	var interval *int
+	if fw.IntervalMin > 0 {
+		interval = &fw.IntervalMin
+	}
 	var id int
 	err = s.pool.QueryRow(ctx,
 		`INSERT INTO firewalls (fqdn, username, password, interval_minutes, retention_count, last_backup, status, ssh_port, cron_expr)
 		 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8) RETURNING id`,
-		fw.FQDN, fw.Username, pw, fw.IntervalMin, fw.RetentionCount, fw.Status, fw.SSHPort, cron).Scan(&id)
+		fw.FQDN, fw.Username, pw, interval, fw.RetentionCount, fw.Status, fw.SSHPort, cron).Scan(&id)
 	return id, err
 }
 
@@ -629,10 +637,18 @@ func (s *Store) DeleteBackupByFilename(ctx context.Context, filename string) err
 	return err
 }
 
-// ListBackupIDFilenames returns up to limit id/filename pairs for cleanup.
+// ListBackupIDFilenames returns id/filename pairs for cleanup, newest first. A
+// limit <= 0 returns every row: callers that use this for orphan detection must
+// see the complete set, otherwise valid files whose rows fall outside the page
+// would be misclassified as orphans and deleted.
 func (s *Store) ListBackupIDFilenames(ctx context.Context, fwID, limit int) ([]models.Backup, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, filename FROM backups WHERE fw_id = $1 LIMIT $2`, fwID, limit)
+	query := `SELECT id, filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`
+	args := []any{fwID}
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

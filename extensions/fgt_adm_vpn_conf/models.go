@@ -1,9 +1,10 @@
 package fgtadmvpnconf
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"strings"
 	"time"
@@ -438,6 +439,18 @@ func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status st
 
 // ---- password generator (parity with Python get_random_password) ------------
 
+// cryptoIntn returns a uniformly distributed int in [0, n) from a cryptographic
+// source. These values seed IPsec pre-shared keys and RADIUS secrets, so a
+// predictable (math/rand) generator would let an observer of a few generated
+// secrets reconstruct future ones.
+func cryptoIntn(n int) int {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		panic("fgt_adm_vpn_conf: crypto/rand unavailable: " + err.Error())
+	}
+	return int(v.Int64())
+}
+
 func getRandomPassword(length, upper, lower, numeric, special int) string {
 	const (
 		uSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -447,23 +460,27 @@ func getRandomPassword(length, upper, lower, numeric, special int) string {
 	)
 	pw := make([]byte, 0, length)
 	for i := 0; i < upper; i++ {
-		pw = append(pw, uSet[rand.Intn(len(uSet))])
+		pw = append(pw, uSet[cryptoIntn(len(uSet))])
 	}
 	for i := 0; i < lower; i++ {
-		pw = append(pw, lSet[rand.Intn(len(lSet))])
+		pw = append(pw, lSet[cryptoIntn(len(lSet))])
 	}
 	for i := 0; i < numeric; i++ {
-		pw = append(pw, nSet[rand.Intn(len(nSet))])
+		pw = append(pw, nSet[cryptoIntn(len(nSet))])
 	}
 	for i := 0; i < special; i++ {
-		pw = append(pw, sSet[rand.Intn(len(sSet))])
+		pw = append(pw, sSet[cryptoIntn(len(sSet))])
 	}
 	remaining := length - (upper + lower + numeric + special)
 	all := uSet + lSet + nSet + sSet
 	for i := 0; i < remaining; i++ {
-		pw = append(pw, all[rand.Intn(len(all))])
+		pw = append(pw, all[cryptoIntn(len(all))])
 	}
-	rand.Shuffle(len(pw), func(i, j int) { pw[i], pw[j] = pw[j], pw[i] })
+	// Fisher-Yates shuffle so the character classes are not grouped by position.
+	for i := len(pw) - 1; i > 0; i-- {
+		j := cryptoIntn(i + 1)
+		pw[i], pw[j] = pw[j], pw[i]
+	}
 	return string(pw)
 }
 

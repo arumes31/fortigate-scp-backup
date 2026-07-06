@@ -235,7 +235,10 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 // cleanNonexistentBackups removes database rows whose file is gone and deletes
 // files on disk with no database row. Never fails the caller.
 func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir string) {
-	backups, err := s.store.ListBackupIDFilenames(ctx, fwID, 100)
+	// Fetch every row (limit 0 = unlimited): the orphan sweep below deletes any
+	// on-disk file not present in this set, so a capped/partial list would delete
+	// valid backups whose rows fall outside the page.
+	backups, err := s.store.ListBackupIDFilenames(ctx, fwID, 0)
 	if err != nil {
 		s.logger.Error("Failed to clean non-existent backups", "fw_id", fwID, "err", err)
 		return

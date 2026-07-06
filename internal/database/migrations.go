@@ -67,6 +67,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		applied[v] = true
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
 	rows.Close()
 
 	for _, m := range migrations {
