@@ -12,14 +12,15 @@
     <div class="table-wrap">
         <table class="data">
             <thead>
-                <tr><th>ID</th><th>Timestamp</th><th>Filename</th><th>Download</th></tr>
+                <tr><th>ID</th><th>Timestamp</th><th>Filename</th><th>Size</th><th>Download</th></tr>
             </thead>
             <tbody>
             {{range .Backups}}
                 <tr>
                     <td>{{.ID}}</td>
-                    <td>{{.Timestamp}}</td>
+                    <td>{{fmtTime .Timestamp}}</td>
                     <td><code>{{.Filename}}</code></td>
+                    <td class="muted">{{if .SizeBytes}}{{fmtBytes .SizeBytes}}{{else}}—{{end}}</td>
                     <td><a class="btn btn-sm" href="/download/{{.Filename}}">Download</a></td>
                 </tr>
             {{end}}

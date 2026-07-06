@@ -29,6 +29,11 @@
                     <input type="number" id="interval_minutes" name="interval_minutes" min="1" value="180" required>
                 </div>
                 <div class="field">
+                    <label for="cron_expr">Cron (optional)</label>
+                    <input type="text" id="cron_expr" name="cron_expr" placeholder="e.g. 0 3 * * *">
+                    <span class="hint">Overrides interval. Standard 5-field cron.</span>
+                </div>
+                <div class="field">
                     <label for="retention_count">Retention (copies)</label>
                     <input type="number" id="retention_count" name="retention_count" min="0" value="7" required>
                 </div>
@@ -67,30 +72,27 @@
             <thead>
                 <tr>
                     <th>ID</th><th>FQDN</th><th>User</th><th>Interval</th><th>Retention</th>
-                    <th>Last Backup</th><th>Status</th><th>SSH Port</th><th>Actions</th>
+                    <th>Last Backup</th><th>Next Run</th><th>Status</th><th>SSH Port</th><th>Actions</th>
                 </tr>
             </thead>
             <tbody>
+            {{$root := .}}
             {{range .Firewalls}}
-                <tr>
+                <tr data-fw="{{.ID}}">
                     <td>{{.ID}}</td>
                     <td class="fw-fqdn">{{.FQDN}}</td>
                     <td class="muted">{{.Username}}</td>
-                    <td>{{.IntervalMin}} min</td>
+                    <td>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}{{.IntervalMin}} min{{end}}</td>
                     <td>{{.RetentionCount}}</td>
-                    <td class="muted">{{if .LastBackup}}{{.LastBackup}}{{else}}—{{end}}</td>
-                    <td class="fw-status">
-                        {{if eq .Status "Success"}}<span class="pill pill-success">Success</span>
-                        {{else if eq .Status "New"}}<span class="pill pill-new">New</span>
-                        {{else if hasPrefix .Status "Failed"}}<span class="pill pill-failed" title="{{.Status}}">Failed</span>
-                        {{else if .Status}}<span class="pill pill-muted">{{.Status}}</span>
-                        {{else}}<span class="pill pill-muted">—</span>{{end}}
-                    </td>
+                    <td class="muted">{{fmtTime .LastBackup}}</td>
+                    <td class="muted">{{fmtTime (index $root.NextRuns .ID)}}</td>
+                    <td class="fw-status">{{template "statusPill" .Status}}</td>
                     <td>{{.SSHPort}}</td>
                     <td>
                         <div class="actions">
                             <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
                             <a class="btn btn-sm" href="/backup_now/{{.ID}}">Backup Now</a>
+                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
                             <a class="btn btn-sm btn-danger" href="/delete/{{.ID}}" onclick="return confirm('Delete firewall {{.FQDN}}?');">Delete</a>
                         </div>
                     </td>
@@ -104,6 +106,15 @@
     {{end}}
 </div>
 {{end}}
+
+{{define "statusPill"}}
+{{- if eq . "Success"}}<span class="pill pill-success">Success</span>
+{{- else if eq . "New"}}<span class="pill pill-new">New</span>
+{{- else if eq . "In Progress"}}<span class="pill pill-info">In Progress</span>
+{{- else if hasPrefix . "Failed"}}<span class="pill pill-failed" title="{{.}}">Failed</span>
+{{- else if .}}<span class="pill pill-muted">{{.}}</span>
+{{- else}}<span class="pill pill-muted">—</span>{{end}}
+{{- end}}
 
 {{define "scripts"}}
 <script>
@@ -122,20 +133,61 @@
                 }
             });
         }
+        // FQDN/status filter, persisted across reloads.
         var filter = document.getElementById('fwFilter');
         var table = document.getElementById('fwTable');
-        if (filter && table) {
-            filter.addEventListener('input', function () {
-                var q = filter.value.toLowerCase();
-                var rows = table.tBodies[0].rows;
-                for (var i = 0; i < rows.length; i++) {
-                    var fqdnCell = rows[i].querySelector('.fw-fqdn');
-                    var statusCell = rows[i].querySelector('.fw-status');
-                    var hay = ((fqdnCell ? fqdnCell.textContent : '') + ' ' + (statusCell ? statusCell.textContent : '')).toLowerCase();
-                    rows[i].style.display = hay.indexOf(q) !== -1 ? '' : 'none';
-                }
-            });
+        function applyFilter() {
+            if (!filter || !table) { return; }
+            var q = filter.value.toLowerCase();
+            try { localStorage.setItem('fwFilter', filter.value); } catch (e) {}
+            var rows = table.tBodies[0].rows;
+            for (var i = 0; i < rows.length; i++) {
+                var fqdnCell = rows[i].querySelector('.fw-fqdn');
+                var statusCell = rows[i].querySelector('.fw-status');
+                var hay = ((fqdnCell ? fqdnCell.textContent : '') + ' ' + (statusCell ? statusCell.textContent : '')).toLowerCase();
+                rows[i].style.display = hay.indexOf(q) !== -1 ? '' : 'none';
+            }
         }
+        if (filter) {
+            try { filter.value = localStorage.getItem('fwFilter') || ''; } catch (e) {}
+            filter.addEventListener('input', applyFilter);
+            applyFilter();
+        }
+        // Status pill markup, mirrored from the server for live updates.
+        function pill(status) {
+            if (status === 'Success') { return '<span class="pill pill-success">Success</span>'; }
+            if (status === 'New') { return '<span class="pill pill-new">New</span>'; }
+            if (status === 'In Progress') { return '<span class="pill pill-info">In Progress</span>'; }
+            if (status.indexOf('Failed') === 0) { return '<span class="pill pill-failed" title="' + status.replace(/"/g, '&quot;') + '">Failed</span>'; }
+            return '<span class="pill pill-muted">' + status + '</span>';
+        }
+        // Live status updates via SSE (#70).
+        if (window.EventSource) {
+            var es = new EventSource('/events');
+            es.onmessage = function (e) {
+                try {
+                    var d = JSON.parse(e.data);
+                    var row = table && table.querySelector('tr[data-fw="' + d.fw_id + '"]');
+                    if (row) {
+                        var cell = row.querySelector('.fw-status');
+                        if (cell) { cell.innerHTML = pill(d.status); }
+                    }
+                } catch (err) {}
+            };
+        }
+        // Test connection buttons (#34).
+        document.querySelectorAll('.test-conn').forEach(function (b) {
+            b.addEventListener('click', function () {
+                var id = b.getAttribute('data-fw');
+                var orig = b.textContent;
+                b.textContent = '…'; b.disabled = true;
+                fetch('/test_connection/' + id).then(function (r) { return r.json(); }).then(function (j) {
+                    alert(j.message || (j.ok ? 'OK' : 'Failed'));
+                }).catch(function () { alert('Test failed'); }).finally(function () {
+                    b.textContent = orig; b.disabled = false;
+                });
+            });
+        });
     })();
 </script>
 {{end}}

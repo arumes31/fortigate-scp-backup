@@ -21,6 +21,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/auth"
 	"github.com/arumes31/fortigate-scp-backup/internal/backup"
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
@@ -32,10 +33,11 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	bootstrap := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	cfg := config.Load(bootstrap)
 
-	cfg := config.Load(logger)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
+	slog.SetDefault(logger)
 	logger.Info("starting FortiSafe",
 		"totp_enabled", cfg.TOTPEnabled,
 		"radius_enabled", cfg.RadiusEnabled,
@@ -45,8 +47,17 @@ func main() {
 
 	ctx := context.Background()
 
+	cipher, err := crypto.New(cfg.EncryptionKey)
+	if err != nil {
+		logger.Error("failed to initialize cipher", "err", err)
+		os.Exit(1)
+	}
+	if cipher.Enabled() {
+		logger.Info("encryption at rest enabled (credentials + backup files)")
+	}
+
 	// Shared PostgreSQL store + schema init/migrations.
-	store, err := database.NewStore(ctx, cfg.PostgresDSN(), cfg.TZ, logger)
+	store, err := database.NewStore(ctx, cfg, cipher, logger)
 	if err != nil {
 		logger.Error("failed to connect to database", "err", err)
 		os.Exit(1)
@@ -55,6 +66,13 @@ func main() {
 	if err := store.InitSchema(ctx, cfg.TOTPEnabled, cfg.TOTPSecret); err != nil {
 		logger.Error("failed to initialize database schema", "err", err)
 		os.Exit(1)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		logger.Error("failed to run database migrations", "err", err)
+		os.Exit(1)
+	}
+	if cfg.ActivityLogRetentionDays > 0 {
+		go pruneActivityLogs(store, cfg.ActivityLogRetentionDays, logger)
 	}
 
 	// Backup storage directory.
@@ -66,24 +84,32 @@ func main() {
 	// Core services.
 	mail := mailer.New(cfg, logger)
 	authn := auth.New(cfg, logger)
-	sess := session.New()
+	sess := session.New(cfg.SessionKey, cfg.CookieSecure)
 	sched := scheduler.New(logger)
-	backupSvc := backup.New(store, mail, cfg, logger)
+	backupSvc := backup.New(store, mail, cfg, cipher, logger)
 
 	// Rebuild recurring backup jobs from the firewalls table (replaces the
-	// APScheduler job store). Stagger startup by 10s per firewall.
+	// APScheduler job store). Stagger startup by 10s per firewall. A cron
+	// expression, when present, takes precedence over the interval.
 	schedules, err := store.ListSchedules(ctx)
 	if err != nil {
 		logger.Error("failed to load firewall schedules", "err", err)
 		os.Exit(1)
 	}
 	for i, sc := range schedules {
-		if sc.IntervalMin <= 0 {
-			logger.Warn("invalid interval, skipping job", "fw_id", sc.ID, "interval", sc.IntervalMin)
-			continue
-		}
 		id := sc.ID
 		jobID := web.BackupJobID(id)
+		if sc.CronExpr != "" {
+			if err := sched.ScheduleCron(jobID, sc.CronExpr, func() { backupSvc.Backup(id) }); err == nil {
+				continue
+			} else {
+				logger.Warn("invalid cron, falling back to interval", "fw_id", id, "cron", sc.CronExpr, "err", err)
+			}
+		}
+		if sc.IntervalMin <= 0 {
+			logger.Warn("invalid interval, skipping job", "fw_id", id, "interval", sc.IntervalMin)
+			continue
+		}
 		sched.Schedule(jobID,
 			time.Duration(sc.IntervalMin)*time.Minute,
 			time.Duration(i)*10*time.Second,
@@ -92,11 +118,13 @@ func main() {
 	logger.Info("scheduled backup jobs", "count", len(sched.IDs()))
 
 	// Web server.
-	srv, err := web.New(cfg, store, sched, backupSvc, sess, authn, logger)
+	srv, err := web.New(cfg, store, sched, backupSvc, sess, authn, cipher, logger)
 	if err != nil {
 		logger.Error("failed to build web server", "err", err)
 		os.Exit(1)
 	}
+	// Live status updates: the engine notifies the web SSE hub on every change.
+	backupSvc.SetStatusHook(srv.BroadcastStatus)
 	router := srv.Routes()
 
 	// Extensions: register, then mount the enabled ones.
@@ -137,4 +165,38 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	sched.Stop()
 	logger.Info("shutdown complete")
+}
+
+// pruneActivityLogs periodically deletes activity rows older than the retention
+// window (runs at startup and daily thereafter).
+func pruneActivityLogs(store *database.Store, days int, logger *slog.Logger) {
+	prune := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if n, err := store.PruneActivityLogs(ctx, days); err != nil {
+			logger.Error("activity log prune failed", "err", err)
+		} else if n > 0 {
+			logger.Info("pruned old activity logs", "deleted", n, "retention_days", days)
+		}
+	}
+	prune()
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for range t.C {
+		prune()
+	}
+}
+
+// parseLevel maps a LOG_LEVEL string to an slog.Level (default info).
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug", "DEBUG":
+		return slog.LevelDebug
+	case "warn", "WARN", "warning":
+		return slog.LevelWarn
+	case "error", "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

@@ -1,5 +1,7 @@
-name: Daily Build and Cleanup
+name: Daily Image Cleanup
 
+# Images are built only on pushes to main (see build-on-main.yml). This
+# scheduled workflow just prunes old GHCR image versions; it does NOT build.
 on:
   schedule:
     - cron: '0 2 * * *'
@@ -10,21 +12,11 @@ permissions:
   packages: write
 
 jobs:
-  build_and_cleanup:
-    name: Build Docker image and cleanup old ones
+  cleanup:
+    name: Cleanup old container images
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Log in to the GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Cleanup old container images
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +26,7 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.repository }}"
           PACKAGE_NAME=$(echo "$REPO" | cut -d'/' -f2)
-          
+
           echo "Listing versions for package '$PACKAGE_NAME' owned by '$OWNER'"
 
           # Determine if OWNER is a user or an organization
@@ -44,10 +36,9 @@ jobs:
           else
             API_BASE="orgs/$OWNER"
           fi
-          
+
           # Use an if statement to handle the expected failure when the package doesn't exist.
           if ! VERSIONS=$(gh api "$API_BASE/packages/container/$PACKAGE_NAME/versions" --jq '[.[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}]' 2>&1); then
-            # This block executes if `gh api` returns a non-zero exit code.
             if echo "$VERSIONS" | grep -q "Package not found"; then
               echo "Package '$PACKAGE_NAME' not found. This is expected if it has not been published yet. Nothing to clean up."
               exit 0
@@ -57,16 +48,15 @@ jobs:
               exit 1
             fi
           fi
-          
-          # This block executes if `gh api` was successful.
+
           if [ -z "$VERSIONS" ] || [ "$VERSIONS" == "[]" ]; then
             echo "No versions found for package. Nothing to clean up."
             exit 0
           fi
-          
+
           CUTOFF_DATE=$(date -d "60 days ago" -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "Cutoff date: $CUTOFF_DATE"
-          
+
           OLD_VERSIONS_TO_DELETE=$(echo "$VERSIONS" | jq --arg cutoff_date "$CUTOFF_DATE" '. | map(select(.created_at < $cutoff_date and (any(.tags[]?; . == "latest") | not)))')
 
           if [ -z "$OLD_VERSIONS_TO_DELETE" ] || [ "$(echo "$OLD_VERSIONS_TO_DELETE" | jq 'length')" -eq 0 ]; then
@@ -76,25 +66,10 @@ jobs:
 
           echo "The following old versions will be deleted:"
           echo "$OLD_VERSIONS_TO_DELETE" | jq .
-          
+
           echo "$OLD_VERSIONS_TO_DELETE" | jq -r '.[].id' | while read -r VERSION_ID; do
             echo "Deleting version with ID: $VERSION_ID"
             gh api --method DELETE "$API_BASE/packages/container/$PACKAGE_NAME/versions/$VERSION_ID" --silent
           done
-          
+
           echo "Cleanup complete."
-
-      - name: Get current date for tagging
-        id: date
-        run: echo "IMAGE_DATE=$(date +'%d%m%Y')" >> $GITHUB_ENV
-
-      - name: Build and push Docker image
-        id: build_and_push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}:${{ env.IMAGE_DATE }}

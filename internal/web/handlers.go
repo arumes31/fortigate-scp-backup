@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ type indexData struct {
 	Base      BaseData
 	Error     string
 	Firewalls []models.Firewall
+	NextRuns  map[int]time.Time
 }
 
 type backupsData struct {
@@ -47,9 +49,11 @@ type errorsData struct {
 }
 
 type activityLogData struct {
-	Base  BaseData
-	Logs  []models.ActivityLog
-	Error string
+	Base       BaseData
+	Logs       []models.ActivityLog
+	Error      string
+	Page       int
+	TotalPages int
 }
 
 type changePasswordData struct {
@@ -82,21 +86,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	totpCode := r.FormValue("totp_code")
 
-	user, err := s.store.GetUserForLogin(ctx, username)
+	// Brute-force guard keyed by client IP + username.
+	rlKey := clientIP(r) + "|" + username
+	if !s.limiter.allowed(rlKey) {
+		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
+		s.render(w, "login.html", loginData{Error: "Too many failed attempts. Please try again later.", TOTPEnabled: s.cfg.TOTPEnabled})
+		return
+	}
+
+	user, localOK, err := s.store.AuthenticateLocal(ctx, username, password)
 	if err != nil {
 		s.logger.Error("login user lookup failed", "user", username, "err", err)
 	}
 
-	authenticated := false
+	authenticated := localOK
 	isRadius := false
-	switch {
-	case user != nil && user.Password == password:
-		authenticated = true
-	case s.auth.VerifyRadius(username, password):
+	if !authenticated && s.auth.VerifyRadius(username, password) {
 		authenticated = true
 		isRadius = true
 		if err := s.store.UpsertRadiusUser(ctx, username); err != nil {
 			s.logger.Error("failed to upsert radius user", "user", username, "err", err)
+		}
+		if u, uerr := s.store.GetUserForLogin(ctx, username); uerr == nil {
+			user = u
 		}
 	}
 
@@ -104,11 +116,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if authenticated && s.cfg.TOTPEnabled && !isRadius {
 		if user != nil && user.TOTPSecret != "" {
 			if !s.auth.VerifyTOTP(user.TOTPSecret, totpCode) {
+				s.limiter.fail(rlKey)
 				s.store.LogActivity(username, "Login Failed", "Invalid TOTP code")
 				s.render(w, "login.html", loginData{Error: "Invalid TOTP code", TOTPEnabled: s.cfg.TOTPEnabled})
 				return
 			}
 		} else {
+			s.limiter.fail(rlKey)
 			s.store.LogActivity(username, "Login Failed", "TOTP required but no secret found")
 			s.render(w, "login.html", loginData{Error: "TOTP required but no secret found", TOTPEnabled: s.cfg.TOTPEnabled})
 			return
@@ -116,11 +130,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !authenticated {
+		s.limiter.fail(rlKey)
 		s.store.LogActivity(username, "Login Failed", "Invalid credentials")
 		s.render(w, "login.html", loginData{Error: "Invalid credentials", TOTPEnabled: s.cfg.TOTPEnabled})
 		return
 	}
 
+	s.limiter.reset(rlKey)
 	if err := s.sess.Login(w, r, username, isRadius); err != nil {
 		s.logger.Error("failed to establish session", "user", username, "err", err)
 	}
@@ -152,6 +168,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	d := s.sess.User(r)
 
 	if r.Method == http.MethodPost {
+		// Cap the request body to guard against oversized uploads (#38).
+		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.CSVMaxBytes)
+
 		// Branch (a): CSV bulk upload.
 		if file, header, ferr := r.FormFile("csv_file"); ferr == nil {
 			defer file.Close()
@@ -215,21 +234,21 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		cronExpr := strings.TrimSpace(r.FormValue("cron_expr"))
 		id, err := s.store.AddFirewall(ctx, models.Firewall{
 			FQDN: fqdn, Username: username, Password: password,
 			IntervalMin: intervalMin, RetentionCount: retention,
-			Status: "New", SSHPort: sshPort,
+			Status: "New", SSHPort: sshPort, CronExpr: cronExpr,
 		})
 		if err != nil {
 			s.render(w, "index.html", indexData{Base: s.base(r, "Firewalls", "firewalls"), Error: "Invalid input: " + err.Error()})
 			return
 		}
 		s.store.LogActivity(d.Username, "Create Firewall", fmt.Sprintf("Created firewall with ID %d and FQDN %s", id, fqdn))
-		if jobID := BackupJobID(id); !s.sched.Has(jobID) {
-			fwID := id
-			s.sched.Schedule(jobID, time.Duration(intervalMin)*time.Minute, 10*time.Second, func() { s.backup.Backup(fwID) })
-		}
-		// Fall through to the common render (matches Flask: no redirect here).
+		s.scheduleFirewall(id, intervalMin, cronExpr, 10*time.Second)
+		// Post/Redirect/Get so a refresh does not re-submit the form (#31).
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 
 	fws, err := s.store.ListFirewalls(ctx)
@@ -244,9 +263,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/change_password", http.StatusFound)
 		return
 	}
+	nextRuns := make(map[int]time.Time, len(fws))
+	for _, fw := range fws {
+		if info, ok := s.sched.Info(BackupJobID(fw.ID)); ok {
+			nextRuns[fw.ID] = info.NextRun
+		}
+	}
 	s.render(w, "index.html", indexData{
 		Base:      s.base(r, "Firewalls", "firewalls"),
 		Firewalls: fws,
+		NextRuns:  nextRuns,
 	})
 }
 
@@ -350,11 +376,7 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 		}
 		added++
 		s.store.LogActivity(actor, "Create Firewall", fmt.Sprintf("Created firewall with ID %d and FQDN %s via bulk upload", id, fqdn))
-		if jobID := BackupJobID(id); !s.sched.Has(jobID) {
-			fwID := id
-			delay := time.Duration(added*10) * time.Second
-			s.sched.Schedule(jobID, time.Duration(intervalMin)*time.Minute, delay, func() { s.backup.Backup(fwID) })
-		}
+		s.scheduleFirewall(id, intervalMin, "", time.Duration(added*10)*time.Second)
 	}
 
 	if len(rowErrors) > 0 {
@@ -363,6 +385,26 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// scheduleFirewall registers a backup job, preferring a cron expression over
+// the interval. No-op if a job already exists.
+func (s *Server) scheduleFirewall(fwID, intervalMin int, cronExpr string, firstDelay time.Duration) {
+	jobID := BackupJobID(fwID)
+	if s.sched.Has(jobID) {
+		return
+	}
+	if cronExpr != "" {
+		if err := s.sched.ScheduleCron(jobID, cronExpr, func() { s.backup.Backup(fwID) }); err == nil {
+			return
+		} else {
+			s.logger.Warn("invalid cron, using interval", "fw_id", fwID, "cron", cronExpr, "err", err)
+		}
+	}
+	if intervalMin <= 0 {
+		intervalMin = 180
+	}
+	s.sched.Schedule(jobID, time.Duration(intervalMin)*time.Minute, firstDelay, func() { s.backup.Backup(fwID) })
 }
 
 // handleListBackups shows the stored configurations for one firewall.
@@ -382,15 +424,29 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, Backups: backups})
 }
 
-// handleDownload serves a stored configuration file.
+// handleDownload serves a stored configuration file, decrypting it on the fly
+// when encryption at rest is enabled so the user always downloads plaintext.
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := chi.URLParam(r, "*")
 	if filename == "" || strings.Contains(filename, "..") {
 		http.NotFound(w, r)
 		return
 	}
+	diskPath := filepath.Join(s.cfg.BackupDir, filepath.FromSlash(filename))
+	raw, err := os.ReadFile(diskPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	plain, err := s.cipher.Decrypt(raw)
+	if err != nil {
+		s.logger.Error("failed to decrypt backup for download", "file", filename, "err", err)
+		http.Error(w, "failed to read backup", http.StatusInternalServerError)
+		return
+	}
 	s.store.LogActivity(s.sess.User(r).Username, "Download Config", "Downloaded configuration file: "+filename)
-	http.ServeFile(w, r, filepath.Join(s.cfg.BackupDir, filepath.FromSlash(filename)))
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(filename)+"\"")
+	http.ServeContent(w, r, filepath.Base(filename), time.Time{}, bytes.NewReader(plain))
 }
 
 // handleDeleteFirewall removes a firewall, its backups, its files and its job.
@@ -432,14 +488,16 @@ func (s *Server) handleErrors(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "errors.html", errorsData{Base: base, Errors: errs})
 }
 
-// handleBackupNow triggers a synchronous backup then returns to the index.
+// handleBackupNow triggers an asynchronous backup then returns to the index so
+// the request does not block on the SSH/SCP timeout.
 func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
 	if err != nil {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	s.backup.Backup(fwID)
+	s.store.LogActivity(s.sess.User(r).Username, "Backup Now", fmt.Sprintf("Manual backup triggered for fw_id %d", fwID))
+	s.backup.Enqueue(fwID)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -492,12 +550,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if query != "" {
 			s.store.LogActivity(s.sess.User(r).Username, "Search", "Performed search for: "+query)
 
-			// Wildcard '*' -> '.*', everything else quoted, case-insensitive.
-			parts := strings.Split(query, "*")
-			for i, p := range parts {
-				parts[i] = regexp.QuoteMeta(p)
-			}
-			pattern, err := regexp.Compile("(?i)" + strings.Join(parts, ".*"))
+			pattern, err := buildSearchPattern(query)
 			if err != nil {
 				data.Error = "Invalid search pattern: " + err.Error()
 				s.render(w, "search.html", data)
@@ -517,6 +570,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, "search.html", data)
+}
+
+// buildSearchPattern converts a user query into a case-insensitive regexp where
+// '*' is a wildcard and everything else is treated literally. Invalid UTF-8 in
+// the query is sanitized so the pattern always compiles.
+func buildSearchPattern(query string) (*regexp.Regexp, error) {
+	parts := strings.Split(query, "*")
+	for i, p := range parts {
+		parts[i] = regexp.QuoteMeta(strings.ToValidUTF8(p, ""))
+	}
+	return regexp.Compile("(?i)" + strings.Join(parts, ".*"))
 }
 
 // searchFirewall scans the newest .conf file of one firewall for pattern matches.
@@ -547,16 +611,20 @@ func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) 
 	}
 
 	fpath := filepath.Join(fwDir, latest)
-	f, err := os.Open(fpath)
+	raw, err := os.ReadFile(fpath)
 	if err != nil {
 		s.logger.Error("error reading file", "path", fpath, "err", err)
 		return nil
 	}
-	defer f.Close()
+	plain, err := s.cipher.Decrypt(raw)
+	if err != nil {
+		s.logger.Error("error decrypting file", "path", fpath, "err", err)
+		return nil
+	}
 
 	relName := filepath.ToSlash(filepath.Join(strconv.Itoa(ref.ID), latest))
 	var results []searchResult
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(plain))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
@@ -571,14 +639,33 @@ func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) 
 	return results
 }
 
-// handleActivityLog renders the activity log, newest first.
+const activityPageSize = 100
+
+// handleActivityLog renders a page of activity, newest first.
 func (s *Server) handleActivityLog(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	base := s.base(r, "Activity Log", "activity")
-	logs, err := s.store.ListActivityLogs(r.Context())
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	total, err := s.store.CountActivityLogs(ctx)
+	if err != nil {
+		s.logger.Error("failed to count activity logs", "err", err)
+	}
+	totalPages := (total + activityPageSize - 1) / activityPageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	logs, err := s.store.ListActivityLogs(ctx, activityPageSize, (page-1)*activityPageSize)
 	if err != nil {
 		s.logger.Error("failed to retrieve activity logs", "err", err)
-		s.render(w, "activity_log.html", activityLogData{Base: base, Error: "Failed to load activity logs"})
+		s.render(w, "activity_log.html", activityLogData{Base: base, Error: "Failed to load activity logs", Page: 1, TotalPages: 1})
 		return
 	}
-	s.render(w, "activity_log.html", activityLogData{Base: base, Logs: logs})
+	s.render(w, "activity_log.html", activityLogData{Base: base, Logs: logs, Page: page, TotalPages: totalPages})
 }

@@ -19,7 +19,7 @@
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
-                    <td class="muted">{{if .LastBackup}}{{.LastBackup}}{{else}}—{{end}}</td>
+                    <td class="muted">{{fmtTime .LastBackup}}</td>
                     <td><span class="pill pill-failed" title="{{.Status}}">{{.Status}}</span></td>
                 </tr>
             {{end}}

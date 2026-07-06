@@ -1,0 +1,39 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Dashboard</h1>
+
+<div class="stat-grid">
+    <div class="stat-tile"><div class="n">{{.Stats.TotalFirewalls}}</div><div class="l">Firewalls</div></div>
+    <div class="stat-tile ok"><div class="n">{{.Stats.Healthy}}</div><div class="l">Healthy</div></div>
+    <div class="stat-tile fail"><div class="n">{{.Stats.Failed}}</div><div class="l">Failed</div></div>
+    <div class="stat-tile new"><div class="n">{{.Stats.New}}</div><div class="l">New / Pending</div></div>
+    <div class="stat-tile"><div class="n">{{.Stats.BackupsLast24h}}</div><div class="l">Backups (24h)</div></div>
+    <div class="stat-tile"><div class="n">{{.Stats.TotalBackups}}</div><div class="l">Total Backups</div></div>
+</div>
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Failing Firewalls</h2>
+        <a href="/" class="btn btn-sm">All Firewalls</a>
+    </div>
+    {{if .Failures}}
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>ID</th><th>FQDN</th><th>Last Backup</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            {{range .Failures}}
+                <tr>
+                    <td>{{.ID}}</td>
+                    <td>{{.FQDN}}</td>
+                    <td class="muted">{{fmtTime .LastBackup}}</td>
+                    <td><span class="pill pill-failed" title="{{.Status}}">Failed</span></td>
+                    <td><a class="btn btn-sm" href="/backup_now/{{.ID}}">Retry</a></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">All firewalls are healthy. 🎉</div>
+    {{end}}
+</div>
+{{end}}

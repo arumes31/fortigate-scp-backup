@@ -84,6 +84,42 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	return nil
 }
 
+// TestConnection performs a quick SSH dial + remote config-path check for a
+// firewall without saving a backup. It returns a human-readable status message
+// on success, or an error if the connection/auth fails.
+func (s *Service) TestConnection(fwID int) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	fw, err := s.store.GetFirewall(ctx, fwID)
+	cancel()
+	if err != nil {
+		return "", err
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User:            fw.Username,
+		Auth:            []ssh.AuthMethod{ssh.Password(fw.Password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         time.Duration(s.cfg.SCPTimeout) * time.Second,
+	}
+	addr := net.JoinHostPort(fw.FQDN, strconv.Itoa(fw.SSHPort))
+	conn, err := ssh.Dial("tcp", addr, clientConfig)
+	if err != nil {
+		return "", fmt.Errorf("SSH connection failed: %w", err)
+	}
+	defer conn.Close()
+
+	session, err := conn.NewSession()
+	if err != nil {
+		return "Connected (auth OK), but could not open a session: " + err.Error(), nil
+	}
+	defer session.Close()
+	if out, err := session.CombinedOutput("ls " + s.cfg.FortigateConfigPath); err != nil {
+		return fmt.Sprintf("Connected (auth OK), but config path %q was not found: %s",
+			s.cfg.FortigateConfigPath, strings.TrimSpace(string(out))), nil
+	}
+	return "Connection OK: authenticated and config path found.", nil
+}
+
 // remoteCheck runs `ls <remotePath>` over a throwaway session and logs the
 // outcome. It never fails the backup: any error is logged and ignored so the
 // SCP transfer is still attempted, exactly like the Python implementation.

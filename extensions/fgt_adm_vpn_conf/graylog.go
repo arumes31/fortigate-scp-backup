@@ -216,10 +216,13 @@ func (e *Extension) graylogSweep() error {
 		// Record when this device was checked (UTC).
 		now := time.Now().UTC()
 
-		// Send an up/down event on every check (not only on transitions) so
-		// HookWise always reflects the current device state. Only online/offline
-		// map to UP/DOWN; error/config_missing states are not sent.
-		if newStatus == "online" || newStatus == "offline" {
+		// Send an up/down event ONLY on a real state transition (#74). The
+		// previous status is read from the persisted LastGraylogStatus, so
+		// transition detection is correct across application restarts and we do
+		// not re-alert for a device whose state is unchanged. Only online/offline
+		// map to UP/DOWN; error/config_missing states are never sent.
+		if (newStatus == "online" || newStatus == "offline") && newStatus != c.LastGraylogStatus {
+			e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
 			e.sendHookwiseEvent(c, newStatus)
 		}
 
