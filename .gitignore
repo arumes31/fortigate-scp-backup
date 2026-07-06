@@ -5,3 +5,7 @@ example.csv
 # Python bytecode cache
 __pycache__/
 *.py[cod]
+graphify-out/
+temp/
+
+.claudeignore
