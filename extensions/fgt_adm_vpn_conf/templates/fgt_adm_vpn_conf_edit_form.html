@@ -1,56 +1,55 @@
-<form action="{{ url_for('fgt_adm_vpn_conf.edit', id=config.id) }}" method="post">
-    <table>
-        <tbody>
-            <tr>
-                <td>Kundenname</td>
-                <td><input type="text" name="kundenname" value="{{ config.kundenname }}"></td>
-            </tr>
-            <tr>
-                <td>Standort</td>
-                <td><input type="text" name="standort" value="{{ config.standort }}"></td>
-            </tr>
-            <tr>
-                <td>Firewallname</td>
-                <td><input type="text" name="firewallname" value="{{ config.firewallname }}"></td>
-            </tr>
-            <tr>
-                <td>CID</td>
-                <td><input type="text" name="cid" value="{{ config.cid or '' }}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required></td>
-            </tr>
-            <tr>
-                <td>REMOTEIP-FULL</td>
-                <td><input type="text" name="remoteip_full" value="{{ config.remoteip_full }}"></td>
-            </tr>
-            <tr>
-                <td>WAN-Interface</td>
-                <td><input type="text" name="wan_interface" value="{{ config.wan_interface }}"></td>
-            </tr>
-            <tr>
-                <td>LAN-Interface</td>
-                <td><input type="text" name="lan_interface" value="{{ config.lan_interface }}"></td>
-            </tr>
-            <tr>
-                <td>IPSEC-PSK-RO</td>
-                <td><input type="text" name="ipsec_psk_ro" value="{{ config.ipsec_psk_ro }}"></td>
-            </tr>
-            <tr>
-                <td>IPSEC-PSK-HCI</td>
-                <td><input type="text" name="ipsec_psk_hci" value="{{ config.ipsec_psk_hci }}"></td>
-            </tr>
-            <tr>
-                <td>RADIUSMGT (YES/NO)</td>
-                <td><input type="text" name="radiusmgt" value="{{ config.radiusmgt }}"></td>
-            </tr>
-            <tr>
-                <td>Graylog Enabled</td>
-                <td><input type="checkbox" name="graylog_enabled" {{ 'checked' if config.graylog_enabled else '' }}></td>
-            </tr>
-            <tr>
-                <td>Cluster Hostnames (comma separated)</td>
-                <td><input type="text" name="cluster_hostnames" value="{{ config.cluster_hostnames or '' }}" placeholder="FW1,FW2"></td>
-            </tr>
-        </tbody>
-    </table>
-    <br>
-    <input type="submit" value="Update Entry">
+<form action="/fgt-adm-vpn-conf/edit/{{.ID}}" method="post">
+    <div class="form-grid">
+        <div class="field">
+            <label>Kundenname</label>
+            <input type="text" name="kundenname" value="{{.Kundenname}}">
+        </div>
+        <div class="field">
+            <label>Standort</label>
+            <input type="text" name="standort" value="{{.Standort}}">
+        </div>
+        <div class="field">
+            <label>Firewallname</label>
+            <input type="text" name="firewallname" value="{{.Firewallname}}">
+        </div>
+        <div class="field">
+            <label>CID</label>
+            <input type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+        </div>
+        <div class="field">
+            <label>REMOTEIP-FULL</label>
+            <input type="text" name="remoteip_full" value="{{.RemoteipFull}}">
+        </div>
+        <div class="field">
+            <label>WAN-Interface</label>
+            <input type="text" name="wan_interface" value="{{.WanInterface}}">
+        </div>
+        <div class="field">
+            <label>LAN-Interface</label>
+            <input type="text" name="lan_interface" value="{{.LanInterface}}">
+        </div>
+        <div class="field">
+            <label>IPSEC-PSK-RO</label>
+            <input type="text" name="ipsec_psk_ro" value="{{.IpsecPskRo}}">
+        </div>
+        <div class="field">
+            <label>IPSEC-PSK-HCI</label>
+            <input type="text" name="ipsec_psk_hci" value="{{.IpsecPskHci}}">
+        </div>
+        <div class="field">
+            <label>RADIUSMGT (YES/NO)</label>
+            <input type="text" name="radiusmgt" value="{{.Radiusmgt}}">
+        </div>
+        <div class="field">
+            <label>Cluster Hostnames (comma separated)</label>
+            <input type="text" name="cluster_hostnames" value="{{.ClusterHostnames}}" placeholder="FW1,FW2">
+        </div>
+        <div class="field checkbox-row">
+            <input type="checkbox" name="graylog_enabled" id="edit_graylog_enabled" {{if .GraylogEnabled}}checked{{end}}>
+            <label for="edit_graylog_enabled">Graylog Enabled</label>
+        </div>
+    </div>
+    <div style="margin-top:18px;">
+        <button type="submit" class="btn btn-primary">Update Entry</button>
+    </div>
 </form>
