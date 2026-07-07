@@ -10,13 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
-// auditFinding is a single compliance observation parsed from a config.
-type auditFinding struct {
-	Severity string // critical | warning | info
-	Text     string
-}
+type auditFinding = models.AuditFinding
 
 // auditRow is one firewall's audit result.
 type auditRow struct {
@@ -64,11 +62,23 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	verCounts := map[string]int{}
 	crit, warn := 0, 0
 	for _, ref := range refs {
-		plain, ok := s.latestConfig(ref.ID)
+		plain, filename, ok := s.latestConfig(ref.ID)
 		row := auditRow{FwID: ref.ID, FQDN: ref.FQDN, HasConfig: ok}
 		if ok {
 			row.Model, row.Version = parseFortiOSVersion(plain)
-			row.Findings = auditFindings(plain)
+
+			// Load from database cache
+			findings, err := s.store.GetAuditFindings(ctx, ref.ID)
+			if err != nil || len(findings) == 0 || findings[0].BackupFilename != filename {
+				// Cache is empty, stale, or error - run parser and save!
+				findings = auditFindingsForBackup(ref.ID, filename, plain)
+				if err := s.store.SaveAuditFindings(ctx, ref.ID, findings); err != nil {
+					s.logger.Error("failed to cache audit findings", "fw_id", ref.ID, "err", err)
+				}
+			}
+
+			row.Findings = findings
+
 			key := row.Version
 			if key == "" {
 				key = "unknown"
@@ -108,13 +118,13 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// latestConfig returns the decrypted newest .conf for a firewall, or ok=false
+// latestConfig returns the decrypted newest .conf for a firewall, the config filename, or ok=false
 // when the firewall has no readable backup.
-func (s *Server) latestConfig(fwID int) (string, bool) {
+func (s *Server) latestConfig(fwID int) (string, string, bool) {
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	var latest string
 	var latestMod time.Time
@@ -132,18 +142,18 @@ func (s *Server) latestConfig(fwID int) (string, bool) {
 		}
 	}
 	if latest == "" {
-		return "", false
+		return "", "", false
 	}
 	raw, err := os.ReadFile(filepath.Join(fwDir, latest))
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	plain, err := s.cipher.Decrypt(raw)
 	if err != nil {
 		s.logger.Error("audit decrypt failed", "fw_id", fwID, "err", err)
-		return "", false
+		return "", "", false
 	}
-	return string(plain), true
+	return string(plain), latest, true
 }
 
 // parseFortiOSVersion extracts the model and firmware version from a config's
@@ -155,14 +165,20 @@ func parseFortiOSVersion(cfg string) (model, version string) {
 	return "", ""
 }
 
-// auditFindings derives management-exposure findings from a config: telnet /
-// plaintext-HTTP management, ping exposure, and how many interfaces expose any
-// management service.
+func auditFindingsForBackup(fwID int, filename string, cfg string) []models.AuditFinding {
+	findings := auditFindings(cfg)
+	for i := range findings {
+		findings[i].FwID = fwID
+		findings[i].BackupFilename = filename
+	}
+	return findings
+}
+
 // auditFindings derives management-exposure and compliance findings from a config:
 // telnet/plaintext-HTTP management, weak ciphers (DES/3DES), weak hashes (MD5),
 // weak DH groups, missing admin 2FA, default accounts, and weak SSL/TLS protocols.
-func auditFindings(cfg string) []auditFinding {
-	var out []auditFinding
+func auditFindings(cfg string) []models.AuditFinding {
+	var out []models.AuditFinding
 	var telnet, httpMgmt, pingMgmt bool
 	exposedMgmt := 0
 	for _, m := range reAllowAccess.FindAllStringSubmatch(cfg, -1) {
@@ -185,19 +201,39 @@ func auditFindings(cfg string) []auditFinding {
 	}
 
 	if telnet {
-		out = append(out, auditFinding{"critical", "Telnet-Management aktiviert (allowaccess telnet)"})
+		out = append(out, models.AuditFinding{
+			Severity:    "critical",
+			Text:        "Telnet-Management aktiviert (allowaccess telnet)",
+			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-telnet>\nnext\nend",
+		})
 	}
 	if strings.Contains(strings.ToLower(cfg), "set admin-telnet enable") {
-		out = append(out, auditFinding{"critical", "Admin-Telnet global aktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "critical",
+			Text:        "Admin-Telnet global aktiviert",
+			Remediation: "config system global\n  set admin-telnet disable\nend",
+		})
 	}
 	if httpMgmt {
-		out = append(out, auditFinding{"warning", "Klartext-HTTP-Management aktiviert (allowaccess http)"})
+		out = append(out, models.AuditFinding{
+			Severity:    "warning",
+			Text:        "Klartext-HTTP-Management aktiviert (allowaccess http)",
+			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-http>\nnext\nend",
+		})
 	}
 	if pingMgmt {
-		out = append(out, auditFinding{"info", "Ping auf Management-Interfaces erlaubt"})
+		out = append(out, models.AuditFinding{
+			Severity:    "info",
+			Text:        "Ping auf Management-Interfaces erlaubt",
+			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-ping>\nnext\nend",
+		})
 	}
 	if exposedMgmt > 0 {
-		out = append(out, auditFinding{"info", fmt.Sprintf("%d Interface(s) mit Management-Zugriff exponiert", exposedMgmt)})
+		out = append(out, models.AuditFinding{
+			Severity:    "info",
+			Text:        fmt.Sprintf("%d Interface(s) mit Management-Zugriff exponiert", exposedMgmt),
+			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <restrict-to-ssh-https>\nnext\nend",
+		})
 	}
 
 	// 1. Two-Factor Authentication (2FA) Audit for Administrators
@@ -212,12 +248,20 @@ func auditFindings(cfg string) []auditFinding {
 
 			// Check if two-factor authentication is configured
 			if !strings.Contains(userConfig, "set two-factor") {
-				out = append(out, auditFinding{"critical", fmt.Sprintf("Administrator '%s' hat keine Zwei-Faktor-Authentifizierung (2FA) aktiviert", username)})
+				out = append(out, models.AuditFinding{
+					Severity:    "critical",
+					Text:        fmt.Sprintf("Administrator '%s' hat keine Zwei-Faktor-Authentifizierung (2FA) aktiviert", username),
+					Remediation: fmt.Sprintf("config system admin\n  edit %s\n  set two-factor email/sms/fortitoken\nnext\nend", username),
+				})
 			}
 
 			// Check if default 'admin' account exists
 			if username == "admin" {
-				out = append(out, auditFinding{"warning", "Standard-Administrator-Account 'admin' existiert noch"})
+				out = append(out, models.AuditFinding{
+					Severity:    "warning",
+					Text:        "Standard-Administrator-Account 'admin' existiert noch",
+					Remediation: "config system admin\n  rename admin to <new_secure_username>\nend",
+				})
 			}
 		}
 	}
@@ -275,26 +319,54 @@ func auditFindings(cfg string) []auditFinding {
 	}
 
 	if hasDES {
-		out = append(out, auditFinding{"critical", "Schwache IPsec-Verschlüsselung (DES) in Proposals aktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "critical",
+			Text:        "Schwache IPsec-Verschlüsselung (DES) in Proposals aktiviert",
+			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
+		})
 	}
 	if has3DES {
-		out = append(out, auditFinding{"critical", "Schwache IPsec-Verschlüsselung (3DES) in Proposals aktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "critical",
+			Text:        "Schwache IPsec-Verschlüsselung (3DES) in Proposals aktiviert",
+			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
+		})
 	}
 	if hasMD5 {
-		out = append(out, auditFinding{"warning", "Schwache IPsec-Integrität (MD5) in Proposals aktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "warning",
+			Text:        "Schwache IPsec-Integrität (MD5) in Proposals aktiviert",
+			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
+		})
 	}
 	if hasWeakDH {
-		out = append(out, auditFinding{"warning", "Schwache Diffie-Hellman-Gruppe (DH-Gruppe 1/2/5) aktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "warning",
+			Text:        "Schwache Diffie-Hellman-Gruppe (DH-Gruppe 1/2/5) aktiviert",
+			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set dhgrp 14 16\nnext\nend",
+		})
 	}
 	if hasMinSSLWeak {
-		out = append(out, auditFinding{"critical", "Veraltetes SSL/TLS-Protokoll als Minimum konfiguriert (SSLv3/TLS1.0/TLS1.1)"})
+		out = append(out, models.AuditFinding{
+			Severity:    "critical",
+			Text:        "Veraltetes SSL/TLS-Protokoll als Minimum konfiguriert (SSLv3/TLS1.0/TLS1.1)",
+			Remediation: "config system global\n  set ssl-min-proto-version tls1-2\nend",
+		})
 	}
 	if hasPasswordPolicyDisabled {
-		out = append(out, auditFinding{"warning", "Globale Passwort-Richtlinie (password-policy) ist deaktiviert"})
+		out = append(out, models.AuditFinding{
+			Severity:    "warning",
+			Text:        "Globale Passwort-Richtlinie (password-policy) ist deaktiviert",
+			Remediation: "config system password-policy\n  set status enable\nend",
+		})
 	}
 
 	if len(out) == 0 {
-		out = append(out, auditFinding{"info", "Keine offensichtlichen Management-Findings"})
+		out = append(out, models.AuditFinding{
+			Severity:    "info",
+			Text:        "Keine offensichtlichen Management-Findings",
+			Remediation: "Keine Aktion erforderlich.",
+		})
 	}
 	return out
 }

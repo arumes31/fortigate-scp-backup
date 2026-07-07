@@ -51,6 +51,19 @@ var migrations = []migration{
 			`CREATE UNIQUE INDEX IF NOT EXISTS backups_fw_id_filename_uidx ON backups (fw_id, filename)`,
 		)
 	}},
+	{7, "audit_findings_cache", func(ctx context.Context, s *Store) error {
+		return s.execAll(ctx,
+			`CREATE TABLE IF NOT EXISTS audit_findings (
+				fw_id INTEGER REFERENCES firewalls(id) ON DELETE CASCADE,
+				backup_filename TEXT NOT NULL,
+				severity TEXT NOT NULL,
+				finding_text TEXT NOT NULL,
+				remediation TEXT NOT NULL,
+				created_at TIMESTAMPTZ DEFAULT now()
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_audit_findings_fw ON audit_findings (fw_id)`,
+		)
+	}},
 }
 
 // Migrate applies any pending migrations in order.

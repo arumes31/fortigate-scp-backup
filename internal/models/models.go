@@ -71,3 +71,12 @@ type FirewallRef struct {
 	ID   int
 	FQDN string
 }
+
+// AuditFinding mirrors a row of the `audit_findings` table.
+type AuditFinding struct {
+	FwID           int
+	BackupFilename string
+	Severity       string
+	Text           string
+	Remediation    string
+}
