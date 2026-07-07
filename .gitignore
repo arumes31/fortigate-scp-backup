@@ -21,3 +21,5 @@ example.csv
 graphify-out/
 temp/
 .claudeignore
+.agents/
+
