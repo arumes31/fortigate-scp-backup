@@ -1,9 +1,7 @@
 services:
   fortisafe-app:
     container_name: "fortisafe-app"
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: "ghcr.io/arumes31/fortigate-scp-backup:latest"
     environment:
       # --- General / Timezone Settings ---
       - "TZ=Europe/Vienna"

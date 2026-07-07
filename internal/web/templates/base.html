@@ -1,0 +1,37 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Base.Title}} · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    {{block "head" .}}{{end}}
+</head>
+<body>
+    <div class="app">
+        <header class="topbar">
+            <a class="brand" href="/">
+                <img src="/static/logo.png" alt="FortiSafe">
+                <span>Forti<b>Safe</b></span>
+            </a>
+            <nav class="nav">
+                <a href="/dashboard" class="{{if eq .Base.Active "dashboard"}}active{{end}}">Dashboard</a>
+                <a href="/" class="{{if eq .Base.Active "firewalls"}}active{{end}}">Firewalls</a>
+                <a href="/search" class="{{if eq .Base.Active "search"}}active{{end}}">Search</a>
+                <a href="/activity_log" class="{{if eq .Base.Active "activity"}}active{{end}}">Activity Log</a>
+                {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/" class="{{if eq .Base.Active "admvpn"}}active{{end}}">ADM VPN Config</a>{{end}}
+                <a href="/change_password" class="{{if eq .Base.Active "password"}}active{{end}}">Change Password</a>
+                <form method="post" action="/logout" style="display:inline;margin:0">
+                    <button type="submit" class="danger" style="background:none;border:none;padding:0;font:inherit;color:inherit;cursor:pointer">Logout</button>
+                </form>
+            </nav>
+        </header>
+
+        <main>
+            {{block "content" .}}{{end}}
+        </main>
+    </div>
+    {{block "scripts" .}}{{end}}
+</body>
+</html>{{end}}

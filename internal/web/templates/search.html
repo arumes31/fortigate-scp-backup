@@ -1,0 +1,47 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Search Configurations</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card">
+    <form method="post" action="/search">
+        <div class="field">
+            <label for="query">Search term</label>
+            <input type="search" id="query" name="query" value="{{.Query}}" placeholder="e.g. set hostname*  (use * as wildcard)" autofocus>
+            <span class="hint">Scans the newest configuration of every firewall. <code>*</code> is a wildcard.</span>
+        </div>
+        <div class="toolbar">
+            <button type="submit" class="btn btn-primary">Search</button>
+        </div>
+    </form>
+</div>
+
+{{if .Query}}
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Results</h2>
+        <span class="muted">{{len .Results}} match{{if ne (len .Results) 1}}es{{end}}</span>
+    </div>
+    {{if .Results}}
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr><th>Firewall</th><th>File</th><th>Matching Line</th></tr>
+            </thead>
+            <tbody>
+            {{range .Results}}
+                <tr>
+                    <td>{{.FQDN}}</td>
+                    <td><a href="/download/{{.Filename}}"><code>{{.Filename}}</code></a></td>
+                    <td><code>{{.Line}}</code></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">No matches found for “{{.Query}}”.</div>
+    {{end}}
+</div>
+{{end}}
+{{end}}

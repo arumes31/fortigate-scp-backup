@@ -1,0 +1,82 @@
+name: Daily Image Cleanup
+
+# Images are built only on pushes to main (see build-on-main.yml). This
+# scheduled workflow just prunes old GHCR image versions; it does NOT build.
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    name: Cleanup old container images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cleanup old container images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          set -x
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.repository }}"
+          PACKAGE_NAME=$(echo "$REPO" | cut -d'/' -f2)
+
+          echo "Listing versions for package '$PACKAGE_NAME' owned by '$OWNER'"
+
+          # Determine if OWNER is a user or an organization
+          OWNER_TYPE=$(gh api "users/$OWNER" --jq '.type' 2>/dev/null || echo "Organization")
+          if [ "$OWNER_TYPE" == "User" ]; then
+            API_BASE="users/$OWNER"
+          else
+            API_BASE="orgs/$OWNER"
+          fi
+
+          # Use an if statement to handle the expected failure when the package doesn't exist.
+          # --paginate follows the Link headers so ALL version pages are fetched (not just the
+          # first 30). With --paginate the --jq emits one object per line across every page;
+          # we re-slurp into a single array below to keep the downstream jq shaping unchanged.
+          if ! VERSIONS=$(gh api --paginate "$API_BASE/packages/container/$PACKAGE_NAME/versions?per_page=100" --jq '.[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}' 2>&1); then
+            if echo "$VERSIONS" | grep -q "Package not found"; then
+              echo "Package '$PACKAGE_NAME' not found. This is expected if it has not been published yet. Nothing to clean up."
+              exit 0
+            else
+              echo "An unexpected error occurred while fetching package versions:"
+              echo "$VERSIONS"
+              exit 1
+            fi
+          fi
+
+          # Collapse the per-page object stream back into a single JSON array so the
+          # existing empty-check and jq filtering below work as before.
+          VERSIONS=$(echo "$VERSIONS" | jq -s '.')
+
+          if [ -z "$VERSIONS" ] || [ "$VERSIONS" == "[]" ]; then
+            echo "No versions found for package. Nothing to clean up."
+            exit 0
+          fi
+
+          CUTOFF_DATE=$(date -d "60 days ago" -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Cutoff date: $CUTOFF_DATE"
+
+          OLD_VERSIONS_TO_DELETE=$(echo "$VERSIONS" | jq --arg cutoff_date "$CUTOFF_DATE" '. | map(select(.created_at < $cutoff_date and (any(.tags[]?; . == "latest") | not)))')
+
+          if [ -z "$OLD_VERSIONS_TO_DELETE" ] || [ "$(echo "$OLD_VERSIONS_TO_DELETE" | jq 'length')" -eq 0 ]; then
+            echo "No old versions to delete."
+            exit 0
+          fi
+
+          echo "The following old versions will be deleted:"
+          echo "$OLD_VERSIONS_TO_DELETE" | jq .
+
+          echo "$OLD_VERSIONS_TO_DELETE" | jq -r '.[].id' | while read -r VERSION_ID; do
+            echo "Deleting version with ID: $VERSION_ID"
+            gh api --method DELETE "$API_BASE/packages/container/$PACKAGE_NAME/versions/$VERSION_ID" --silent
+          done
+
+          echo "Cleanup complete."

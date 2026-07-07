@@ -1,0 +1,34 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Backups · Firewall #{{.FwID}}</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Stored Configurations</h2>
+        <a href="/" class="btn btn-sm">Back to Firewalls</a>
+    </div>
+    {{if .Backups}}
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr><th>ID</th><th>Timestamp</th><th>Filename</th><th>Size</th><th>Download</th></tr>
+            </thead>
+            <tbody>
+            {{range .Backups}}
+                <tr>
+                    <td>{{.ID}}</td>
+                    <td>{{fmtTime .Timestamp}}</td>
+                    <td><code>{{.Filename}}</code></td>
+                    <td class="muted">{{if .SizeBytes}}{{fmtBytes .SizeBytes}}{{else}}—{{end}}</td>
+                    <td><a class="btn btn-sm" href="/download/{{.Filename}}">Download</a></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">No backups recorded for this firewall yet.</div>
+    {{end}}
+</div>
+{{end}}

@@ -3,186 +3,272 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FGT ADM VPN Config</title>
-    <link rel="stylesheet" href="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_style.css') }}">
+    <title>FGT ADM VPN Config · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-    <a href="{{ url_for('index') }}" class="return-button">Return to Dashboard</a>
-    <h1>FGT ADM VPN Config</h1>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/">
+            <img src="/static/logo.png" alt="FortiSafe">
+            <span>Forti<b>Safe</b></span>
+        </a>
+        <nav class="nav">
+            <a href="/">&larr; Dashboard</a>
+        </nav>
+    </header>
 
-    <hr>
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>FGT ADM VPN Config</h1>
 
-    <div class="collapsible-section">
-        <h2 class="collapsible-header">Add New Entry <button type="button" class="toggle-button">Show/Hide</button></h2>
-        <div class="collapsible-content">
-            <form action="{{ url_for('fgt_adm_vpn_conf.add') }}" method="post">
-                <table>
-                    <tbody>
-                        <tr>
-                            <td>Firewallname</td>
-                            <td><input type="text" name="firewallname" required></td>
-                        </tr>
-                        <tr>
-                            <td>CID</td>
-                            <td><input type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required></td>
-                        </tr>
-                        <tr>
-                            <td>Kundenname</td>
-                            <td><input type="text" name="kundenname" required></td>
-                        </tr>
-                        <tr>
-                            <td>Standort</td>
-                            <td><input type="text" name="standort" required></td>
-                        </tr>
-                        <tr>
-                            <td>WAN-Interface</td>
-                            <td><input type="text" name="wan_interface" value="wan1" required></td>
-                        </tr>
-                        <tr>
-                            <td>LAN-Interface</td>
-                            <td><input type="text" name="lan_interface" value="loopback" required></td>
-                        </tr>
-                        <tr>
-                            <td>IPSEC-PSK-RO</td>
-                            <td><input type="text" name="ipsec_psk_ro" value="psauto" required></td>
-                        </tr>
-                        <tr>
-                            <td>IPSEC-PSK-HCI</td>
-                            <td><input type="text" name="ipsec_psk_hci" value="psauto" required></td>
-                        </tr>
-                        <tr>
-                            <td>RADIUSMGT (YES/NO)</td>
-                            <td><input type="text" name="radiusmgt" value="YES" required></td>
-                        </tr>
-                        <tr>
-                            <td>Graylog Enabled</td>
-                            <td><input type="checkbox" name="graylog_enabled" checked></td>
-                        </tr>
-                        <tr>
-                            <td>Cluster Hostnames (comma separated)</td>
-                            <td><input type="text" name="cluster_hostnames" placeholder="FW1,FW2"></td>
-                        </tr>
-                    </tbody>
-                </table>
-                <br>
-                <input type="submit" value="Add Entry">
-            </form>
-        </div>
-    </div>
-
-    <hr>
-
-    <h2>Existing Entries</h2>
-
-    <div class="available-ips-section">
-        <h3>Available IPs (10.105.1.0/24): 
-        {% if available_ips_count is not none and available_ips_percentage is not none %}
-            <span>{{ available_ips_count }} IPs available ({{ "%.2f" | format(available_ips_percentage) }}%)</span>
-        {% else %}
-            <span>Information on available IPs not currently available.</span>
-        {% endif %}
-        </h3>
-    </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Firewallname</th>
-                    <th>CID</th>
-                    <th>Kundenname</th>
-                    <th>Standort</th>
-                    <th>REMOTEIP-FULL</th>
-                    <th>REMOTEIP-FULL-1st</th>
-                    <th>ike2-username</th>
-                    <th>WAN-Interface</th>
-                    <th>DNS-Name</th>
-                    <th>RADIUSMGT</th>
-                    <th>Graylog</th>
-                    <th>GL Status</th>
-                    <th>Next Check</th>
-                    <th>Cluster Hostnames</th>
-                    <th>DNS-Name-Full</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for config in configs %}
-                <tr>
-                    <td>{{ config.firewallname }}</td>
-                    <td>{{ config.cid }}</td>
-                    <td>{{ config.kundenname }}</td>
-                    <td>{{ config.standort }}</td>
-                    <td>{{ config.remoteip_full }}</td>
-                    <td>{{ config.remoteip_full_1st }}</td>
-                    <td>{{ config.ike2_username }}</td>
-                    <td>{{ config.wan_interface }}</td>
-                    <td>{{ config.dns_name }}</td>
-                    <td>{{ config.radiusmgt }}</td>
-                    <td>{{ 'YES' if config.graylog_enabled else 'NO' }}</td>
-                    <td>
-                        {% if config.last_graylog_status == 'config_missing' %}
-                            <span title="Graylog not configured">⚠️</span>
-                        {% elif config.graylog_enabled == False or config.last_graylog_status == 'disabled' %}
-                            <span title="Disabled">-</span>
-                        {% elif config.last_graylog_status == 'online' %}
-                            <span title="Online" style="color: green;">✅</span>
-                        {% elif config.last_graylog_status == 'offline' %}
-                            <span title="Offline" style="color: red;">❌</span>
-                        {% else %}
-                            <span title="Unknown">❓</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if config.graylog_enabled and config.next_graylog_check %}
-                            <span class="next-graylog-check" data-next="{{ config.next_graylog_check.strftime('%Y-%m-%dT%H:%M:%SZ') }}">…</span>
-                        {% else %}-{% endif %}
-                    </td>
-                    <td>{{ config.cluster_hostnames or '-' }}</td>
-                    <td><a href="https://{{ config.dns_name_full }}:9443" target="_blank">{{ config.dns_name_full }}</a></td>
-                    <td>
-                        <a href="#" class="open-edit-modal" data-id="{{ config.id }}">Edit</a>
-                        <a href="{{ url_for('fgt_adm_vpn_conf.delete', id=config.id) }}" onclick="return confirm('Are you sure you want to remove this entry?');">Remove</a>
-                        <a href="{{ url_for('fgt_adm_vpn_conf.generate_single', id=config.id) }}">Download</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    <h2>Import/Export</h2>
-    <form action="{{ url_for('fgt_adm_vpn_conf.import_csv') }}" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".csv">
-        <input type="submit" value="Import">
-        <a href="{{ url_for('fgt_adm_vpn_conf.export_csv') }}" class="submit">Export All to CSV (Backup)</a>
-        <a href="{{ url_for('fgt_adm_vpn_conf.export_bookmarks') }}" class="submit">Export to Browser Favorites</a>
-    </form>
-
-    <hr>
-    
-    <div id="editModal" class="modal">
-        <div class="modal-content">
-            <span class="close-button">&times;</span>
-            <h2>Edit Configuration</h2>
-            <div id="modal-body-content">
-                <!-- Edit form will be loaded here -->
+        <div class="card">
+            <h2 class="collapsible-header mb-0" id="addToggle">
+                Add New Entry
+                <button type="button" class="btn btn-sm" id="addToggleBtn">Show</button>
+            </h2>
+            <div class="collapsible-content" id="addContent" style="display:none; margin-top:18px;">
+                <form action="/fgt-adm-vpn-conf/add" method="post">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label>Firewallname</label>
+                            <input type="text" name="firewallname" required>
+                        </div>
+                        <div class="field">
+                            <label>CID</label>
+                            <input type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+                        </div>
+                        <div class="field">
+                            <label>Kundenname</label>
+                            <input type="text" name="kundenname" required>
+                        </div>
+                        <div class="field">
+                            <label>Standort</label>
+                            <input type="text" name="standort" required>
+                        </div>
+                        <div class="field">
+                            <label>WAN-Interface</label>
+                            <input type="text" name="wan_interface" value="wan1" required>
+                        </div>
+                        <div class="field">
+                            <label>LAN-Interface</label>
+                            <input type="text" name="lan_interface" value="loopback" required>
+                        </div>
+                        <div class="field">
+                            <label>IPSEC-PSK-RO</label>
+                            <input type="text" name="ipsec_psk_ro" value="psauto" required>
+                        </div>
+                        <div class="field">
+                            <label>IPSEC-PSK-HCI</label>
+                            <input type="text" name="ipsec_psk_hci" value="psauto" required>
+                        </div>
+                        <div class="field">
+                            <label>RADIUSMGT (YES/NO)</label>
+                            <input type="text" name="radiusmgt" value="YES" required>
+                        </div>
+                        <div class="field">
+                            <label>Cluster Hostnames (comma separated)</label>
+                            <input type="text" name="cluster_hostnames" placeholder="FW1,FW2">
+                        </div>
+                        <div class="field checkbox-row">
+                            <input type="checkbox" name="graylog_enabled" id="add_graylog_enabled" checked>
+                            <label for="add_graylog_enabled">Graylog Enabled</label>
+                        </div>
+                    </div>
+                    <div style="margin-top:18px;">
+                        <button type="submit" class="btn btn-primary">Add Entry</button>
+                    </div>
+                </form>
             </div>
         </div>
-    </div>
 
-    <script src="{{ url_for('fgt_adm_vpn_conf.static', filename='fgt_adm_vpn_conf_script.js') }}"></script>
-    <script>
-        function updateGraylogCheckTimers() {
-            var now = Date.now();
-            document.querySelectorAll('.next-graylog-check').forEach(function (el) {
-                var target = new Date(el.dataset.next).getTime();
-                var diff = Math.round((target - now) / 1000);
-                if (isNaN(target)) { el.textContent = '-'; return; }
-                if (diff <= 0) { el.textContent = 'due'; return; }
-                var m = Math.floor(diff / 60);
-                var s = diff % 60;
-                el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
-            });
-        }
-        updateGraylogCheckTimers();
-        setInterval(updateGraylogCheckTimers, 1000);
-    </script>
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Available IPs <span class="muted">(10.105.1.0/24)</span></h2>
+                <div class="stat"><b>{{.AvailableIPsCount}}</b><span class="muted">available ({{.AvailableIPsPercentage}}%)</span></div>
+            </div>
+            <div class="meter"><span style="width:{{.AvailableIPsPercentage}}%"></span></div>
+        </div>
+
+        <div class="card pad-0">
+            <div class="table-wrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Firewallname</th>
+                            <th>CID</th>
+                            <th>Kundenname</th>
+                            <th>Standort</th>
+                            <th>REMOTEIP-FULL</th>
+                            <th>REMOTEIP-FULL-1st</th>
+                            <th>ike2-username</th>
+                            <th>WAN-Interface</th>
+                            <th>DNS-Name</th>
+                            <th>RADIUSMGT</th>
+                            <th>Graylog</th>
+                            <th>GL Status</th>
+                            <th>Next Check</th>
+                            <th>Cluster Hostnames</th>
+                            <th>DNS-Name-Full</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Configs}}
+                        <tr>
+                            <td>{{.Firewallname}}</td>
+                            <td>{{.Cid}}</td>
+                            <td>{{.Kundenname}}</td>
+                            <td>{{.Standort}}</td>
+                            <td><code>{{.RemoteipFull}}</code></td>
+                            <td><code>{{.RemoteipFull1st}}</code></td>
+                            <td>{{.Ike2Username}}</td>
+                            <td>{{.WanInterface}}</td>
+                            <td>{{.DnsName}}</td>
+                            <td>{{.Radiusmgt}}</td>
+                            <td>{{if .GraylogEnabled}}YES{{else}}NO{{end}}</td>
+                            <td>
+                                {{if eq .LastGraylogStatus "config_missing"}}
+                                    <span class="pill pill-new" title="Graylog not configured">config</span>
+                                {{else if or (not .GraylogEnabled) (eq .LastGraylogStatus "disabled")}}
+                                    <span class="pill pill-muted" title="Disabled">disabled</span>
+                                {{else if eq .LastGraylogStatus "online"}}
+                                    <span class="pill pill-success" title="Online">online</span>
+                                {{else if eq .LastGraylogStatus "offline"}}
+                                    <span class="pill pill-failed" title="Offline">offline</span>
+                                {{else}}
+                                    <span class="pill pill-muted" title="Unknown">unknown</span>
+                                {{end}}
+                            </td>
+                            <td>
+                                {{if and .GraylogEnabled .NextCheckISO}}
+                                    <span class="next-graylog-check muted" data-next="{{.NextCheckISO}}">&hellip;</span>
+                                {{else}}-{{end}}
+                            </td>
+                            <td>{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}-{{end}}</td>
+                            <td><a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a></td>
+                            <td class="actions">
+                                <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
+                                <form method="post" action="/fgt-adm-vpn-conf/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Are you sure you want to remove this entry?');">
+                                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                                </form>
+                                <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
+                            </td>
+                        </tr>
+                        {{else}}
+                        <tr><td colspan="16" class="empty">No entries yet.</td></tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="mt-0">Import / Export</h2>
+            <form action="/fgt-adm-vpn-conf/import" method="post" enctype="multipart/form-data" class="toolbar">
+                <input type="file" name="file" accept=".csv" style="max-width:280px;">
+                <button type="submit" class="btn">Import</button>
+                <a href="/fgt-adm-vpn-conf/export" class="btn">Export All to CSV (Backup)</a>
+                <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">Export to Browser Favorites</a>
+            </form>
+        </div>
+    </main>
+</div>
+
+<div id="editModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="modalClose" type="button">&times;</button>
+        <h2 class="mt-0">Edit Configuration</h2>
+        <div id="modal-body-content"></div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var editModal = document.getElementById('editModal');
+    var modalClose = document.getElementById('modalClose');
+    var modalBody = document.getElementById('modal-body-content');
+
+    function closeModal() {
+        editModal.classList.remove('open');
+        modalBody.innerHTML = '';
+    }
+
+    document.querySelectorAll('.open-edit-modal').forEach(function (link) {
+        link.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            var id = this.dataset.id;
+            fetch('/fgt-adm-vpn-conf/edit/' + id)
+                .then(function (resp) {
+                    if (!resp.ok) { throw new Error('Network response was not ok'); }
+                    return resp.text();
+                })
+                .then(function (html) {
+                    modalBody.innerHTML = html;
+                    editModal.classList.add('open');
+                    var form = modalBody.querySelector('form');
+                    if (form) {
+                        form.addEventListener('submit', function (e) {
+                            e.preventDefault();
+                            fetch(form.action, { method: 'POST', body: new FormData(form) })
+                                .then(function (resp) {
+                                    if (!resp.ok) { return resp.text().then(function (t) { throw new Error(t); }); }
+                                    return resp.text();
+                                })
+                                .then(function () {
+                                    alert('Configuration updated successfully!');
+                                    closeModal();
+                                    window.location.reload();
+                                })
+                                .catch(function (err) {
+                                    alert('Error updating configuration: ' + err.message);
+                                });
+                        });
+                    }
+                })
+                .catch(function (err) {
+                    modalBody.innerHTML = '<p class="alert alert-error">Error loading form: ' + err.message + '</p>';
+                    editModal.classList.add('open');
+                });
+        });
+    });
+
+    if (modalClose) { modalClose.addEventListener('click', closeModal); }
+    window.addEventListener('click', function (e) { if (e.target === editModal) { closeModal(); } });
+
+    // Collapsible "Add New Entry" panel.
+    var addHeader = document.getElementById('addToggle');
+    var addBtn = document.getElementById('addToggleBtn');
+    var addContent = document.getElementById('addContent');
+    if (addHeader) {
+        addHeader.addEventListener('click', function () {
+            if (!addContent) { return; }
+            if (addContent.style.display === 'none') {
+                addContent.style.display = 'block';
+                if (addBtn) { addBtn.textContent = 'Hide'; }
+            } else {
+                addContent.style.display = 'none';
+                if (addBtn) { addBtn.textContent = 'Show'; }
+            }
+        });
+    }
+
+    // Live "next check" countdown.
+    function updateGraylogCheckTimers() {
+        var now = Date.now();
+        document.querySelectorAll('.next-graylog-check').forEach(function (el) {
+            var target = new Date(el.dataset.next).getTime();
+            if (isNaN(target)) { el.textContent = '-'; return; }
+            var diff = Math.round((target - now) / 1000);
+            if (diff <= 0) { el.textContent = 'due'; return; }
+            var m = Math.floor(diff / 60);
+            var s = diff % 60;
+            el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
+        });
+    }
+    updateGraylogCheckTimers();
+    setInterval(updateGraylogCheckTimers, 1000);
+});
+</script>
 </body>
 </html>
