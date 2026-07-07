@@ -276,6 +276,74 @@ end`
 	if !warn {
 		t.Error("plaintext http allowaccess should raise a warning")
 	}
+
+	// Test 2FA and default admin account
+	adminCfg := `config system admin
+edit "admin"
+set accprofile "super_admin"
+next
+edit "user2"
+set accprofile "super_admin"
+set two-factor email
+next
+end`
+	adminFindings := auditFindings(adminCfg)
+	var hasAdminNo2FA, hasDefaultAdmin bool
+	for _, f := range adminFindings {
+		if strings.Contains(f.Text, "Zwei-Faktor-Authentifizierung") && strings.Contains(f.Text, "admin") {
+			hasAdminNo2FA = true
+		}
+		if strings.Contains(f.Text, "Standard-Administrator-Account") {
+			hasDefaultAdmin = true
+		}
+	}
+	if !hasAdminNo2FA {
+		t.Error("admin account without 2FA should raise critical finding")
+	}
+	if !hasDefaultAdmin {
+		t.Error("admin default account should raise warning finding")
+	}
+
+	// Test weak crypto (3des, des, md5, dhgrp, ssl)
+	cryptoCfg := `config system global
+set ssl-min-proto-version tls1-0
+end
+config vpn ipsec phase1-interface
+edit "vpn1"
+set proposal 3des-md5 des-sha1 aes128-sha256
+set dhgrp 1 2 14
+next
+end
+config system password-policy
+set status disable
+end`
+	cryptoFindings := auditFindings(cryptoCfg)
+	var hasDES, has3DES, hasMD5, hasDH, hasTLS, hasPassPolicy bool
+	for _, f := range cryptoFindings {
+		if strings.Contains(f.Text, "(DES)") {
+			hasDES = true
+		}
+		if strings.Contains(f.Text, "(3DES)") {
+			has3DES = true
+		}
+		if strings.Contains(f.Text, "(MD5)") {
+			hasMD5 = true
+		}
+		if strings.Contains(f.Text, "DH-Gruppe 1/2/5") {
+			hasDH = true
+		}
+		if strings.Contains(f.Text, "SSL/TLS-Protokoll") {
+			hasTLS = true
+		}
+		if strings.Contains(f.Text, "password-policy") {
+			hasPassPolicy = true
+		}
+	}
+	if !hasDES || !has3DES || !hasMD5 || !hasDH || !hasTLS || !hasPassPolicy {
+		t.Errorf("crypto findings missing expected reports: DES=%t, 3DES=%t, MD5=%t, DH=%t, TLS=%t, PassPolicy=%t",
+			hasDES, has3DES, hasMD5, hasDH, hasTLS, hasPassPolicy)
+	}
+
 	clean := auditFindings("config system global\nend")
 	if len(clean) != 1 || clean[0].Severity != "info" {
 		t.Fatalf("clean config should yield one info finding, got %+v", clean)
