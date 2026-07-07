@@ -153,7 +153,15 @@
             }
         }
         if (filter) {
-            try { filter.value = localStorage.getItem('fwFilter') || ''; } catch (e) {}
+            // A ?q= param (e.g. from a clicked dashboard tile) takes precedence and
+            // is persisted, so deep-links like /?q=Failed pre-filter the list.
+            var urlQ = new URLSearchParams(window.location.search).get('q');
+            if (urlQ !== null) {
+                filter.value = urlQ;
+                try { localStorage.setItem('fwFilter', urlQ); } catch (e) {}
+            } else {
+                try { filter.value = localStorage.getItem('fwFilter') || ''; } catch (e) {}
+            }
             filter.addEventListener('input', applyFilter);
             applyFilter();
         }

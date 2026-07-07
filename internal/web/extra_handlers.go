@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
 // handleHealthz is a liveness probe.
@@ -28,30 +26,6 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("ready"))
-}
-
-type dashboardData struct {
-	Base     BaseData
-	Stats    models.DashboardStats
-	Failures []models.Firewall
-}
-
-// handleDashboard renders the overview page with health counts and failures.
-func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	stats, err := s.store.DashboardStats(ctx)
-	if err != nil {
-		s.logger.Error("dashboard stats failed", "err", err)
-	}
-	failures, err := s.store.ListErrors(ctx)
-	if err != nil {
-		s.logger.Error("dashboard failures failed", "err", err)
-	}
-	s.render(w, "dashboard.html", dashboardData{
-		Base:     s.base(r, "Dashboard", "dashboard"),
-		Stats:    stats,
-		Failures: failures,
-	})
 }
 
 // handleTestConnection performs an SSH/SCP reachability check and returns JSON.

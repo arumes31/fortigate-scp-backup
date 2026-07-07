@@ -33,7 +33,46 @@ type Service struct {
 	sem  chan struct{}              // bounds concurrent backups (#28)
 	hook atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
 	fwMu sync.Map                   // fwID(int) -> *sync.Mutex: serialises runs per firewall
+
+	// Live operational counters for the dashboard. All in-memory: they describe
+	// activity since process start and reset on restart.
+	running     sync.Map     // fwID(int) -> time.Time: in-flight backup start times
+	durTotalNs  atomic.Int64 // sum of completed run durations, nanoseconds
+	durCount    atomic.Int64 // number of completed runs
+	prunedTotal atomic.Int64 // retention-overflow files pruned since start
 }
+
+// RunningBackup describes an in-flight backup for the dashboard "running now" view.
+type RunningBackup struct {
+	FwID  int
+	Since time.Time
+}
+
+// Running returns the firewalls with a backup currently in flight.
+func (s *Service) Running() []RunningBackup {
+	var out []RunningBackup
+	s.running.Range(func(k, v any) bool {
+		out = append(out, RunningBackup{FwID: k.(int), Since: v.(time.Time)})
+		return true
+	})
+	return out
+}
+
+// AvgBackupDuration is the mean wall-clock duration of backup runs since start
+// (0 when none have run yet).
+func (s *Service) AvgBackupDuration() time.Duration {
+	c := s.durCount.Load()
+	if c == 0 {
+		return 0
+	}
+	return time.Duration(s.durTotalNs.Load() / c)
+}
+
+// BackupsRun is the number of backup runs since process start.
+func (s *Service) BackupsRun() int64 { return s.durCount.Load() }
+
+// PrunedTotal is the number of retention-overflow files pruned since start.
+func (s *Service) PrunedTotal() int64 { return s.prunedTotal.Load() }
 
 // New constructs a backup Service with a concurrency limit.
 func New(store *database.Store, m *mailer.Mailer, cfg *config.Config, cipher *crypto.Cipher, logger *slog.Logger) *Service {
@@ -75,6 +114,14 @@ func (s *Service) Backup(fwID int) {
 	defer l.Unlock()
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
+
+	start := time.Now()
+	s.running.Store(fwID, start)
+	defer func() {
+		s.running.Delete(fwID)
+		s.durTotalNs.Add(int64(time.Since(start)))
+		s.durCount.Add(1)
+	}()
 	s.backup(fwID)
 }
 

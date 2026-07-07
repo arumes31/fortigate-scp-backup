@@ -1,0 +1,54 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Audit / Compliance</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="stat-grid">
+    <div class="stat-tile fail"><div class="n">{{.Critical}}</div><div class="l">Critical Findings</div></div>
+    <div class="stat-tile new"><div class="n">{{.Warnings}}</div><div class="l">Warnings</div></div>
+    <div class="stat-tile"><div class="n">{{len .Rows}}</div><div class="l">Firewalls audited</div></div>
+</div>
+
+<div class="card">
+    <h2 class="mt-0">FortiOS-Versionsübersicht</h2>
+    {{if .Versions}}
+    <div class="chips">
+        {{range .Versions}}<span class="chip no-caps">{{.Version}} &times; {{.Count}}</span>{{end}}
+    </div>
+    {{else}}
+    <p class="muted">Keine Konfigurationen zum Auswerten.</p>
+    {{end}}
+</div>
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Compliance je Firewall</h2>
+        <span class="muted">Aus der neuesten gespeicherten Konfiguration</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data sticky-first">
+            <thead>
+                <tr><th>FQDN</th><th>Model</th><th>FortiOS</th><th>Findings</th></tr>
+            </thead>
+            <tbody>
+            {{range .Rows}}
+                <tr>
+                    <td>{{.FQDN}}</td>
+                    <td class="muted">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+                    <td>{{if .Version}}<code>{{.Version}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>
+                        {{if .HasConfig}}
+                            {{range .Findings}}<div class="finding finding-{{.Severity}}">{{.Text}}</div>{{end}}
+                        {{else}}
+                            <span class="muted">Kein Backup vorhanden</span>
+                        {{end}}
+                    </td>
+                </tr>
+            {{else}}
+                <tr><td colspan="4" class="empty">Keine Firewalls konfiguriert.</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
