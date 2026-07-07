@@ -256,6 +256,23 @@ func TestParseFortiOSVersion(t *testing.T) {
 	}
 }
 
+// structuralFindings is a test helper running the block-scanner checks the way
+// computeAudit does.
+func structuralFindings(cfg string) []auditFinding {
+	doc := parseCfg(cfg)
+	_, routes, _, _ := parseConfigData(cfg)
+	return runStructuralChecks(doc, routes)
+}
+
+// findingIDs collects the CheckIDs of a finding list.
+func findingIDs(fs []auditFinding) map[string]auditFinding {
+	out := make(map[string]auditFinding, len(fs))
+	for _, f := range fs {
+		out[f.CheckID] = f
+	}
+	return out
+}
+
 func TestAuditFindings(t *testing.T) {
 	cfg := `config system interface
 edit "wan1"
@@ -265,50 +282,41 @@ edit "mgmt"
 set allowaccess https http
 next
 end`
-	var crit, warn bool
-	for _, f := range auditFindings(cfg) {
-		switch f.Severity {
-		case "critical":
-			crit = true
-		case "warning":
-			warn = true
-		}
+	ids := findingIDs(structuralFindings(cfg))
+	if f, ok := ids["intf-telnet"]; !ok || f.Severity != "critical" {
+		t.Error("telnet allowaccess should raise a critical intf-telnet finding")
 	}
-	if !crit {
-		t.Error("telnet allowaccess should raise a critical finding")
+	if f, ok := ids["intf-http"]; !ok || f.Severity != "warning" {
+		t.Error("plaintext http allowaccess should raise an intf-http warning")
 	}
-	if !warn {
-		t.Error("plaintext http allowaccess should raise a warning")
+	// Line context must point at the allowaccess statement of wan1 (line 3).
+	if f := ids["intf-telnet"]; f.Line != 3 || !strings.Contains(f.Context, "set allowaccess ping https ssh telnet") {
+		t.Errorf("intf-telnet should anchor at line 3 with context, got line=%d ctx=%q", f.Line, f.Context)
 	}
 
-	// Test 2FA and default admin account
+	// Test 2FA, trusted hosts and default admin account
 	adminCfg := `config system admin
 edit "admin"
 set accprofile "super_admin"
 next
 edit "user2"
 set accprofile "super_admin"
+set trusthost1 10.0.0.0 255.255.255.0
 set two-factor email
 next
 end`
-	adminFindings := auditFindings(adminCfg)
-	var hasAdminNo2FA, hasDefaultAdmin bool
-	for _, f := range adminFindings {
-		if strings.Contains(f.Text, "Zwei-Faktor-Authentifizierung") && strings.Contains(f.Text, "admin") {
-			hasAdminNo2FA = true
-		}
-		if strings.Contains(f.Text, "Standard-Administrator-Account") {
-			hasDefaultAdmin = true
-		}
+	ids = findingIDs(structuralFindings(adminCfg))
+	if f, ok := ids["admin-no-2fa"]; !ok || f.Severity != "critical" || f.Key != "admin-no-2fa:admin" {
+		t.Errorf("admin without 2FA should raise critical keyed finding, got %+v", ids["admin-no-2fa"])
 	}
-	if !hasAdminNo2FA {
-		t.Error("admin account without 2FA should raise critical finding")
+	if _, ok := ids["admin-default-account"]; !ok {
+		t.Error("admin default account should raise a warning finding")
 	}
-	if !hasDefaultAdmin {
-		t.Error("admin default account should raise warning finding")
+	if f, ok := ids["admin-no-trusthost"]; !ok || f.Key != "admin-no-trusthost:admin" {
+		t.Error("admin without trusted hosts should raise a keyed warning finding")
 	}
 
-	// Test weak crypto (3des, des, md5, dhgrp, ssl)
+	// Test weak crypto (3des/des, md5, dhgrp, ssl min version, password policy)
 	cryptoCfg := `config system global
 set ssl-min-proto-version tls1-0
 end
@@ -321,36 +329,271 @@ end
 config system password-policy
 set status disable
 end`
-	cryptoFindings := auditFindings(cryptoCfg)
-	var hasDES, has3DES, hasMD5, hasDH, hasTLS, hasPassPolicy bool
-	for _, f := range cryptoFindings {
-		if strings.Contains(f.Text, "(DES)") {
-			hasDES = true
+	ids = findingIDs(structuralFindings(cryptoCfg))
+	for _, want := range []string{"vpn-weak-cipher", "vpn-weak-hash", "vpn-weak-dhgrp", "global-weak-tls", "pwpolicy-disabled"} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("crypto config should raise %s", want)
 		}
-		if strings.Contains(f.Text, "(3DES)") {
-			has3DES = true
-		}
-		if strings.Contains(f.Text, "(MD5)") {
-			hasMD5 = true
-		}
-		if strings.Contains(f.Text, "DH-Gruppe 1/2/5") {
-			hasDH = true
-		}
-		if strings.Contains(f.Text, "SSL/TLS-Protokoll") {
-			hasTLS = true
-		}
-		if strings.Contains(f.Text, "password-policy") {
-			hasPassPolicy = true
-		}
-	}
-	if !hasDES || !has3DES || !hasMD5 || !hasDH || !hasTLS || !hasPassPolicy {
-		t.Errorf("crypto findings missing expected reports: DES=%t, 3DES=%t, MD5=%t, DH=%t, TLS=%t, PassPolicy=%t",
-			hasDES, has3DES, hasMD5, hasDH, hasTLS, hasPassPolicy)
 	}
 
-	clean := auditFindings("config system global\nend")
-	if len(clean) != 1 || clean[0].Severity != "info" {
-		t.Fatalf("clean config should yield one info finding, got %+v", clean)
+	// A config with hardened settings raises none of the critical checks.
+	hardened := `config system global
+set admin-sport 9443
+set pre-login-banner enable
+end
+config system password-policy
+set status enable
+end
+config log syslogd setting
+set status enable
+end`
+	ids = findingIDs(structuralFindings(hardened))
+	for _, bad := range []string{"intf-telnet", "global-weak-tls", "pwpolicy-disabled", "log-no-remote", "global-admin-sport-default"} {
+		if _, ok := ids[bad]; ok {
+			t.Errorf("hardened config should not raise %s", bad)
+		}
+	}
+}
+
+func TestCheckGlobalHardening(t *testing.T) {
+	cfg := `config system global
+set admin-telnet enable
+set admin-ssh-v1 enable
+set strong-crypto disable
+set ssl-static-key-ciphers enable
+set admin-https-redirect disable
+set admintimeout 480
+set admin-maintainer enable
+set rest-api-key-url-query enable
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	for _, want := range []string{"global-admin-telnet", "global-ssh-v1", "global-strong-crypto",
+		"global-static-keys", "global-http-redirect", "global-admintimeout",
+		"global-maintainer", "global-rest-api-query", "global-admin-sport-default"} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("expected finding %s", want)
+		}
+	}
+}
+
+func TestCheckWANManagement(t *testing.T) {
+	cfg := `config system interface
+edit "wan1"
+set role wan
+set allowaccess ping https ssh
+next
+edit "lan"
+set allowaccess https ssh
+next
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	f, ok := ids["intf-wan-mgmt"]
+	if !ok || f.Severity != "critical" || f.Key != "intf-wan-mgmt:wan1" {
+		t.Fatalf("management on WAN interface should raise critical keyed finding, got %+v", f)
+	}
+	if _, ok := ids["intf-ping-wan"]; !ok {
+		t.Error("ping on WAN interface should raise an info finding")
+	}
+}
+
+func TestCheckSSLVPNAndSNMP(t *testing.T) {
+	cfg := `config vpn ssl settings
+set servercert "cert"
+set port 443
+set source-interface "wan1"
+end
+config system snmp community
+edit 1
+set name "public"
+next
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	if _, ok := ids["sslvpn-default-port"]; !ok {
+		t.Error("SSL-VPN on default port should raise a warning")
+	}
+	if _, ok := ids["sslvpn-no-source-address"]; !ok {
+		t.Error("SSL-VPN without source-address should raise an info finding")
+	}
+	if f, ok := ids["snmp-default-community"]; !ok || f.Severity != "critical" {
+		t.Error("default SNMP community should raise a critical finding")
+	}
+	if _, ok := ids["snmp-v1v2c"]; !ok {
+		t.Error("SNMP v1/v2c usage should raise an info finding")
+	}
+}
+
+func TestCheckPolicies(t *testing.T) {
+	cfg := `config firewall policy
+edit 1
+set srcintf "lan"
+set dstintf "wan1"
+set srcaddr "all"
+set dstaddr "all"
+set service "ALL"
+set action accept
+set logtraffic disable
+next
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	if f, ok := ids["policy-any-any"]; !ok || f.Severity != "critical" || f.Key != "policy-any-any:1" {
+		t.Fatalf("any/any/ALL accept policy should raise critical keyed finding, got %+v", f)
+	}
+	if _, ok := ids["policy-no-log"]; !ok {
+		t.Error("accept policy without logging should raise an info finding")
+	}
+}
+
+func TestGetUpgradePath(t *testing.T) {
+	// 7.6.7 is the newest patch of the recommended train: never a downgrade.
+	steps, stepsDE := getUpgradePath("7.6.7")
+	joined := strings.Join(steps, " | ")
+	if strings.Contains(joined, "7.6.0") {
+		t.Fatalf("7.6.7 must not suggest 7.6.0, got %v", steps)
+	}
+	if !strings.Contains(joined, "Up to date") {
+		t.Fatalf("7.6.7 should report up to date, got %v", steps)
+	}
+	if !strings.Contains(strings.Join(stepsDE, " | "), "Aktuell") {
+		t.Fatalf("German path should report Aktuell, got %v", stepsDE)
+	}
+
+	// 7.6.5 patches up within its own train.
+	steps, _ = getUpgradePath("7.6.5")
+	if !strings.Contains(steps[0], "7.6.7") {
+		t.Fatalf("7.6.5 should first patch to 7.6.7, got %v", steps)
+	}
+
+	// 7.0.12 walks the trains upward, never downward.
+	steps, stepsDE = getUpgradePath("7.0.12")
+	joined = strings.Join(steps, " | ")
+	for _, want := range []string{"7.0.17", "7.2.13", "7.4.12", "7.6.7"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("7.0.12 path missing %s: %v", want, steps)
+		}
+	}
+	if len(stepsDE) != len(steps) {
+		t.Errorf("en/de paths differ in length: %d vs %d", len(steps), len(stepsDE))
+	}
+
+	// Unknown versions degrade gracefully.
+	if steps, _ = getUpgradePath("bogus"); len(steps) != 1 {
+		t.Fatalf("unexpected path for bogus version: %v", steps)
+	}
+}
+
+func TestFindingLocalization(t *testing.T) {
+	fs := []auditFinding{
+		{Text: "english", TextDE: "deutsch"},
+		{Text: "custom only"},
+	}
+	de := localizeFindings(fs, "de")
+	if de[0].Text != "deutsch" || de[0].TextDE != "" {
+		t.Fatalf("de localization wrong: %+v", de[0])
+	}
+	if de[1].Text != "custom only" {
+		t.Fatal("missing translation must fall back to English")
+	}
+	en := localizeFindings(fs, "en")
+	if en[0].Text != "english" || en[0].TextDE != "" {
+		t.Fatalf("en localization wrong: %+v", en[0])
+	}
+	// Source slice untouched.
+	if fs[0].TextDE != "deutsch" {
+		t.Fatal("localizeFindings must not mutate the cached findings")
+	}
+}
+
+func TestTr(t *testing.T) {
+	if got := tr("de", "audit.warnings"); got != "Warnungen" {
+		t.Errorf("tr(de) = %q", got)
+	}
+	if got := tr("en", "audit.warnings"); got != "Warnings" {
+		t.Errorf("tr(en) = %q", got)
+	}
+	if got := tr("fr", "audit.warnings"); got != "Warnings" {
+		t.Errorf("unknown lang must fall back to en, got %q", got)
+	}
+	if got := tr("en", "no.such.key"); got != "no.such.key" {
+		t.Errorf("unknown key must return the key, got %q", got)
+	}
+}
+
+func TestGetCVEs(t *testing.T) {
+	ids := func(version string) map[string]bool {
+		out := map[string]bool{}
+		for _, f := range getCVEs(version) {
+			out[f.Key] = true
+		}
+		return out
+	}
+	if got := ids("7.0.11"); !got["cve:CVE-2023-27997"] || !got["cve:CVE-2024-21762"] || !got["cve:CVE-2024-55591"] {
+		t.Errorf("7.0.11 should flag known SSL-VPN CVEs, got %v", got)
+	}
+	if got := ids("7.6.7"); len(got) != 0 {
+		t.Errorf("7.6.7 should have no CVE findings, got %v", got)
+	}
+	if got := ids("6.4.10"); !got["cve:CVE-2022-42475"] || !got["eol-train"] {
+		t.Errorf("6.4.10 should flag CVE-2022-42475 and EOL, got %v", got)
+	}
+}
+
+func TestComplianceScores(t *testing.T) {
+	pci, cis, hipaa := calculateComplianceScores(nil)
+	if pci != 100 || cis != 100 || hipaa != 100 {
+		t.Fatalf("no findings should score 100/100/100, got %d/%d/%d", pci, cis, hipaa)
+	}
+	findings := []auditFinding{{CheckID: "intf-telnet"}, {CheckID: "pwpolicy-disabled"}}
+	pci, cis, hipaa = calculateComplianceScores(findings)
+	if pci >= 100 || cis >= 100 || hipaa >= 100 {
+		t.Fatalf("failing checks must lower every framework score, got %d/%d/%d", pci, cis, hipaa)
+	}
+}
+
+func TestSplitExemptions(t *testing.T) {
+	findings := []auditFinding{
+		{FwID: 1, Key: "admin-no-2fa:admin", Text: "Administrator 'admin' ohne 2FA"},
+		{FwID: 1, Key: "intf-telnet:wan1", Text: "Telnet auf wan1"},
+	}
+	exemptions := []exemption{
+		{FwID: 1, FindingKey: "admin-no-2fa:admin"},           // key match
+		{FwID: 2, FindingKey: "intf-telnet:wan1"},             // other firewall
+		{FwID: 1, FindingKey: "", FindingText: "nicht dabei"}, // legacy, no match
+	}
+	active, exempted := splitExemptions(findings, exemptions, 1)
+	if len(exempted) != 1 || exempted[0].Key != "admin-no-2fa:admin" {
+		t.Fatalf("expected exactly the keyed exemption to match, got %+v", exempted)
+	}
+	if len(active) != 1 || active[0].Key != "intf-telnet:wan1" {
+		t.Fatalf("expected one active finding, got %+v", active)
+	}
+}
+
+func TestParseCfgBlocks(t *testing.T) {
+	cfg := `config system admin
+edit "admin"
+set accprofile "super_admin"
+next
+end
+config system global
+set admintimeout 480
+end`
+	doc := parseCfg(cfg)
+	g, ok := doc.block("config system global")
+	if !ok {
+		t.Fatal("global block not found")
+	}
+	val, idx, found := doc.settingDirect(g, "admintimeout")
+	if !found || val != "480" || idx != 6 {
+		t.Fatalf("admintimeout: val=%q idx=%d found=%t", val, idx, found)
+	}
+	admins := doc.blocksUnder("config system admin")
+	if len(admins) != 1 || admins[0].Name != "admin" {
+		t.Fatalf("expected one admin edit block, got %+v", admins)
+	}
+	// Context includes the matched line and the block ending.
+	ctx, start := doc.context(idx, g)
+	if start < 1 || !strings.Contains(ctx, "set admintimeout 480") || !strings.Contains(ctx, "end") {
+		t.Fatalf("context wrong: start=%d ctx=%q", start, ctx)
 	}
 }
 

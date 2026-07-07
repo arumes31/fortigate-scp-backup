@@ -72,11 +72,30 @@ type FirewallRef struct {
 	FQDN string
 }
 
-// AuditFinding mirrors a row of the `audit_findings` table.
+// AuditFinding mirrors a row of the `audit_findings` table. The JSON tags are
+// used by the insights audit cache (results_json) and the /audit/results API.
 type AuditFinding struct {
-	FwID           int
-	BackupFilename string
-	Severity       string
-	Text           string
-	Remediation    string
+	FwID           int    `json:"fw_id"`
+	BackupFilename string `json:"backup_filename"`
+	Severity       string `json:"severity"`
+	Text           string `json:"text"` // canonical English text
+	// TextDE is the German rendering of Text; the results API substitutes it
+	// when the UI language is "de" (empty = English only, e.g. custom rules).
+	TextDE      string `json:"text_de,omitempty"`
+	Remediation string `json:"remediation"`
+
+	// CheckID identifies the audit check that produced the finding (stable
+	// across runs, e.g. "admin-no-2fa"). Empty for custom rules.
+	CheckID string `json:"check_id,omitempty"`
+	// Key is the stable instance key used for exemption matching: the CheckID
+	// plus an object qualifier where one check can fire per object
+	// (e.g. "admin-no-2fa:daniel"). Falls back to Text matching when empty.
+	Key string `json:"key,omitempty"`
+	// Line is the 1-based line number of the detected config statement
+	// (0 when the finding has no single anchor line).
+	Line int `json:"line,omitempty"`
+	// Context holds the detected line ±3 lines (plus the enclosing block end)
+	// for display; ContextStart is the 1-based number of its first line.
+	Context      string `json:"context,omitempty"`
+	ContextStart int    `json:"context_start,omitempty"`
 }

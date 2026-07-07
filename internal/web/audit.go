@@ -7,10 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
@@ -19,20 +17,15 @@ import (
 
 type auditFinding = models.AuditFinding
 
-// SQLite instance for insights data
-var (
-	insightsDB    *sql.DB
-	insightsOnce  sync.Once
-	insightsDBErr error
-)
-
-// initInsightsDB opens the SQLite database and sets up the schemas
-func initInsightsDB(dataDir string) (*sql.DB, error) {
-	insightsOnce.Do(func() {
-		dbPath := filepath.Join(dataDir, "forti-insights.db")
+// insightsDB opens the per-server SQLite insights database once and sets up
+// the schemas. Held on the Server (not a package global) so tests and future
+// multi-instance setups each get their own handle.
+func (s *Server) insightsDB() (*sql.DB, error) {
+	s.insightsOnce.Do(func() {
+		dbPath := filepath.Join(s.cfg.DataDir, "forti-insights.db")
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
-			insightsDBErr = err
+			s.insightsErr = err
 			return
 		}
 		db.SetMaxOpenConns(1)
@@ -45,7 +38,7 @@ func initInsightsDB(dataDir string) (*sql.DB, error) {
 		} {
 			if _, pragmaErr := db.Exec(pragma); pragmaErr != nil {
 				_ = db.Close()
-				insightsDBErr = pragmaErr
+				s.insightsErr = pragmaErr
 				return
 			}
 		}
@@ -80,40 +73,39 @@ func initInsightsDB(dataDir string) (*sql.DB, error) {
 				cis_score INTEGER,
 				hipaa_score INTEGER
 			)`,
+			`CREATE TABLE IF NOT EXISTS audit_cache (
+				fw_id INTEGER PRIMARY KEY,
+				backup_filename TEXT NOT NULL,
+				computed_at TEXT NOT NULL,
+				results_json TEXT NOT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS topology_shares (
+				token TEXT PRIMARY KEY,
+				fw_id INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at TEXT
+			)`,
 		}
 		for _, q := range queries {
 			if _, execErr := db.Exec(q); execErr != nil {
 				_ = db.Close()
-				insightsDBErr = execErr
+				s.insightsErr = execErr
 				return
 			}
 		}
-		insightsDB = db
+		// Migration: exemptions match on the stable finding key (check id +
+		// object) instead of the exact finding text, which breaks whenever a
+		// finding contains dynamic parts. Ignore the duplicate-column error on
+		// re-runs.
+		if _, err := db.Exec(`ALTER TABLE exemptions ADD COLUMN finding_key TEXT DEFAULT ''`); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			_ = db.Close()
+			s.insightsErr = err
+			return
+		}
+		s.insights = db
 	})
-	return insightsDB, insightsDBErr
-}
-
-// Structs for UI data
-type auditRow struct {
-	FwID         int
-	FQDN         string
-	Model        string
-	Version      string
-	Findings     []auditFinding
-	Exempted     []auditFinding
-	HasConfig    bool
-	UpgradePath  []string
-	PciScore     int
-	CisScore     int
-	HipaaScore   int
-	TicketID     string
-	TicketDetail string
-
-	// Topology data for JSON/JS consumption
-	Interfaces []Interface
-	Routes     []StaticRoute
-	Policies   []Policy
-	Switches   []FortiSwitch
+	return s.insights, s.insightsErr
 }
 
 type customRule struct {
@@ -127,22 +119,18 @@ type customRule struct {
 type exemption struct {
 	ID          int64
 	FwID        int
+	FindingKey  string
 	FindingText string
 	Reason      string
 	CreatedAt   time.Time
 }
 
-type versionCount struct {
-	Version string
-	Count   int
-}
-
+// auditData is the audit page *shell*: the firewall list plus the custom
+// rules / exemptions panels. Per-firewall results are fetched asynchronously
+// from /audit/results/{fwID}.
 type auditData struct {
 	Base        BaseData
-	Rows        []auditRow
-	Versions    []versionCount
-	Critical    int
-	Warnings    int
+	Firewalls   []models.FirewallRef
 	Error       string
 	CustomRules []customRule
 	Exemptions  []exemption
@@ -156,6 +144,10 @@ type Interface struct {
 	AllowAccess []string `json:"allowaccess"`
 	VlanID      int      `json:"vlan_id"`
 	Interface   string   `json:"interface"` // Parent interface
+	Role        string   `json:"role"`
+	Status      string   `json:"status"` // "" or "up"/"down" when explicitly set
+	Alias       string   `json:"alias"`
+	Type        string   `json:"type"`
 }
 
 type StaticRoute struct {
@@ -186,54 +178,16 @@ type FortiSwitch struct {
 	Ports    []SwitchPort `json:"ports"`
 }
 
-var (
-	reConfigVersion = regexp.MustCompile(`(?i)#config-version=([A-Za-z0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)`)
-	reAllowAccess   = regexp.MustCompile(`(?i)set allowaccess ([^\r\n]+)`)
-)
+var reConfigVersion = regexp.MustCompile(`(?i)#config-version=([A-Za-z0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)`)
 
-// handleAudit renders the audit page, compiling compliance results, CVE mapping, shadow rules,
-// change management ticket details, custom policies, and network topology.
+// handleAudit renders the audit page shell: firewall list, custom rules and
+// exemptions. The expensive per-firewall audit results are loaded by the page
+// itself via GET /audit/results/{fwID} (cached in the insights DB).
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	db, err := initInsightsDB(s.cfg.DataDir)
+	db, err := s.insightsDB()
 	if err != nil {
 		s.logger.Error("failed to load insights database", "err", err)
-	}
-
-	// Fetch custom rules
-	var customRules []customRule
-	if db != nil {
-		rows, err := db.Query("SELECT id, name, pattern, severity, remediation FROM custom_rules")
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			for rows.Next() {
-				var cr customRule
-				if scanErr := rows.Scan(&cr.ID, &cr.Name, &cr.Pattern, &cr.Severity, &cr.Remediation); scanErr == nil {
-					customRules = append(customRules, cr)
-				}
-			}
-		}
-	}
-
-	// Fetch exemptions
-	var exemptions []exemption
-	if db != nil {
-		rows, err := db.Query("SELECT id, fw_id, finding_text, reason, created_at FROM exemptions")
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			for rows.Next() {
-				var ex exemption
-				var caRaw string
-				if scanErr := rows.Scan(&ex.ID, &ex.FwID, &ex.FindingText, &ex.Reason, &caRaw); scanErr == nil {
-					if t, tErr := time.Parse("2006-01-02 15:04:05", caRaw); tErr == nil {
-						ex.CreatedAt = t
-					} else {
-						ex.CreatedAt = time.Now()
-					}
-					exemptions = append(exemptions, ex)
-				}
-			}
-		}
 	}
 
 	refs, err := s.store.ListFirewallRefs(ctx)
@@ -243,143 +197,66 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows := make([]auditRow, 0, len(refs))
-	verCounts := map[string]int{}
-	crit, warn := 0, 0
-
-	for _, ref := range refs {
-		plain, filename, ok := s.latestConfig(ref.ID)
-		row := auditRow{FwID: ref.ID, FQDN: ref.FQDN, HasConfig: ok}
-
-		if ok {
-			row.Model, row.Version = parseFortiOSVersion(plain)
-
-			// Parse topology including switches
-			row.Interfaces, row.Routes, row.Policies, row.Switches = parseConfigData(plain)
-
-			// Run checks
-			rawFindings := auditFindingsForBackup(ref.ID, filename, plain)
-
-			// 1. Add shadow rules
-			shadowFindings := findShadowRules(row.Policies)
-			for i := range shadowFindings {
-				shadowFindings[i].FwID = ref.ID
-				shadowFindings[i].BackupFilename = filename
-			}
-			rawFindings = append(rawFindings, shadowFindings...)
-
-			// 2. Add Security Fabric audit
-			fabricFindings := auditSecurityFabric(plain)
-			for i := range fabricFindings {
-				fabricFindings[i].FwID = ref.ID
-				fabricFindings[i].BackupFilename = filename
-			}
-			rawFindings = append(rawFindings, fabricFindings...)
-
-			// 3. Add CVE warnings
-			cveFindings := getCVEs(row.Version)
-			for i := range cveFindings {
-				cveFindings[i].FwID = ref.ID
-				cveFindings[i].BackupFilename = filename
-			}
-			rawFindings = append(rawFindings, cveFindings...)
-
-			// 4. Custom Rules evaluation
-			for _, cr := range customRules {
-				if strings.Contains(plain, cr.Pattern) {
-					rawFindings = append(rawFindings, models.AuditFinding{
-						FwID:           ref.ID,
-						BackupFilename: filename,
-						Severity:       cr.Severity,
-						Text:           fmt.Sprintf("Eigene Regel '%s' verletzt: Muster '%s' gefunden", cr.Name, cr.Pattern),
-						Remediation:    cr.Remediation,
-					})
-				}
-			}
-
-			// Filter Exemptions
-			var activeFindings []auditFinding
-			var exemptedFindings []auditFinding
-
-			for _, rf := range rawFindings {
-				isExempt := false
-				for _, ex := range exemptions {
-					if ex.FwID == ref.ID && ex.FindingText == rf.Text {
-						isExempt = true
-						break
-					}
-				}
-				if isExempt {
-					exemptedFindings = append(exemptedFindings, rf)
-				} else {
-					activeFindings = append(activeFindings, rf)
-				}
-			}
-
-			row.Findings = activeFindings
-			row.Exempted = exemptedFindings
-
-			// 5. Calculate upgrade path
-			row.UpgradePath = getUpgradePath(row.Version)
-
-			// 6. Calculate compliance scores
-			row.PciScore, row.CisScore, row.HipaaScore = calculateComplianceScores(activeFindings, plain)
-
-			// 7. Load Change Ticket
-			if db != nil {
-				_ = db.QueryRow("SELECT ticket_id, details FROM change_tickets WHERE backup_filename = ?", filename).Scan(&row.TicketID, &row.TicketDetail)
-			}
-
-			// Track version metrics
-			key := row.Version
-			if key == "" {
-				key = "unknown"
-			}
-			verCounts[key]++
-
-			for _, f := range row.Findings {
-				switch f.Severity {
-				case "critical":
-					crit++
-				case "warning":
-					warn++
-				}
-			}
-		} else {
-			verCounts["no backup"]++
-		}
-		rows = append(rows, row)
-	}
-
-	versions := make([]versionCount, 0, len(verCounts))
-	for v, c := range verCounts {
-		versions = append(versions, versionCount{Version: v, Count: c})
-	}
-	sort.Slice(versions, func(i, j int) bool {
-		if versions[i].Count != versions[j].Count {
-			return versions[i].Count > versions[j].Count
-		}
-		return versions[i].Version < versions[j].Version
-	})
-
 	s.render(w, "audit.html", auditData{
 		Base:        s.base(r, "Audit", "audit"),
-		Rows:        rows,
-		Versions:    versions,
-		Critical:    crit,
-		Warnings:    warn,
-		CustomRules: customRules,
-		Exemptions:  exemptions,
+		Firewalls:   refs,
+		CustomRules: loadCustomRules(db),
+		Exemptions:  loadExemptions(db),
 	})
 }
 
-// handleAuditExemption handles POST requests to register / remove exemptions
+// loadCustomRules fetches the custom rule list (empty on any error).
+func loadCustomRules(db *sql.DB) []customRule {
+	if db == nil {
+		return nil
+	}
+	rows, err := db.Query("SELECT id, name, pattern, severity, remediation FROM custom_rules")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []customRule
+	for rows.Next() {
+		var cr customRule
+		if scanErr := rows.Scan(&cr.ID, &cr.Name, &cr.Pattern, &cr.Severity, &cr.Remediation); scanErr == nil {
+			out = append(out, cr)
+		}
+	}
+	return out
+}
+
+// loadExemptions fetches all exemptions (empty on any error).
+func loadExemptions(db *sql.DB) []exemption {
+	if db == nil {
+		return nil
+	}
+	rows, err := db.Query("SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []exemption
+	for rows.Next() {
+		var ex exemption
+		var caRaw string
+		if scanErr := rows.Scan(&ex.ID, &ex.FwID, &ex.FindingKey, &ex.FindingText, &ex.Reason, &caRaw); scanErr == nil {
+			if t, tErr := time.Parse("2006-01-02 15:04:05", caRaw); tErr == nil {
+				ex.CreatedAt = t
+			} else {
+				ex.CreatedAt = time.Now()
+			}
+			out = append(out, ex)
+		}
+	}
+	return out
+}
+
 func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db, err := initInsightsDB(s.cfg.DataDir)
+	db, err := s.insightsDB()
 	if err != nil || db == nil {
 		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
 		return
@@ -393,12 +270,13 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fwIDStr := r.FormValue("fw_id")
 		fwID, _ := strconv.Atoi(fwIDStr)
+		findingKey := r.FormValue("finding_key")
 		findingText := r.FormValue("finding_text")
 		reason := r.FormValue("reason")
 		createdAt := time.Now().Format("2006-01-02 15:04:05")
 
-		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_text, reason, created_at) VALUES (?, ?, ?, ?)",
-			fwID, findingText, reason, createdAt)
+		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+			fwID, findingKey, findingText, reason, createdAt)
 	}
 
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
@@ -410,7 +288,7 @@ func (s *Server) handleAuditCustomRule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db, err := initInsightsDB(s.cfg.DataDir)
+	db, err := s.insightsDB()
 	if err != nil || db == nil {
 		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
 		return
@@ -431,6 +309,9 @@ func (s *Server) handleAuditCustomRule(w http.ResponseWriter, r *http.Request) {
 			name, pattern, severity, remediation)
 	}
 
+	// Custom rules feed into the cached raw findings: recompute on next read.
+	_, _ = db.Exec("DELETE FROM audit_cache")
+
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
 }
 
@@ -440,7 +321,7 @@ func (s *Server) handleAuditTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db, err := initInsightsDB(s.cfg.DataDir)
+	db, err := s.insightsDB()
 	if err != nil || db == nil {
 		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
 		return
@@ -549,6 +430,14 @@ func parseConfigData(cfg string) ([]Interface, []StaticRoute, []Policy, []FortiS
 					currentInterface.VlanID = vlanID
 				} else if strings.HasPrefix(lower, "set interface ") {
 					currentInterface.Interface = strings.Trim(trimmed[14:], `"`+"'")
+				} else if strings.HasPrefix(lower, "set role ") {
+					currentInterface.Role = strings.ToLower(strings.Trim(trimmed[9:], `"`+"'"))
+				} else if strings.HasPrefix(lower, "set status ") {
+					currentInterface.Status = strings.ToLower(strings.TrimSpace(trimmed[11:]))
+				} else if strings.HasPrefix(lower, "set alias ") {
+					currentInterface.Alias = strings.Trim(trimmed[10:], `"`+"'")
+				} else if strings.HasPrefix(lower, "set type ") {
+					currentInterface.Type = strings.ToLower(strings.TrimSpace(trimmed[9:]))
 				}
 			}
 
@@ -678,89 +567,24 @@ func findShadowRules(policies []Policy) []models.AuditFinding {
 		return false
 	}
 
+	covers := func(super []string, sub []string, wildcard string) bool {
+		if contains(super, wildcard) {
+			return true
+		}
+		for _, s := range sub {
+			if !contains(super, s) {
+				return false
+			}
+		}
+		return true
+	}
+
 	supersedes := func(p1, p2 Policy) bool {
-		srcMatch := false
-		if contains(p1.SrcIntf, "any") {
-			srcMatch = true
-		} else {
-			allContained := true
-			for _, s := range p2.SrcIntf {
-				if !contains(p1.SrcIntf, s) {
-					allContained = false
-					break
-				}
-			}
-			srcMatch = allContained
-		}
-		if !srcMatch {
-			return false
-		}
-
-		dstMatch := false
-		if contains(p1.DstIntf, "any") {
-			dstMatch = true
-		} else {
-			allContained := true
-			for _, d := range p2.DstIntf {
-				if !contains(p1.DstIntf, d) {
-					allContained = false
-					break
-				}
-			}
-			dstMatch = allContained
-		}
-		if !dstMatch {
-			return false
-		}
-
-		srcAddrMatch := false
-		if contains(p1.SrcAddr, "all") {
-			srcAddrMatch = true
-		} else {
-			allContained := true
-			for _, sa := range p2.SrcAddr {
-				if !contains(p1.SrcAddr, sa) {
-					allContained = false
-					break
-				}
-			}
-			srcAddrMatch = allContained
-		}
-		if !srcAddrMatch {
-			return false
-		}
-
-		dstAddrMatch := false
-		if contains(p1.DstAddr, "all") {
-			dstAddrMatch = true
-		} else {
-			allContained := true
-			for _, da := range p2.DstAddr {
-				if !contains(p1.DstAddr, da) {
-					allContained = false
-					break
-				}
-			}
-			dstAddrMatch = allContained
-		}
-		if !dstAddrMatch {
-			return false
-		}
-
-		srvMatch := false
-		if contains(p1.Service, "ALL") {
-			srvMatch = true
-		} else {
-			allContained := true
-			for _, sv := range p2.Service {
-				if !contains(p1.Service, sv) {
-					allContained = false
-					break
-				}
-			}
-			srvMatch = allContained
-		}
-		return srvMatch
+		return covers(p1.SrcIntf, p2.SrcIntf, "any") &&
+			covers(p1.DstIntf, p2.DstIntf, "any") &&
+			covers(p1.SrcAddr, p2.SrcAddr, "all") &&
+			covers(p1.DstAddr, p2.DstAddr, "all") &&
+			covers(p1.Service, p2.Service, "ALL")
 	}
 
 	for i := 1; i < len(policies); i++ {
@@ -769,9 +593,12 @@ func findShadowRules(policies []Policy) []models.AuditFinding {
 			p1 := policies[j]
 			if supersedes(p1, p2) {
 				findings = append(findings, models.AuditFinding{
+					CheckID:     "shadow-rule",
+					Key:         fmt.Sprintf("shadow-rule:%d-%d", p2.ID, p1.ID),
 					Severity:    "warning",
-					Text:        fmt.Sprintf("Shadow-Rule ID %d: wird durch ID %d blockiert", p2.ID, p1.ID),
-					Remediation: fmt.Sprintf("Verschieben Sie die spezifischere Policy ID %d vor ID %d, oder entfernen Sie die überflüssige Policy.", p2.ID, p1.ID),
+					Text:        fmt.Sprintf("Shadow rule ID %d: blocked by ID %d", p2.ID, p1.ID),
+					TextDE:      fmt.Sprintf("Shadow-Rule ID %d: wird durch ID %d blockiert", p2.ID, p1.ID),
+					Remediation: fmt.Sprintf("Move the more specific policy ID %d before ID %d, or remove the redundant policy.", p2.ID, p1.ID),
 				})
 				break
 			}
@@ -780,178 +607,13 @@ func findShadowRules(policies []Policy) []models.AuditFinding {
 	return findings
 }
 
-// auditSecurityFabric implements Category 1 Feature 10
-func auditSecurityFabric(cfg string) []models.AuditFinding {
-	var findings []models.AuditFinding
-	if !strings.Contains(cfg, "config system csf") {
-		findings = append(findings, models.AuditFinding{
-			Severity:    "info",
-			Text:        "Fortinet Security Fabric (CSF) ist nicht konfiguriert",
-			Remediation: "config system csf\n  set status enable\n  set upstream-ip <upstream_ip>\nend",
-		})
-	}
-	return findings
-}
-
-// getUpgradePath implements Category 3 Feature 3
-func getUpgradePath(version string) []string {
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return []string{"Keine Upgrade-Pfad-Informationen verfügbar"}
-	}
-	major := parts[0]
-	minor := parts[1]
-
-	switch major + "." + minor {
-	case "6.0":
-		return []string{"6.0.x", "6.2.16 (Latest 6.2)", "6.4.15 (Latest 6.4)", "7.0.16 (Latest 7.0)", "7.2.9 (Latest 7.2)", "7.4.3 (Latest 7.4)"}
-	case "6.2":
-		return []string{"6.2.x", "6.4.15 (Latest 6.4)", "7.0.16 (Latest 7.0)", "7.2.9 (Latest 7.2)", "7.4.3 (Latest 7.4)"}
-	case "6.4":
-		return []string{"6.4.x", "7.0.16 (Latest 7.0)", "7.2.9 (Latest 7.2)", "7.4.3 (Latest 7.4)"}
-	case "7.0":
-		return []string{"7.0.x", "7.2.9 (Latest 7.2)", "7.4.3 (Latest 7.4)", "7.6.0"}
-	case "7.2":
-		return []string{"7.2.x", "7.4.3 (Latest 7.4)", "7.6.0"}
-	case "7.4":
-		return []string{"7.4.x", "7.6.0"}
-	default:
-		return []string{version + " -> 7.6.0"}
-	}
-}
-
-// getCVEs implements Category 3 Feature 4
-func getCVEs(version string) []models.AuditFinding {
-	var findings []models.AuditFinding
-	parts := strings.Split(version, ".")
-	if len(parts) < 3 {
-		return nil
-	}
-	vNum := func(idx int) int {
-		n, _ := strconv.Atoi(parts[idx])
-		return n
-	}
-	major, minor, patch := vNum(0), vNum(1), vNum(2)
-
-	// CVE-2023-27997: SSLVPN Heap Buffer Overflow
-	isVulnerable2023 := false
-	if major == 7 && minor == 2 && patch < 5 {
-		isVulnerable2023 = true
-	} else if major == 7 && minor == 0 && patch < 12 {
-		isVulnerable2023 = true
-	} else if major == 6 && minor == 4 && patch < 13 {
-		isVulnerable2023 = true
-	} else if major == 6 && minor == 2 && patch < 15 {
-		isVulnerable2023 = true
-	} else if major == 6 && minor == 0 && patch < 17 {
-		isVulnerable2023 = true
-	}
-
-	if isVulnerable2023 {
-		findings = append(findings, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Kritische Sicherheitslücke CVE-2023-27997 (SSL-VPN Heap Buffer Overflow)",
-			Remediation: "Upgrade auf FortiOS >= 7.2.5, 7.0.12 oder Deaktivierung des SSL-VPN.",
-		})
-	}
-
-	// CVE-2024-21762: SSLVPN Remote Code Execution
-	isVulnerable2024 := false
-	if major == 7 && minor == 4 && patch < 3 {
-		isVulnerable2024 = true
-	} else if major == 7 && minor == 2 && patch < 7 {
-		isVulnerable2024 = true
-	} else if major == 7 && minor == 0 && patch < 14 {
-		isVulnerable2024 = true
-	}
-
-	if isVulnerable2024 {
-		findings = append(findings, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Kritische Sicherheitslücke CVE-2024-21762 (SSL-VPN Out-of-bounds Write RCE)",
-			Remediation: "Upgrade auf FortiOS >= 7.4.3, 7.2.7, 7.0.14 oder Deaktivierung von SSL-VPN Web-Mode.",
-		})
-	}
-
-	return findings
-}
-
-// calculateComplianceScores implements Category 7 Features 1, 2, 3
-func calculateComplianceScores(findings []models.AuditFinding, cfg string) (pci, cis, hipaa int) {
-	pciChecks, cisChecks, hipaaChecks := 5, 5, 4
-	pciPass, cisPass, hipaaPass := 5, 5, 4
-
-	for _, f := range findings {
-		text := strings.ToLower(f.Text)
-
-		if strings.Contains(text, "telnet") {
-			pciPass--
-		}
-		if strings.Contains(text, "http-management") {
-			pciPass--
-		}
-		if strings.Contains(text, "proposals") {
-			pciPass--
-		}
-		if strings.Contains(text, "password-policy") {
-			pciPass--
-		}
-		if strings.Contains(text, "zwei-faktor") {
-			pciPass--
-		}
-
-		if strings.Contains(text, "telnet") {
-			cisPass--
-		}
-		if strings.Contains(text, "ssl/tls-protokoll") {
-			cisPass--
-		}
-		if strings.Contains(text, "allowaccess") {
-			cisPass--
-		}
-		if strings.Contains(text, "password-policy") {
-			cisPass--
-		}
-		if strings.Contains(text, "diffie-hellman") {
-			cisPass--
-		}
-
-		if strings.Contains(text, "telnet") || strings.Contains(text, "http-management") {
-			hipaaPass--
-		}
-		if strings.Contains(text, "password-policy") {
-			hipaaPass--
-		}
-		if strings.Contains(text, "zwei-faktor") {
-			hipaaPass--
-		}
-		if strings.Contains(text, "proposals") {
-			hipaaPass--
-		}
-	}
-
-	if pciPass < 0 {
-		pciPass = 0
-	}
-	if cisPass < 0 {
-		cisPass = 0
-	}
-	if hipaaPass < 0 {
-		hipaaPass = 0
-	}
-
-	pci = (pciPass * 100) / pciChecks
-	cis = (cisPass * 100) / cisChecks
-	hipaa = (hipaaPass * 100) / hipaaChecks
-
-	return pci, cis, hipaa
-}
-
-func (s *Server) latestConfig(fwID int) (string, string, bool) {
+// latestConfigFilename returns the newest backup filename for a firewall
+// without reading or decrypting it (cheap cache-key lookup).
+func (s *Server) latestConfigFilename(fwID int) (string, bool) {
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
 	var latest string
 	var latestMod time.Time
@@ -968,9 +630,15 @@ func (s *Server) latestConfig(fwID int) (string, string, bool) {
 			latestMod = info.ModTime()
 		}
 	}
-	if latest == "" {
+	return latest, latest != ""
+}
+
+func (s *Server) latestConfig(fwID int) (string, string, bool) {
+	latest, ok := s.latestConfigFilename(fwID)
+	if !ok {
 		return "", "", false
 	}
+	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
 	raw, err := os.ReadFile(filepath.Join(fwDir, latest))
 	if err != nil {
 		return "", "", false
@@ -988,201 +656,4 @@ func parseFortiOSVersion(cfg string) (model, version string) {
 		return m[1], m[2]
 	}
 	return "", ""
-}
-
-func auditFindingsForBackup(fwID int, filename string, cfg string) []models.AuditFinding {
-	findings := auditFindings(cfg)
-	for i := range findings {
-		findings[i].FwID = fwID
-		findings[i].BackupFilename = filename
-	}
-	return findings
-}
-
-func auditFindings(cfg string) []models.AuditFinding {
-	var out []models.AuditFinding
-	var telnet, httpMgmt, pingMgmt bool
-	exposedMgmt := 0
-	for _, m := range reAllowAccess.FindAllStringSubmatch(cfg, -1) {
-		hasMgmt := false
-		for _, t := range strings.Fields(strings.ToLower(m[1])) {
-			switch t {
-			case "telnet":
-				telnet, hasMgmt = true, true
-			case "http":
-				httpMgmt, hasMgmt = true, true
-			case "ssh", "https":
-				hasMgmt = true
-			case "ping":
-				pingMgmt = true
-			}
-		}
-		if hasMgmt {
-			exposedMgmt++
-		}
-	}
-
-	if telnet {
-		out = append(out, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Telnet-Management aktiviert (allowaccess telnet)",
-			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-telnet>\nnext\nend",
-		})
-	}
-	if strings.Contains(strings.ToLower(cfg), "set admin-telnet enable") {
-		out = append(out, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Admin-Telnet global aktiviert",
-			Remediation: "config system global\n  set admin-telnet disable\nend",
-		})
-	}
-	if httpMgmt {
-		out = append(out, models.AuditFinding{
-			Severity:    "warning",
-			Text:        "Klartext-HTTP-Management aktiviert (allowaccess http)",
-			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-http>\nnext\nend",
-		})
-	}
-	if pingMgmt {
-		out = append(out, models.AuditFinding{
-			Severity:    "info",
-			Text:        "Ping auf Management-Interfaces erlaubt",
-			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <access-without-ping>\nnext\nend",
-		})
-	}
-	if exposedMgmt > 0 {
-		out = append(out, models.AuditFinding{
-			Severity:    "info",
-			Text:        fmt.Sprintf("%d Interface(s) mit Management-Zugriff exponiert", exposedMgmt),
-			Remediation: "config system interface\n  edit <interface>\n  set allowaccess <restrict-to-ssh-https>\nnext\nend",
-		})
-	}
-
-	// 1. Two-Factor Authentication (2FA) Audit for Administrators
-	adminBlockRegex := regexp.MustCompile(`(?s)config system admin\s*(.*?)\s*end`)
-	if match := adminBlockRegex.FindStringSubmatch(cfg); len(match) > 1 {
-		adminBlock := match[1]
-		editRegex := regexp.MustCompile(`(?s)edit\s+["']?([^"'\s]+)["']?\s*(.*?)\s*next`)
-		edits := editRegex.FindAllStringSubmatch(adminBlock, -1)
-		for _, edit := range edits {
-			username := edit[1]
-			userConfig := edit[2]
-
-			if !strings.Contains(userConfig, "set two-factor") {
-				out = append(out, models.AuditFinding{
-					Severity:    "critical",
-					Text:        fmt.Sprintf("Administrator '%s' hat keine Zwei-Faktor-Authentifizierung (2FA) aktiviert", username),
-					Remediation: fmt.Sprintf("config system admin\n  edit %s\n  set two-factor email/sms/fortitoken\nnext\nend", username),
-				})
-			}
-
-			if username == "admin" {
-				out = append(out, models.AuditFinding{
-					Severity:    "warning",
-					Text:        "Standard-Administrator-Account 'admin' existiert noch",
-					Remediation: "config system admin\n  rename admin to <new_secure_username>\nend",
-				})
-			}
-		}
-	}
-
-	// 2. Proposal audits & Cryptographic checks
-	re3DES := regexp.MustCompile(`(?i)\b3des\b`)
-	reDES := regexp.MustCompile(`(?i)\bdes\b`)
-	reMD5 := regexp.MustCompile(`(?i)\bmd5\b`)
-
-	var hasDES, has3DES, hasMD5, hasWeakDH, hasMinSSLWeak, hasPasswordPolicyDisabled bool
-
-	lines := strings.Split(cfg, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-
-		if strings.HasPrefix(lower, "set proposal") {
-			if reDES.MatchString(lower) {
-				hasDES = true
-			}
-			if re3DES.MatchString(lower) {
-				has3DES = true
-			}
-			if reMD5.MatchString(lower) {
-				hasMD5 = true
-			}
-		}
-
-		if strings.HasPrefix(lower, "set dhgrp") {
-			parts := strings.Fields(lower)
-			for _, part := range parts {
-				if part == "1" || part == "2" || part == "5" {
-					hasWeakDH = true
-				}
-			}
-		}
-
-		if strings.HasPrefix(lower, "set ssl-min-proto-version") {
-			if strings.Contains(lower, "ssl3") || strings.Contains(lower, "tls1-0") || strings.Contains(lower, "tls1-1") {
-				hasMinSSLWeak = true
-			}
-		}
-	}
-
-	if strings.Contains(strings.ToLower(cfg), "config system password-policy") {
-		if match := regexp.MustCompile(`(?s)config system password-policy\s*(.*?)\s*end`).FindStringSubmatch(cfg); len(match) > 1 {
-			if strings.Contains(match[1], "set status disable") {
-				hasPasswordPolicyDisabled = true
-			}
-		}
-	}
-
-	if hasDES {
-		out = append(out, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Schwache IPsec-Verschlüsselung (DES) in Proposals aktiviert",
-			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
-		})
-	}
-	if has3DES {
-		out = append(out, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Schwache IPsec-Verschlüsselung (3DES) in Proposals aktiviert",
-			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
-		})
-	}
-	if hasMD5 {
-		out = append(out, models.AuditFinding{
-			Severity:    "warning",
-			Text:        "Schwache IPsec-Integrität (MD5) in Proposals aktiviert",
-			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes128-sha256 aes256-sha256\nnext\nend",
-		})
-	}
-	if hasWeakDH {
-		out = append(out, models.AuditFinding{
-			Severity:    "warning",
-			Text:        "Schwache Diffie-Hellman-Gruppe (DH-Gruppe 1/2/5) aktiviert",
-			Remediation: "config vpn ipsec phase1-interface\n  edit <tunnel>\n  set dhgrp 14 16\nnext\nend",
-		})
-	}
-	if hasMinSSLWeak {
-		out = append(out, models.AuditFinding{
-			Severity:    "critical",
-			Text:        "Veraltetes SSL/TLS-Protokoll als Minimum konfiguriert (SSLv3/TLS1.0/TLS1.1)",
-			Remediation: "config system global\n  set ssl-min-proto-version tls1-2\nend",
-		})
-	}
-	if hasPasswordPolicyDisabled {
-		out = append(out, models.AuditFinding{
-			Severity:    "warning",
-			Text:        "Globale Passwort-Richtlinie (password-policy) ist deaktiviert",
-			Remediation: "config system password-policy\n  set status enable\nend",
-		})
-	}
-
-	if len(out) == 0 {
-		out = append(out, models.AuditFinding{
-			Severity:    "info",
-			Text:        "Keine offensichtlichen Management-Findings",
-			Remediation: "Keine Aktion erforderlich.",
-		})
-	}
-	return out
 }
