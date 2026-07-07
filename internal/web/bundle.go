@@ -24,7 +24,7 @@ func (s *Server) handleDownloadBundle(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(&buf)
 	added := 0
 	for _, ref := range refs {
-		plain, ok := s.latestConfig(ref.ID)
+		plain, _, ok := s.latestConfig(ref.ID)
 		if !ok {
 			continue
 		}

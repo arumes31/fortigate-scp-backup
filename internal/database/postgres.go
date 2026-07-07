@@ -738,3 +738,48 @@ func (s *Store) scanFirewalls(rows pgx.Rows) ([]models.Firewall, error) {
 	}
 	return out, rows.Err()
 }
+
+// GetAuditFindings returns the cached audit findings for a firewall.
+func (s *Store) GetAuditFindings(ctx context.Context, fwID int) ([]models.AuditFinding, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT fw_id, backup_filename, severity, finding_text, remediation
+		 FROM audit_findings
+		 WHERE fw_id = $1`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.AuditFinding
+	for rows.Next() {
+		var f models.AuditFinding
+		if err := rows.Scan(&f.FwID, &f.BackupFilename, &f.Severity, &f.Text, &f.Remediation); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// SaveAuditFindings clears old findings and inserts new ones in a transaction.
+func (s *Store) SaveAuditFindings(ctx context.Context, fwID int, findings []models.AuditFinding) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM audit_findings WHERE fw_id = $1`, fwID); err != nil {
+		return err
+	}
+
+	for _, f := range findings {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO audit_findings (fw_id, backup_filename, severity, finding_text, remediation)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			fwID, f.BackupFilename, f.Severity, f.Text, f.Remediation); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
