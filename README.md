@@ -77,17 +77,19 @@ graph TD
 - 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
 - 🔍 **Security Auditing & Insights**:
+  - **Instant, cached audits**: The audit page renders immediately; per-firewall results are computed asynchronously, cached in SQLite, and pre-warmed right after each successful backup. A per-firewall "re-check" recomputes on demand.
+  - **~30 curated hardening checks** based on the Fortinet hardening guide and community best practices: admin access (2FA, trusted hosts, default account, idle timeout, maintainer account), protocol hygiene (Telnet, SSHv1, weak TLS, static ciphers), SSL-VPN exposure (default port, source restriction, TLS floor), SNMP default communities, USB auto-install, NTP, remote logging, any/any/ALL policies, and more.
+  - **Exact config context**: Every finding points at the exact configuration block — the detected line ±3 lines with the block ending, rendered with a highlighted line and gutter numbers.
   - **Shadow Rule Finder**: Identifies firewall policies shadowed or blocked by preceding rules.
   - **Weak Crypto Policy Flags**: Scans IPsec VPN configurations for weak encryption/integrity settings (DES, 3DES, MD5, weak DH groups) and global outdated TLS settings.
   - **Security Fabric Audit**: Flags missing Fortinet Security Fabric (CSF) setups.
-  - **CVE Correlation & Upgrade Paths**: Maps the detected FortiOS version to known critical CVEs (e.g. CVE-2023-27997, CVE-2024-21762) and outlines safe upgrade paths.
-  - **Compliance Scoring**: Dynamically calculates scores for PCI-DSS, CIS Benchmarks, and HIPAA.
-  - **Change Tickets & Exemptions**: Link configuration runs to change tickets, and log approved security exemptions.
-- 🗺️ **Network Topology Visualizer**: Renders interactive, CDN-free SVG maps detailing:
-  - Physical ports & VLAN sub-interfaces branching off physical ports.
-  - Managed FortiSwitches, their ports, and their assigned VLANs.
-  - Static routing destinations and gateways.
-  - Firewall zone-to-zone policies.
+  - **CVE Correlation & Upgrade Paths**: Maps the detected FortiOS version to known exploited CVEs (2022–2025, e.g. CVE-2022-42475, CVE-2023-27997, CVE-2024-21762, CVE-2024-55591) and computes correct train-by-train upgrade paths (never a downgrade; up-to-date versions are reported as such).
+  - **Compliance Scoring**: Derives PCI-DSS, CIS Benchmark, and HIPAA scores from the structured check results.
+  - **Change Tickets & Exemptions**: Link configuration runs to change tickets, and log approved security exemptions (matched by stable finding keys, so dynamic finding texts stay exempt).
+- 🗺️ **Interactive Network Topology** (dedicated page): A D3-powered, CDN-free collapsible tree — Internet → FortiGate → interfaces → VLANs / FortiSwitches → ports — with pan/zoom, hover details, and:
+  - **Device faceplates**: Clicking the firewall or a switch slides in an auto-generated schematic front panel with per-port coloring (WAN / FortiLink / VLAN parent / IP configured) and per-port details.
+  - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login.
+- 🌐 **Bilingual UI (EN/DE)**: English by default, one-click toggle to German — including localized audit findings and upgrade paths.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
 - 🖥️ **Terminal-style Web UI**: A full-width, keyboard-accessible interface with a self-hosted monospace typeface — no external fonts or scripts.

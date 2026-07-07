@@ -17,12 +17,18 @@
                 <a href="/" class="{{if eq .Base.Active "firewalls"}}active{{end}}">Firewalls</a>
                 <a href="/search" class="{{if eq .Base.Active "search"}}active{{end}}">Search</a>
                 <a href="/audit" class="{{if eq .Base.Active "audit"}}active{{end}}">Audit</a>
+                <a href="/topology" class="{{if eq .Base.Active "topology"}}active{{end}}">Topology</a>
                 <a href="/activity_log" class="{{if eq .Base.Active "activity"}}active{{end}}">Act_Log</a>
                 {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/" class="{{if eq .Base.Active "admvpn"}}active{{end}}">VPN_Conf</a>{{end}}
-                <a href="/change_password" class="{{if eq .Base.Active "password"}}active{{end}}">Change_PW</a>
+                {{if not .Base.IsRadius}}<a href="/change_password" class="{{if eq .Base.Active "password"}}active{{end}}">Change_PW</a>{{end}}
             </nav>
             <div class="sysinfo">
                 <span class="sse-dot" id="sseDot" title="Live" hidden></span>
+                <form method="post" action="/lang" style="display: inline; margin: 0;">
+                    <input type="hidden" name="lang" value="{{if eq .Base.Lang "de"}}en{{else}}de{{end}}">
+                    <input type="hidden" name="back" value="">
+                    <button type="submit" class="logout-btn" title="Switch language" onclick="this.form.back.value = window.location.pathname + window.location.search;">[{{if eq .Base.Lang "de"}}DE{{else}}EN{{end}}]</button>
+                </form>
                 <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
                 <form method="post" action="/logout" class="logout-form">
                     <button type="submit" class="logout-btn">[EXIT]</button>

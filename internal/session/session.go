@@ -103,6 +103,13 @@ func (m *Manager) User(r *http.Request) Data {
 	return m.Current(r)
 }
 
+// WithTestUser returns a context carrying the given session snapshot exactly
+// as LoginRequired would store it. Test helper for handler tests in other
+// packages (the context key is unexported).
+func WithTestUser(ctx context.Context, d Data) context.Context {
+	return context.WithValue(ctx, ctxKey{}, d)
+}
+
 // LoginRequired guards a handler. It enforces the idle timeout and IP pinning,
 // refreshes the activity marker, and stores the session snapshot in context.
 func (m *Manager) LoginRequired(next http.Handler) http.Handler {
