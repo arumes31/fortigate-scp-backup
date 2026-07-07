@@ -112,7 +112,7 @@ func openDB(path string) (*sql.DB, error) {
 		"PRAGMA synchronous=NORMAL",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, err
 		}
 	}
@@ -256,7 +256,7 @@ func (e *Extension) usedIPSet() (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	used := map[string]bool{}
 	for rows.Next() {
 		var ip sql.NullString
@@ -319,7 +319,7 @@ func (e *Extension) queryConfigs(where string) ([]*VpnConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []*VpnConfig
 	for rows.Next() {
 		c, err := scanConfig(rows)

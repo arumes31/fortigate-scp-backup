@@ -32,7 +32,7 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	if err != nil {
 		return fmt.Errorf("ssh connect: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Keep-alive goroutine, matching paramiko transport.set_keepalive(60).
 	// Best-effort: failures are ignored. Stopped via done before conn closes.
@@ -108,13 +108,13 @@ func (s *Service) TestConnection(fwID int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("SSH connection failed: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	session, err := conn.NewSession()
 	if err != nil {
 		return "Connected (auth OK), but could not open a session: " + err.Error(), nil
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if out, err := session.CombinedOutput("ls " + s.cfg.FortigateConfigPath); err != nil {
 		return fmt.Sprintf("Connected (auth OK), but config path %q was not found: %s",
 			s.cfg.FortigateConfigPath, strings.TrimSpace(string(out))), nil
@@ -132,7 +132,7 @@ func (s *Service) remoteCheck(conn *ssh.Client, remotePath, fqdn string) {
 			"fqdn", fqdn, "path", remotePath, "err", err)
 		return
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	out, err := session.CombinedOutput("ls " + remotePath)
 	if err != nil {

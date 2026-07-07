@@ -60,7 +60,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch := s.hub.subscribe()
 	defer s.hub.unsubscribe(ch)
 
-	fmt.Fprint(w, ": connected\n\n")
+	_, _ = fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
 	ctx := r.Context()
@@ -69,7 +69,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case msg := <-ch:
-			fmt.Fprintf(w, "data: %s\n\n", msg)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", msg)
 			flusher.Flush()
 		}
 	}
