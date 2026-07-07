@@ -1,25 +1,31 @@
-# golangci-lint configuration for FortiSafe.
+# golangci-lint configuration for FortiSafe (v2 schema).
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
   enable:
-    - govet
+    - bodyclose
     - errcheck
-    - staticcheck
-    - unused
+    - govet
     - ineffassign
+    - misspell
+    - staticcheck
+    - unconvert
+    - unused
+  exclusions:
+    rules:
+      # Test fakes intentionally have empty method bodies.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-    - bodyclose
-    - unconvert
 
 issues:
-  exclude-rules:
-    # Test fakes intentionally have empty method bodies.
-    - path: _test\.go
-      linters:
-        - errcheck
   max-issues-per-linter: 0
   max-same-issues: 0
