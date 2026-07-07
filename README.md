@@ -1,7 +1,7 @@
 # FortiSafe
 
 <p align="center">
-  <img src="logo.png" alt="FortiSafe Logo" width="240">
+  <img src="internal/web/static/logo.png" alt="FortiSafe Logo" width="240">
 </p>
 
 <p align="center">

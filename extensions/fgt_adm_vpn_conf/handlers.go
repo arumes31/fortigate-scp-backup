@@ -313,6 +313,30 @@ func (e *Extension) delete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, e.Prefix()+"/", http.StatusSeeOther)
 }
 
+// ---- removal commands -------------------------------------------------------
+
+// removalCommands returns the FortiGate CLI that tears down what this entry
+// created. It is shown in the delete-confirmation modal so the operator removes
+// the config from the device(s) before the entry is deleted from the app.
+func (e *Extension) removalCommands(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	c, err := e.getConfig(id)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		e.serverError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, buildRemovalCommands(c))
+}
+
 // ---- generate ---------------------------------------------------------------
 
 func (e *Extension) generateSingle(w http.ResponseWriter, r *http.Request) {
