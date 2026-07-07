@@ -1,254 +1,269 @@
 # FortiSafe
 
-Web application for backing up FortiGate firewall configurations over SCP.
+<p align="center">
+  <img src="logo.png" alt="FortiSafe Logo" width="240">
+</p>
 
-Rewritten in **Go**: it ships as a single, fully static binary (`fortisafe`) with
-all HTML templates and static assets embedded via Go `embed` and the timezone
-database embedded via `time/tzdata`. It runs as **one process** — the HTTP
-server, the backup scheduler and every extension background worker are
-goroutines. There is no gunicorn, no Python runtime, and no worker/thread tuning
-to get right. Existing deployments can swap in place: the same environment
-variables are honored and it is drop-in compatible with your existing
-PostgreSQL (main store) and SQLite (extension) data.
+<p align="center">
+  <strong>Secure, scheduled, and self-contained backups for FortiGate firewalls, rewritten in Go.</strong>
+</p>
 
-## Features
-- **Firewall Management**: Add, delete, and manage multiple FortiGate firewalls with customizable SSH credentials and backup intervals.
-- **Automated Backups**: Schedule periodic backups with retention policies. On startup the scheduler is rebuilt from the `firewalls` table (job startup is staggered), so there is no separate job store to maintain.
-- **Backup History**: View and download previous backup configurations.
-- **Error Logging**: Monitor failed backup attempts with detailed logs.
-- **Email Notifications**: Receive alerts for backup failures via SMTP (configurable via environment variables).
-- **Authentication**: Local admin login with optional TOTP, plus optional RADIUS authentication (no external RADIUS dictionary file required).
-- **Reverse Proxy Support**: Compatible with reverse proxies using X-Forwarded headers.
-- **Session Management**: Automatic logout after 1 hour or on IP address change.
+<p align="center">
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8.svg?style=flat-square&logo=go" alt="Go Version"></a>
+  <a href="https://github.com/arumes31/fortigate-scp-backup/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arumes31/fortigate-scp-backup/ci.yml?branch=main&style=flat-square&logo=github" alt="CI Build Status"></a>
+  <a href="https://github.com/arumes31/fortigate-scp-backup/pkgs/container/fortigate-scp-backup"><img src="https://img.shields.io/badge/Container-GHCR-blue?style=flat-square&logo=docker" alt="Docker Registry"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/arumes31/fortigate-scp-backup?style=flat-square" alt="License"></a>
+</p>
 
-## Screenshots
+---
 
-![login](https://github.com/user-attachments/assets/5929f9ae-e4e2-4b25-911d-c5e102bc5f06)
-<img width="1515" height="801" alt="image" src="https://github.com/user-attachments/assets/3ef6e5f3-c48a-49dd-a15e-434151df3e06" />
-<img width="1561" height="690" alt="image" src="https://github.com/user-attachments/assets/02600e20-8cce-42f8-af32-cd65466662af" />
+## 📖 Overview
 
-## Prerequisites
-- Docker (or the Go toolchain if building from source — see [Build from source](#build-from-source)).
-- A reachable PostgreSQL database (a companion service is included in `docker-compose.yml`).
-- Access to a FortiGate firewall with SSH and SCP enabled.
-```
-config system global
-    set admin-scp enable
-end
-```
-- scp profile
-```
-config system accprofile
-    edit "scp-profile"
-        set comments "https://community.fortinet.com/t5/FortiGate/Technical-Tip-Backing-Up-the-FortiGate-configuration-file-via/ta-p/367088"
-        set secfabgrp read
-        set ftviewgrp read
-        set authgrp read
-        set sysgrp custom
-        set netgrp read
-        set loggrp read
-        set fwgrp read
-        set vpngrp read
-        set utmgrp read
-        set wifi read
-        set cli-diagnose enable
-        set cli-get enable
-        set cli-show enable
-        set cli-exec enable
-        set cli-config enable
-        config sysgrp-permission
-            set admin read-write
-            set upd read
-            set cfg read
-            set mnt read
+**FortiSafe** is a web-based management tool and cron-based automation engine designed to back up FortiGate firewall configurations securely over SSH/SCP. 
+
+Originally written in Python/Flask, FortiSafe has been fully rebuilt from the ground up in **Go**. It compiles into a **single, fully static, high-performance binary** that runs the web interface, the backup scheduler, and all extension background workers as concurrent goroutines in a single process.
+
+### Why Go?
+* **Single-Process Model**: No separate WSGI server (Gunicorn), celery workers, or background task runners. Everything runs in lightweight goroutines.
+* **Fully Static & Lightweight**: Replaces Python dependencies with a distroless container containing only the compiled binary and root CA certificates.
+* **No CGO Required**: Pure Go drivers (such as `modernc.org/sqlite` for extensions) ensure smooth compiling and cross-platform compatibility.
+* **Drop-in Compatible**: Honors the exact same environment variables and data schemas as the original Python project, allowing seamless replacement.
+
+---
+
+## 🏗️ Process Architecture
+
+```mermaid
+graph TD
+    User([User / Browser]) -->|HTTP / SSE| WebServer[Web Server / Chi Router]
+    Firewall[(FortiGate Firewall)] <-->|SSH / SCP| BackupEngine[Backup Engine]
+    
+    subgraph FortiSafe ["FortiSafe Go Process"]
+        WebServer
+        Scheduler[Cron Scheduler] -->|Triggers| BackupEngine
+        BackupEngine -->|Save backups| FileSystem[(File System / backups/)]
+        BackupEngine -->|Log events| Postgres[(PostgreSQL DB)]
+        WebServer -->|Read/Write| Postgres
+        
+        subgraph Extension ["fgt_adm_vpn_conf Extension"]
+            ExtWorker[Graylog Status Worker] -->|Status events| HookWise([HookWise Webhook])
+            ExtWorker -->|Read config| SQLite[(SQLite DB)]
+            WebServer -->|Mount routes| ExtRoutes[Extension Web Routes]
+            ExtRoutes -->|Read/Write| SQLite
         end
-    next
-end
-```
-- scp user
-```
-config system admin
-    edit "scpuser"
-        set accprofile "scp-profile"
-        set password xxxxxxxXCHANGEMExxxxx
-    next
-end
+    end
+    
+    Graylog([Graylog Server]) <-->|API check| ExtWorker
 ```
 
-## Installation
-### Using Docker Compose
-We provide two Docker Compose configurations depending on how you wish to deploy:
-- [`docker-compose.yml`](docker-compose.yml): Builds the application container locally from the source files.
-- [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml): Pulls and runs the official pre-built image from GitHub Container Registry (`ghcr.io/arumes31/fortigate-scp-backup:latest`).
+---
 
-Both configurations spin up the main FortiSafe web app and a PostgreSQL database container. All configurable environment variables for both the application and database services are fully listed inside these files.
+## ✨ Features
 
-To start with the local build configuration:
+- 🛡️ **Firewall Management**: Connect and monitor multiple firewalls using custom credentials, ports, and backup schedules.
+- ⏰ **Automated Scheduling**: Set up cron or interval-based backups with automatic, staggered runs on startup to avoid traffic spikes.
+- 🔐 **Hardened Security**:
+  - **AES-256-GCM Encryption**: Optional encryption at rest for all backups and firewall SSH passwords.
+  - **Session Guard**: Session signing, idle session timeouts, and IP pinning.
+  - **Multi-Factor Auth**: Admin accounts support optional TOTP and RADIUS (PAP) authentication.
+- 📡 **Real-time Updates**: Live status propagation via Server-Sent Events (SSE) direct to the UI.
+- ✉️ **SMTP Alerts**: Automatic email notifications with STARTTLS enforcement when a backup fails.
+- 🔌 **Modular Extension System**: Clean interface loader to mount self-contained extensions (e.g., FGT ADM VPN configuration module).
+
+---
+
+## 📋 Prerequisites
+
+1. **FortiGate SSH & SCP Access**:
+   Ensure SCP backups are enabled on the target FortiGate:
+   ```txt
+   config system global
+       set admin-scp enable
+   end
+   ```
+2. **SCP User Account & Profile**:
+   Create a dedicated profile and administrator user with read/write access to system configs:
+   ```txt
+   config system accprofile
+       edit "scp-profile"
+           set comments "Access profile for FortiSafe backups"
+           set secfabgrp read
+           set ftviewgrp read
+           set authgrp read
+           set sysgrp custom
+           set netgrp read
+           set loggrp read
+           set fwgrp read
+           set vpngrp read
+           set utmgrp read
+           set wifi read
+           set cli-diagnose enable
+           set cli-get enable
+           set cli-show enable
+           set cli-exec enable
+           set cli-config enable
+           config sysgrp-permission
+               set admin read-write
+               set upd read
+               set cfg read
+               set mnt read
+           end
+       next
+   end
+
+   config system admin
+       edit "scpuser"
+           set accprofile "scp-profile"
+           set password <YOUR_SECURE_PASSWORD>
+       next
+   end
+   ```
+
+---
+
+## 🚀 Installation & Deployment
+
+We provide two Docker Compose setups under the project root:
+
+### 1. Build and Run Locally (Development / Custom Build)
+Uses [`docker-compose.yml`](docker-compose.yml) to compile the static Go binary inside a multi-stage Docker build:
 ```bash
 docker compose up -d
 ```
 
-To start using the GitHub Container Registry image:
+### 2. Run Pre-built Image from GHCR (Production)
+Uses [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) to fetch the latest official package directly from GitHub Container Registry:
 ```bash
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-Two volumes are used by the app:
-- `/app/backups` — the backup files (`BACKUP_DIR`, default relative `backups`).
-- `/app/data` — the extension SQLite database `fgt-adm-vpn-conf-db.db` (`DATA_DIR`, default `/app/data`).
+> [!NOTE]
+> By default, the application maps local `./backups` and `./data` directories for persistent storage.
 
-The container runs as root so bind-mounted host volumes stay writable; the
-binary creates both directories at startup if they do not already exist.
+---
 
-## Build from source
-The app is a standard Go module (`github.com/arumes31/fortigate-scp-backup`)
-with the entrypoint under `cmd/fortisafe`. It uses the pure-Go SQLite
-driver (`modernc.org/sqlite`), so **CGO is not required**.
+## ⚙️ Configuration Reference
 
-Build a native binary:
-```
+FortiSafe is configured entirely via environment variables.
+
+### General Configuration
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `TZ` | `Europe/Vienna` | Timezone location used by the scheduler. |
+| `PORT` | `8521` | HTTP port the application web server listens on. |
+| `LOG_LEVEL` | `info` | Logging verbosity: `debug` \| `info` \| `warn` \| `error`. |
+| `BACKUP_DIR` | `backups` | Storage directory for configuration backups. |
+| `DATA_DIR` | `/app/data` | Storage directory for SQLite extensions data. |
+
+### PostgreSQL Configuration (Main Database Store)
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `PG_HOST` | `localhost` | PostgreSQL host. |
+| `PG_PORT` | `5432` | PostgreSQL port. |
+| `PG_USER` | `your_user` | PostgreSQL user. |
+| `PG_PASSWORD` | `your_password` | PostgreSQL password. |
+| `PG_DATABASE` | `firewall_backups` | PostgreSQL database name. |
+| `PGSSLMODE` | `prefer` | SSL connection mode. |
+| `PG_MAX_CONNS` | `50` | Maximum connections allowed in the database pool. |
+| `PG_CONNECT_RETRIES` | `10` | Database connection retry attempts on startup. |
+| `PG_CONNECT_BACKOFF_SECONDS` | `3` | Time to wait between connection retry attempts. |
+
+### Authentication & Web Security
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `TOTP_ENABLED` | `false` | Enable TOTP 2FA authentication for the local admin. |
+| `TOTP_SECRET` | *(Auto-generated)* | 16-character Base32 TOTP secret. |
+| `RADIUS_ENABLED` | `false` | Enable RADIUS fallback authentication. |
+| `RADIUS_SERVER` | `localhost` | RADIUS server address. |
+| `RADIUS_PORT` | `1812` | RADIUS service port. |
+| `RADIUS_SECRET` | `secret` | RADIUS shared secret key. |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Maximum login failures allowed before lockout. |
+| `LOGIN_LOCKOUT_MINUTES` | `15` | Minutes a user is locked out after limit exceeded. |
+| `SESSION_KEY` | *(Auto-generated)* | Secure token signing key (forces re-login on restart if empty). |
+| `COOKIE_SECURE` | `false` | Enable the `Secure` flag on session cookies (requires HTTPS). |
+| `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` header for client IP verification. |
+
+### Backup Engine & SCP Defaults
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `ENCRYPTION_KEY` | *(Unset)* | 32-byte (hex/base64) key to enable AES-256-GCM encryption at rest. |
+| `DEFAULT_SCP_USER` | `test` | Default SSH username when none is specified. |
+| `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
+| `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |
+| `SCP_TIMEOUT` | `60` | SSH connection and transfer timeout in seconds. |
+| `MAX_CONCURRENT_BACKUPS` | `10` | Semaphore cap limiting simultaneous SSH sessions. |
+| `CSV_MAX_BYTES` | `5242880` | Maximum allowed size (in bytes) for CSV bulk uploads. |
+
+### SMTP Mail Notification Settings
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `MAIL_SERVER` | `smtp.example.com` | SMTP host for backup failure notifications. |
+| `MAIL_PORT` | `587` | SMTP port (STARTTLS is enforced). |
+| `MAIL_USER` | `user@example.com` | SMTP authentication user. |
+| `MAIL_PASSWORD` | `password` | SMTP authentication password. |
+| `MAIL_RECIPIENT` | *(Same as user)* | Destination email address for error logs. |
+
+### Extension: FGT ADM VPN Configuration (`EXT_ADM_VPN_CONF`)
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_ADM_VPN_CONF` | `false` | Enable the FGT ADM VPN Config module. |
+| `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster. |
+| `GRAYLOG_TOKEN` | *(Unset)* | Graylog authentication token. |
+| `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log timeframe scan in seconds. |
+| `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
+| `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
+| `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune activity logs older than N days (0 = keep forever). |
+
+---
+
+## 🔌 Modules & Extensions
+
+### FGT ADM VPN Config
+This module provides customer-specific VPN configurations and device statuses.
+* **Independent Storage**: Mounts an SQLite database (`fgt-adm-vpn-conf-db.db`) inside the data directory to manage entries locally without bloating Postgres.
+* **Public Status DSV Endpoint**: `/fgt-adm-vpn-conf/graylog_dsv` serves raw, unauthenticated status data (`Firewallname;Remote_IP;Status`) for external metrics collectors.
+* **Graylog Integration**: Checks Graylog API to assert status. A firewall is considered `online` if logs are found within the `GRAYLOG_SEARCH_TIMEFRAME` (default 24h).
+* **HookWise Alerting**: Sends HTTP webhooks on transition states (`online` ↔ `offline`).
+
+---
+
+## 🛠️ Development & Building from Source
+
+### Native Binary Compilation
+Because the application leverages embedded statics and timezone data, CGO is disabled. You can build a native binary cleanly without a C toolchain:
+```bash
 CGO_ENABLED=0 go build -ldflags="-s -w" -o fortisafe ./cmd/fortisafe
 ./fortisafe
 ```
 
-Build the container image:
-```
+### Local Docker Build
+```bash
 docker build -t fortisafe:local .
 ```
 
-The image is multi-stage: `golang:1.26` compiles a fully static binary, and the
-final image is `gcr.io/distroless/static-debian12` (just the binary + CA
-certificates). The listening port is **8521**.
+### Run Tests and Code Quality
+We enforce standard code formatting and linters via GitHub Actions:
+```bash
+# Run tests
+go test ./...
 
-## Modules
-### FGT ADM VPN Config
-This module provides a way to manage and generate VPN configurations for FortiGate firewalls.
-- **Enabled via**: `EXT_ADM_VPN_CONF=true` environment variable.
-- **Storage**: Uses a self-contained SQLite database at `${DATA_DIR}/fgt-adm-vpn-conf-db.db` (pure-Go driver, no cgo).
-- **CID**: Each VPN config requires a `CID` (customer/contract identifier) field.
-- **Public Graylog Endpoint**: `/fgt-adm-vpn-conf/graylog_dsv` — Serves DSV data (`Firewallname;Remote_IP;Status`) without authentication for Graylog integration. Supports cluster hostnames (multiple entries per VPN config if `cluster_hostnames` is set).
-- **Graylog Status Monitoring**: A background worker (goroutine) periodically checks Graylog for recent logs from each device (a device is `online` if any log exists for its hostname within `GRAYLOG_SEARCH_TIMEFRAME`).
-- **HookWise Up/Down Events**: When a device transitions between `online` and `offline`, an UP/DOWN event is sent to [HookWise](https://github.com/arumes31/hookwise). Configured via `HOOKWISE_URL` and `HOOKWISE_TOKEN`; if unset, event sending is skipped.
-
-## Usage
-1. Access the app at `http://localhost:8521` (or your reverse proxy URL).
-2. Log in with the default credentials:
-   - Username: `admin`
-   - Password: `changeme`
-   - **Note**: You must change the password on first login.
-3. Add a new firewall by clicking "Add New Firewall", filling in the details, and submitting.
-4. Schedule backups or trigger manual backups via the "Backup Now" button.
-5. View backup history or error logs from the respective links.
-6. Change your password via the "Change Password" button in the top-right corner.
-
-## Configuration
-APP:
-Environment variables can be set to customize the app:
-- `TZ`: Timezone (default: `Europe/Vienna`).
-- `TOTP_ENABLED`: Enable TOTP authentication for the admin user (default: `false`).
-- `TOTP_SECRET`: TOTP secret key (Base32, 16 characters). If unset, a random secret is generated at startup and not displayed.
-- `RADIUS_ENABLED`: Enable RADIUS authentication (default: `false`).
-- `RADIUS_SERVER`: RADIUS server address (default: `localhost`).
-- `RADIUS_PORT`: RADIUS server port (default: `1812`).
-- `RADIUS_SECRET`: RADIUS shared secret (default: `secret`).
-- `DEFAULT_SCP_USER`: Default SCP username (default: `test`).
-- `DEFAULT_SCP_PASSWORD`: Default SCP password.
-- `FORTIGATE_CONFIG_PATH`: Path to the configuration file on the FortiGate (default: `sys_config`).
-- `SCP_TIMEOUT`: SCP/SSH timeout in seconds (default: `60`).
-- `MAIL_SERVER`: SMTP server address (default: `smtp.example.com`).
-- `MAIL_PORT`: SMTP port (default: `587`).
-- `MAIL_USER`: SMTP username (default: `user@example.com`).
-- `MAIL_PASSWORD`: SMTP password.
-- `MAIL_RECIPIENT`: Email recipient for failure notifications (default: value of `MAIL_USER`).
-- `GRAYLOG_URL`: Graylog API URL for status checks (e.g., `https://graylog.example.com`).
-- `GRAYLOG_TOKEN`: Graylog API token for authentication.
-- `GRAYLOG_SEARCH_TIMEFRAME`: Time in seconds to check for recent logs (default: `86400`). A device is considered `online` if any log exists for its hostname within this timeframe.
-- `HOOKWISE_URL`: Full HookWise webhook URL (e.g., `https://hookwise.example.com/webhook/<endpoint_id>`). Up/down events are sent here on device status transitions. Leave unset to disable.
-- `HOOKWISE_TOKEN`: HookWise bearer token for authentication.
-- `EXT_ADM_VPN_CONF`: Enable the FGT ADM VPN Config module (default: `false`).
-- `PORT`: HTTP listen port (default: `8521`).
-- `BACKUP_DIR`: Directory for backup files (default: `backups`, i.e. `/app/backups` in the container).
-- `DATA_DIR`: Directory for the extension SQLite database (default: `/app/data`).
-- `PG_HOST`: PostgreSQL host (e.g., `fortisafe-db`).
-- `PG_PORT`: PostgreSQL port (default: `5432`).
-- `PG_USER`: PostgreSQL user (e.g., `postgre`).
-- `PG_PASSWORD`: PostgreSQL password.
-- `PG_DATABASE`: PostgreSQL database name (e.g., `firewall_backups`).
-- `PGSSLMODE`: PostgreSQL SSL mode (default: `prefer`).
-- `PG_MAX_CONNS`: Max pooled connections (default: `50`).
-- `PG_CONNECT_RETRIES`: Startup DB connection attempts (default: `10`).
-- `PG_CONNECT_BACKOFF_SECONDS`: Delay between connection attempts (default: `3`).
-
-Security / hardening:
-- `ENCRYPTION_KEY`: 32-byte key (base64 or hex) enabling AES-256-GCM encryption at rest for
-  firewall SSH passwords and backup files. Unset = no encryption (existing plaintext data still works;
-  new data is encrypted only when set). Downloads/search transparently decrypt.
-- `SESSION_KEY`: Stable secret for signing session cookies. Unset = a random key per start
-  (sessions do not survive a restart, matching the original behavior).
-- `COOKIE_SECURE`: Set the `Secure` flag on the session cookie (default: `false`; enable behind HTTPS).
-- `ENABLE_HSTS`: Emit a `Strict-Transport-Security` header (default: `false`).
-- `LOGIN_MAX_ATTEMPTS`: Failed logins per client/username before lockout (default: `5`).
-- `LOGIN_LOCKOUT_MINUTES`: Lockout duration after too many failures (default: `15`).
-
-Operations:
-- `MAX_CONCURRENT_BACKUPS`: Global cap on simultaneous backups (default: `10`).
-- `CSV_MAX_BYTES`: Max size of an uploaded CSV (default: `5242880`).
-- `ACTIVITY_LOG_RETENTION_DAYS`: Prune activity rows older than N days (default: `0` = keep all).
-- `LOG_LEVEL`: `debug` | `info` | `warn` | `error` (default: `info`).
-
-Firewalls also accept an optional **cron expression** (5-field) in the Add form, which overrides the
-interval-minutes schedule. User passwords are stored as bcrypt hashes (legacy plaintext is upgraded on
-next login). Health probes: `GET /healthz` (liveness), `GET /readyz` (DB reachable).
-
-DB:
-- `POSTGRES_USER`: postgre
-- `POSTGRES_PASSWORD`: XXXXXXTDB
-- `POSTGRES_DB`: firewall_backups
-
-## Generate TOTP SECRET
-
-The `TOTP_SECRET` is a standard 16-character Base32 key. Any Base32 generator
-works; for example, in PowerShell:
-```
-# Define the Base32 alphabet (A-Z, 2-7)
-$base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-
-# Function to generate a random Base32 key
-function Generate-Base32Key {
-    $keyLength = 16  # Standard 16-character Base32 secret
-    $randomKey = -join (1..$keyLength | ForEach-Object {
-        $base32Alphabet[(Get-Random -Minimum 0 -Maximum $base32Alphabet.Length)]
-    })
-    return $randomKey
-}
-
-# Generate and output the key
-$key = Generate-Base32Key
-Write-Output $key
+# Run linters
+golangci-lint run
 ```
 
-## Bulk Upload
+---
 
-CSV Content:
-```fqdn,username,password,interval_minutes,retention_count,ssh_port
-fqdn,username,password,interval_minutes,retention_count,ssh_port
-firewall1.example.com,username,password,180,300,9422
-firewall2.example.com,username,password,60,600,22
-```
-`username` and `password`: Optional, default to `DEFAULT_SCP_USER` and `DEFAULT_SCP_PASSWORD` if empty.
+## 🤝 Contributing
 
-## Troubleshooting
-- **Backup Fails**: Check the container logs for detailed errors (e.g., SSH/SCP issues). Ensure the FortiGate allows SCP and the config path (`FORTIGATE_CONFIG_PATH`) is correct.
-- **Timeout Issues**: Increase `SCP_TIMEOUT` (seconds) if network latency is high.
-- **Email Not Sent**: Verify SMTP credentials and server accessibility.
-- **Database**: Ensure PostgreSQL is reachable (`PG_HOST`/`PG_PORT`/credentials); the app initializes/migrates the schema on startup.
+1. Fork this repository.
+2. Create a clean feature branch: `git checkout -b feature/my-new-feature`.
+3. Commit your changes with descriptive messages: `git commit -m 'feat: add support for X'`.
+4. Push to your branch: `git push origin feature/my-new-feature`.
+5. Open a Pull Request pointing to `main`.
 
-## Contributing
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feature-name`.
-3. Commit your changes: `git commit -m "Add feature-name"`.
-4. Push to the branch: `git push origin feature-name`.
-5. Open a pull request.
+---
 
-## License
+## 📄 License
+
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
