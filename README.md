@@ -76,6 +76,18 @@ graph TD
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
 - 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
+- 🔍 **Security Auditing & Insights**:
+  - **Shadow Rule Finder**: Identifies firewall policies shadowed or blocked by preceding rules.
+  - **Weak Crypto Policy Flags**: Scans IPsec VPN configurations for weak encryption/integrity settings (DES, 3DES, MD5, weak DH groups) and global outdated TLS settings.
+  - **Security Fabric Audit**: Flags missing Fortinet Security Fabric (CSF) setups.
+  - **CVE Correlation & Upgrade Paths**: Maps the detected FortiOS version to known critical CVEs (e.g. CVE-2023-27997, CVE-2024-21762) and outlines safe upgrade paths.
+  - **Compliance Scoring**: Dynamically calculates scores for PCI-DSS, CIS Benchmarks, and HIPAA.
+  - **Change Tickets & Exemptions**: Link configuration runs to change tickets, and log approved security exemptions.
+- 🗺️ **Network Topology Visualizer**: Renders interactive, CDN-free SVG maps detailing:
+  - Physical ports & VLAN sub-interfaces branching off physical ports.
+  - Managed FortiSwitches, their ports, and their assigned VLANs.
+  - Static routing destinations and gateways.
+  - Firewall zone-to-zone policies.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
 - 🖥️ **Terminal-style Web UI**: A full-width, keyboard-accessible interface with a self-hosted monospace typeface — no external fonts or scripts.
