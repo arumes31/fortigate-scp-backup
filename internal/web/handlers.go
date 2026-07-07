@@ -176,7 +176,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 		// Branch (a): CSV bulk upload.
 		if file, header, ferr := r.FormFile("csv_file"); ferr == nil {
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 			s.handleIndexCSV(w, r, file, header, d.Username)
 			return
 		}

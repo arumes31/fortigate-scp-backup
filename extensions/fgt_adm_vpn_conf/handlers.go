@@ -395,12 +395,12 @@ func (e *Extension) exportBookmarks(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("<TITLE>Bookmarks</TITLE>\n")
 	b.WriteString("<H1>Bookmarks</H1>\n")
 	b.WriteString("<DL><p>\n")
-	b.WriteString(fmt.Sprintf("    <DT><H3 ADD_DATE=\"%d\" LAST_MODIFIED=\"%d\">FGT ADM VPN</H3>\n", ts, ts))
+	fmt.Fprintf(&b, "    <DT><H3 ADD_DATE=\"%d\" LAST_MODIFIED=\"%d\">FGT ADM VPN</H3>\n", ts, ts)
 	b.WriteString("    <DL><p>\n")
 	for _, c := range configs {
 		url := fmt.Sprintf("https://%s:9443", c.DnsNameFull)
 		name := fmt.Sprintf("FGT ADM - %s - %s", c.Kundenname, c.Standort)
-		b.WriteString(fmt.Sprintf("        <DT><A HREF=\"%s\" ADD_DATE=\"%d\">%s</A>\n", url, ts, name))
+		fmt.Fprintf(&b, "        <DT><A HREF=\"%s\" ADD_DATE=\"%d\">%s</A>\n", url, ts, name)
 	}
 	b.WriteString("    </DL><p>\n")
 	b.WriteString("</DL><p>\n")
@@ -447,7 +447,7 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("No file uploaded."))
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -461,7 +461,7 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 	cr.FieldsPerRecord = -1
 	records, err := cr.ReadAll()
 	if err != nil {
-		_, _ = w.Write([]byte(fmt.Sprintf("Failed to parse CSV: %v", err)))
+		_, _ = fmt.Fprintf(w, "Failed to parse CSV: %v", err)
 		return
 	}
 	if len(records) == 0 {

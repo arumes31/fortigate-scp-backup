@@ -137,7 +137,7 @@ func migrateTimestampsToTZ(ctx context.Context, s *Store) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL TIME ZONE %s", quoteLiteral(s.tz.String()))); err != nil {
 		return err

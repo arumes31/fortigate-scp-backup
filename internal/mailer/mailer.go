@@ -52,10 +52,10 @@ func (m *Mailer) send(subject, body, to string) error {
 
 	client, err := smtp.NewClient(conn, c.MailServer)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Fail closed: never fall back to plaintext transport or unauthenticated
 	// delivery, which would expose the message and the SMTP credentials.

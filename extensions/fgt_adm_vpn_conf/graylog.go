@@ -54,7 +54,7 @@ func (e *Extension) getGraylogStatus(hostname string) string {
 	if err != nil {
 		return "error"
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// urllib.request.urlopen raises for HTTP >= 400; mirror that as an error.
 	if resp.StatusCode >= 400 {
 		return "error"
@@ -177,7 +177,7 @@ func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) bool {
 		e.logger.Error("failed to send HookWise event", "firewall", c.Firewallname, "status", eventStatus, "err", err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
 		e.logger.Error("HookWise returned an error status", "firewall", c.Firewallname, "status", eventStatus, "code", resp.StatusCode)

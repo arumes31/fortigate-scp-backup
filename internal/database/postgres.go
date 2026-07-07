@@ -405,7 +405,7 @@ func (s *Store) DeleteFirewall(ctx context.Context, id int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var fqdn string
 	err = tx.QueryRow(ctx, `SELECT fqdn FROM firewalls WHERE id = $1`, id).Scan(&fqdn)
