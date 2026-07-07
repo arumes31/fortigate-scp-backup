@@ -1,11 +1,37 @@
 package fgtadmvpnconf
 
 import (
+	"bytes"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestIndexTemplateRenders parses the embedded templates and renders the index
+// with one row, guarding the delete-confirmation modal markup against template
+// syntax/field mistakes (the extension templates are not exercised elsewhere).
+func TestIndexTemplateRenders(t *testing.T) {
+	e := &Extension{}
+	if err := e.parseTemplates(); err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	data := indexData{
+		Configs:                []configRow{{VpnConfig: &VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}}},
+		AvailableIPsCount:      5,
+		AvailableIPsPercentage: "50.00",
+	}
+	var buf bytes.Buffer
+	if err := e.tmpl.ExecuteTemplate(&buf, indexTemplate, data); err != nil {
+		t.Fatalf("execute index: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"open-remove-modal", "removeConfirmCheck", "removal_commands"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered index missing %q", want)
+		}
+	}
+}
 
 func TestGetRandomPassword(t *testing.T) {
 	pw := getRandomPassword(34, 4, 4, 2, 2)
@@ -58,6 +84,60 @@ func TestContainsStr(t *testing.T) {
 	}
 	if containsStr([]string{"a"}, "z") {
 		t.Fatal("should not find z")
+	}
+}
+
+func TestBuildRemovalCommands(t *testing.T) {
+	base := VpnConfig{
+		Kundenname:   "acme",
+		Standort:     "hq",
+		Ike2Username: "vpn-adm-acme-hq",
+		RemoteipFull: "10.105.1.5",
+		DnsNameFull:  "fgt-acme-hq.adm.eworx.at",
+	}
+
+	// RADIUS enabled: the RO + HCI/RADIUS objects must all be present.
+	yes := base
+	yes.Radiusmgt = "YES"
+	out := buildRemovalCommands(&yes)
+	for _, want := range []string{
+		`delete "VPN_EX-ADMRO"`,
+		`delete "VPN_EX-ADMHCI"`,
+		`delete "RAD-EXADM-1stlvl_1"`,
+		`delete "sg-ADM_FGT_Auth_2nd-Level"`,
+		`delete "LB-EXADM"`,
+		`delete "vpn-adm-acme-hq"`,
+		`delete "VPN_ADM_acme-hq_1st"`,
+		"config firewall policy",
+		"RZP / HCI firewall",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("radius=YES output missing %q", want)
+		}
+	}
+	// phase2 must be deleted before phase1 (dependency order).
+	if strings.Index(out, `delete "VPN_EX-ADMRO-1st"`) > strings.Index(out, `delete "VPN_EX-ADMRO"`) {
+		t.Error("phase2 must be listed before phase1")
+	}
+
+	// RADIUS disabled: no HCI/RADIUS objects, but the RO tunnel + local user stay.
+	no := base
+	no.Radiusmgt = "NO"
+	out = buildRemovalCommands(&no)
+	for _, absent := range []string{
+		`delete "VPN_EX-ADMHCI"`,
+		`delete "RAD-EXADM-1stlvl_1"`,
+		"RZP / HCI firewall",
+		"config firewall policy",
+	} {
+		if strings.Contains(out, absent) {
+			t.Errorf("radius=NO output should not contain %q", absent)
+		}
+	}
+	for _, want := range []string{`delete "VPN_EX-ADMRO"`, `delete "vpn-adm-acme-hq"`, `delete "LB-EXADM"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("radius=NO output missing %q", want)
+		}
 	}
 }
 

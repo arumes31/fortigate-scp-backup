@@ -109,6 +109,21 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestStaticFontServed(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/static/fonts/jetbrains-mono-400.woff2", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("self-hosted font not served: got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "font/woff2" {
+		t.Errorf("Content-Type = %q, want font/woff2", ct)
+	}
+	if b := rr.Body.Bytes(); len(b) < 4 || string(b[:4]) != "wOF2" {
+		t.Error("served font is not a valid woff2 (bad magic bytes)")
+	}
+}
+
 func TestLoginSuccess(t *testing.T) {
 	srv := testServer(t)
 	form := url.Values{"username": {"admin"}, "password": {"changeme"}}

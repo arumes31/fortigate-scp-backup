@@ -18,6 +18,11 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
 
+// radiusTimeout bounds a single RADIUS exchange. It is generous (60s) because
+// some RADIUS servers front a push/mobile MFA prompt: the Access-Request is not
+// answered until the user approves (or the OTP is confirmed) on their phone.
+const radiusTimeout = 60 * time.Second
+
 // Authenticator performs RADIUS and TOTP checks.
 type Authenticator struct {
 	cfg    *config.Config
@@ -35,7 +40,7 @@ func (a *Authenticator) VerifyRadius(username, password string) bool {
 	if !a.cfg.RadiusEnabled {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), radiusTimeout)
 	defer cancel()
 
 	packet := radius.New(radius.CodeAccessRequest, []byte(a.cfg.RadiusSecret))

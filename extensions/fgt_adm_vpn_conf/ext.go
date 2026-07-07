@@ -88,6 +88,8 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Post("/import", e.importCSV)
 		pr.Get("/edit/{id}", e.editForm)
 		pr.Post("/edit/{id}", e.editSubmit)
+		// Removal commands feed the delete-confirmation modal (read-only).
+		pr.Get("/removal_commands/{id}", e.removalCommands)
 		// Delete is state-changing: POST only, so it cannot be triggered by a
 		// simple GET navigation/prefetch/<img>.
 		pr.Post("/delete/{id}", e.delete)
