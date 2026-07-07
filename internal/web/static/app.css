@@ -341,6 +341,7 @@ table.data {
 }
 table.data thead th {
   position: sticky; top: 0;
+  z-index: 2;
   background: var(--surface);
   color: var(--text-muted);
   font-weight: 500;
@@ -363,6 +364,20 @@ table.data .actions { display: flex; gap: 12px; flex-wrap: wrap; }
 table.data code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
 .muted { color: var(--text-muted); }
 .empty { padding: 32px; text-align: center; color: var(--text-dim); }
+
+/* Pinned first column (opt-in via .sticky-first): keeps the row's identifier
+   visible while scrolling a wide table sideways. Layering: sticky header row = 2,
+   sticky first column = 1, top-left corner cell = 3 (above both). */
+table.data.sticky-first thead th:first-child,
+table.data.sticky-first tbody td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+table.data.sticky-first tbody td:first-child { z-index: 1; }
+table.data.sticky-first thead th:first-child { z-index: 3; }
+table.data.sticky-first tbody tr:hover td:first-child { background: var(--surface-2); }
 
 /* In-table action buttons read as bare op-codes (RUN / MOD / DEL). */
 table.data .actions .btn {
