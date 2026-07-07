@@ -16,6 +16,58 @@
     </form>
 </div>
 
+<div class="card">
+    <h2 class="mt-0">Search examples &amp; tips</h2>
+    <p class="muted" style="margin-top:0;">
+        The search scans the <b>newest saved configuration of every firewall</b> and
+        returns each matching line together with the firewall it came from. Matching is
+        <b>case-insensitive</b>; <code>*</code> is a wildcard that matches any characters,
+        and everything else is matched literally (so <code>.</code>, <code>-</code>, and
+        quotes are taken as-is). Click any example to load it into the search box.
+    </p>
+
+    <h3>Find a firewall by name / hostname</h3>
+    <div class="chips">
+        <span class="chip" data-q="set hostname">set hostname</span>
+        <span class="chip" data-q="set hostname *FGT*">set hostname *FGT*</span>
+        <span class="chip" data-q="set hostname *-fw01*">set hostname *-fw01*</span>
+        <span class="chip" data-q="set alias *branch*">set alias *branch*</span>
+    </div>
+
+    <h3>Interfaces &amp; addressing</h3>
+    <div class="chips">
+        <span class="chip" data-q='edit "port1"'>edit "port1"</span>
+        <span class="chip" data-q="set ip 10.*">set ip 10.*</span>
+        <span class="chip" data-q="set vdom *root*">set vdom *root*</span>
+        <span class="chip" data-q="set allowaccess *https*">set allowaccess *https*</span>
+    </div>
+
+    <h3>Policies, addresses &amp; services</h3>
+    <div class="chips">
+        <span class="chip" data-q="config firewall policy">config firewall policy</span>
+        <span class="chip" data-q="set srcintf *wan*">set srcintf *wan*</span>
+        <span class="chip" data-q='set service "HTTPS"'>set service "HTTPS"</span>
+        <span class="chip" data-q="set action deny">set action deny</span>
+        <span class="chip" data-q="config firewall vip">config firewall vip</span>
+    </div>
+
+    <h3>VPN</h3>
+    <div class="chips">
+        <span class="chip" data-q="config vpn ipsec phase1-interface">config vpn ipsec phase1-interface</span>
+        <span class="chip" data-q="set remote-gw *">set remote-gw *</span>
+        <span class="chip" data-q="set psksecret *">set psksecret *</span>
+    </div>
+
+    <h3>Admins, users &amp; security review</h3>
+    <div class="chips">
+        <span class="chip" data-q="config system admin">config system admin</span>
+        <span class="chip" data-q="set trusthost*">set trusthost*</span>
+        <span class="chip" data-q="config user local">config user local</span>
+        <span class="chip" data-q="config system dns">config system dns</span>
+        <span class="chip" data-q="set dstaddr *all*">set dstaddr *all*</span>
+    </div>
+</div>
+
 {{if .Query}}
 <div class="card pad-0">
     <div class="card-header">
@@ -44,4 +96,19 @@
     {{end}}
 </div>
 {{end}}
+{{end}}
+
+{{define "scripts"}}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var input = document.getElementById('query');
+    document.querySelectorAll('.chip').forEach(function (chip) {
+        chip.addEventListener('click', function () {
+            if (!input) { return; }
+            input.value = this.dataset.q;
+            input.focus();
+        });
+    });
+});
+</script>
 {{end}}

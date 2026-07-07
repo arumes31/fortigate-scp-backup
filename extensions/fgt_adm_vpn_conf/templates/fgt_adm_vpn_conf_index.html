@@ -10,12 +10,11 @@
 <body>
 <div class="app">
     <header class="topbar">
-        <a class="brand" href="/">
-            <img src="/static/logo.png" alt="FortiSafe">
-            <span>Forti<b>Safe</b></span>
-        </a>
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
         <nav class="nav">
-            <a href="/">&larr; Dashboard</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/fgt-adm-vpn-conf/" class="active">VPN_Conf</a>
         </nav>
     </header>
 
@@ -149,9 +148,7 @@
                             <td><a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a></td>
                             <td class="actions">
                                 <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
-                                <form method="post" action="/fgt-adm-vpn-conf/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Are you sure you want to remove this entry?');">
-                                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
-                                </form>
+                                <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-id="{{.ID}}" data-name="{{.Firewallname}}">Remove</button>
                                 <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
                             </td>
                         </tr>
@@ -173,6 +170,11 @@
             </form>
         </div>
     </main>
+
+    <footer class="sysfooter">
+        <div>EOF // (C) FORTISAFE_SEC</div>
+        <div class="sysfooter-links"><span>MODULE: FGT_ADM_VPN_CONF</span></div>
+    </footer>
 </div>
 
 <div id="editModal" class="modal">
@@ -180,6 +182,30 @@
         <button class="modal-close" id="modalClose" type="button">&times;</button>
         <h2 class="mt-0">Edit Configuration</h2>
         <div id="modal-body-content"></div>
+    </div>
+</div>
+
+<div id="removeModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="removeModalClose" type="button">&times;</button>
+        <h2 class="mt-0">Remove Configuration</h2>
+        <p class="muted" id="removeIntro">
+            This configuration must be removed from the FortiGate device(s) first.
+            Run the commands below on the matching device, then confirm removal.
+        </p>
+        <pre id="removalCommands" class="code-block">Loading&hellip;</pre>
+        <label class="checkbox-row" style="margin-top:14px; align-items:flex-start;">
+            <input type="checkbox" id="removeConfirmCheck">
+            <span>I have removed this configuration from the FortiGate device(s).</span>
+        </label>
+        <div class="toolbar" style="margin-top:16px;">
+            <button type="button" class="btn btn-sm" id="copyRemovalBtn">Copy commands</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn" id="removeCancelBtn">Cancel</button>
+            <form method="post" id="removeForm" action="" style="display:inline; margin:0;">
+                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" disabled>Remove entry</button>
+            </form>
+        </div>
     </div>
 </div>
 
@@ -235,6 +261,72 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (modalClose) { modalClose.addEventListener('click', closeModal); }
     window.addEventListener('click', function (e) { if (e.target === editModal) { closeModal(); } });
+
+    // ---- Remove confirmation modal ----
+    // Shows the FortiGate teardown commands for the entry and requires the
+    // operator to confirm (checkbox) that the device was cleaned up before the
+    // delete POST is allowed to submit.
+    var removeModal = document.getElementById('removeModal');
+    var removeForm = document.getElementById('removeForm');
+    var removeCheck = document.getElementById('removeConfirmCheck');
+    var removeBtn = document.getElementById('removeConfirmBtn');
+    var removalPre = document.getElementById('removalCommands');
+    var removeIntro = document.getElementById('removeIntro');
+
+    function closeRemoveModal() {
+        if (removeModal) { removeModal.classList.remove('open'); }
+    }
+
+    document.querySelectorAll('.open-remove-modal').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = this.dataset.id;
+            var name = this.dataset.name || ('#' + id);
+            removeForm.action = '/fgt-adm-vpn-conf/delete/' + id;
+            removeCheck.checked = false;
+            removeBtn.disabled = true;
+            removalPre.textContent = 'Loading…';
+            if (removeIntro) {
+                removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
+            }
+            removeModal.classList.add('open');
+            fetch('/fgt-adm-vpn-conf/removal_commands/' + id)
+                .then(function (resp) {
+                    if (!resp.ok) { throw new Error('Network response was not ok'); }
+                    return resp.text();
+                })
+                .then(function (text) { removalPre.textContent = text; })
+                .catch(function (err) { removalPre.textContent = 'Could not load removal commands: ' + err.message; });
+        });
+    });
+
+    if (removeCheck) {
+        removeCheck.addEventListener('change', function () {
+            removeBtn.disabled = !this.checked;
+        });
+    }
+    // Guard: never submit the delete unless the box is ticked.
+    if (removeForm) {
+        removeForm.addEventListener('submit', function (e) {
+            if (!removeCheck.checked) { e.preventDefault(); }
+        });
+    }
+    var copyRemovalBtn = document.getElementById('copyRemovalBtn');
+    if (copyRemovalBtn) {
+        copyRemovalBtn.addEventListener('click', function () {
+            var text = removalPre.textContent || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function () {
+                    copyRemovalBtn.textContent = 'Copied!';
+                    setTimeout(function () { copyRemovalBtn.textContent = 'Copy commands'; }, 1500);
+                });
+            }
+        });
+    }
+    var removeCancelBtn = document.getElementById('removeCancelBtn');
+    var removeModalCloseBtn = document.getElementById('removeModalClose');
+    if (removeCancelBtn) { removeCancelBtn.addEventListener('click', closeRemoveModal); }
+    if (removeModalCloseBtn) { removeModalCloseBtn.addEventListener('click', closeRemoveModal); }
+    window.addEventListener('click', function (e) { if (e.target === removeModal) { closeRemoveModal(); } });
 
     // Collapsible "Add New Entry" panel.
     var addHeader = document.getElementById('addToggle');

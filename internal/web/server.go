@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -29,6 +30,14 @@ var templatesFS embed.FS
 
 //go:embed static/*
 var staticFS embed.FS
+
+func init() {
+	// The embedded static FileServer picks Content-Type by extension. Register
+	// the self-hosted font types explicitly so they are served correctly on every
+	// platform (Go's built-in table / the OS registry may not include them).
+	_ = mime.AddExtensionType(".woff2", "font/woff2")
+	_ = mime.AddExtensionType(".woff", "font/woff")
+}
 
 // Authenticator is the subset of internal/auth used by the login handler.
 type Authenticator interface {
