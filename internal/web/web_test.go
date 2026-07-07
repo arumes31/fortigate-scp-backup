@@ -2,10 +2,13 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +239,131 @@ func TestClientIP(t *testing.T) {
 				t.Fatalf("clientIP() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseFortiOSVersion(t *testing.T) {
+	cfg := "#config-version=FGT60F-7.2.5-FW-build1517-230608:opmode=0:vdom=0\nconfig system global\nend\n"
+	if model, ver := parseFortiOSVersion(cfg); model != "FGT60F" || ver != "7.2.5" {
+		t.Fatalf("got model=%q ver=%q, want FGT60F/7.2.5", model, ver)
+	}
+	if m, v := parseFortiOSVersion("no version header"); m != "" || v != "" {
+		t.Fatalf("expected empty, got %q %q", m, v)
+	}
+}
+
+func TestAuditFindings(t *testing.T) {
+	cfg := `config system interface
+edit "wan1"
+set allowaccess ping https ssh telnet
+next
+edit "mgmt"
+set allowaccess https http
+next
+end`
+	var crit, warn bool
+	for _, f := range auditFindings(cfg) {
+		switch f.Severity {
+		case "critical":
+			crit = true
+		case "warning":
+			warn = true
+		}
+	}
+	if !crit {
+		t.Error("telnet allowaccess should raise a critical finding")
+	}
+	if !warn {
+		t.Error("plaintext http allowaccess should raise a warning")
+	}
+	clean := auditFindings("config system global\nend")
+	if len(clean) != 1 || clean[0].Severity != "info" {
+		t.Fatalf("clean config should yield one info finding, got %+v", clean)
+	}
+}
+
+func TestSanitizeBundleName(t *testing.T) {
+	cases := map[string]string{
+		"fw-core-01.corp.local": "fw-core-01.corp.local.conf",
+		"a b/c":                 "a_b_c.conf",
+	}
+	for in, want := range cases {
+		if got := sanitizeBundleName(in, 1); got != want {
+			t.Errorf("sanitizeBundleName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := sanitizeBundleName("", 3); got != "fw-3.conf" {
+		t.Errorf("empty fqdn = %q, want fw-3.conf", got)
+	}
+}
+
+func TestBackupStorageStats(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "1")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(sub, "a.conf"), make([]byte, 100), 0o644)
+	_ = os.WriteFile(filepath.Join(sub, "b.conf"), make([]byte, 300), 0o644)
+	_ = os.WriteFile(filepath.Join(sub, "ignore.txt"), make([]byte, 50), 0o644)
+
+	total, week, largest, smallest := backupStorageStats(root)
+	if total != 400 {
+		t.Errorf("total = %d, want 400 (only .conf files)", total)
+	}
+	if week != 400 {
+		t.Errorf("week = %d, want 400 (just written)", week)
+	}
+	if largest != 300 || smallest != 100 {
+		t.Errorf("largest/smallest = %d/%d, want 300/100", largest, smallest)
+	}
+	if t2, _, _, _ := backupStorageStats(filepath.Join(root, "missing")); t2 != 0 {
+		t.Errorf("missing dir total = %d, want 0", t2)
+	}
+}
+
+func TestDashboardStatsJSON(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.handleDashboardStats(rr, httptest.NewRequest(http.MethodGet, "/dashboard/stats", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	for _, k := range []string{"total", "failed", "storageBytes", "nextBackup", "running"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("stats JSON missing key %q", k)
+		}
+	}
+}
+
+func TestAuditRenders(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.handleAudit(rr, httptest.NewRequest(http.MethodGet, "/audit", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Compliance") {
+		t.Error("audit page did not render expected content")
+	}
+}
+
+func TestRetryAllFailedRedirects(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.handleRetryAllFailed(rr, httptest.NewRequest(http.MethodPost, "/backup_now_all_failed", nil))
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("want 303, got %d", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/dashboard" {
+		t.Errorf("Location = %q, want /dashboard", loc)
 	}
 }
 
