@@ -325,7 +325,14 @@ input[type="file"]::file-selector-button:hover { background: var(--accent-soft);
 .hint { color: var(--text-dim); font-size: 11px; margin-top: 4px; letter-spacing: 0.04em; }
 
 /* ---------- Tables ---------- */
-.table-wrap { width: 100%; overflow-x: auto; border-radius: 0; }
+/* The wrap is its own scroll panel with a capped height, so on small screens the
+   horizontal scrollbar stays pinned to the bottom of the visible panel instead of
+   sitting at the far bottom of a tall table (which forced scrolling the whole
+   page to reach it). The sticky header keeps column labels in view. */
+.table-wrap { width: 100%; overflow: auto; max-height: 72vh; border-radius: 0; overscroll-behavior: contain; }
+/* Slightly thicker scrollbars than the global 6px so the horizontal bar is easy
+   to grab on touch / small screens. */
+.table-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
 table.data {
   width: 100%;
   border-collapse: collapse;
