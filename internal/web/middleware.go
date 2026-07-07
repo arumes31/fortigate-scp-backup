@@ -15,8 +15,12 @@ import (
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
+			// XFF is appended left-to-right by each hop, so the leftmost
+			// entries are client-supplied and spoofable. With a single trusted
+			// reverse proxy the rightmost entry is the peer address that proxy
+			// actually observed, so use it as the source IP.
+			if i := strings.LastIndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[i+1:])
 			}
 			return strings.TrimSpace(xff)
 		}

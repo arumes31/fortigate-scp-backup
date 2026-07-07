@@ -193,6 +193,37 @@ func TestFmtTimeZero(t *testing.T) {
 	}
 }
 
+func TestClientIP(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		xff        string
+		trustProxy bool
+		want       string
+	}{
+		{"no trust ignores xff", "203.0.113.5:443", "1.2.3.4", false, "203.0.113.5"},
+		{"no trust no port", "203.0.113.5", "", false, "203.0.113.5"},
+		{"trust single xff", "10.0.0.1:80", "198.51.100.7", true, "198.51.100.7"},
+		// Client prepends a spoofed hop; the trusted proxy appends the real peer
+		// on the right, so the rightmost entry is the address to trust.
+		{"trust picks rightmost", "10.0.0.1:80", "1.2.3.4, 198.51.100.7", true, "198.51.100.7"},
+		{"trust trims spaces", "10.0.0.1:80", "1.2.3.4,  198.51.100.7  ", true, "198.51.100.7"},
+		{"trust empty xff falls back", "203.0.113.5:443", "", true, "203.0.113.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = tc.remoteAddr
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if got := clientIP(r, tc.trustProxy); got != tc.want {
+				t.Fatalf("clientIP() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoginLimiter(t *testing.T) {
 	l := newLoginLimiter(2, time.Minute)
 	if !l.allowed("k") {
