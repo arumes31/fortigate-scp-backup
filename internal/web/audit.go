@@ -158,6 +158,9 @@ func parseFortiOSVersion(cfg string) (model, version string) {
 // auditFindings derives management-exposure findings from a config: telnet /
 // plaintext-HTTP management, ping exposure, and how many interfaces expose any
 // management service.
+// auditFindings derives management-exposure and compliance findings from a config:
+// telnet/plaintext-HTTP management, weak ciphers (DES/3DES), weak hashes (MD5),
+// weak DH groups, missing admin 2FA, default accounts, and weak SSL/TLS protocols.
 func auditFindings(cfg string) []auditFinding {
 	var out []auditFinding
 	var telnet, httpMgmt, pingMgmt bool
@@ -196,6 +199,100 @@ func auditFindings(cfg string) []auditFinding {
 	if exposedMgmt > 0 {
 		out = append(out, auditFinding{"info", fmt.Sprintf("%d Interface(s) mit Management-Zugriff exponiert", exposedMgmt)})
 	}
+
+	// 1. Two-Factor Authentication (2FA) Audit for Administrators
+	adminBlockRegex := regexp.MustCompile(`(?s)config system admin\s*(.*?)\s*end`)
+	if match := adminBlockRegex.FindStringSubmatch(cfg); len(match) > 1 {
+		adminBlock := match[1]
+		editRegex := regexp.MustCompile(`(?s)edit\s+["']?([^"'\s]+)["']?\s*(.*?)\s*next`)
+		edits := editRegex.FindAllStringSubmatch(adminBlock, -1)
+		for _, edit := range edits {
+			username := edit[1]
+			userConfig := edit[2]
+
+			// Check if two-factor authentication is configured
+			if !strings.Contains(userConfig, "set two-factor") {
+				out = append(out, auditFinding{"critical", fmt.Sprintf("Administrator '%s' hat keine Zwei-Faktor-Authentifizierung (2FA) aktiviert", username)})
+			}
+
+			// Check if default 'admin' account exists
+			if username == "admin" {
+				out = append(out, auditFinding{"warning", "Standard-Administrator-Account 'admin' existiert noch"})
+			}
+		}
+	}
+
+	// 2. Proposal audits & Cryptographic checks (DES, 3DES, MD5, DH-Groups, TLS)
+	re3DES := regexp.MustCompile(`(?i)\b3des\b`)
+	reDES := regexp.MustCompile(`(?i)\bdes\b`)
+	reMD5 := regexp.MustCompile(`(?i)\bmd5\b`)
+
+	var hasDES, has3DES, hasMD5, hasWeakDH, hasMinSSLWeak, hasPasswordPolicyDisabled bool
+
+	lines := strings.Split(cfg, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		// proposal check
+		if strings.HasPrefix(lower, "set proposal") {
+			if reDES.MatchString(lower) {
+				hasDES = true
+			}
+			if re3DES.MatchString(lower) {
+				has3DES = true
+			}
+			if reMD5.MatchString(lower) {
+				hasMD5 = true
+			}
+		}
+
+		// weak Diffie-Hellman groups check (1, 2, 5)
+		if strings.HasPrefix(lower, "set dhgrp") {
+			parts := strings.Fields(lower)
+			for _, part := range parts {
+				if part == "1" || part == "2" || part == "5" {
+					hasWeakDH = true
+				}
+			}
+		}
+
+		// outdated SSL/TLS minimum protocol
+		if strings.HasPrefix(lower, "set ssl-min-proto-version") {
+			if strings.Contains(lower, "ssl3") || strings.Contains(lower, "tls1-0") || strings.Contains(lower, "tls1-1") {
+				hasMinSSLWeak = true
+			}
+		}
+	}
+
+	// Global password policy disabled check
+	if strings.Contains(strings.ToLower(cfg), "config system password-policy") {
+		if match := regexp.MustCompile(`(?s)config system password-policy\s*(.*?)\s*end`).FindStringSubmatch(cfg); len(match) > 1 {
+			if strings.Contains(match[1], "set status disable") {
+				hasPasswordPolicyDisabled = true
+			}
+		}
+	}
+
+	if hasDES {
+		out = append(out, auditFinding{"critical", "Schwache IPsec-Verschlüsselung (DES) in Proposals aktiviert"})
+	}
+	if has3DES {
+		out = append(out, auditFinding{"critical", "Schwache IPsec-Verschlüsselung (3DES) in Proposals aktiviert"})
+	}
+	if hasMD5 {
+		out = append(out, auditFinding{"warning", "Schwache IPsec-Integrität (MD5) in Proposals aktiviert"})
+	}
+	if hasWeakDH {
+		out = append(out, auditFinding{"warning", "Schwache Diffie-Hellman-Gruppe (DH-Gruppe 1/2/5) aktiviert"})
+	}
+	if hasMinSSLWeak {
+		out = append(out, auditFinding{"critical", "Veraltetes SSL/TLS-Protokoll als Minimum konfiguriert (SSLv3/TLS1.0/TLS1.1)"})
+	}
+	if hasPasswordPolicyDisabled {
+		out = append(out, auditFinding{"warning", "Globale Passwort-Richtlinie (password-policy) ist deaktiviert"})
+	}
+
 	if len(out) == 0 {
 		out = append(out, auditFinding{"info", "Keine offensichtlichen Management-Findings"})
 	}
