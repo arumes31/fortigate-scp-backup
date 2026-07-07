@@ -77,70 +77,20 @@ end
 
 ## Installation
 ### Using Docker Compose
-Use the provided [`docker-compose.yml`](docker-compose.yml). It defines two
-services: the `fortisafe-app` container and a `fortisafe-db` PostgreSQL
-companion (the app waits for the DB healthcheck before starting).
+We provide two Docker Compose configurations depending on how you wish to deploy:
+- [`docker-compose.yml`](docker-compose.yml): Builds the application container locally from the source files.
+- [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml): Pulls and runs the official pre-built image from GitHub Container Registry (`ghcr.io/arumes31/fortigate-scp-backup:latest`).
 
-```yaml
-services:
-  fortisafe-app:
-    container_name: "fortisafe-app"
-    # Pre-built image from GitHub Container Registry...
-    image: "ghcr.io/arumes31/fortigate-scp-backup:latest"
-    # ...or build locally instead (comment out `image:` above):
-    # build: .
-    environment:
-      - "DEFAULT_SCP_USER=fortisafe"
-      - "DEFAULT_SCP_PASSWORD=XXXXXX"
-      - "TOTP_ENABLED=true"
-      - "TOTP_SECRET=XXXXXX"
-      - "MAIL_SERVER=smtp.test.com"
-      - "MAIL_PORT=25"
-      - "MAIL_USER=fortisafe@test.com"
-      - "MAIL_PASSWORD=XXXXXX"
-      - "MAIL_RECIPIENT=user1@test.com"
-      - "TZ=Europe/Vienna"
-      - "RADIUS_ENABLED=true"
-      - "RADIUS_PORT=1812"
-      - "RADIUS_SECRET=fortisafe-XXXXXX"
-      - "RADIUS_SERVER=192.168.0.100"
-      - "PG_HOST=fortisafe-db"
-      - "PG_PORT=5432"
-      - "PG_USER=postgre"
-      - "PG_PASSWORD=XXXXXXTDB"
-      - "PG_DATABASE=firewall_backups"
-      - "EXT_ADM_VPN_CONF=true"
-    ports:
-      - "8521:8521/tcp"
-    volumes:
-      - "/mnt/.../backups:/app/backups"
-      - "/mnt/.../data_fgt-adm-vpn-conf:/app/data"
-    restart: unless-stopped
-    depends_on:
-      fortisafe-db:
-        condition: service_healthy
-        restart: true
+Both configurations spin up the main FortiSafe web app and a PostgreSQL database container. All configurable environment variables for both the application and database services are fully listed inside these files.
 
-  fortisafe-db:
-    container_name: "fortisafe-db"
-    image: postgres:latest
-    environment:
-      - "POSTGRES_USER=postgre"
-      - "POSTGRES_PASSWORD=XXXXXXTDB"
-      - "POSTGRES_DB=firewall_backups"
-    restart: unless-stopped
-    volumes:
-      - "/mnt/.../data:/var/lib/postgresql/data"
-    healthcheck:
-          test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
-          interval: 5s
-          timeout: 5s
-          retries: 5
-```
-
-Then run:
-```
+To start with the local build configuration:
+```bash
 docker compose up -d
+```
+
+To start using the GitHub Container Registry image:
+```bash
+docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 Two volumes are used by the app:
