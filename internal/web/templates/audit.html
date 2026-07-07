@@ -21,10 +21,70 @@
 </div>
 
 <div class="card pad-0">
-    <div class="card-header">
+    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 15px 20px;">
         <h2 class="mt-0 mb-0">Compliance je Firewall</h2>
         <span class="muted">Aus der neuesten gespeicherten Konfiguration</span>
     </div>
+    
+    <div style="padding: 15px 20px 5px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;">
+        <input type="text" id="auditSearch" placeholder="Suche nach FQDN, Modell oder Finding..." onkeyup="filterAuditTable()" style="flex: 1; min-width: 250px; max-width: 400px; padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; transition: border-color 0.2s;" onfocus="this.style.borderColor='rgba(255,255,255,0.25)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+        
+        <div class="severity-filters" style="display: flex; gap: 6px;">
+            <button class="severity-btn active" data-severity="all" onclick="filterSeverity('all')" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: all 0.2s;">Alle</button>
+            <button class="severity-btn" data-severity="critical" onclick="filterSeverity('critical')" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: all 0.2s;">Critical</button>
+            <button class="severity-btn" data-severity="warning" onclick="filterSeverity('warning')" style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #fbbf24; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: all 0.2s;">Warning</button>
+            <button class="severity-btn" data-severity="info" onclick="filterSeverity('info')" style="background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #60a5fa; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: all 0.2s;">Info</button>
+        </div>
+    </div>
+
+    <style>
+        .severity-btn.active {
+            background: #ef4444 !important;
+            border-color: #ef4444 !important;
+            color: #fff !important;
+        }
+        .severity-btn[data-severity="all"].active {
+            background: rgba(255,255,255,0.15) !important;
+            border-color: rgba(255,255,255,0.3) !important;
+        }
+        .severity-btn[data-severity="warning"].active {
+            background: #f59e0b !important;
+            border-color: #f59e0b !important;
+            color: #000 !important;
+        }
+        .severity-btn[data-severity="info"].active {
+            background: #3b82f6 !important;
+            border-color: #3b82f6 !important;
+        }
+        .finding-remediation {
+            margin-top: 6px;
+            border-radius: 4px;
+            background: rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.03);
+        }
+        .finding-remediation summary {
+            font-size: 0.8em;
+            cursor: pointer;
+            color: rgba(255,255,255,0.4);
+            padding: 4px 8px;
+            user-select: none;
+            outline: none;
+        }
+        .finding-remediation summary:hover {
+            color: rgba(255,255,255,0.7);
+        }
+        .finding-remediation pre {
+            margin: 0;
+            padding: 8px;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 0.8em;
+            color: #34d399;
+            white-space: pre-wrap;
+            border-top: 1px solid rgba(255,255,255,0.03);
+            overflow-x: auto;
+        }
+    </style>
+
     <div class="table-wrap">
         <table class="data sticky-first">
             <thead>
@@ -32,13 +92,23 @@
             </thead>
             <tbody>
             {{range .Rows}}
-                <tr>
+                <tr class="audit-row-item">
                     <td>{{.FQDN}}</td>
                     <td class="muted">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
                     <td>{{if .Version}}<code>{{.Version}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
                     <td>
                         {{if .HasConfig}}
-                            {{range .Findings}}<div class="finding finding-{{.Severity}}">{{.Text}}</div>{{end}}
+                            {{range .Findings}}
+                            <div class="finding finding-{{.Severity}}">
+                                <div style="font-weight: 500;">{{.Text}}</div>
+                                {{if ne .Remediation "Keine Aktion erforderlich."}}
+                                <details class="finding-remediation">
+                                    <summary>Behebung (CLI) anzeigen</summary>
+                                    <pre>{{.Remediation}}</pre>
+                                </details>
+                                {{end}}
+                            </div>
+                            {{end}}
                         {{else}}
                             <span class="muted">Kein Backup vorhanden</span>
                         {{end}}
@@ -51,4 +121,57 @@
         </table>
     </div>
 </div>
+
+<script>
+let currentSeverity = 'all';
+
+function filterAuditTable() {
+    const input = document.getElementById("auditSearch").value.toUpperCase();
+    const table = document.querySelector("table.data");
+    const trs = table.getElementsByTagName("tbody")[0].getElementsByClassName("audit-row-item");
+
+    for (let i = 0; i < trs.length; i++) {
+        const fqdnCol = trs[i].getElementsByTagName("td")[0];
+        const modelCol = trs[i].getElementsByTagName("td")[1];
+        const findingsCol = trs[i].getElementsByTagName("td")[3];
+        
+        if (!fqdnCol) continue;
+        
+        const fqdnText = fqdnCol.textContent || fqdnCol.innerText;
+        const modelText = modelCol.textContent || modelCol.innerText;
+        const findingsText = findingsCol.textContent || findingsCol.innerText;
+        
+        const matchesSearch = fqdnText.toUpperCase().indexOf(input) > -1 || 
+                             modelText.toUpperCase().indexOf(input) > -1 || 
+                             findingsText.toUpperCase().indexOf(input) > -1;
+                             
+        let matchesSeverity = true;
+        if (currentSeverity !== 'all') {
+            const findings = trs[i].getElementsByClassName("finding-" + currentSeverity);
+            matchesSeverity = findings.length > 0;
+        }
+        
+        if (matchesSearch && matchesSeverity) {
+            trs[i].style.display = "";
+        } else {
+            trs[i].style.display = "none";
+        }
+    }
+}
+
+function filterSeverity(severity) {
+    currentSeverity = severity;
+    
+    // Update active class on buttons
+    const buttons = document.querySelectorAll(".severity-btn");
+    buttons.forEach(btn => {
+        btn.classList.remove("active");
+        if (btn.getAttribute("data-severity") === severity) {
+            btn.classList.add("active");
+        }
+    });
+    
+    filterAuditTable();
+}
+</script>
 {{end}}

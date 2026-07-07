@@ -26,4 +26,6 @@ type Store interface {
 	CountActivityLogs(ctx context.Context) (int, error)
 	DashboardStats(ctx context.Context) (models.DashboardStats, error)
 	ListFirewallRefs(ctx context.Context) ([]models.FirewallRef, error)
+	GetAuditFindings(ctx context.Context, fwID int) ([]models.AuditFinding, error)
+	SaveAuditFindings(ctx context.Context, fwID int, findings []models.AuditFinding) error
 }

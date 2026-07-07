@@ -58,6 +58,10 @@ func (fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error)
 func (fakeStore) ListActivityLogs(context.Context, int, int) ([]models.ActivityLog, error) {
 	return nil, nil
 }
+func (fakeStore) GetAuditFindings(context.Context, int) ([]models.AuditFinding, error) {
+	return nil, nil
+}
+func (fakeStore) SaveAuditFindings(context.Context, int, []models.AuditFinding) error { return nil }
 
 type fakeAuth struct{ totp bool }
 
