@@ -248,10 +248,44 @@
         }
 
         #totp-section {
-            /* Shown whenever the server renders it (TOTP enabled). Visibility is
-               driven by the .TOTPEnabled flag, not the username. */
-            display: block;
+            /* Hidden until the user enters the TOTP-enabled account (admin),
+               matching the v2.1.7 behaviour so the field is not shown when it is
+               not needed. Server-side enforcement is unchanged. */
+            display: none;
         }
+
+        .radius-banner {
+            margin-bottom: 18px;
+            padding: 12px 14px;
+            border: 1px solid rgba(133, 1, 1, 0.6);
+            border-radius: 8px;
+            background: rgba(133, 1, 1, 0.12);
+            color: #ffd7d7;
+            font-size: 0.92em;
+            line-height: 1.4;
+            text-align: left;
+        }
+        .radius-banner b { color: #ff9999; }
+
+        .login-wait {
+            display: none;
+            margin-top: 16px;
+            color: #ffd7d7;
+            font-size: 0.95em;
+        }
+        .login-wait.show { display: block; }
+        .spinner {
+            display: inline-block;
+            width: 16px; height: 16px;
+            margin-right: 8px;
+            border: 2px solid rgba(255, 153, 153, 0.3);
+            border-top-color: #ff9999;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        input[type="submit"]:disabled { opacity: 0.6; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -274,7 +308,14 @@
         {{if .Error}}
             <p class="error">{{.Error}}</p>
         {{end}}
-        <form method="post" action="/login">
+        {{if .RadiusEnabled}}
+        <div class="radius-banner">
+            <b>RADIUS / MFA:</b> Sign-in can take up to 60&nbsp;seconds. If your
+            account uses push or one-time-password MFA, <b>approve the prompt on
+            your mobile device</b> after clicking Login.
+        </div>
+        {{end}}
+        <form method="post" action="/login" id="login-form">
             <label>Username: <input type="text" name="username" id="username"></label>
             <label>Password: <input type="password" name="password"></label>
             {{if .TOTPEnabled}}
@@ -282,8 +323,11 @@
                     <label>TOTP Code: <input type="text" name="totp_code"></label>
                 </div>
             {{end}}
-            <input type="submit" value="Login">
+            <input type="submit" value="Login" id="login-submit">
         </form>
+        <div class="login-wait" id="login-wait">
+            <span class="spinner"></span>Signing in… check your mobile device to confirm the login if prompted.
+        </div>
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -319,9 +363,30 @@
             // Start the matrix rain animation
             matrixRain();
 
-            // TOTP visibility is decided server-side via .TOTPEnabled (the section
-            // is only rendered when TOTP is enabled) and applies to every user, so
-            // there is no username-based show/hide here.
+            // TOTP conditional display: only the local admin account uses TOTP,
+            // so reveal the field when that username is entered (matches v2.1.7).
+            // The server still enforces TOTP regardless of this show/hide.
+            if (totpSection && usernameInput) {
+                usernameInput.addEventListener('input', function () {
+                    totpSection.style.display =
+                        usernameInput.value.trim().toLowerCase() === 'admin' ? 'block' : 'none';
+                });
+            }
+
+            // On submit, show a waiting hint and disable the button: a RADIUS/MFA
+            // sign-in can take up to 60s and may need approval on the user's phone.
+            var loginForm = document.getElementById('login-form');
+            var loginSubmit = document.getElementById('login-submit');
+            var loginWait = document.getElementById('login-wait');
+            if (loginForm) {
+                loginForm.addEventListener('submit', function () {
+                    if (loginWait) { loginWait.classList.add('show'); }
+                    if (loginSubmit) {
+                        loginSubmit.disabled = true;
+                        loginSubmit.value = 'Signing in…';
+                    }
+                });
+            }
         });
     </script>
 </body>

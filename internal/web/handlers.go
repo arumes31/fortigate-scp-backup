@@ -24,8 +24,20 @@ import (
 // ---- page data structs (each embeds Base for the shared layout) ----
 
 type loginData struct {
-	Error       string
-	TOTPEnabled bool
+	Error         string
+	TOTPEnabled   bool
+	RadiusEnabled bool
+}
+
+// loginView builds the login page data, carrying the TOTP/RADIUS flags the
+// template needs to decide whether to reveal the TOTP field and show the
+// "approve on your mobile" RADIUS banner.
+func (s *Server) loginView(errMsg string) loginData {
+	return loginData{
+		Error:         errMsg,
+		TOTPEnabled:   s.cfg.TOTPEnabled,
+		RadiusEnabled: s.cfg.RadiusEnabled,
+	}
 }
 
 type indexData struct {
@@ -77,7 +89,7 @@ type searchData struct {
 // handleLogin renders and processes the login form (public route).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.render(w, "login.html", loginData{TOTPEnabled: s.cfg.TOTPEnabled})
+		s.render(w, "login.html", s.loginView(""))
 		return
 	}
 
@@ -90,7 +102,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rlKey := clientIP(r, s.cfg.TrustProxyHeaders) + "|" + username
 	if !s.limiter.allowed(rlKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
-		s.render(w, "login.html", loginData{Error: "Too many failed attempts. Please try again later.", TOTPEnabled: s.cfg.TOTPEnabled})
+		s.render(w, "login.html", s.loginView("Too many failed attempts. Please try again later."))
 		return
 	}
 
@@ -118,13 +130,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			if !s.auth.VerifyTOTP(user.TOTPSecret, totpCode) {
 				s.limiter.fail(rlKey)
 				s.store.LogActivity(username, "Login Failed", "Invalid TOTP code")
-				s.render(w, "login.html", loginData{Error: "Invalid TOTP code", TOTPEnabled: s.cfg.TOTPEnabled})
+				s.render(w, "login.html", s.loginView("Invalid TOTP code"))
 				return
 			}
 		} else {
 			s.limiter.fail(rlKey)
 			s.store.LogActivity(username, "Login Failed", "TOTP required but no secret found")
-			s.render(w, "login.html", loginData{Error: "TOTP required but no secret found", TOTPEnabled: s.cfg.TOTPEnabled})
+			s.render(w, "login.html", s.loginView("TOTP required but no secret found"))
 			return
 		}
 	}
@@ -132,7 +144,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !authenticated {
 		s.limiter.fail(rlKey)
 		s.store.LogActivity(username, "Login Failed", "Invalid credentials")
-		s.render(w, "login.html", loginData{Error: "Invalid credentials", TOTPEnabled: s.cfg.TOTPEnabled})
+		s.render(w, "login.html", s.loginView("Invalid credentials"))
 		return
 	}
 
@@ -140,7 +152,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.sess.Login(w, r, username, isRadius); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
-		s.render(w, "login.html", loginData{Error: "Failed to establish session. Please try again.", TOTPEnabled: s.cfg.TOTPEnabled})
+		s.render(w, "login.html", s.loginView("Failed to establish session. Please try again."))
 		return
 	}
 	s.store.LogActivity(username, "Login Success", "User logged in")
