@@ -236,6 +236,7 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 			if delErr := s.store.DeleteBackupByFilename(ctx, dbName); delErr != nil {
 				return delErr
 			}
+			s.prunedTotal.Add(1)
 		}
 	}
 
