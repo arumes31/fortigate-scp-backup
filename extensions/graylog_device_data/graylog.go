@@ -325,7 +325,7 @@ type stpEvent struct {
 
 // reDot1x parses 802.1X authorization transitions from "FortiSwitch switch"
 // events ("802.1x port30 reset to unauthorized mode and native_vlan=100").
-var reDot1x = regexp.MustCompile(`(?i)802\.1x\s+(\S+)\s.*?(unauthorized|authorized)`)
+var reDot1x = regexp.MustCompile(`(?i)\b802\.1x\s+(\S+)\s.*?\b(unauthorized|authorized)\b`)
 
 // firstNonEmpty returns the first non-empty string.
 func firstNonEmpty(vals ...string) string {
