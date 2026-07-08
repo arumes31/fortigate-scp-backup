@@ -74,7 +74,7 @@ graph TD
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
   - **Brute-force lockout**: Per-IP + username rate limiting with a configurable lockout window.
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
-- 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, and an audited activity trail with optional age-based pruning.
+- 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, a **Graylog logging-issues** card (VPN devices whose logging is offline / errored / unconfigured, surfaced from the FGT ADM VPN Config module), and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
 - 🔍 **Security Auditing & Insights**:
   - **Instant, cached audits**: The audit page renders immediately; per-firewall results are computed asynchronously, cached in SQLite, and pre-warmed right after each successful backup. A per-firewall "re-check" recomputes on demand.
@@ -86,14 +86,72 @@ graph TD
   - **CVE Correlation & Upgrade Paths**: Maps the detected FortiOS version to known exploited CVEs (2022–2025, e.g. CVE-2022-42475, CVE-2023-27997, CVE-2024-21762, CVE-2024-55591) and computes correct train-by-train upgrade paths (never a downgrade; up-to-date versions are reported as such).
   - **Compliance Scoring**: Derives PCI-DSS, CIS Benchmark, and HIPAA scores from the structured check results.
   - **Change Tickets & Exemptions**: Link configuration runs to change tickets, and log approved security exemptions (matched by stable finding keys, so dynamic finding texts stay exempt).
-- 🗺️ **Interactive Network Topology** (dedicated page): A D3-powered, CDN-free collapsible tree — Internet → FortiGate → interfaces → VLANs / FortiSwitches → ports — with pan/zoom, hover details, and:
-  - **Device faceplates**: Clicking the firewall or a switch slides in an auto-generated schematic front panel with per-port coloring (WAN / FortiLink / VLAN parent / IP configured) and per-port details.
-  - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login.
-  - **Live device inventory** (optional `graylog_device_data` extension): For firewalls with managed FortiSwitches, client devices seen in Graylog logs (MAC, IP, VLAN, switch port) are rendered under their switch — refreshed hourly in the background, with a "fetch device data now" button for the viewed firewall. Devices with shared MAC/IP addresses are highlighted.
+- 🗺️ **Interactive Network Topology** (dedicated page): A D3-powered, CDN-free collapsible tree with a **mirrored layout** — WAN uplinks and IPsec/SSL-VPN tunnels fan out to the *left* of a central Internet node, while the FortiGate, its FortiSwitch stack, VLANs, ports, and client devices grow to the *right*. Pan/zoom, search, filters, a right-click context menu, and:
+  - **Device faceplates**: Clicking the firewall or a switch slides in an auto-generated schematic front panel with per-port coloring (WAN / FortiLink / VLAN parent / IP configured), a **VLAN color legend**, and per-port details.
+  - **Maximize view**: A one-click ⛶ button (and `Esc`) hides all page chrome so the canvas fills the viewport.
+  - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login (firmware version and VPN remote gateways are redacted).
+  - **Live device & state overlay** (optional `graylog_device_data` extension) — derived purely from **config backups + Graylog logs**, with *no REST API and no SSH connection to the firewall*. For firewalls with managed FortiSwitches it adds, refreshed hourly (or on demand):
+    - **Client devices** under their switch/VLAN with MAC, IP, and an OS/vendor **fingerprint**; devices sharing a MAC/IP are highlighted;
+    - **Device → switch-port pinning** derived from FortiSwitch MAC-table events (add / move / delete);
+    - **Wireless clients** linked to their AP and SSID, with signal strength;
+    - **Port link up/down** and **FortiSwitch STP / loop / root-guard** state — blocked ports blink orange on faceplates and mark their switch and interlinks;
+    - **VPN tunnel up/down** and **HA member/role** status;
+    - **MC-LAG ICL** peer detection between core switches.
+  - **"Live" refresh button**: temporarily polls Graylog every ~minute (auto-stops after 10 min) with an automatically narrowed search window, for near-real-time device data while you watch.
 - 🌐 **Bilingual UI (EN/DE)**: English by default, one-click toggle to German — including localized audit findings and upgrade paths.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
 - 🖥️ **Terminal-style Web UI**: A full-width, keyboard-accessible interface with a self-hosted monospace typeface — no external fonts or scripts.
+
+---
+
+## 🗺️ Network Topology
+
+The topology page renders a live map of each site **entirely from the two data sources FortiSafe already has — the config backup and Graylog logs.** It never opens an SSH session or calls the FortiGate REST API. The structure (interfaces, VLANs, FortiSwitches, ports, VPN definitions, HA, FortiAPs) is parsed from the latest backup; the runtime overlay (device→port pinning, link/STP state, tunnel and HA up/down, wireless associations) comes from the `graylog_device_data` extension.
+
+```mermaid
+graph LR
+    Peers([Remote VPN peers]):::ext
+
+    %% Internet-facing branches render to the LEFT of the Internet node
+    WAN["🌎 WAN uplinks<br/>wan1 · wan2"]:::cfg
+    VPN["🔒 IPsec / SSL-VPN tunnels<br/><i>up ▲ / down ▼</i>"]:::live
+    NET(["🌐 Internet"]):::ext
+
+    Peers --- VPN
+    WAN --> NET
+    VPN --> NET
+    NET --> FGT
+
+    FGT["🛡️ FortiGate<br/><i>HA-cluster aware</i>"]:::cfg
+    HA["⇄ HA members<br/>primary · secondary"]:::live
+    APG["📶 FortiAPs"]:::cfg
+    WCL["Wireless clients<br/>SSID · AP · signal"]:::live
+    VLAN["VLANs<br/><i>color-coded</i>"]:::cfg
+    CORE["FortiSwitch — core"]:::cfg
+    CORE2["FortiSwitch — core peer"]:::cfg
+    ACC["FortiSwitch — access"]:::cfg
+    PORT["Ports<br/><i>link ▲/▼ · STP / guard</i>"]:::live
+    DEV["Client devices<br/>MAC · IP · VLAN · fingerprint"]:::live
+
+    FGT --> HA
+    FGT --> APG
+    APG --> WCL
+    FGT --> VLAN
+    FGT --> CORE
+    CORE -. "MC-LAG ICL" .- CORE2
+    CORE --> ACC
+    ACC --> PORT
+    PORT --> DEV
+
+    classDef cfg fill:#0b3d5c,stroke:#22d3ee,color:#e6f6ff;
+    classDef live fill:#4a3410,stroke:#f0b429,color:#fff6e0;
+    classDef ext fill:#2b2b2b,stroke:#888,color:#eeeeee;
+```
+
+> **Legend** — 🟦 **blue** nodes are parsed from the **config backup**; 🟧 **amber** nodes are the **live Graylog overlay** (device pinning, link/STP state, VPN & HA up/down, wireless associations). Enable the overlay with `EXT_GRAYLOG_DEVICE_DATA=true` plus `GRAYLOG_URL` / `GRAYLOG_TOKEN`.
+
+Each Graylog signal has its own tunable query template (`%s` is expanded to the firewall's Graylog `source`, resolved from the FGT ADM VPN Config module so HA clusters match **both** member hostnames). See the [extension configuration](#extension-graylog-device-data-topology-overlay) below.
 
 ---
 
@@ -309,16 +367,28 @@ FortiSafe is configured entirely via environment variables.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `EXT_ADM_VPN_CONF` | `false` | Enable the FGT ADM VPN Config module. |
-| `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster. |
+| `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster (shared by both Graylog-backed extensions). |
 | `GRAYLOG_TOKEN` | *(Unset)* | Graylog authentication token. |
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
-| `EXT_GRAYLOG_DEVICE_DATA` | `false` | Enable the Graylog switch-device inventory extension (topology device data). |
-| `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` | Graylog query template for device logs; `%s` is the firewall's short hostname. Must match logs containing MAC address fields. |
-| `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per device fetch. |
-| `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background device refresh interval in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
 | `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune activity logs older than N days (0 = keep forever). |
+
+### Extension: Graylog Device Data (Topology Overlay)
+
+Powers the live device & state overlay on the [topology page](#-network-topology). Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above). Each signal is a separate query template; `%s` is expanded to the firewall's Graylog `source` (resolved from the FGT ADM VPN Config module, so HA clusters match both member hostnames).
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_GRAYLOG_DEVICE_DATA` | `false` | Enable the Graylog switch-device inventory extension (topology device data). |
+| `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background refresh interval in seconds for all signals below. |
+| `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per background fetch. (The topology "Live" button overrides this with a narrower window, clamped to 60–3600 s.) |
+| `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` | Client-device logs (MAC/IP/VLAN + OS fingerprint). |
+| `GRAYLOG_MAC_QUERY` | `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616)` | FortiSwitch MAC-table add / move / delete events → device-to-switch-port pinning. |
+| `GRAYLOG_STP_QUERY` | *(FortiSwitch spanning-tree / port-status / link / BPDU / loop- & root-guard filter)* | Port link up/down and STP / guard state (blocked ports blink on faceplates). |
+| `GRAYLOG_WIFI_QUERY` | `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)` | Wireless client ↔ AP ↔ SSID associations with signal strength. |
+| `GRAYLOG_VPN_QUERY` | `source:"%s" AND subtype:"vpn" AND tunnelid:*` | IPsec / SSL-VPN tunnel up/down status. |
+| `GRAYLOG_HA_QUERY` | `source:"%s" AND subtype:"ha"` | HA member / role events. |
 
 ---
 
