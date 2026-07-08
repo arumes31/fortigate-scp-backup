@@ -230,6 +230,15 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.col_reason":    {"en": "Reason", "de": "Grund"},
 	"dashboard.col_since":     {"en": "Since", "de": "Seit"},
 	"dashboard.topology":      {"en": "Topology", "de": "Topologie"},
+
+	// Dashboard page (Graylog logging status card, from the FGT ADM VPN config)
+	"dashboard.graylog_title":    {"en": "Graylog logging issues", "de": "Graylog-Logging-Probleme"},
+	"dashboard.col_site":         {"en": "Site", "de": "Standort"},
+	"dashboard.col_status":       {"en": "Status", "de": "Status"},
+	"dashboard.col_checked":      {"en": "Last checked", "de": "Zuletzt geprüft"},
+	"dashboard.gl_offline":       {"en": "offline", "de": "offline"},
+	"dashboard.gl_error":         {"en": "error", "de": "Fehler"},
+	"dashboard.gl_config_missing": {"en": "not configured", "de": "nicht konfiguriert"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by
