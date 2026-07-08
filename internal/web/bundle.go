@@ -24,7 +24,11 @@ func (s *Server) handleDownloadBundle(w http.ResponseWriter, r *http.Request) {
 	zw := zip.NewWriter(&buf)
 	added := 0
 	for _, ref := range refs {
-		plain, _, ok := s.latestConfig(ref.ID)
+		filename, ok := s.latestConfigFilename(ref.ID)
+		if !ok {
+			continue
+		}
+		plain, ok := s.readConfig(ref.ID, filename)
 		if !ok {
 			continue
 		}
