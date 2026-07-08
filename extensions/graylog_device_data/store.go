@@ -653,8 +653,10 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 		// it carries the real switch + physical port, which the traffic-log
 		// inventory lacks (its "port" is only the VLAN interface).
 		if mpPort != "" {
-			d.SwitchID = mpSwitch
 			d.Port = mpPort
+			if mpSwitch != "" {
+				d.SwitchID = mpSwitch
+			}
 			if mpVlan != "" {
 				d.Vlan = mpVlan
 			}

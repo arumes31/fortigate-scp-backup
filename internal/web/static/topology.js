@@ -77,7 +77,7 @@ function deviceNode(d) {
     // Endpoint fingerprint (device-identification) and wireless association.
     const fp = [d.devtype, d.osname && (d.osname + (d.osversion ? " " + d.osversion : "")), d.vendor].filter(Boolean).join(" · ");
     if (fp) info += `\n${fp}`;
-    if (d.ap) info += `\n${tt("topo.ap") || "AP"}: ${d.ap}${d.ssid ? " · " + d.ssid : ""}${d.signal ? " · " + d.signal + " dBm" : ""}`;
+    if (d.ap) info += `\n${tt("topo.ap")}: ${d.ap}${d.ssid ? " · " + d.ssid : ""}${d.signal ? " · " + d.signal + " dBm" : ""}`;
     if (d.first_seen) info += `\n${tt("topo.first_seen")}: ${d.first_seen}`;
     if (d.last_seen) info += `\n${tt("topo.seen")}: ${d.last_seen}`;
     if (stale) info += `\n⏱ ${tt("topo.stale")}`;
