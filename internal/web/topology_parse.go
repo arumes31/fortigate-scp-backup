@@ -225,6 +225,9 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 			if v, _, ok := doc.settingDirect(pb, "type"); ok {
 				p.Type = strings.ToLower(v)
 			}
+			if v, _, ok := doc.settingDirect(pb, "access-mode"); ok {
+				p.AccessMode = strings.ToLower(v)
+			}
 			p.Members = doc.settingFields(pb, "members")
 			if v, _, ok := doc.settingDirect(pb, "mclag-icl"); ok && strings.EqualFold(v, "enable") {
 				p.MclagIcl = true

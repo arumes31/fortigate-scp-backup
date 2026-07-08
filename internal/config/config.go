@@ -162,7 +162,7 @@ func Load(logger *slog.Logger) *Config {
 
 		ExtGraylogDeviceData:  boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
 		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
-		GraylogStpQuery:       getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
+		GraylogStpQuery:       getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR logdesc:"FortiSwitch switch" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
 		GraylogMacQuery:       getenv("GRAYLOG_MAC_QUERY", `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616 OR logid:0115022861 OR logid:0115022862)`),
 		GraylogWifiQuery:      getenv("GRAYLOG_WIFI_QUERY", `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)`),
 		GraylogVpnQuery:       getenv("GRAYLOG_VPN_QUERY", `source:"%s" AND subtype:"vpn" AND tunnelid:*`),

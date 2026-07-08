@@ -22,7 +22,7 @@ import (
 // entry via RulesFingerprint.
 // auditSchemaVersion invalidates cached results whose parse predates a
 // parser/derivation change (bump when parseConfigData output changes).
-const auditSchemaVersion = 5
+const auditSchemaVersion = 6
 
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
