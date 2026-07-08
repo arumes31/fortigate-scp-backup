@@ -57,3 +57,29 @@ type Deps struct {
 idempotent migrations, a config-bundle (ZIP) generator, CSV import/export, a
 public Graylog DSV endpoint, and a background Graylog status worker that emits
 HookWise up/down events on state transitions.
+
+## graylog_device_data
+
+`extensions/graylog_device_data` (mounted at `/graylog-devices`, enabled via
+`EXT_GRAYLOG_DEVICE_DATA=true`) feeds the topology page with the client
+devices seen behind managed FortiSwitches:
+
+- A background worker runs every `GRAYLOG_DEVICE_INTERVAL` seconds (default
+  3600). For every firewall whose latest audited configuration manages
+  FortiSwitches (read from the core insights cache), it queries Graylog
+  (`GRAYLOG_URL`/`GRAYLOG_TOKEN`) with the `GRAYLOG_DEVICE_QUERY` template
+  (default `source:"%s" AND mac:*`, `%s` = the firewall's short hostname)
+  over the last `GRAYLOG_DEVICE_RANGE` seconds, staggering firewalls across
+  the interval.
+- Messages are normalized into devices (MAC, IP, VLAN, switch port, switch
+  serial, hostname, last seen); several FortiGate field aliases are accepted
+  (`mac`/`srcmac`, `ip`/`assignedip`/`srcip`, `vlan`/`vlanid`,
+  `portname`/`port`/`srcintf`, `switchid`/`sn`, …).
+- The inventory lives in a private SQLite DB (`graylog-device-data.db`).
+- API: `GET /graylog-devices/data/{fwID}` returns the stored inventory with
+  `shared_mac` / `shared_ip` flags (one MAC seen with several IPs, one IP
+  behind several MACs); `POST /graylog-devices/refresh/{fwID}` fetches from
+  Graylog immediately ("fetch device data now" in the topology view).
+- The topology page renders devices under their switch's VLAN group with the
+  device's VLAN badge, and highlights shared MAC/IP devices with a red dashed
+  border. When the extension is disabled the topology simply omits devices.

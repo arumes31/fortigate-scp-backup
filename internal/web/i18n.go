@@ -143,6 +143,18 @@ var uiMsgs = map[string]map[string]string{
 	"topo.legend_ip":   {"en": "IP configured", "de": "IP konfiguriert"},
 	"topo.legend_none": {"en": "unconfigured", "de": "unkonfiguriert"},
 	"topo.legend_vlan": {"en": "VLAN parent", "de": "VLAN-Parent"},
+
+	// Graylog device inventory (extension)
+	"topo.device":       {"en": "Device", "de": "Gerät"},
+	"topo.devices":      {"en": "Devices", "de": "Geräte"},
+	"topo.seen":         {"en": "Seen", "de": "Gesehen"},
+	"topo.shared_mac":   {"en": "MAC seen with multiple IPs", "de": "MAC mit mehreren IPs gesehen"},
+	"topo.shared_ip":    {"en": "IP shared by multiple MACs", "de": "IP von mehreren MACs verwendet"},
+	"topo.fetch_now":    {"en": "⟳ Fetch device data", "de": "⟳ Gerätedaten abrufen"},
+	"topo.fetching":     {"en": "fetching device data…", "de": "Gerätedaten werden abgerufen…"},
+	"topo.dev_updated":  {"en": "device data updated", "de": "Gerätedaten aktualisiert"},
+	"topo.fetch_failed": {"en": "Device data fetch failed.", "de": "Gerätedaten-Abruf fehlgeschlagen."},
+	"topo.legend_share": {"en": "MAC/IP shared", "de": "MAC/IP geteilt"},
 }
 
 // i18nJSKeys are the catalog keys exposed to the browser as window.I18N.
@@ -161,6 +173,9 @@ var i18nJSKeys = []string{
 	"topo.legend_wan", "topo.legend_ip", "topo.legend_none", "topo.legend_vlan",
 	"topo.copied", "topo.created", "topo.expires", "topo.no_expiry",
 	"topo.revoke", "topo.share_fail", "topo.copy_hint", "topo.copy",
+	"topo.device", "topo.devices", "topo.seen", "topo.shared_mac",
+	"topo.shared_ip", "topo.fetch_now", "topo.fetching", "topo.dev_updated",
+	"topo.fetch_failed", "topo.legend_share",
 }
 
 // i18nJSON renders the JS-facing catalog subset for a language as a JSON

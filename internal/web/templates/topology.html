@@ -14,6 +14,7 @@
         </div>
         <div style="display: flex; gap: 8px; align-items: center; font-size: 0.82em;">
             <span class="muted">{{T .Base.Lang "topo.hint"}}</span>
+            <button id="fetchDevBtn" class="btn btn-small" onclick="fetchDevicesNow()" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">{{T .Base.Lang "topo.fetch_now"}}</button>
             <button class="btn btn-small" onclick="resetZoom()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⤢ {{T .Base.Lang "topo.reset"}}</button>
         </div>
     </div>
@@ -58,7 +59,7 @@
     </div>
 </div>
 
-<script>window.TOPO_CONFIG = { dataBase: "/topology/data/" }; window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script>window.TOPO_CONFIG = { dataBase: "/topology/data/", devicesBase: "/graylog-devices" }; window.I18N = {{i18nJSON .Base.Lang}};</script>
 <script src="/static/d3.v7.min.js"></script>
 <script src="/static/topology.js"></script>
 <script>

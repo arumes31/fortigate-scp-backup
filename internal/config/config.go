@@ -76,6 +76,12 @@ type Config struct {
 	HookwiseURL            string
 	HookwiseToken          string
 
+	// Extension: graylog_device_data (switch client inventory for the topology)
+	ExtGraylogDeviceData  bool
+	GraylogDeviceQuery    string // Graylog query template, %s = source host
+	GraylogDeviceRange    string // seconds of log history to scan per fetch
+	GraylogDeviceInterval int    // background refresh interval in seconds
+
 	// Housekeeping
 	ActivityLogRetentionDays int
 
@@ -148,6 +154,11 @@ func Load(logger *slog.Logger) *Config {
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
 		HookwiseToken:          os.Getenv("HOOKWISE_TOKEN"),
+
+		ExtGraylogDeviceData:  boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
+		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND mac:*`),
+		GraylogDeviceRange:    getenv("GRAYLOG_DEVICE_RANGE", "86400"),
+		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
 

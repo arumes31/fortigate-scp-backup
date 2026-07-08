@@ -89,6 +89,7 @@ graph TD
 - 🗺️ **Interactive Network Topology** (dedicated page): A D3-powered, CDN-free collapsible tree — Internet → FortiGate → interfaces → VLANs / FortiSwitches → ports — with pan/zoom, hover details, and:
   - **Device faceplates**: Clicking the firewall or a switch slides in an auto-generated schematic front panel with per-port coloring (WAN / FortiLink / VLAN parent / IP configured) and per-port details.
   - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login.
+  - **Live device inventory** (optional `graylog_device_data` extension): For firewalls with managed FortiSwitches, client devices seen in Graylog logs (MAC, IP, VLAN, switch port) are rendered under their switch — refreshed hourly in the background, with a "fetch device data now" button for the viewed firewall. Devices with shared MAC/IP addresses are highlighted.
 - 🌐 **Bilingual UI (EN/DE)**: English by default, one-click toggle to German — including localized audit findings and upgrade paths.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
@@ -311,6 +312,10 @@ FortiSafe is configured entirely via environment variables.
 | `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster. |
 | `GRAYLOG_TOKEN` | *(Unset)* | Graylog authentication token. |
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
+| `EXT_GRAYLOG_DEVICE_DATA` | `false` | Enable the Graylog switch-device inventory extension (topology device data). |
+| `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND mac:*` | Graylog query template for device logs; `%s` is the firewall's short hostname. |
+| `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per device fetch. |
+| `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background device refresh interval in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
 | `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune activity logs older than N days (0 = keep forever). |
