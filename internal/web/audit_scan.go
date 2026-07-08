@@ -84,11 +84,21 @@ func parseCfg(cfg string) *cfgDoc {
 	return doc
 }
 
-// block returns the first block whose path matches exactly (case-insensitive
-// on the config segments; edit names compare case-sensitively as stored).
+// pathMatches reports whether a block path equals the wanted section path,
+// ignoring any VDOM wrapping: on multi-VDOM FortiGates sections like
+// "config system interface" are nested under "config global" or
+// "config vdom > edit <name>", producing paths such as
+// "config global > config system interface". Matching on the segment-aligned
+// suffix keeps the checks working in both modes.
+func pathMatches(blockPath, path string) bool {
+	return blockPath == path || strings.HasSuffix(blockPath, " > "+path)
+}
+
+// block returns the first block whose path matches the section (VDOM
+// wrapping ignored; edit names compare case-sensitively as stored).
 func (d *cfgDoc) block(path string) (cfgBlock, bool) {
 	for _, b := range d.blocks {
-		if b.Path == path {
+		if pathMatches(b.Path, path) {
 			return b, true
 		}
 	}
@@ -96,14 +106,26 @@ func (d *cfgDoc) block(path string) (cfgBlock, bool) {
 }
 
 // blocksUnder returns every direct edit block under the given config path,
-// e.g. blocksUnder("config system admin") yields one block per admin.
+// e.g. blocksUnder("config system admin") yields one block per admin. VDOM
+// wrapping is ignored, and with multiple VDOMs the edits of every VDOM's
+// section are collected.
 func (d *cfgDoc) blocksUnder(path string) []cfgBlock {
-	prefix := path + " > edit "
+	key := path + " > edit "
 	var out []cfgBlock
 	for _, b := range d.blocks {
-		if strings.HasPrefix(b.Path, prefix) && !strings.Contains(b.Path[len(prefix):], " > ") {
-			out = append(out, b)
+		idx := strings.Index(b.Path, key)
+		if idx < 0 {
+			continue
 		}
+		// The section must start the path or sit on a segment boundary
+		// (VDOM prefix), and the edit must be the last segment.
+		if idx > 0 && !strings.HasSuffix(b.Path[:idx], " > ") {
+			continue
+		}
+		if strings.Contains(b.Path[idx+len(key):], " > ") {
+			continue
+		}
+		out = append(out, b)
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -49,28 +50,18 @@ type topologyJSON struct {
 	Switches   []FortiSwitch `json:"switches,omitempty"`
 }
 
-// handleTopologyData serves the parsed topology for one firewall from the
-// audit cache (computing lazily on miss).
-func (s *Server) handleTopologyData(w http.ResponseWriter, r *http.Request) {
-	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
-	if err != nil {
-		http.Error(w, "invalid firewall id", http.StatusBadRequest)
-		return
-	}
-
+// buildTopologyJSON assembles the topology payload for one firewall from the
+// audit cache (computing lazily on miss). Shared by the authenticated and the
+// token-shared endpoints.
+func (s *Server) buildTopologyJSON(ctx context.Context, db *sql.DB, fwID int) topologyJSON {
 	out := topologyJSON{FwID: fwID}
-	if refs, lerr := s.store.ListFirewallRefs(r.Context()); lerr == nil {
+	if refs, lerr := s.store.ListFirewallRefs(ctx); lerr == nil {
 		for _, ref := range refs {
 			if ref.ID == fwID {
 				out.FQDN = ref.FQDN
 				break
 			}
 		}
-	}
-
-	db, dbErr := s.insightsDB()
-	if dbErr != nil {
-		s.logger.Error("insights db unavailable", "err", dbErr)
 	}
 	if res, ok := s.auditResultFor(db, fwID); ok {
 		out.HasConfig = true
@@ -81,7 +72,21 @@ func (s *Server) handleTopologyData(w http.ResponseWriter, r *http.Request) {
 		out.Policies = res.Policies
 		out.Switches = res.Switches
 	}
+	return out
+}
 
+// handleTopologyData serves the parsed topology for one firewall.
+func (s *Server) handleTopologyData(w http.ResponseWriter, r *http.Request) {
+	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
+	if err != nil {
+		http.Error(w, "invalid firewall id", http.StatusBadRequest)
+		return
+	}
+	db, dbErr := s.insightsDB()
+	if dbErr != nil {
+		s.logger.Error("insights db unavailable", "err", dbErr)
+	}
+	out := s.buildTopologyJSON(r.Context(), db, fwID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
@@ -116,7 +121,7 @@ func resolveShare(db *sql.DB, token string) (int, bool) {
 	if expiresAt != "" {
 		// Timestamps are stored as local wall-clock strings: parse them in the
 		// same location, otherwise the expiry shifts by the UTC offset.
-		if exp, perr := time.ParseInLocation("2006-01-02 15:04:05", expiresAt, time.Local); perr != nil || time.Now().After(exp) {
+		if exp, perr := time.ParseInLocation(insightsTimeLayout, expiresAt, time.Local); perr != nil || time.Now().After(exp) {
 			_, _ = db.Exec("DELETE FROM topology_shares WHERE token = ?", token)
 			return 0, false
 		}
@@ -148,10 +153,10 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 	now := time.Now()
 	expiresAt := ""
 	if hours, herr := strconv.Atoi(r.FormValue("expiry_hours")); herr == nil && hours > 0 {
-		expiresAt = now.Add(time.Duration(hours) * time.Hour).Format("2006-01-02 15:04:05")
+		expiresAt = now.Add(time.Duration(hours) * time.Hour).Format(insightsTimeLayout)
 	}
 	if _, err := db.Exec("INSERT INTO topology_shares (token, fw_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-		token, fwID, now.Format("2006-01-02 15:04:05"), expiresAt); err != nil {
+		token, fwID, now.Format(insightsTimeLayout), expiresAt); err != nil {
 		http.Error(w, "failed to store share", http.StatusInternalServerError)
 		return
 	}
@@ -160,7 +165,7 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(topologyShare{Token: token, FwID: fwID,
-		CreatedAt: now.Format("2006-01-02 15:04:05"), ExpiresAt: expiresAt})
+		CreatedAt: now.Format(insightsTimeLayout), ExpiresAt: expiresAt})
 }
 
 // handleTopologyShareList lists active share tokens (authenticated),
@@ -194,7 +199,7 @@ func (s *Server) handleTopologyShareList(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		if sh.ExpiresAt != "" {
-			if exp, perr := time.ParseInLocation("2006-01-02 15:04:05", sh.ExpiresAt, time.Local); perr == nil && now.After(exp) {
+			if exp, perr := time.ParseInLocation(insightsTimeLayout, sh.ExpiresAt, time.Local); perr == nil && now.After(exp) {
 				continue // expired: hide (cleaned lazily by resolveShare)
 			}
 		}
@@ -245,23 +250,16 @@ func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	out := topologyJSON{FwID: fwID}
-	if refs, lerr := s.store.ListFirewallRefs(r.Context()); lerr == nil {
-		for _, ref := range refs {
-			if ref.ID == fwID {
-				out.FQDN = ref.FQDN
-				break
-			}
+	out := s.buildTopologyJSON(r.Context(), db, fwID)
+	// The public view only needs per-interface policy counts: strip the rule
+	// details (addresses, services, actions) so a share link never discloses
+	// the firewall's ruleset.
+	for i := range out.Policies {
+		out.Policies[i] = Policy{
+			ID:      out.Policies[i].ID,
+			SrcIntf: out.Policies[i].SrcIntf,
+			DstIntf: out.Policies[i].DstIntf,
 		}
-	}
-	if res, rok := s.auditResultFor(db, fwID); rok {
-		out.HasConfig = true
-		out.Model = res.Model
-		out.Version = res.Version
-		out.Interfaces = res.Interfaces
-		out.Routes = res.Routes
-		out.Policies = res.Policies
-		out.Switches = res.Switches
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)

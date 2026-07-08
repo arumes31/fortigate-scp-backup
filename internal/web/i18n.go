@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 )
 
 // Minimal i18n layer: English is the canonical language, German is provided
@@ -13,10 +14,19 @@ import (
 
 const defaultLang = "en"
 
-// langFromRequest returns "en" or "de" for the request.
+// langFromRequest returns "en" or "de" for the request: the explicit cookie
+// wins, otherwise the browser's Accept-Language is honoured (relevant for
+// first visits and public topology share links, which have no toggle chrome),
+// falling back to English.
 func langFromRequest(r *http.Request) string {
 	if c, err := r.Cookie("lang"); err == nil && (c.Value == "de" || c.Value == "en") {
 		return c.Value
+	}
+	// With exactly two languages a q-value parse is overkill: the first
+	// language tag decides.
+	accept := strings.ToLower(r.Header.Get("Accept-Language"))
+	if strings.HasPrefix(accept, "de") {
+		return "de"
 	}
 	return defaultLang
 }
@@ -37,7 +47,9 @@ func (s *Server) handleSetLang(w http.ResponseWriter, r *http.Request) {
 		MaxAge: 365 * 24 * 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 	back := r.FormValue("back")
-	if back == "" || back[0] != '/' {
+	// Local paths only: "//host" and "/\host" are protocol-relative in
+	// browsers and would make this an open redirect.
+	if !strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") || strings.HasPrefix(back, "/\\") {
 		back = "/"
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
@@ -157,32 +169,14 @@ var uiMsgs = map[string]map[string]string{
 	"topo.legend_share": {"en": "MAC/IP shared", "de": "MAC/IP geteilt"},
 }
 
-// i18nJSKeys are the catalog keys exposed to the browser as window.I18N.
-var i18nJSKeys = []string{
-	"audit.no_backup", "audit.model", "audit.backup", "audit.computed",
-	"audit.ticket_id", "audit.ticket_comment", "audit.details_show",
-	"audit.details_hide", "audit.n_critical", "audit.n_warnings", "audit.clean",
-	"audit.recheck", "audit.recheck_title", "audit.load_error", "audit.retry",
-	"audit.exempt", "audit.exempt_reason", "audit.show_cli", "audit.show_context",
-	"audit.findings_title", "audit.findings_none", "audit.exempted_title",
-	"audit.exempted_note", "audit.upgrade_title", "audit.upgrade_note",
-	"topo.loading", "topo.no_backup", "topo.load_error", "topo.internet",
-	"topo.external", "topo.route", "topo.route_dst", "topo.gateway",
-	"topo.direct", "topo.no_vlan", "topo.ports", "topo.no_ports", "topo.role",
-	"topo.mgmt_access", "topo.serial", "topo.alias", "topo.parent",
-	"topo.legend_wan", "topo.legend_ip", "topo.legend_none", "topo.legend_vlan",
-	"topo.copied", "topo.created", "topo.expires", "topo.no_expiry",
-	"topo.revoke", "topo.share_fail", "topo.copy_hint", "topo.copy",
-	"topo.device", "topo.devices", "topo.seen", "topo.shared_mac",
-	"topo.shared_ip", "topo.fetch_now", "topo.fetching", "topo.dev_updated",
-	"topo.fetch_failed", "topo.legend_share",
-}
-
-// i18nJSON renders the JS-facing catalog subset for a language as a JSON
-// object (used by templates as `window.I18N = {{i18nJSON .Base.Lang}}`).
+// i18nJSON renders the whole catalog for a language as a JSON object (used by
+// templates as `window.I18N = {{i18nJSON .Base.Lang}}`). Serializing every key
+// costs a few hundred bytes per page and removes the failure mode of a
+// hand-maintained JS-key list drifting from the catalog (a missed key would
+// silently render as its raw name).
 func i18nJSON(lang string) template.JS {
-	m := make(map[string]string, len(i18nJSKeys))
-	for _, k := range i18nJSKeys {
+	m := make(map[string]string, len(uiMsgs))
+	for k := range uiMsgs {
 		m[k] = tr(lang, k)
 	}
 	blob, err := json.Marshal(m)

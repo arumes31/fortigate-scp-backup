@@ -12,15 +12,7 @@ let topo = null;        // current topology JSON
 let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
 let svg, gRoot, zoomBehavior;
 
-function esc(s) {
-    return String(s ?? "").replace(/[&<>"']/g, c => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    })[c]);
-}
-
-// tt looks up a UI string injected by the page as window.I18N (English is
-// the fallback of the catalog itself, so a missing key is a bug).
-function tt(key) { return (window.I18N && window.I18N[key]) || key; }
+// esc() and tt() come from ui.js, which every topology page loads first.
 
 const NODE_STYLE = {
     internet:  { fill: "#0f172a", stroke: "#94a3b8", icon: "☁", label: "#e2e8f0" },
@@ -53,6 +45,18 @@ function deviceNode(d) {
     };
 }
 
+// wanSet returns the interface names facing the internet: role wan or device
+// of a default route. Single source of truth for the tree and the faceplate.
+function wanSet(interfaces, routes) {
+    const wan = new Set();
+    (interfaces || []).forEach(i => { if ((i.role || "") === "wan") wan.add(i.name); });
+    (routes || []).forEach(r => {
+        if (!r.device) return;
+        if (!r.dst || r.dst.startsWith("0.0.0.0")) wan.add(r.device);
+    });
+    return wan;
+}
+
 // buildTree converts the parsed config into a d3.hierarchy-compatible tree.
 function buildTree(data) {
     const interfaces = data.interfaces || [];
@@ -60,12 +64,7 @@ function buildTree(data) {
     const routes = data.routes || [];
     const policies = data.policies || [];
 
-    const wanDevices = new Set();
-    interfaces.forEach(i => { if ((i.role || "") === "wan") wanDevices.add(i.name); });
-    routes.forEach(r => {
-        if (!r.device) return;
-        if (!r.dst || r.dst.startsWith("0.0.0.0")) wanDevices.add(r.device);
-    });
+    const wanDevices = wanSet(interfaces, routes);
 
     const policyCount = {};
     policies.forEach(p => {
@@ -405,9 +404,7 @@ function showFaceplate(nodeData) {
         const d = nodeData.data;
         title = d.fqdn || "FortiGate";
         sub = `${d.model || "FortiGate"} · FortiOS ${d.version || "?"}`;
-        const wan = new Set();
-        (d.routes || []).forEach(r => { if (!r.dst || r.dst.startsWith("0.0.0.0")) wan.add(r.device); });
-        (d.interfaces || []).forEach(i => { if ((i.role || "") === "wan") wan.add(i.name); });
+        const wan = wanSet(d.interfaces, d.routes);
         const vlanCount = {};
         (d.interfaces || []).forEach(i => { if (i.vlan_id > 0 && i.interface) vlanCount[i.interface] = (vlanCount[i.interface] || 0) + 1; });
 

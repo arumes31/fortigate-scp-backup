@@ -17,95 +17,207 @@ import (
 
 type auditFinding = models.AuditFinding
 
+// insightsTimeLayout is the wall-clock timestamp format used across the
+// insights database (exemptions, topology shares, audit cache metadata).
+const insightsTimeLayout = "2006-01-02 15:04:05"
+
 // insightsDB opens the per-server SQLite insights database once and sets up
 // the schemas. Held on the Server (not a package global) so tests and future
-// multi-instance setups each get their own handle.
+// multi-instance setups each get their own handle. A failed open is retried
+// on the next call rather than latched for the process lifetime (e.g. the
+// data directory appearing after startup).
 func (s *Server) insightsDB() (*sql.DB, error) {
-	s.insightsOnce.Do(func() {
-		dbPath := filepath.Join(s.cfg.DataDir, "forti-insights.db")
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			s.insightsErr = err
-			return
-		}
-		db.SetMaxOpenConns(1)
+	s.insightsMu.Lock()
+	defer s.insightsMu.Unlock()
+	if s.insights != nil {
+		return s.insights, nil
+	}
 
-		// Set pragmas
-		for _, pragma := range []string{
-			"PRAGMA journal_mode=WAL",
-			"PRAGMA busy_timeout=5000",
-			"PRAGMA synchronous=NORMAL",
-		} {
-			if _, pragmaErr := db.Exec(pragma); pragmaErr != nil {
-				_ = db.Close()
-				s.insightsErr = pragmaErr
-				return
-			}
-		}
+	db, err := s.openInsightsDB()
+	if err != nil {
+		return nil, err
+	}
+	s.insights = db
+	return db, nil
+}
 
-		// Create tables
-		queries := []string{
-			`CREATE TABLE IF NOT EXISTS custom_rules (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				name TEXT,
-				pattern TEXT,
-				severity TEXT,
-				remediation TEXT
-			)`,
-			`CREATE TABLE IF NOT EXISTS exemptions (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				fw_id INTEGER,
-				finding_text TEXT,
-				reason TEXT,
-				created_at DATETIME
-			)`,
-			`CREATE TABLE IF NOT EXISTS change_tickets (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				backup_filename TEXT UNIQUE,
-				ticket_id TEXT,
-				details TEXT
-			)`,
-			`CREATE TABLE IF NOT EXISTS compliance_history (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				fw_id INTEGER,
-				timestamp DATETIME,
-				pci_score INTEGER,
-				cis_score INTEGER,
-				hipaa_score INTEGER
-			)`,
-			`CREATE TABLE IF NOT EXISTS audit_cache (
-				fw_id INTEGER PRIMARY KEY,
-				backup_filename TEXT NOT NULL,
-				computed_at TEXT NOT NULL,
-				results_json TEXT NOT NULL
-			)`,
-			`CREATE TABLE IF NOT EXISTS topology_shares (
-				token TEXT PRIMARY KEY,
-				fw_id INTEGER NOT NULL,
-				created_at TEXT NOT NULL,
-				expires_at TEXT
-			)`,
-		}
-		for _, q := range queries {
-			if _, execErr := db.Exec(q); execErr != nil {
-				_ = db.Close()
-				s.insightsErr = execErr
-				return
-			}
-		}
-		// Migration: exemptions match on the stable finding key (check id +
-		// object) instead of the exact finding text, which breaks whenever a
-		// finding contains dynamic parts. Ignore the duplicate-column error on
-		// re-runs.
-		if _, err := db.Exec(`ALTER TABLE exemptions ADD COLUMN finding_key TEXT DEFAULT ''`); err != nil &&
-			!strings.Contains(err.Error(), "duplicate column") {
+// openInsightsDB creates the data directory, opens the SQLite file and runs
+// schema setup + migrations. Called under s.insightsMu.
+func (s *Server) openInsightsDB() (*sql.DB, error) {
+	// 0o700: the insights DB holds audit results derived from configs.
+	if err := os.MkdirAll(s.cfg.DataDir, 0o700); err != nil {
+		return nil, err
+	}
+	dbPath := filepath.Join(s.cfg.DataDir, "forti-insights.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+
+	// Set pragmas
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, pragmaErr := db.Exec(pragma); pragmaErr != nil {
 			_ = db.Close()
-			s.insightsErr = err
-			return
+			return nil, pragmaErr
 		}
-		s.insights = db
-	})
-	return s.insights, s.insightsErr
+	}
+
+	// Create tables
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS custom_rules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT,
+			pattern TEXT,
+			severity TEXT,
+			remediation TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS exemptions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			fw_id INTEGER,
+			finding_text TEXT,
+			reason TEXT,
+			created_at DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS change_tickets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			backup_filename TEXT UNIQUE,
+			ticket_id TEXT,
+			details TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS compliance_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			fw_id INTEGER,
+			timestamp DATETIME,
+			pci_score INTEGER,
+			cis_score INTEGER,
+			hipaa_score INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_cache (
+			fw_id INTEGER PRIMARY KEY,
+			backup_filename TEXT NOT NULL,
+			computed_at TEXT NOT NULL,
+			results_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS topology_shares (
+			token TEXT PRIMARY KEY,
+			fw_id INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			expires_at TEXT
+		)`,
+	}
+	for _, q := range queries {
+		if _, execErr := db.Exec(q); execErr != nil {
+			_ = db.Close()
+			return nil, execErr
+		}
+	}
+	// Migration: exemptions match on the stable finding key (check id +
+	// object) instead of the exact finding text, which breaks whenever a
+	// finding contains dynamic parts. Ignore the duplicate-column error on
+	// re-runs.
+	if _, err := db.Exec(`ALTER TABLE exemptions ADD COLUMN finding_key TEXT DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, err
+	}
+	// Backfill: map pre-i18n exemption rows (German finding texts, empty
+	// finding_key) to stable keys so upgrades keep existing exemptions active.
+	s.backfillExemptionKeys(db)
+	return db, nil
+}
+
+// Pre-i18n finding texts (the German literals the checks emitted before the
+// English-canonical rewrite) mapped to stable finding keys. Keys with the
+// "check:" prefix exempt every instance of that check — the old findings were
+// global while the new ones are per-object, so a broader match preserves the
+// operator's intent.
+var legacyExemptionTexts = map[string]string{
+	"Telnet-Management aktiviert (allowaccess telnet)":                            "check:intf-telnet",
+	"Admin-Telnet global aktiviert":                                               "global-admin-telnet",
+	"Klartext-HTTP-Management aktiviert (allowaccess http)":                       "check:intf-http",
+	"Ping auf Management-Interfaces erlaubt":                                      "check:intf-ping-wan",
+	"Standard-Administrator-Account 'admin' existiert noch":                       "admin-default-account",
+	"Schwache IPsec-Verschlüsselung (DES) in Proposals aktiviert":                 "vpn-weak-cipher",
+	"Schwache IPsec-Verschlüsselung (3DES) in Proposals aktiviert":                "vpn-weak-cipher",
+	"Schwache IPsec-Integrität (MD5) in Proposals aktiviert":                      "vpn-weak-hash",
+	"Schwache Diffie-Hellman-Gruppe (DH-Gruppe 1/2/5) aktiviert":                  "vpn-weak-dhgrp",
+	"Veraltetes SSL/TLS-Protokoll als Minimum konfiguriert (SSLv3/TLS1.0/TLS1.1)": "global-weak-tls",
+	"Globale Passwort-Richtlinie (password-policy) ist deaktiviert":               "pwpolicy-disabled",
+	"Fortinet Security Fabric (CSF) ist nicht konfiguriert":                       "fabric-csf",
+}
+
+var (
+	reLegacyAdmin2FA = regexp.MustCompile(`^Administrator '(.+)' hat keine Zwei-Faktor`)
+	reLegacyShadow   = regexp.MustCompile(`^Shadow-Rule ID (\d+): wird durch ID (\d+) blockiert`)
+	reLegacyCVE      = regexp.MustCompile(`Sicherheitslücke (CVE-\d{4}-\d+)`)
+	reLegacyExposed  = regexp.MustCompile(`Interface\(s\) mit Management-Zugriff exponiert`)
+	reLegacyCustom   = regexp.MustCompile(`^Eigene Regel '(.+)' verletzt`)
+)
+
+// legacyExemptionKey maps one pre-i18n finding text to its stable key
+// ("" when unknown). Custom-rule texts are resolved via the rules table.
+func legacyExemptionKey(db *sql.DB, text string) string {
+	if key, ok := legacyExemptionTexts[text]; ok {
+		return key
+	}
+	if m := reLegacyAdmin2FA.FindStringSubmatch(text); m != nil {
+		return "admin-no-2fa:" + m[1]
+	}
+	if m := reLegacyShadow.FindStringSubmatch(text); m != nil {
+		return "shadow-rule:" + m[1] + "-" + m[2]
+	}
+	if m := reLegacyCVE.FindStringSubmatch(text); m != nil {
+		return "cve:" + m[1]
+	}
+	if reLegacyExposed.MatchString(text) {
+		return "mgmt-exposed"
+	}
+	if m := reLegacyCustom.FindStringSubmatch(text); m != nil {
+		var id int64
+		if err := db.QueryRow("SELECT id FROM custom_rules WHERE name = ?", m[1]).Scan(&id); err == nil {
+			return "custom:" + strconv.FormatInt(id, 10)
+		}
+	}
+	return ""
+}
+
+// backfillExemptionKeys assigns stable finding keys to exemption rows created
+// before the key column existed. Idempotent: only rows with an empty key are
+// touched, and unmapped texts stay empty (still visible in the UI).
+func (s *Server) backfillExemptionKeys(db *sql.DB) {
+	rows, err := db.Query("SELECT id, finding_text FROM exemptions WHERE COALESCE(finding_key, '') = ''")
+	if err != nil {
+		return
+	}
+	type pending struct {
+		id  int64
+		key string
+	}
+	var updates []pending
+	for rows.Next() {
+		var id int64
+		var text string
+		if scanErr := rows.Scan(&id, &text); scanErr != nil {
+			continue
+		}
+		if key := legacyExemptionKey(db, text); key != "" {
+			updates = append(updates, pending{id: id, key: key})
+		}
+	}
+	_ = rows.Close()
+	for _, u := range updates {
+		if _, err := db.Exec("UPDATE exemptions SET finding_key = ? WHERE id = ?", u.key, u.id); err != nil {
+			s.logger.Warn("exemption key backfill failed", "id", u.id, "err", err)
+		}
+	}
+	if len(updates) > 0 {
+		s.logger.Info("backfilled legacy exemption keys", "count", len(updates))
+	}
 }
 
 type customRule struct {
@@ -145,9 +257,7 @@ type Interface struct {
 	VlanID      int      `json:"vlan_id"`
 	Interface   string   `json:"interface"` // Parent interface
 	Role        string   `json:"role"`
-	Status      string   `json:"status"` // "" or "up"/"down" when explicitly set
 	Alias       string   `json:"alias"`
-	Type        string   `json:"type"`
 }
 
 type StaticRoute struct {
@@ -227,10 +337,20 @@ func loadCustomRules(db *sql.DB) []customRule {
 
 // loadExemptions fetches all exemptions (empty on any error).
 func loadExemptions(db *sql.DB) []exemption {
+	return queryExemptions(db, "SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions")
+}
+
+// loadExemptionsFor fetches the exemptions of one firewall.
+func loadExemptionsFor(db *sql.DB, fwID int) []exemption {
+	return queryExemptions(db,
+		"SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions WHERE fw_id = ?", fwID)
+}
+
+func queryExemptions(db *sql.DB, query string, args ...any) []exemption {
 	if db == nil {
 		return nil
 	}
-	rows, err := db.Query("SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions")
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil
 	}
@@ -240,7 +360,7 @@ func loadExemptions(db *sql.DB) []exemption {
 		var ex exemption
 		var caRaw string
 		if scanErr := rows.Scan(&ex.ID, &ex.FwID, &ex.FindingKey, &ex.FindingText, &ex.Reason, &caRaw); scanErr == nil {
-			if t, tErr := time.Parse("2006-01-02 15:04:05", caRaw); tErr == nil {
+			if t, tErr := time.Parse(insightsTimeLayout, caRaw); tErr == nil {
 				ex.CreatedAt = t
 			} else {
 				ex.CreatedAt = time.Now()
@@ -273,7 +393,7 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 		findingKey := r.FormValue("finding_key")
 		findingText := r.FormValue("finding_text")
 		reason := r.FormValue("reason")
-		createdAt := time.Now().Format("2006-01-02 15:04:05")
+		createdAt := time.Now().Format(insightsTimeLayout)
 
 		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (?, ?, ?, ?, ?)",
 			fwID, findingKey, findingText, reason, createdAt)
@@ -432,12 +552,8 @@ func parseConfigData(cfg string) ([]Interface, []StaticRoute, []Policy, []FortiS
 					currentInterface.Interface = strings.Trim(trimmed[14:], `"`+"'")
 				} else if strings.HasPrefix(lower, "set role ") {
 					currentInterface.Role = strings.ToLower(strings.Trim(trimmed[9:], `"`+"'"))
-				} else if strings.HasPrefix(lower, "set status ") {
-					currentInterface.Status = strings.ToLower(strings.TrimSpace(trimmed[11:]))
 				} else if strings.HasPrefix(lower, "set alias ") {
 					currentInterface.Alias = strings.Trim(trimmed[10:], `"`+"'")
-				} else if strings.HasPrefix(lower, "set type ") {
-					currentInterface.Type = strings.ToLower(strings.TrimSpace(trimmed[9:]))
 				}
 			}
 
@@ -554,44 +670,57 @@ func parseConfigData(cfg string) ([]Interface, []StaticRoute, []Policy, []FortiS
 	return interfaces, routes, policies, switches
 }
 
-// findShadowRules implements Category 1 Feature 1
+// findShadowRules implements Category 1 Feature 1. Policy attributes are
+// precomputed into lowercase hash sets so the O(n²) pair loop pays O(sub)
+// lookups per dimension instead of nested linear case-insensitive scans
+// (relevant for rulebases with thousands of policies).
 func findShadowRules(policies []Policy) []models.AuditFinding {
 	var findings []models.AuditFinding
 
-	contains := func(slice []string, val string) bool {
-		for _, s := range slice {
-			if strings.EqualFold(s, val) {
-				return true
-			}
+	lowerSet := func(vals []string) map[string]bool {
+		m := make(map[string]bool, len(vals))
+		for _, v := range vals {
+			m[strings.ToLower(v)] = true
 		}
-		return false
+		return m
+	}
+	type polSets struct {
+		srcIntf, dstIntf, srcAddr, dstAddr, service map[string]bool
+	}
+	sets := make([]polSets, len(policies))
+	for i, p := range policies {
+		sets[i] = polSets{
+			srcIntf: lowerSet(p.SrcIntf), dstIntf: lowerSet(p.DstIntf),
+			srcAddr: lowerSet(p.SrcAddr), dstAddr: lowerSet(p.DstAddr),
+			service: lowerSet(p.Service),
+		}
 	}
 
-	covers := func(super []string, sub []string, wildcard string) bool {
-		if contains(super, wildcard) {
+	covers := func(super map[string]bool, sub []string, wildcard string) bool {
+		if super[wildcard] {
 			return true
 		}
 		for _, s := range sub {
-			if !contains(super, s) {
+			if !super[strings.ToLower(s)] {
 				return false
 			}
 		}
 		return true
 	}
 
-	supersedes := func(p1, p2 Policy) bool {
-		return covers(p1.SrcIntf, p2.SrcIntf, "any") &&
-			covers(p1.DstIntf, p2.DstIntf, "any") &&
-			covers(p1.SrcAddr, p2.SrcAddr, "all") &&
-			covers(p1.DstAddr, p2.DstAddr, "all") &&
-			covers(p1.Service, p2.Service, "ALL")
+	supersedes := func(s1 polSets, p2 Policy) bool {
+		return covers(s1.srcIntf, p2.SrcIntf, "any") &&
+			covers(s1.dstIntf, p2.DstIntf, "any") &&
+			covers(s1.srcAddr, p2.SrcAddr, "all") &&
+			covers(s1.dstAddr, p2.DstAddr, "all") &&
+			covers(s1.service, p2.Service, "all")
 	}
 
 	for i := 1; i < len(policies); i++ {
 		p2 := policies[i]
 		for j := 0; j < i; j++ {
 			p1 := policies[j]
-			if supersedes(p1, p2) {
+			if supersedes(sets[j], p2) {
 				findings = append(findings, models.AuditFinding{
 					CheckID:     "shadow-rule",
 					Key:         fmt.Sprintf("shadow-rule:%d-%d", p2.ID, p1.ID),
@@ -633,22 +762,20 @@ func (s *Server) latestConfigFilename(fwID int) (string, bool) {
 	return latest, latest != ""
 }
 
-func (s *Server) latestConfig(fwID int) (string, string, bool) {
-	latest, ok := s.latestConfigFilename(fwID)
-	if !ok {
-		return "", "", false
-	}
+// readConfig reads and decrypts one backup file of a firewall. The filename
+// comes from latestConfigFilename so callers scan the directory only once.
+func (s *Server) readConfig(fwID int, filename string) (string, bool) {
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(fwID))
-	raw, err := os.ReadFile(filepath.Join(fwDir, latest))
+	raw, err := os.ReadFile(filepath.Join(fwDir, filename))
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
 	plain, err := s.cipher.Decrypt(raw)
 	if err != nil {
 		s.logger.Error("audit decrypt failed", "fw_id", fwID, "err", err)
-		return "", "", false
+		return "", false
 	}
-	return string(plain), latest, true
+	return string(plain), true
 }
 
 func parseFortiOSVersion(cfg string) (model, version string) {

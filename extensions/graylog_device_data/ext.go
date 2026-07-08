@@ -72,6 +72,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	for _, q := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
 		createTableSQL,
 	} {
 		if _, execErr := db.Exec(q); execErr != nil {
