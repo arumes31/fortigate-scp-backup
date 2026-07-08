@@ -54,7 +54,7 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := e.refreshFirewall(fwID, fqdn); err != nil {
 		e.logger.Error("graylog devices: refresh failed", "fw_id", fwID, "err", err)
-		http.Error(w, "graylog fetch failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "graylog fetch failed", http.StatusBadGateway)
 		return
 	}
 	if e.logActivity != nil {

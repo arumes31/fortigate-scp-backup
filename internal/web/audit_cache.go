@@ -73,6 +73,11 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule) *a
 	findings = append(findings, getCVEs(res.Version)...)
 
 	for _, cr := range customRules {
+		if cr.Pattern == "" {
+			// strings.Index matches "" at offset 0: an empty pattern would flag
+			// every firewall.
+			continue
+		}
 		if idx := strings.Index(plain, cr.Pattern); idx >= 0 {
 			lineIdx := strings.Count(plain[:idx], "\n")
 			f := doc.findingAt(

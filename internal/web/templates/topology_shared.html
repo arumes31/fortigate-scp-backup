@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="{{.Lang}}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <title>Netzwerk-Topologie · FortiSafe</title>
+    <title>{{T .Lang "topo.title"}} · FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,7 +13,7 @@
         <header class="topbar">
             <span class="brand">FORTISAFE_SYS</span>
             <div class="sysinfo">
-                <span class="muted">READ-ONLY · SHARED VIEW</span>
+                <span class="muted">{{T .Lang "topo.shared_view"}}</span>
             </div>
         </header>
 

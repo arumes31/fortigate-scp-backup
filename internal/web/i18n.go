@@ -132,6 +132,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.revoke":      {"en": "Revoke", "de": "Widerrufen"},
 	"topo.share_fail":  {"en": "Could not create link:", "de": "Link konnte nicht erstellt werden:"},
 	"topo.copy_hint":   {"en": "Click to copy", "de": "Klicken zum Kopieren"},
+	"topo.shared_view": {"en": "READ-ONLY · SHARED VIEW", "de": "NUR LESEN · GETEILTE ANSICHT"},
 
 	// Topology renderer (JS strings, injected as window.I18N)
 	"topo.loading":     {"en": "loading…", "de": "lädt…"},
