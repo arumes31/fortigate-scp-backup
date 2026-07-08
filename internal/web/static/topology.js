@@ -634,14 +634,18 @@ function buildTree(data) {
     // interfaces are excluded here — VPNs render on the Internet side — and
     // zones consisting only of tunnels move there with them.
     const fwChildren = [];
+    const externalIntf = []; // WAN uplinks — rendered on the Internet side (left)
     const zoneEmitted = new Set();
     sorted.forEach(i => {
         if (vpnByName[i.name]) return;
+        // WAN interfaces face the Internet: pull them out of the firewall subtree
+        // so they render on the left alongside the VPN tunnels.
+        if (wanDevices.has(i.name)) { externalIntf.push(intfNode(i)); return; }
         const zn = zoneOf[i.name];
         if (!zn) { fwChildren.push(intfNode(i)); return; }
         if (zoneEmitted.has(zn)) return;
         zoneEmitted.add(zn);
-        const members = sorted.filter(m => zoneOf[m.name] === zn && !vpnByName[m.name]);
+        const members = sorted.filter(m => zoneOf[m.name] === zn && !vpnByName[m.name] && !wanDevices.has(m.name));
         if (!members.length) return;
         fwChildren.push({
             name: zn, kind: "zone",
@@ -673,8 +677,12 @@ function buildTree(data) {
         children: fwChildren
     }];
 
-    // IPsec VPNs live between the Internet and their remote peers.
-    rootChildren.push(...vpnBranches());
+    // External / Internet-facing branches (WAN uplinks + IPsec VPN tunnels)
+    // render to the LEFT of the Internet node (see the mirror step in update());
+    // the firewall and its LAN stay on the right.
+    const externalBranches = [...externalIntf, ...vpnBranches()];
+    externalBranches.forEach(n => { n.side = "left"; });
+    rootChildren.push(...externalBranches);
 
     // HA peer: the standby unit of an a-p / a-a cluster.
     if (data.ha) {
@@ -728,6 +736,16 @@ function renderTree(data) {
         const links = root.links();
 
         nodes.forEach(d => { d.y += 60; });
+
+        // Mirror the external branches (WAN uplinks + VPN tunnels, tagged
+        // side:"left" on their depth-1 root) to the left of the Internet node,
+        // so the map reads internet-in-the-middle: WAN/VPN left, LAN right.
+        const rootY = root.y;
+        nodes.forEach(d => {
+            let a = d;
+            while (a.depth > 1) a = a.parent;
+            if (a.depth === 1 && a.data.side === "left") d.y = 2 * rootY - d.y;
+        });
 
         const node = gNodes.selectAll("g.node").data(nodes, d => d.id || (d.id = ++i));
 
@@ -953,7 +971,12 @@ function renderTree(data) {
     topoUpdate = update;
     update(root);
 
-    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(20, height / 2));
+    // Internet sits in the middle now (WAN/VPN mirror to its left), so anchor
+    // the initial view further right than the old left-edge origin to keep the
+    // left arm on-screen.
+    const svgEl0 = svg.node();
+    const originX = Math.round((svgEl0 && svgEl0.clientWidth ? svgEl0.clientWidth : 1000) * 0.42);
+    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(originX, height / 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1108,9 @@ function renderDevicePanel() {
 
 function resetZoom() {
     if (!svg || !zoomBehavior) return;
-    svg.transition().duration(300).call(zoomBehavior.transform, d3.zoomIdentity.translate(20, 320));
+    const el = svg.node();
+    const originX = Math.round((el && el.clientWidth ? el.clientWidth : 1000) * 0.42);
+    svg.transition().duration(300).call(zoomBehavior.transform, d3.zoomIdentity.translate(originX, 320));
 }
 
 // ---------------------------------------------------------------------------
