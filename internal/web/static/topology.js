@@ -1360,6 +1360,8 @@ async function loadDeviceData() {
         const data = await resp.json();
         const btn = document.getElementById("fetchDevBtn");
         if (btn) btn.style.display = "";
+        const live = document.getElementById("liveDevBtn");
+        if (live) live.style.display = "";
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
@@ -1398,6 +1400,70 @@ async function fetchDevicesNow() {
         if (meta) meta.textContent = tt("topo.fetch_failed");
     } finally {
         if (btn) btn.disabled = false;
+    }
+}
+
+// --- Live device-data mode -------------------------------------------------
+// While enabled, re-runs the Graylog device fetch for the viewed firewall
+// every LIVE_INTERVAL_MS so the topology tracks clients in near-real-time (the
+// background worker only refreshes hourly). It auto-stops after LIVE_MAX_MS so
+// a forgotten tab cannot poll Graylog forever; toggling off, or closing the
+// tab, stops it too. Each tick targets whatever firewall is currently
+// selected, so switching the selector keeps live mode following the view.
+const LIVE_INTERVAL_MS = 60000;  // poll cadence (~1 min)
+const LIVE_MAX_MS = 600000;      // safety cap: auto-stop after 10 min
+let liveTimer = null;            // setInterval handle for the poll
+let liveCountdown = null;        // setInterval handle for the 1s button label
+let liveDeadline = 0;            // epoch ms at which live mode auto-stops
+let liveInFlight = false;        // prevents overlapping fetches on slow Graylog
+
+function toggleLiveDevices() {
+    if (liveTimer) stopLiveDevices();
+    else startLiveDevices();
+}
+
+function startLiveDevices() {
+    if (liveTimer) return;
+    liveDeadline = Date.now() + LIVE_MAX_MS;
+    liveTimer = setInterval(livePoll, LIVE_INTERVAL_MS);
+    liveCountdown = setInterval(updateLiveBtn, 1000);
+    updateLiveBtn();
+    livePoll(); // fetch immediately so enabling gives instant feedback
+}
+
+function stopLiveDevices() {
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+    if (liveCountdown) { clearInterval(liveCountdown); liveCountdown = null; }
+    updateLiveBtn();
+}
+
+async function livePoll() {
+    if (Date.now() >= liveDeadline) { stopLiveDevices(); return; }
+    if (liveInFlight) return; // a previous fetch is still running — skip this tick
+    liveInFlight = true;
+    try { await fetchDevicesNow(); }
+    finally { liveInFlight = false; }
+}
+
+// updateLiveBtn reflects live state on the button: an orange "⏸ Live m:ss"
+// countdown while active, the cyan "⟳ Live" idle label otherwise. It also
+// enforces the deadline between poll ticks.
+function updateLiveBtn() {
+    const btn = document.getElementById("liveDevBtn");
+    if (!btn) return;
+    if (liveTimer) {
+        if (Date.now() >= liveDeadline) { stopLiveDevices(); return; }
+        const secs = Math.max(0, Math.round((liveDeadline - Date.now()) / 1000));
+        const mm = Math.floor(secs / 60), ss = String(secs % 60).padStart(2, "0");
+        btn.textContent = `⏸ ${tt("topo.live")} ${mm}:${ss}`;
+        btn.style.background = "rgba(239,68,68,0.15)";
+        btn.style.color = "#fca5a5";
+        btn.style.borderColor = "rgba(239,68,68,0.4)";
+    } else {
+        btn.textContent = `⟳ ${tt("topo.live")}`;
+        btn.style.background = "rgba(34,211,238,0.12)";
+        btn.style.color = "#67e8f9";
+        btn.style.borderColor = "rgba(34,211,238,0.35)";
     }
 }
 

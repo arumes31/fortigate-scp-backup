@@ -22,6 +22,7 @@
         <div style="display: flex; gap: 8px; align-items: center; font-size: 0.82em;">
             <span class="muted">{{T .Base.Lang "topo.hint"}}</span>
             <button id="fetchDevBtn" class="btn btn-small" onclick="fetchDevicesNow()" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">{{T .Base.Lang "topo.fetch_now"}}</button>
+            <button id="liveDevBtn" class="btn btn-small" onclick="toggleLiveDevices()" title="{{T .Base.Lang "topo.live_hint"}}" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">⟳ {{T .Base.Lang "topo.live"}}</button>
             <button class="btn btn-small" onclick="resetZoom()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⤢ {{T .Base.Lang "topo.reset"}}</button>
         </div>
     </div>
