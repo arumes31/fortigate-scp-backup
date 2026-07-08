@@ -8,7 +8,8 @@
 //   { dataBase: "/topology/data/" }        — id appended from #topoSelect
 //   { staticUrl: "/topology/shared/x/data" } — fixed endpoint, no selector
 // ---------------------------------------------------------------------------
-let topo = null; // current topology JSON
+let topo = null;        // current topology JSON
+let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
 let svg, gRoot, zoomBehavior;
 
 function esc(s) {
@@ -30,8 +31,27 @@ const NODE_STYLE = {
     switch:    { fill: "#064e3b", stroke: "#10b981", icon: "≣", label: "#d1fae5" },
     port:      { fill: "#0f172a", stroke: "#34d399", icon: "•", label: "#a7f3d0" },
     route:     { fill: "#1e293b", stroke: "#38bdf8", icon: "→", label: "#bae6fd" },
+    device:    { fill: "#082f36", stroke: "#22d3ee", icon: "◇", label: "#a5f3fc" },
     lan:       { fill: "#111827", stroke: "#6b7280", icon: "▦", label: "#e5e7eb" }
 };
+
+// deviceNode maps one Graylog inventory entry to a tree node. Devices whose
+// MAC/IP is shared are highlighted (red dashed border) so address conflicts
+// and multi-homed devices stand out.
+function deviceNode(d) {
+    let info = `${tt("topo.device")}\nMAC: ${d.mac}\nIP: ${d.ip || "—"}\nVLAN: ${d.vlan || "—"}\nPort: ${d.port || "—"}`;
+    if (d.hostname) info += `\nHost: ${d.hostname}`;
+    if (d.switch_id) info += `\nSwitch: ${d.switch_id}`;
+    if (d.last_seen) info += `\n${tt("topo.seen")}: ${d.last_seen}`;
+    if (d.shared_mac) info += `\n⚠ ${tt("topo.shared_mac")}`;
+    if (d.shared_ip) info += `\n⚠ ${tt("topo.shared_ip")}`;
+    return {
+        name: d.hostname || d.ip || d.mac,
+        kind: "device", data: d, info: info,
+        badge: d.vlan ? "VLAN " + d.vlan + (d.ip ? " · " + d.ip : "") : (d.ip || d.mac),
+        highlight: !!(d.shared_mac || d.shared_ip)
+    };
+}
 
 // buildTree converts the parsed config into a d3.hierarchy-compatible tree.
 function buildTree(data) {
@@ -69,6 +89,11 @@ function buildTree(data) {
 
     const fortilinkHost = physical.find(i => i.name.toLowerCase().includes("fortilink"))?.name || null;
 
+    // Graylog device inventory: assign each device to its switch / VLAN group.
+    const devices = topoDevices || [];
+    const singleSwitch = switches.length === 1;
+    const assigned = new Set();
+
     function intfNode(i) {
         const isWan = wanDevices.has(i.name);
         const children = [];
@@ -99,17 +124,42 @@ function buildTree(data) {
 
     function switchNode(sw) {
         const ports = sw.ports || [];
+        // Devices seen behind this switch (unattributed devices match when
+        // there is only one switch).
+        const swDevs = devices.filter(dv => {
+            if (assigned.has(dv)) return false;
+            if (!dv.switch_id) return singleSwitch;
+            return dv.switch_id === sw.switch_id || (sw.name && dv.switch_id === sw.name) || singleSwitch;
+        });
+
         const byVlan = {};
         ports.forEach(p => (byVlan[p.vlan || "—"] = byVlan[p.vlan || "—"] || []).push(p));
-        const children = Object.entries(byVlan).map(([vlan, ps]) => ({
-            name: vlan === "—" ? tt("topo.no_vlan") : "VLAN " + vlan,
-            kind: "port", data: { vlan, ports: ps },
-            info: `${ps.length} ${tt("topo.ports")}\n${ps.map(p => p.name).join(", ")}`,
-            badge: ps.length + " " + tt("topo.ports")
-        }));
+        const children = Object.entries(byVlan).map(([vlan, ps]) => {
+            const portNames = new Set(ps.map(p => p.name));
+            const groupDevs = swDevs.filter(dv => !assigned.has(dv) && (
+                (dv.port && portNames.has(dv.port)) ||
+                (dv.vlan && (String(dv.vlan) === vlan || vlan === "vlan" + dv.vlan || vlan.endsWith("." + dv.vlan) || vlan.endsWith("_" + dv.vlan)))
+            ));
+            groupDevs.forEach(dv => assigned.add(dv));
+            return {
+                name: vlan === "—" ? tt("topo.no_vlan") : "VLAN " + vlan,
+                kind: "port", data: { vlan, ports: ps },
+                info: `${ps.length} ${tt("topo.ports")}\n${ps.map(p => p.name).join(", ")}` +
+                    (groupDevs.length ? `\n${groupDevs.length} ${tt("topo.devices")}` : ""),
+                badge: ps.length + " " + tt("topo.ports") + (groupDevs.length ? " · " + groupDevs.length + " " + tt("topo.devices") : ""),
+                children: groupDevs.map(deviceNode)
+            };
+        });
+        // Devices that matched the switch but no VLAN/port group.
+        const rest = swDevs.filter(dv => !assigned.has(dv));
+        rest.forEach(dv => assigned.add(dv));
+        children.push(...rest.map(deviceNode));
+
+        const devCount = swDevs.length;
         return {
             name: sw.name || sw.switch_id, kind: "switch", data: sw,
-            info: `FortiSwitch\n${tt("topo.serial")}: ${sw.switch_id}\n${tt("topo.ports")}: ${ports.length}`,
+            info: `FortiSwitch\n${tt("topo.serial")}: ${sw.switch_id}\n${tt("topo.ports")}: ${ports.length}` +
+                (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
             children: children
         };
     }
@@ -122,14 +172,29 @@ function buildTree(data) {
         return bc - ac;
     });
 
+    const fwChildren = sorted.map(intfNode);
+
+    // Devices that could not be attributed to any switch get their own group
+    // under the firewall so they never disappear.
+    const unassigned = devices.filter(dv => !assigned.has(dv));
+    if (unassigned.length) {
+        fwChildren.push({
+            name: tt("topo.devices"), kind: "lan",
+            info: `${unassigned.length} ${tt("topo.devices")}`,
+            badge: String(unassigned.length),
+            children: unassigned.map(deviceNode)
+        });
+    }
+
     return {
         name: tt("topo.internet"), kind: "internet", info: tt("topo.external"),
         children: [{
             name: data.fqdn || "FortiGate",
             kind: "firewall", data: data,
-            info: `${data.model || "FortiGate"} · FortiOS ${data.version || "?"}\nInterfaces: ${interfaces.length}\nSwitches: ${switches.length}\nPolicies: ${policies.length}`,
+            info: `${data.model || "FortiGate"} · FortiOS ${data.version || "?"}\nInterfaces: ${interfaces.length}\nSwitches: ${switches.length}\nPolicies: ${policies.length}` +
+                (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : ""),
             badge: data.model || null,
-            children: sorted.map(intfNode)
+            children: fwChildren
         }]
     };
 }
@@ -143,7 +208,9 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        if (d.data.kind === "port" || d.data.kind === "route") d.children = d.children || null;
+        // Collapse port/route groups by default to keep the initial view tidy
+        // (their devices/details expand on click).
+        if (d.data.kind === "port" || d.data.kind === "route") d.children = null;
     });
 
     gRoot = svg.append("g");
@@ -187,12 +254,15 @@ function renderTree(data) {
             const isMajor = d.data.kind === "firewall" || d.data.kind === "internet" || d.data.kind === "switch";
             const w = isMajor ? 150 : 120, h = isMajor ? 40 : 30;
 
-            g.append("rect")
+            // Shared MAC/IP devices get a red dashed border so conflicts stand out.
+            const stroke = d.data.highlight ? "#ef4444" : st.stroke;
+            const rect = g.append("rect")
                 .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
                 .attr("rx", 7)
                 .attr("fill", st.fill)
-                .attr("stroke", st.stroke)
-                .attr("stroke-width", isMajor ? 2.4 : 1.4);
+                .attr("stroke", stroke)
+                .attr("stroke-width", d.data.highlight ? 2.4 : (isMajor ? 2.4 : 1.4));
+            if (d.data.highlight) rect.attr("stroke-dasharray", "5,3");
 
             g.append("text")
                 .attr("x", -w / 2 + 10).attr("y", 4)
@@ -393,6 +463,64 @@ function topoDataURL() {
     return (cfg.dataBase || "/topology/data/") + sel.value;
 }
 
+function selectedFwID() {
+    const sel = document.getElementById("topoSelect");
+    return sel && sel.value ? sel.value : null;
+}
+
+// loadDeviceData fetches the Graylog device inventory (extension). Returns
+// the device list or null when the extension is disabled/unreachable — the
+// topology renders fine without it.
+async function loadDeviceData() {
+    const cfg = window.TOPO_CONFIG || {};
+    const fwid = selectedFwID();
+    if (!cfg.devicesBase || !fwid) return null;
+    try {
+        const resp = await fetch(cfg.devicesBase + "/data/" + fwid, { headers: { "Accept": "application/json" } });
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const btn = document.getElementById("fetchDevBtn");
+        if (btn) btn.style.display = "";
+        return data.devices || [];
+    } catch (e) {
+        return null;
+    }
+}
+
+// fetchDevicesNow triggers an immediate Graylog fetch for the viewed firewall
+// ("fetch device data now" button) and re-renders the tree.
+async function fetchDevicesNow() {
+    const cfg = window.TOPO_CONFIG || {};
+    const fwid = selectedFwID();
+    if (!cfg.devicesBase || !fwid) return;
+    const meta = document.getElementById("topoMeta");
+    const btn = document.getElementById("fetchDevBtn");
+    if (btn) btn.disabled = true;
+    if (meta) meta.textContent = tt("topo.fetching");
+    try {
+        const resp = await fetch(cfg.devicesBase + "/refresh/" + fwid, { method: "POST" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        topoDevices = data.devices || [];
+        if (topo && topo.has_config) renderTree(topo);
+        if (meta) meta.textContent = topoMetaText() + " · " + tt("topo.dev_updated");
+    } catch (e) {
+        console.error("device fetch failed", e);
+        if (meta) meta.textContent = tt("topo.fetch_failed");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+function topoMetaText() {
+    if (!topo) return "";
+    let text = `${topo.model || ""} · FortiOS ${topo.version || "?"} · ${(topo.interfaces || []).length} Interfaces · ${(topo.switches || []).length} Switches`;
+    if (topoDevices && topoDevices.length) {
+        text += ` · ${topoDevices.length} ${tt("topo.devices")}`;
+    }
+    return text;
+}
+
 async function loadTopology() {
     const url = topoDataURL();
     if (!url) return;
@@ -400,16 +528,19 @@ async function loadTopology() {
     const meta = document.getElementById("topoMeta");
     if (meta) meta.textContent = tt("topo.loading");
     try {
-        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+        const [resp, devices] = await Promise.all([
+            fetch(url, { headers: { "Accept": "application/json" } }),
+            loadDeviceData()
+        ]);
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         topo = await resp.json();
+        topoDevices = devices;
         if (!topo.has_config) {
             if (meta) meta.textContent = tt("topo.no_backup");
             d3.select("#topoSvg").selectAll("*").remove();
             return;
         }
-        if (meta) meta.textContent =
-            `${topo.model || ""} · FortiOS ${topo.version || "?"} · ${(topo.interfaces || []).length} Interfaces · ${(topo.switches || []).length} Switches`;
+        if (meta) meta.textContent = topoMetaText();
         renderTree(topo);
     } catch (e) {
         console.error("topology load failed", e);
