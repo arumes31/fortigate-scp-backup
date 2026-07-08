@@ -36,6 +36,7 @@ type dataResponse struct {
 	Stp           []StpPort      `json:"stp"` // [] = no blocked ports; null = STP lookup failed
 	StpEvents     []StpEvent     `json:"stp_events,omitempty"`
 	MultiMacPorts []MultiMacPort `json:"multi_mac_ports,omitempty"`
+	Edges         []SwitchEdge   `json:"edges,omitempty"` // trunk observations from STP/link events
 	Wifi          []WifiClient   `json:"wifi,omitempty"`
 	Vpn           []VpnStatus    `json:"vpn,omitempty"`
 	HaDetail      string         `json:"ha_detail,omitempty"`
@@ -78,6 +79,10 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		e.logger.Warn("graylog devices: multi-mac list failed", "fw_id", fwID, "err", err)
 	}
+	edges, err := e.listSwitchEdges(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: switch-edge list failed", "fw_id", fwID, "err", err)
+	}
 	wifi, err := e.listWifi(fwID)
 	if err != nil {
 		e.logger.Warn("graylog devices: wifi list failed", "fw_id", fwID, "err", err)
@@ -89,7 +94,7 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dataResponse{
 		FwID: fwID, Devices: devices, Stp: stp,
-		StpEvents: events, MultiMacPorts: multiMac,
+		StpEvents: events, MultiMacPorts: multiMac, Edges: edges,
 		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID),
 		UpdatedAt: updatedAt,
 	})

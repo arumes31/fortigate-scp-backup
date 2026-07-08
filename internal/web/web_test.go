@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -697,5 +698,57 @@ func TestLoginLimiter(t *testing.T) {
 	l.reset("k")
 	if !l.allowed("k") {
 		t.Fatal("reset should clear the block")
+	}
+}
+
+// TestLoginPageAnimation guards the login screen's animated backdrop: the
+// radar background (grid + scan + 10 positioned pulse rings), the matrix
+// "FGT → FortiSafe" logo script and the shared stylesheet must all render.
+// The pulse rings are children 3-12 of the container (grid + scan occupy 1-2),
+// so the position rules must target exactly that range — a regression here made
+// the rings invisible once before.
+func TestLoginPageAnimation(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	html := rr.Body.String()
+	for _, want := range []string{
+		`<link rel="stylesheet" href="/static/app.css">`,
+		`class="background-animation"`,
+		`class="grid-overlay"`,
+		`class="scan-effect"`,
+		`@keyframes pulse-circle`,
+		`@keyframes scan`,
+		`matrixRain`,
+		`id="logo-text"`,
+		`id="loginShader"`,
+		`class="shader-backdrop"`,
+		`fsBeams`,
+		`fsFlow`,
+		`Math.random() < 0.1 ? fsFlow : fsBeams`,
+		`prefers-reduced-motion`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("login page missing %q", want)
+		}
+	}
+	if n := strings.Count(html, `<div class="pulse-circle">`); n != 10 {
+		t.Errorf("pulse circles = %d, want 10", n)
+	}
+	// Every ring must have a position rule: children 3..12 of the container.
+	for i := 3; i <= 12; i++ {
+		sel := fmt.Sprintf(".pulse-circle:nth-child(%d)", i)
+		if !strings.Contains(html, sel) {
+			t.Errorf("missing position rule %s", sel)
+		}
+	}
+	if strings.Contains(html, ".pulse-circle:nth-child(1) ") || strings.Contains(html, ".pulse-circle:nth-child(2) ") {
+		t.Error("position rules target children 1-2 (grid/scan) — rings are children 3-12")
+	}
+	if strings.Contains(html, "src=\"http") || strings.Contains(html, "cdn.") {
+		t.Error("login page must not reference external scripts (same-origin CSP)")
 	}
 }
