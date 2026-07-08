@@ -99,6 +99,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	for _, alter := range []string{
 		`ALTER TABLE stp_ports ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE stp_ports ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN dot1x TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN first_seen TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN devtype TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN osname TEXT NOT NULL DEFAULT ''`,
@@ -166,6 +167,7 @@ const createStpTableSQL = `CREATE TABLE IF NOT EXISTS stp_ports (
 	role        TEXT NOT NULL DEFAULT '',
 	state       TEXT NOT NULL DEFAULT '',
 	guard       TEXT NOT NULL DEFAULT '',
+	dot1x       TEXT NOT NULL DEFAULT '',
 	last_change TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, switch_name, port)

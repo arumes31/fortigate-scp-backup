@@ -39,14 +39,14 @@
             height: 100%;
             background:
                 repeating-linear-gradient(45deg,
-                    rgba(255, 43, 43, 0.06) 0px,
-                    rgba(255, 43, 43, 0.06) 1px,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
                     transparent 1px, transparent 25px),
                 repeating-linear-gradient(-45deg,
-                    rgba(255, 43, 43, 0.06) 0px,
-                    rgba(255, 43, 43, 0.06) 1px,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
                     transparent 1px, transparent 25px);
-            opacity: 0.5;
+            opacity: 0.55;
             animation: pulse-grid 8s infinite ease-in-out;
         }
 
@@ -57,7 +57,7 @@
             height: 100%;
             background: linear-gradient(to bottom,
                 transparent 0%,
-                rgba(255, 43, 43, 0.12) 50%,
+                rgba(255, 43, 43, 0.22) 50%,
                 transparent 100%);
             animation: scan 5s infinite linear;
         }
@@ -66,30 +66,31 @@
         .pulse-circle {
             position: absolute;
             width: 0; height: 0;
-            border: 2px solid rgba(255, 180, 171, 0.55);
+            border: 2px solid rgba(255, 180, 171, 0.8);
             border-radius: 50%;
+            box-shadow: 0 0 12px rgba(255, 43, 43, 0.45);
             animation: pulse-circle 4s infinite ease-out;
             transform: translate(-50%, -50%);
         }
-        .pulse-circle:nth-child(1) { top: 50%; left: 50%; animation-delay: 0s; }
-        .pulse-circle:nth-child(2) { top: 20%; left: 20%; animation-delay: -0.8s; }
-        .pulse-circle:nth-child(3) { top: 20%; left: 80%; animation-delay: -1.6s; }
-        .pulse-circle:nth-child(4) { top: 80%; left: 20%; animation-delay: -2.4s; }
-        .pulse-circle:nth-child(5) { top: 80%; left: 80%; animation-delay: -3.2s; }
-        .pulse-circle:nth-child(6) { top: 30%; left: 30%; animation-delay: -0.4s; }
-        .pulse-circle:nth-child(7) { top: 30%; left: 70%; animation-delay: -1.2s; }
-        .pulse-circle:nth-child(8) { top: 70%; left: 30%; animation-delay: -2.0s; }
-        .pulse-circle:nth-child(9) { top: 70%; left: 70%; animation-delay: -2.8s; }
-        .pulse-circle:nth-child(10) { top: 40%; left: 60%; animation-delay: -3.6s; }
+        .pulse-circle:nth-child(3)  { top: 50%; left: 50%; animation-delay: 0s; }
+        .pulse-circle:nth-child(4)  { top: 20%; left: 20%; animation-delay: -0.8s; }
+        .pulse-circle:nth-child(5)  { top: 20%; left: 80%; animation-delay: -1.6s; }
+        .pulse-circle:nth-child(6)  { top: 80%; left: 20%; animation-delay: -2.4s; }
+        .pulse-circle:nth-child(7)  { top: 80%; left: 80%; animation-delay: -3.2s; }
+        .pulse-circle:nth-child(8)  { top: 30%; left: 30%; animation-delay: -0.4s; }
+        .pulse-circle:nth-child(9)  { top: 30%; left: 70%; animation-delay: -1.2s; }
+        .pulse-circle:nth-child(10) { top: 70%; left: 30%; animation-delay: -2.0s; }
+        .pulse-circle:nth-child(11) { top: 70%; left: 70%; animation-delay: -2.8s; }
+        .pulse-circle:nth-child(12) { top: 40%; left: 60%; animation-delay: -3.6s; }
 
         @keyframes pulse-circle {
             0%   { transform: translate(-50%, -50%) scale(0);  opacity: 1; }
             100% { transform: translate(-50%, -50%) scale(15); opacity: 0; }
         }
         @keyframes pulse-grid {
-            0%   { opacity: 0.4; transform: scale(1); }
-            50%  { opacity: 0.6; transform: scale(1.02); }
-            100% { opacity: 0.4; transform: scale(1); }
+            0%   { opacity: 0.45; transform: scale(1); }
+            50%  { opacity: 0.7;  transform: scale(1.02); }
+            100% { opacity: 0.45; transform: scale(1); }
         }
         @keyframes scan {
             0%   { transform: translateY(-100%); }

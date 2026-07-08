@@ -18,6 +18,8 @@ let topoStpEvents = []; // raw port event history (48h) from the extension
 let topoStpEventsIdx = {}; // "switchDisplayName|port" → [events, newest first]
 let topoMultiMac = [];  // ports with several MACs behind them (extension-computed)
 let topoEdges = [];     // switch-edge observations (STP trunk names + LAG legs) from the extension
+let topoFaceData = null;      // nodeData of the open faceplate (re-render on filter change)
+let topoFaceVlanFilter = null;// active VLAN highlight filter on the faceplate (legend click)
 let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
 let topoVpn = [];       // VPN tunnel up/down states from the extension
 let topoVpnIdx = {};    // tunnel name → { status, remip, type }
@@ -1235,7 +1237,8 @@ function portColor(p) {
 function portCellSVG(p, idx, x, y, cell) {
     const col = p.stpBlocked ? "#f97316" : portColor(p);
     const active = !p.isDown && !p.liveDown && (p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink);
-    const led = p.stpBlocked ? "#f97316" : (p.liveDown ? "#4b5563" : (active ? "#22c55e" : "#4b5563"));
+    // Link LED: live link state wins; without live data fall back to config activity.
+    const led = p.stpBlocked ? "#f97316" : (p.liveDown ? "#4b5563" : (p.liveUp || active ? "#22c55e" : "#4b5563"));
     const blink = p.stpBlocked
         ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#f97316" stroke-width="2">
              <animate attributeName="opacity" values="1;0.1;1" dur="0.9s" repeatCount="indefinite"/>
@@ -1245,14 +1248,41 @@ function portCellSVG(p, idx, x, y, cell) {
         ? `<circle cx="${x + cell - 7}" cy="${y + cell - 7}" r="5.5" fill="#22d3ee"/>
            <text x="${x + cell - 7}" y="${y + cell - 4.5}" text-anchor="middle" fill="#083344" font-size="7.5" font-weight="bold" font-family="monospace">${p.multiMac > 9 ? "9+" : p.multiMac}</text>`
         : "";
+    // Pinned-device count (violet) unless the multi-MAC badge already tells it.
+    const devBadge = !p.multiMac && p.devices && p.devices.length
+        ? `<circle cx="${x + 7}" cy="${y + cell - 7}" r="5.5" fill="#a78bfa"/>
+           <text x="${x + 7}" y="${y + cell - 4.5}" text-anchor="middle" fill="#1e1b4b" font-size="7.5" font-weight="bold" font-family="monospace">${p.devices.length > 9 ? "9+" : p.devices.length}</text>`
+        : "";
+    // Guard glyph (BPDU / loop / root); AP ports show the WiFi client bubble.
+    const guardGlyph = p.guardKind
+        ? `<text x="${x + cell / 2}" y="${y + 13}" text-anchor="middle" font-size="9">${p.guardKind === "bpdu-guard" ? "⛔" : (p.guardKind === "loop-guard" ? "↻" : "🛡")}</text>`
+        : (p.wifiCount ? `<text x="${x + cell / 2}" y="${y + 12}" text-anchor="middle" fill="#7dd3fc" font-size="8" font-family="monospace">📶${p.wifiCount > 9 ? "9+" : p.wifiCount}</text>` : "");
+    // 802.1X: configured = cyan; live authorized = green; unauthorized = red.
+    const dot1xCol = p.dot1xState === "authorized" ? "#22c55e" : (p.dot1xState === "unauthorized" ? "#ef4444" : "#38bdf8");
+    // allowed-vlans-all: tri-color micro stripe above the native VLAN stripe.
+    const seg = (cell - 16) / 3;
+    const rainbow = p.allowedAll
+        ? `<rect x="${x + 8}" y="${y + cell - 15}" width="${seg}" height="3" fill="#ef4444" opacity="0.5"/>
+           <rect x="${x + 8 + seg}" y="${y + cell - 15}" width="${seg}" height="3" fill="#22c55e" opacity="0.5"/>
+           <rect x="${x + 8 + 2 * seg}" y="${y + cell - 15}" width="${seg}" height="3" fill="#3b82f6" opacity="0.5"/>`
+        : "";
+    const uplink = p.isUplink ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">▲</text>` : "";
+    const icl = p.isIcl ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">⫘</text>` : "";
+    const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
+    const dim = p.filtered ? " opacity: 0.15;" : ((p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : "");
     return `
-    <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${(p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : ""}">
+    <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${dim}">
         <rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="4" fill="rgba(0,0,0,0.55)" stroke="${col}" stroke-width="1.6"/>
         ${blink}
         <rect x="${x + 8}" y="${y + cell - 11}" width="${cell - 16}" height="6" rx="1.5" fill="${col}" opacity="0.85"/>
+        ${rainbow}
         <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${led}">${p.stpBlocked ? `<animate attributeName="opacity" values="1;0.15;1" dur="0.9s" repeatCount="indefinite"/>` : ""}</circle>
-        ${p.dot1x ? `<rect x="${x + cell - 11}" y="${y + 4}" width="7" height="7" rx="1.5" fill="#38bdf8"/>` : ""}
+        ${p.dot1x || p.dot1xState ? `<rect x="${x + cell - 11}" y="${y + 4}" width="7" height="7" rx="1.5" fill="${dot1xCol}"/>` : ""}
+        ${p.nac ? `<rect x="${x + cell - 21}" y="${y + 4}" width="7" height="7" rx="1.5" fill="#34d399"/><text x="${x + cell - 17.5}" y="${y + 10}" text-anchor="middle" fill="#022c22" font-size="6" font-weight="bold" font-family="monospace">N</text>` : ""}
+        ${guardGlyph}
         ${multiMac}
+        ${devBadge}
+        ${uplink}${icl}${quarantine}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -1267,7 +1297,7 @@ function faceplateSVG(ports, title) {
     let cells = "";
     ports.forEach((p, idx) => {
         const r = Math.floor(idx / perRow), c = idx % perRow;
-        cells += portCellSVG(p, idx, padX + c * (cell + gap), padY + r * (cell + 22), cell);
+        cells += portCellSVG(p, p._idx !== undefined ? p._idx : idx, padX + c * (cell + gap), padY + r * (cell + 22), cell);
     });
 
     return `<svg viewBox="0 0 ${w} ${h}" style="width: 100%; background: linear-gradient(180deg, #171b22, #0c0f14); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
@@ -1313,9 +1343,12 @@ function faceplateLegend(kind) {
     const items = kind === "switch"
         ? [["#f97316", tt("topo.stp_blocked")], ["#f59e0b", tt("topo.interlink")], ["#8b5cf6", tt("topo.legend_vlan")], ["#38bdf8", "802.1X"], ["#4b5563", tt("topo.status_down")], ["#374151", tt("topo.legend_none")]]
         : [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
+    const glyphs = kind === "switch"
+        ? `<div class="muted" style="margin-top: 6px; font-size: 0.78em;">▲ ${tt("topo.uplink")} · ⫘ ${tt("topo.icl")} · N ${tt("topo.nac")} · ☣ ${tt("topo.quarantine")} · 🔒/🔓 802.1X · ⛔↻🛡 Guard</div>`
+        : "";
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 0.78em;">
         ${items.map(([c, t]) => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${c}; margin-right: 5px; vertical-align: -1px;"></span>${t}</span>`).join("")}
-    </div>`;
+    </div>` + glyphs;
 }
 
 // vlanColorLegend maps the hashed per-VLAN port colors on a switch faceplate
@@ -1325,10 +1358,185 @@ function vlanColorLegend(ports) {
     const names = [...new Set((ports || []).map(p => p.vlanName).filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     if (!names.length) return "";
+    const vlanIdOf = n => ((topo && topo.interfaces) || []).find(i => i.name === n)?.vlan_id || 0;
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.78em; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
         <span class="muted">${tt("topo.vlan_colors")}:</span>
-        ${names.map(n => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${vlanColor(n)}; margin-right: 5px; vertical-align: -1px;"></span>${esc(n)}</span>`).join("")}
+        ${names.map(n => `<span data-vlanchip="${esc(n)}" title="VLAN ${vlanIdOf(n) || "?"} · ${esc(n)}" style="cursor: pointer;${topoFaceVlanFilter === n ? " outline: 1px solid " + vlanColor(n) + "; outline-offset: 2px; border-radius: 2px;" : ""}"><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${vlanColor(n)}; margin-right: 5px; vertical-align: -1px;"></span>${esc(n)}</span>`).join("")}
     </div>`;
+}
+
+// buildSwitchFacePorts assembles the faceplate port array for one switch:
+// config attributes + live STP/link/802.1X state, interlink/uplink/ICL flags,
+// pinned devices (with AP/WiFi enrichment) and quarantine/NAC markers.
+function buildSwitchFacePorts(sw) {
+    const swTitle = swName(sw);
+    const allSw = (topo && topo.switches) || [];
+    const vlanIdOf = n => ((topo && topo.interfaces) || []).find(i => i.name === n)?.vlan_id || 0;
+
+    const inter = {}, interIcl = {};
+    (topoInterlinks || []).forEach(l => {
+        const mark = (pl, peer, peerPorts, iclFlag) => (pl || []).forEach((p2, i) => {
+            inter[p2] = peer + ((peerPorts || [])[i] ? " " + peerPorts[i] : "");
+            if (iclFlag) interIcl[p2] = true;
+        });
+        if (l.from === swTitle) mark(l.from_ports, l.to, l.to_ports, l.kind === "mclag-icl");
+        if (l.to === swTitle) mark(l.to_ports, l.from, l.from_ports, l.kind === "mclag-icl");
+    });
+    // Uplink ports: STP root role, or member ports of an edge whose parent is the peer.
+    const uplinkPorts = new Set();
+    (topoInterlinks || []).forEach(l => {
+        if (l.parent === l.to && l.from === swTitle) (l.from_ports || []).forEach(p2 => uplinkPorts.add(p2));
+        if (l.parent === l.from && l.to === swTitle) (l.to_ports || []).forEach(p2 => uplinkPorts.add(p2));
+    });
+    // Pinned devices per port (server-side best-pin already applied).
+    const devsByPort = {};
+    (topoDevices || []).forEach(dv => {
+        if (!dv.port) return;
+        if (resolveSwitchName(allSw, dv.switch_id) === swTitle) {
+            (devsByPort[dv.port] = devsByPort[dv.port] || []).push(dv);
+        }
+    });
+    const apOf = dv => ((topo && topo.aps) || []).find(a =>
+        (a.name && dv.hostname && a.name.toLowerCase() === dv.hostname.toLowerCase()) ||
+        (a.wtp_id && dv.hostname === a.wtp_id));
+
+    return (sw.ports || []).map(p => {
+        const st = topoStpIdx[swTitle + "|" + p.name];
+        const multiMac = topoMultiMacIdx[swTitle + "|" + p.name] || 0;
+        const history = (topoStpEventsIdx[swTitle + "|" + p.name] || []).slice(0, 6)
+            .map(ev => `  ${(ev.time || "").replace("T", " ").slice(5, 16)} ${ev.kind}: ${ev.from ? ev.from + " → " : ""}${ev.to}`);
+        const devices = devsByPort[p.name] || [];
+        let apName = "", wifiCount = 0;
+        devices.forEach(dv => {
+            const ap = apOf(dv);
+            if (ap) {
+                apName = ap.name || ap.wtp_id;
+                wifiCount = (topoDevices || []).filter(d2 => d2.ap && (d2.ap === ap.name || d2.ap === ap.wtp_id)).length;
+            }
+        });
+        const quarantine = /quarantine/i.test(p.vlan || "") || vlanIdOf(p.vlan) === 4093;
+        const nac = p.access_mode === "nac" || p.access_mode === "dynamic";
+        return {
+            label: p.name,
+            _sw: swTitle,
+            hasIP: false, isWan: false, isFortilink: false,
+            isInterlink: !!inter[p.name],
+            isIcl: !!interIcl[p.name],
+            isUplink: uplinkPorts.has(p.name) || !!(st && st.role === "root"),
+            isDown: p.status === "down",
+            liveDown: !!(st && st.link === "down"),
+            liveUp: !!(st && st.link === "up"),
+            dot1x: !!p.security_policy,
+            dot1xState: (st && st.dot1x) || "",
+            nac: nac,
+            quarantine: quarantine,
+            guardKind: st && st.blocked ? (st.guard || "") : "",
+            isTrunk: p.type === "trunk",
+            stpBlocked: !!(st && st.blocked),
+            multiMac: multiMac,
+            devices: devices,
+            apName: apName, wifiCount: wifiCount,
+            vlanName: p.vlan || "",
+            tagged: p.allowed_vlans || [],
+            allowedAll: !!p.allowed_vlans_all,
+            vlans: (p.vlan ? 1 : 0) + (p.allowed_vlans || []).length + (p.allowed_vlans_all ? 1 : 0),
+            detail: `VLAN: ${p.vlan || "—"}` +
+                (taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
+                (quarantine ? `\n☣ ${tt("topo.quarantine")}` : "") +
+                (inter[p.name] ? `\n${interIcl[p.name] ? "⫘ " + tt("topo.icl") : tt("topo.interlink")}: ${inter[p.name]}` : "") +
+                (uplinkPorts.has(p.name) || (st && st.role === "root") ? `\n▲ ${tt("topo.uplink")}` : "") +
+                (st && st.link ? `\nLink: ${st.link}` : "") +
+                (st ? `\nSTP: ${stpLabel(st)}${st.last ? " (" + st.last + ")" : ""}` : "") +
+                (st && st.dot1x ? `\n${st.dot1x === "authorized" ? "🔒 " + tt("topo.dot1x_auth") : "🔓 " + tt("topo.dot1x_unauth")}` : "") +
+                (nac ? `\n☑ ${tt("topo.nac")} (${p.access_mode})` : "") +
+                (multiMac ? `\n⚠ ${multiMac} MACs — ${tt("topo.multi_mac")}` : "") +
+                (devices.length ? `\n${tt("topo.port_devices")}: ${devices.length}` : "") +
+                (apName ? `\n📶 ${apName}${wifiCount ? " · " + wifiCount + " " + tt("topo.wifi_clients") : ""}` : "") +
+                (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
+                (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
+                (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
+                (st && st.guard === "bpdu-guard" ? `\n⛔ ${tt("topo.bpdu_fix")}:\n  config switch-controller managed-switch\n  edit "${sw.serial || sw.switch_id}" > config ports > edit "${p.name}"\n  set status disable → set status enable` : "") +
+                (p.description ? `\n${p.description}` : "") +
+                (p.mac ? `\nMAC: ${p.mac}` : "") +
+                (p.speed ? `\nSpeed: ${p.speed}` : "") +
+                (history.length ? `\n${tt("topo.history")}:\n${history.join("\n")}` : "")
+        };
+    });
+}
+
+// buildSwitchPanelHTML draws one switch's model-accurate panel (copper rows +
+// SFP block + LAG chips) from ports whose _idx is already assigned; falls
+// back to the generic grid for unknown models.
+function buildSwitchPanelHTML(sw, ports) {
+    const title = swName(sw);
+    const m = /^FS-(\d{3})/.exec(sw.model || "");
+    const base = m ? Number(m[1]) % 100 : 0;
+    const copper = [], sfp = [], lags = [];
+    ports.forEach(p => {
+        const pm = /^port(\d+)$/i.exec(p.label);
+        if (p.isTrunk || !pm) { lags.push(p); return; }
+        if (base && Number(pm[1]) > base) sfp.push(p); else copper.push(p);
+    });
+    let html = "";
+    if (base && copper.length) {
+        const byNum = (a, b) => Number((/\d+/.exec(a.label) || [0])[0]) - Number((/\d+/.exec(b.label) || [0])[0]);
+        copper.sort(byNum);
+        sfp.sort(byNum);
+        html = switchFaceplateSVG(copper, sfp, title);
+        if (lags.length) {
+            html += `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;">` +
+                lags.map(p => `<span class="fp-port" data-idx="${p._idx}" style="cursor: pointer; padding: 3px 10px; border: 1px solid ${portColor(p)}; border-radius: 12px; font-size: 0.75em; font-family: monospace;">⇆ ${esc(p.label)}</span>`).join("") +
+                `</div>`;
+        }
+    }
+    if (!html && ports.length) html = faceplateSVG(ports, title);
+    return html;
+}
+
+// fpPopover shows the pinned devices of a hovered port; rows locate the
+// device in the tree on click. Stale devices (unseen > 24h) render faded.
+function fpPopoverEl() {
+    let el = document.getElementById("fpPopover");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "fpPopover";
+        el.style.cssText = "position:fixed;z-index:2000;display:none;max-width:340px;background:#12161d;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:6px 8px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.6);color:#d1d5db;";
+        el.addEventListener("mouseenter", () => clearTimeout(el._t));
+        el.addEventListener("mouseleave", () => hideFpPopover());
+        document.body.appendChild(el);
+    }
+    return el;
+}
+function hideFpPopover() {
+    const el = document.getElementById("fpPopover");
+    if (!el) return;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.style.display = "none"; }, 200);
+}
+function deviceIsStale(dv) {
+    const t = Date.parse(String(dv.last_seen || "").replace(" ", "T"));
+    return !isNaN(t) && Date.now() - t > 24 * 3600 * 1000;
+}
+function showFpPopover(anchor, p) {
+    if (!p.devices || !p.devices.length) { hideFpPopover(); return; }
+    const el = fpPopoverEl();
+    clearTimeout(el._t);
+    const rows = p.devices.slice(0, 12).map(dv => {
+        const fp = [dv.osname, dv.devtype, dv.vendor].filter(Boolean).join(" · ");
+        const stale = deviceIsStale(dv);
+        return `<div class="fp-devrow" data-mac="${esc(dv.mac)}" style="cursor:pointer;padding:4px 6px;border-radius:5px;${stale ? "opacity:.5;" : ""}" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background=''">
+            <span style="color:#fff;">${esc(dv.hostname || dv.ip || dv.mac)}</span>${stale ? ` <span style="color:#9ca3af;">· ${tt("topo.stale")}</span>` : ""}
+            <div style="color:#9ca3af;font-family:monospace;font-size:11px;">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}</div>
+        </div>`;
+    }).join("");
+    el.innerHTML = `<div style="color:#9ca3af;margin:2px 4px 4px;">${tt("topo.port_devices")} — ${esc(p.label)} (${p.devices.length})</div>` + rows;
+    el.querySelectorAll(".fp-devrow").forEach(r => r.addEventListener("click", () => {
+        locateDeviceByMac(r.getAttribute("data-mac"));
+    }));
+    const rect = anchor.getBoundingClientRect();
+    el.style.display = "block";
+    el.style.left = Math.max(8, Math.min(window.innerWidth - 356, rect.left)) + "px";
+    el.style.top = (rect.bottom + 8) + "px";
 }
 
 function portDetailHTML(p) {
@@ -1363,77 +1571,49 @@ function showFaceplate(nodeData) {
         const sw = nodeData.data;
         title = swName(sw);
         sub = `FortiSwitch${sw.model ? " " + sw.model : ""} · ${sw.serial || sw.switch_id}`;
-        // Interlink ports of this switch → peer label ("SW-CORE02 port29").
-        const inter = {};
-        topoInterlinks.forEach(l => {
-            if (l.from === title) (l.from_ports || []).forEach((p, i) => { inter[p] = l.to + ((l.to_ports || [])[i] ? " " + l.to_ports[i] : ""); });
-            if (l.to === title) (l.to_ports || []).forEach((p, i) => { inter[p] = l.from + ((l.from_ports || [])[i] ? " " + l.from_ports[i] : ""); });
-        });
-        ports = (sw.ports || []).map(p => {
-            const st = topoStpIdx[title + "|" + p.name];
-            const multiMac = topoMultiMacIdx[title + "|" + p.name] || 0;
-            // Port event history (48h): the newest transitions, one per line.
-            const history = (topoStpEventsIdx[title + "|" + p.name] || []).slice(0, 6)
-                .map(ev => `  ${(ev.time || "").replace("T", " ").slice(5, 16)} ${ev.kind}: ${ev.from ? ev.from + " → " : ""}${ev.to}`);
-            return {
-                label: p.name,
-                hasIP: false,
-                isWan: false,
-                isFortilink: false,
-                isInterlink: !!inter[p.name],
-                isDown: p.status === "down",
-                liveDown: !!(st && st.link === "down"),
-                dot1x: !!p.security_policy,
-                isTrunk: p.type === "trunk",
-                stpBlocked: !!(st && st.blocked),
-                multiMac: multiMac,
-                vlanName: p.vlan || "",
-                vlans: (p.vlan ? 1 : 0) + (p.allowed_vlans || []).length + (p.allowed_vlans_all ? 1 : 0),
-                detail: `VLAN: ${p.vlan || "—"}` +
-                    (taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
-                    (inter[p.name] ? `\n${tt("topo.interlink")}: ${inter[p.name]}` : "") +
-                    (st && st.link ? `\nLink: ${st.link}` : "") +
-                    (st ? `\nSTP: ${stpLabel(st)}${st.last ? " (" + st.last + ")" : ""}` : "") +
-                    (multiMac ? `\n⚠ ${multiMac} MACs — ${tt("topo.multi_mac")}` : "") +
-                    (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
-                    (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
-                    (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
-                    (p.description ? `\n${p.description}` : "") +
-                    (p.mac ? `\nMAC: ${p.mac}` : "") +
-                    (p.speed ? `\nSpeed: ${p.speed}` : "") +
-                    (history.length ? `\n${tt("topo.history")}:\n${history.join("\n")}` : "")
-            };
-        });
+        ports = buildSwitchFacePorts(sw);
+        // MC-LAG peer: stack the partner's faceplate in the same panel.
+        const iclLink = (topoInterlinks || []).find(l => l.kind === "mclag-icl" && (l.from === title || l.to === title));
+        if (iclLink) {
+            const peerName = iclLink.from === title ? iclLink.to : iclLink.from;
+            const peerSw = ((topo && topo.switches) || []).find(s2 => swName(s2) === peerName);
+            if (peerSw) {
+                ports = ports.concat(buildSwitchFacePorts(peerSw));
+                nodeData._pairPeer = peerSw;
+                sub += ` · ⫘ ${tt("topo.mclag_peer")}: ${peerName}`;
+            }
+        }
+        // Dual-homed uplink: this switch links to BOTH members of the MC-LAG pair.
+        const pair = (topoInterlinks || []).find(l => l.kind === "mclag-icl");
+        if (pair && title !== pair.from && title !== pair.to) {
+            const peers = new Set();
+            (topoInterlinks || []).forEach(l => {
+                if (l.from === title) peers.add(l.to);
+                if (l.to === title) peers.add(l.from);
+            });
+            if (peers.has(pair.from) && peers.has(pair.to)) {
+                sub += ` · ⇈ ${tt("topo.dual_homed")}: ${pair.from} + ${pair.to}`;
+            }
+        }
+        // Legend VLAN filter: dim every port not carrying the selected VLAN.
+        const f = topoFaceVlanFilter;
+        if (f) ports.forEach(p => { p.filtered = !(p.vlanName === f || (p.tagged || []).includes(f) || p.allowedAll); });
     }
 
     document.getElementById("faceTitle").textContent = title;
     document.getElementById("faceSub").textContent = sub;
 
-    // Switch panels are drawn model-accurately when the model is known:
-    // copper ports (portN ≤ base count) in two physical rows, SFP uplinks in
-    // a separate block, LAG/trunk entries as chips below.
+    // Switch panels are drawn model-accurately when the model is known; an
+    // MC-LAG pair renders both members stacked, joined by an ICL divider.
     let panelHTML = "";
+    ports.forEach((p, idx) => { p._idx = idx; });
     if (nodeData.kind === "switch" && ports.length) {
-        const sw = nodeData.data;
-        const m = /^FS-(\d{3})/.exec(sw.model || "");
-        const base = m ? Number(m[1]) % 100 : 0;
-        const copper = [], sfp = [], lags = [];
-        ports.forEach((p, idx) => {
-            p._idx = idx;
-            const pm = /^port(\d+)$/i.exec(p.label);
-            if (p.isTrunk || !pm) { lags.push(p); return; }
-            if (base && Number(pm[1]) > base) sfp.push(p); else copper.push(p);
-        });
-        if (base && copper.length) {
-            const byNum = (a, b) => Number((/\d+/.exec(a.label) || [0])[0]) - Number((/\d+/.exec(b.label) || [0])[0]);
-            copper.sort(byNum);
-            sfp.sort(byNum);
-            panelHTML = switchFaceplateSVG(copper, sfp, title);
-            if (lags.length) {
-                panelHTML += `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;">` +
-                    lags.map(p => `<span class="fp-port" data-idx="${p._idx}" style="cursor: pointer; padding: 3px 10px; border: 1px solid ${portColor(p)}; border-radius: 12px; font-size: 0.75em; font-family: monospace;">⇆ ${esc(p.label)}</span>`).join("") +
-                    `</div>`;
-            }
+        const own = ports.filter(p => p._sw === title || !p._sw);
+        panelHTML = buildSwitchPanelHTML(nodeData.data, own);
+        if (nodeData._pairPeer) {
+            const peerPorts = ports.filter(p => p._sw === swName(nodeData._pairPeer));
+            panelHTML += `<div style="text-align: center; color: #f59e0b; font-size: 0.8em; margin: 6px 0;">⫘ ${tt("topo.icl")} ⇕</div>` +
+                buildSwitchPanelHTML(nodeData._pairPeer, peerPorts);
         }
     }
     if (!panelHTML && ports.length) panelHTML = faceplateSVG(ports, title);
@@ -1449,10 +1629,19 @@ function showFaceplate(nodeData) {
         el.addEventListener("click", () => {
             document.getElementById("facePortDetail").innerHTML = portDetailHTML(p);
         });
-        el.addEventListener("mouseenter", () => el.style.opacity = "0.75");
-        el.addEventListener("mouseleave", () => el.style.opacity = "1");
+        el.addEventListener("mouseenter", () => { el.style.opacity = "0.75"; showFpPopover(el, p); });
+        el.addEventListener("mouseleave", () => { el.style.opacity = "1"; hideFpPopover(); });
+    });
+    // Legend VLAN chips filter the panel; a second click clears the filter.
+    body.querySelectorAll("[data-vlanchip]").forEach(el => {
+        el.addEventListener("click", () => {
+            const v = el.getAttribute("data-vlanchip");
+            topoFaceVlanFilter = topoFaceVlanFilter === v ? null : v;
+            showFaceplate(topoFaceData);
+        });
     });
 
+    topoFaceData = nodeData;
     panel.style.right = "0";
 }
 function closeFaceplate() { document.getElementById("facePanel").style.right = "-480px"; }

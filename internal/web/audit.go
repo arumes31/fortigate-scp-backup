@@ -299,6 +299,7 @@ type SwitchPort struct {
 	MclagIcl      bool     `json:"mclag_icl,omitempty"`
 	IslPeerDevice string   `json:"isl_peer_device,omitempty"`
 	IslPeerPort   string   `json:"isl_peer_port,omitempty"`
+	AccessMode    string   `json:"access_mode,omitempty"` // normal | nac | dynamic | static
 }
 
 type FortiSwitch struct {

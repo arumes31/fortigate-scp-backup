@@ -286,6 +286,7 @@ type StpPort struct {
 	State      string `json:"state,omitempty"`       // forwarding / discarding / learning …
 	Guard      string `json:"guard,omitempty"`       // "bpdu-guard" / "loop-guard" / "root-guard" while triggered
 	Link       string `json:"link,omitempty"`        // "up" / "down" (live link status)
+	Dot1x      string `json:"dot1x,omitempty"`       // "authorized" / "unauthorized" (802.1X port auth)
 	LastChange string `json:"last_change,omitempty"` // timestamp of the newest event
 }
 
@@ -320,6 +321,20 @@ type stpEvent struct {
 	kind  string // "role" | "state" | "guard" | "link"
 	from  string // previous value when the message carries one
 	value string // role/state/link value, or guard kind ("" = guard cleared)
+}
+
+// reDot1x parses 802.1X authorization transitions from "FortiSwitch switch"
+// events ("802.1x port30 reset to unauthorized mode and native_vlan=100").
+var reDot1x = regexp.MustCompile(`(?i)802\.1x\s+(\S+)\s.*?(unauthorized|authorized)`)
+
+// firstNonEmpty returns the first non-empty string.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // rePhysPort matches plain physical port names ("port11"); anything else in
@@ -413,6 +428,8 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 			cur.Guard = ev.value // "" when the newest guard event is a recovery
 		case "link":
 			cur.Link = ev.value
+		case "dot1x":
+			cur.Dot1x = ev.value
 		}
 	}
 	out := make([]StpPort, 0, len(order))
@@ -527,10 +544,22 @@ func stpFromMessage(msg map[string]any) (*StpPort, stpEvent) {
 	port := field(msg, "switchphysicalport")
 	name := field(msg, "name")
 	sn := field(msg, "sn")
+	text := field(msg, "msg", "message")
+	// 802.1X authorization changes ("802.1x port30 reset to unauthorized mode
+	// and native_vlan=100") arrive without a switchphysicalport field — the
+	// port lives in the message text.
+	if m8 := reDot1x.FindStringSubmatch(text); m8 != nil && (name != "" || sn != "") {
+		if port == "" {
+			port = m8[1]
+		}
+		return &StpPort{
+			SwitchName: firstNonEmpty(name, sn), Serial: sn, Port: port,
+			LastChange: field(msg, "timestamp"),
+		}, stpEvent{kind: "dot1x", value: strings.ToLower(m8[2])}
+	}
 	if port == "" || (name == "" && sn == "") {
 		return nil, stpEvent{}
 	}
-	text := field(msg, "msg", "message")
 	var ev stpEvent
 	if mm := reStpMsg.FindStringSubmatch(text); mm != nil {
 		ev = stpEvent{kind: mm[1], from: mm[2], value: mm[3]}

@@ -311,17 +311,18 @@ func (e *Extension) storeStp(fwID int, stp []StpPort, now string) error {
 		// retention above. guard is taken as-is: an empty guard is a recovery
 		// that clears the block (matching the previous replace semantics).
 		if _, err := tx.Exec(`INSERT INTO stp_ports
-			(fw_id, switch_name, serial, port, role, state, guard, link, last_change, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(fw_id, switch_name, serial, port, role, state, guard, link, dot1x, last_change, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
 				serial      = CASE WHEN excluded.serial != '' THEN excluded.serial ELSE serial END,
 				role        = CASE WHEN excluded.role   != '' THEN excluded.role   ELSE role   END,
 				state       = CASE WHEN excluded.state  != '' THEN excluded.state  ELSE state  END,
 				link        = CASE WHEN excluded.link   != '' THEN excluded.link   ELSE link   END,
+				dot1x       = CASE WHEN excluded.dot1x  != '' THEN excluded.dot1x  ELSE dot1x  END,
 				guard       = excluded.guard,
 				last_change = excluded.last_change,
 				updated_at  = excluded.updated_at`,
-			fwID, p.SwitchName, p.Serial, p.Port, p.Role, p.State, p.Guard, p.Link, p.LastChange, now); err != nil {
+			fwID, p.SwitchName, p.Serial, p.Port, p.Role, p.State, p.Guard, p.Link, p.Dot1x, p.LastChange, now); err != nil {
 			return err
 		}
 	}
@@ -401,7 +402,7 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 
 // listStp returns the stored STP port states of a firewall.
 func (e *Extension) listStp(fwID int) ([]StpPort, error) {
-	rows, err := e.db.Query(`SELECT switch_name, serial, port, role, state, guard, link, last_change
+	rows, err := e.db.Query(`SELECT switch_name, serial, port, role, state, guard, link, dot1x, last_change
 		FROM stp_ports WHERE fw_id = ? ORDER BY switch_name, port`, fwID)
 	if err != nil {
 		return nil, err
@@ -410,7 +411,7 @@ func (e *Extension) listStp(fwID int) ([]StpPort, error) {
 	var out []StpPort
 	for rows.Next() {
 		var p StpPort
-		if scanErr := rows.Scan(&p.SwitchName, &p.Serial, &p.Port, &p.Role, &p.State, &p.Guard, &p.Link, &p.LastChange); scanErr != nil {
+		if scanErr := rows.Scan(&p.SwitchName, &p.Serial, &p.Port, &p.Role, &p.State, &p.Guard, &p.Link, &p.Dot1x, &p.LastChange); scanErr != nil {
 			return nil, scanErr
 		}
 		out = append(out, p)
