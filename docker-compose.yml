@@ -64,6 +64,17 @@ services:
       - "HOOKWISE_URL=https://hookwise.example.com/webhook/xxxxxxxx"
       - "HOOKWISE_TOKEN=XXXXXX"
 
+      # --- Extension: Graylog Device Data (Optional) ---
+      # Enables the device inventory for the topology page (switch client MAC/IP/VLAN).
+      # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
+      - "EXT_GRAYLOG_DEVICE_DATA=true"
+      # Graylog query template (%s = firewall hostname); must match logs with MAC fields.
+      # - "GRAYLOG_DEVICE_QUERY=source:\"%s\" AND (mac:* OR srcmac:* OR macaddr:*)"
+      # Seconds of log history to scan per fetch (default: 86400 = 24h).
+      # - "GRAYLOG_DEVICE_RANGE=86400"
+      # Background refresh interval in seconds (default: 3600 = 1h).
+      # - "GRAYLOG_DEVICE_INTERVAL=3600"
+
       # --- Housekeeping ---
       - "ACTIVITY_LOG_RETENTION_DAYS=0" # 0 means keep logs indefinitely
     ports:

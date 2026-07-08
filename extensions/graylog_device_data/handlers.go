@@ -12,9 +12,12 @@ import (
 
 // dataResponse is the JSON payload consumed by the topology page.
 type dataResponse struct {
-	FwID      int      `json:"fw_id"`
-	Devices   []Device `json:"devices"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	FwID          int            `json:"fw_id"`
+	Devices       []Device       `json:"devices"`
+	Stp           []StpPort      `json:"stp"` // [] = no blocked ports; null = STP lookup failed
+	StpEvents     []StpEvent     `json:"stp_events,omitempty"`
+	MultiMacPorts []MultiMacPort `json:"multi_mac_ports,omitempty"`
+	UpdatedAt     string         `json:"updated_at,omitempty"`
 }
 
 // handleData serves the stored device inventory of a firewall.
@@ -33,8 +36,31 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if devices == nil {
 		devices = []Device{}
 	}
+	stp, err := e.listStp(fwID)
+	if err != nil {
+		// The STP overlay is optional: serve the inventory without it. stp is
+		// nil here, so the response serializes it as `null` — a failed lookup
+		// stays distinguishable from a successful "no blocked ports" (an
+		// empty `[]`), rather than both looking healthy.
+		e.logger.Warn("graylog devices: stp list failed", "fw_id", fwID, "err", err)
+	} else if stp == nil {
+		stp = []StpPort{}
+	}
+	// Event history and multi-MAC ports are decorations: a failure only
+	// costs the extra detail, never the inventory.
+	events, err := e.listStpEvents(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: stp event list failed", "fw_id", fwID, "err", err)
+	}
+	multiMac, err := e.listMultiMacPorts(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: multi-mac list failed", "fw_id", fwID, "err", err)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dataResponse{FwID: fwID, Devices: devices, UpdatedAt: updatedAt})
+	_ = json.NewEncoder(w).Encode(dataResponse{
+		FwID: fwID, Devices: devices, Stp: stp,
+		StpEvents: events, MultiMacPorts: multiMac, UpdatedAt: updatedAt,
+	})
 }
 
 // handleRefresh fetches the device inventory for one firewall from Graylog

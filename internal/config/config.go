@@ -79,6 +79,7 @@ type Config struct {
 	// Extension: graylog_device_data (switch client inventory for the topology)
 	ExtGraylogDeviceData  bool
 	GraylogDeviceQuery    string // Graylog query template, %s = source host
+	GraylogStpQuery       string // Graylog query template for FortiSwitch STP events, %s = source host
 	GraylogDeviceRange    string // seconds of log history to scan per fetch
 	GraylogDeviceInterval int    // background refresh interval in seconds
 
@@ -156,7 +157,8 @@ func Load(logger *slog.Logger) *Config {
 		HookwiseToken:          os.Getenv("HOOKWISE_TOKEN"),
 
 		ExtGraylogDeviceData:  boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
-		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND mac:*`),
+		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
+		GraylogStpQuery:       getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
 		GraylogDeviceRange:    getenv("GRAYLOG_DEVICE_RANGE", "86400"),
 		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
 
