@@ -194,7 +194,10 @@ function findingCard(f, fwid) {
 }
 
 function renderRow(tr, res) {
-    const fwid = tr.getAttribute("data-fwid");
+    // Coerce the id to a number at the DOM boundary: data-fwid is a
+    // server-rendered integer, and a numeric value can never be reinterpreted
+    // as HTML when later interpolated into innerHTML strings.
+    const fwid = Number(tr.getAttribute("data-fwid"));
     const sysCell = tr.querySelector(".cell-sys");
     const scoreCell = tr.querySelector(".cell-scores");
     const ticketCell = tr.querySelector(".cell-ticket");
@@ -341,7 +344,7 @@ function recompute(fwid) {
 
 // Fetch all rows with limited concurrency (4 at a time).
 async function loadAll() {
-    const ids = auditRows.map(tr => tr.getAttribute("data-fwid"));
+    const ids = auditRows.map(tr => Number(tr.getAttribute("data-fwid")));
     let idx = 0;
     async function worker() {
         while (idx < ids.length) {
@@ -355,7 +358,7 @@ async function loadAll() {
 function filterAuditTable() {
     const input = document.getElementById("auditSearch").value.toUpperCase();
     for (const tr of auditRows) {
-        const fwid = tr.getAttribute("data-fwid");
+        const fwid = Number(tr.getAttribute("data-fwid"));
         const detailsRow = document.getElementById("detail-" + fwid);
         const text = tr.textContent.toUpperCase() + " " + (searchCache[fwid] || "");
         if (text.indexOf(input) > -1) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -44,13 +45,20 @@ func (s *Server) handleSetLang(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: "lang", Value: lang, Path: "/",
-		MaxAge: 365 * 24 * 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		MaxAge: 365 * 24 * 3600, HttpOnly: true, Secure: s.cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
 	})
-	back := r.FormValue("back")
-	// Local paths only: "//host" and "/\host" are protocol-relative in
-	// browsers and would make this an open redirect.
-	if !strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") || strings.HasPrefix(back, "/\\") {
-		back = "/"
+	// Only ever redirect to a local, host-less path. url.Parse rejects control
+	// characters and populates Host for "//evil.com"/"https://evil.com" style
+	// targets; backslashes are rejected outright because browsers normalise
+	// "/\evil" to "//evil" (a protocol-relative jump off-site). Rebuilding from
+	// RequestURI() then drops any scheme/host so Location can never point
+	// off-site (open-redirect guard).
+	raw := r.FormValue("back")
+	back := "/"
+	if u, err := url.Parse(raw); err == nil && !strings.Contains(raw, "\\") &&
+		!u.IsAbs() && u.Host == "" && strings.HasPrefix(u.Path, "/") {
+		back = u.RequestURI()
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
