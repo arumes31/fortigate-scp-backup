@@ -102,6 +102,34 @@
 </div>
 {{end}}
 
+{{if .GraylogIssues}}
+<div class="card pad-0" style="border: 1px solid rgba(239,68,68,0.4);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #f87171;">⚠ {{T .Base.Lang "dashboard.graylog_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;">{{len .GraylogIssues}}</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_site"}}</th><th>{{T .Base.Lang "dashboard.col_status"}}</th><th>{{T .Base.Lang "dashboard.col_checked"}}</th></tr></thead>
+            <tbody>
+            {{range .GraylogIssues}}
+                <tr>
+                    <td>{{.Firewall}}{{if .Cluster}} <span class="muted" style="font-size: 0.85em;">({{.Cluster}})</span>{{end}}</td>
+                    <td class="muted">{{.Site}}</td>
+                    <td>
+                        {{if eq .Status "offline"}}<span class="pill pill-failed" style="background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.4);">{{T $.Base.Lang "dashboard.gl_offline"}}</span>
+                        {{else if eq .Status "config_missing"}}<span class="pill" style="background: rgba(148,163,184,0.15); color: #cbd5e1; border-color: rgba(148,163,184,0.4);">{{T $.Base.Lang "dashboard.gl_config_missing"}}</span>
+                        {{else}}<span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{T $.Base.Lang "dashboard.gl_error"}}</span>{{end}}
+                    </td>
+                    <td class="muted">{{if .LastCheck}}{{.LastCheck}}{{else}}—{{end}}</td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
 <div class="panel">
     <div class="panel-head">SYS_STDOUT_</div>
     <div class="stdout" id="stdout">

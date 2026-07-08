@@ -5,10 +5,29 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// liveRangeParam validates the optional Graylog search-window override (seconds)
+// passed by the topology live refresh. It accepts a positive integer clamped to
+// [60, 3600]; anything else yields "" so the configured default window is used.
+// The clamp also caps how far back a single request can make Graylog scan.
+func liveRangeParam(s string) string {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return ""
+	}
+	if n < 60 {
+		n = 60
+	}
+	if n > 3600 {
+		n = 3600
+	}
+	return strconv.Itoa(n)
+}
 
 // dataResponse is the JSON payload consumed by the topology page.
 type dataResponse struct {
@@ -17,6 +36,9 @@ type dataResponse struct {
 	Stp           []StpPort      `json:"stp"` // [] = no blocked ports; null = STP lookup failed
 	StpEvents     []StpEvent     `json:"stp_events,omitempty"`
 	MultiMacPorts []MultiMacPort `json:"multi_mac_ports,omitempty"`
+	Wifi          []WifiClient   `json:"wifi,omitempty"`
+	Vpn           []VpnStatus    `json:"vpn,omitempty"`
+	HaDetail      string         `json:"ha_detail,omitempty"`
 	UpdatedAt     string         `json:"updated_at,omitempty"`
 }
 
@@ -56,10 +78,20 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		e.logger.Warn("graylog devices: multi-mac list failed", "fw_id", fwID, "err", err)
 	}
+	wifi, err := e.listWifi(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: wifi list failed", "fw_id", fwID, "err", err)
+	}
+	vpn, err := e.listVpn(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: vpn list failed", "fw_id", fwID, "err", err)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dataResponse{
 		FwID: fwID, Devices: devices, Stp: stp,
-		StpEvents: events, MultiMacPorts: multiMac, UpdatedAt: updatedAt,
+		StpEvents: events, MultiMacPorts: multiMac,
+		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID),
+		UpdatedAt: updatedAt,
 	})
 }
 
@@ -78,7 +110,11 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown firewall", http.StatusNotFound)
 		return
 	}
-	if _, err := e.refreshFirewall(fwID, fqdn); err != nil {
+	// Optional per-request window override: the topology "live" refresh polls
+	// every ~minute and passes a small range so it scans only recent logs
+	// instead of the full configured window.
+	rangeSec := liveRangeParam(r.URL.Query().Get("range"))
+	if _, err := e.refreshFirewall(fwID, fqdn, rangeSec); err != nil {
 		e.logger.Error("graylog devices: refresh failed", "fw_id", fwID, "err", err)
 		http.Error(w, "graylog fetch failed", http.StatusBadGateway)
 		return

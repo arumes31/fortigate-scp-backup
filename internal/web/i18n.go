@@ -126,6 +126,9 @@ var uiMsgs = map[string]map[string]string{
 	"topo.firewall":    {"en": "Firewall:", "de": "Firewall:"},
 	"topo.hint":        {"en": "Scroll = zoom · Drag = pan · Click firewall/switch = faceplate", "de": "Scrollen = Zoom · Ziehen = Verschieben · Klick auf Firewall/Switch = Frontblende"},
 	"topo.reset":       {"en": "⤢ Reset view", "de": "⤢ Ansicht zurücksetzen"},
+	"topo.maximize":    {"en": "Maximize", "de": "Vollbild"},
+	"topo.exit_max":    {"en": "Exit", "de": "Schließen"},
+	"topo.ap":          {"en": "AP", "de": "AP"},
 	"topo.share":       {"en": "Public link:", "de": "Öffentlicher Link:"},
 	"topo.share_24h":   {"en": "24 hours", "de": "24 Stunden"},
 	"topo.share_7d":    {"en": "7 days", "de": "7 Tage"},
@@ -164,6 +167,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.legend_ip":   {"en": "IP configured", "de": "IP konfiguriert"},
 	"topo.legend_none": {"en": "unconfigured", "de": "unkonfiguriert"},
 	"topo.legend_vlan": {"en": "VLAN parent", "de": "VLAN-Parent"},
+	"topo.vlan_colors": {"en": "VLANs", "de": "VLANs"},
 
 	// Graylog device inventory (extension)
 	"topo.device":       {"en": "Device", "de": "Gerät"},
@@ -229,6 +233,15 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.col_reason":    {"en": "Reason", "de": "Grund"},
 	"dashboard.col_since":     {"en": "Since", "de": "Seit"},
 	"dashboard.topology":      {"en": "Topology", "de": "Topologie"},
+
+	// Dashboard page (Graylog logging status card, from the FGT ADM VPN config)
+	"dashboard.graylog_title":     {"en": "Graylog logging issues", "de": "Graylog-Logging-Probleme"},
+	"dashboard.col_site":          {"en": "Site", "de": "Standort"},
+	"dashboard.col_status":        {"en": "Status", "de": "Status"},
+	"dashboard.col_checked":       {"en": "Last checked", "de": "Zuletzt geprüft"},
+	"dashboard.gl_offline":        {"en": "offline", "de": "offline"},
+	"dashboard.gl_error":          {"en": "error", "de": "Fehler"},
+	"dashboard.gl_config_missing": {"en": "not configured", "de": "nicht konfiguriert"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by
