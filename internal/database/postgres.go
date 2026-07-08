@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -58,7 +59,13 @@ func NewStore(ctx context.Context, cfg *config.Config, cipher *crypto.Cipher, lo
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	poolCfg.MaxConns = int32(cfg.PGMaxConns)
+	// Guard the int32 cast with an explicit range check (config validation
+	// already floors PGMaxConns at 1): a nonsensical value from the
+	// environment must not overflow into a negative pool size. Out of range,
+	// pgx's parsed default MaxConns is kept.
+	if cfg.PGMaxConns >= 1 && cfg.PGMaxConns <= math.MaxInt32 {
+		poolCfg.MaxConns = int32(cfg.PGMaxConns)
+	}
 
 	var pool *pgxpool.Pool
 	attempts := cfg.PGConnectRetries

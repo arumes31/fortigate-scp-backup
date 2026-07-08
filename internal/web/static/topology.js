@@ -12,6 +12,12 @@
 // ---------------------------------------------------------------------------
 let topo = null;        // current topology JSON
 let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
+let topoStp = [];       // STP/guard/link port states from the extension (switch-controller event logs)
+let topoStpIdx = {};    // "switchDisplayName|port" → { role, state, guard, link, last, blocked }
+let topoStpEvents = []; // raw port event history (48h) from the extension
+let topoStpEventsIdx = {}; // "switchDisplayName|port" → [events, newest first]
+let topoMultiMac = [];  // ports with several MACs behind them (extension-computed)
+let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
 let topoRootNode = null;// d3 hierarchy root of the current render (search/locate)
@@ -38,6 +44,7 @@ const NODE_STYLE = {
     vlangroup: { fill: "#1e1b4b", stroke: "#8b5cf6", icon: "⌗", label: "#ddd6fe" },
     zone:      { fill: "#111827", stroke: "#94a3b8", icon: "▣", label: "#e5e7eb" },
     vpn:       { fill: "#2a1215", stroke: "#fb7185", icon: "⚿", label: "#fecdd3" },
+    vpngroup:  { fill: "#2a1215", stroke: "#fb7185", icon: "⚿", label: "#fecdd3" },
     apgroup:   { fill: "#082436", stroke: "#38bdf8", icon: "❊", label: "#bae6fd" },
     ap:        { fill: "#082436", stroke: "#38bdf8", icon: "❊", label: "#bae6fd" },
     ssid:      { fill: "#1e1b4b", stroke: "#a78bfa", icon: "≋", label: "#ddd6fe" },
@@ -64,6 +71,7 @@ function deviceNode(d) {
     let info = `${tt("topo.device")}\nMAC: ${d.mac}\nIP: ${d.ip || "—"}\nVLAN: ${d.vlan || "—"}\nPort: ${d.port || "—"}`;
     if (d.hostname) info += `\nHost: ${d.hostname}`;
     if (d.switch_id) info += `\nSwitch: ${d.switch_id}`;
+    if (d.first_seen) info += `\n${tt("topo.first_seen")}: ${d.first_seen}`;
     if (d.last_seen) info += `\n${tt("topo.seen")}: ${d.last_seen}`;
     if (stale) info += `\n⏱ ${tt("topo.stale")}`;
     if (d.shared_mac) info += `\n⚠ ${tt("topo.shared_mac")}`;
@@ -140,10 +148,44 @@ function taggedVlans(p) {
     return (p.allowed_vlans || []).join(", ");
 }
 
+// vlanColor hashes a VLAN name to a stable hue so the same VLAN gets the
+// same color on every switch faceplate and tree node.
+function vlanColor(vlan) {
+    if (!vlan) return "#8b5cf6";
+    let h = 0;
+    for (let i = 0; i < vlan.length; i++) h = (h * 31 + vlan.charCodeAt(i)) >>> 0;
+    return `hsl(${(h * 137.508) % 360}, 55%, 58%)`;
+}
+
+// stpLabel renders one port's STP/guard status ("designated · forwarding",
+// "⃠ bpdu-guard", …).
+function stpLabel(st) {
+    if (!st) return "";
+    const parts = [st.role, st.state].filter(Boolean);
+    if (st.guard) parts.push(st.guard);
+    return (st.blocked ? "⃠ " : "") + parts.join(" · ");
+}
+
+// stpBlockedPorts lists an interlink's endpoint ports currently blocked
+// (STP discarding/alternate, BPDU/loop/root guard).
+function stpBlockedPorts(l) {
+    const out = [];
+    const scan = (sw, ports) => (ports || []).forEach(p => {
+        const st = topoStpIdx[sw + "|" + p];
+        if (st && st.blocked) out.push(`${sw} ${p}: ${st.guard || st.state || st.role}`);
+    });
+    scan(l.from, l.from_ports);
+    scan(l.to, l.to_ports);
+    return out;
+}
+
 function interlinkTip(l) {
-    return `${tt("topo.interlink")} · ${interlinkKindLabel(l.kind)}\n` +
+    let s = `${tt("topo.interlink")} · ${interlinkKindLabel(l.kind)}\n` +
         `${l.from}: ${(l.from_ports || []).join(", ") || "—"}\n` +
         `${l.to}: ${(l.to_ports || []).join(", ") || "—"}`;
+    const blocked = stpBlockedPorts(l);
+    if (blocked.length) s += `\n⃠ ${tt("topo.stp_blocked")}: ${blocked.join("; ")}`;
+    return s;
 }
 
 // buildTree converts the parsed config into a d3.hierarchy-compatible tree.
@@ -203,7 +245,6 @@ function buildTree(data) {
     const routesByDevice = {};
     routes.forEach(r => (routesByDevice[r.device] = routesByDevice[r.device] || []).push(r));
 
-    const interfaceNames = new Set(interfaces.map(i => i.name));
     const fortilinkHost = physical.find(i => i.name.toLowerCase().includes("fortilink"))?.name || null;
 
     // Graylog device inventory: assign each device to its switch / VLAN group.
@@ -262,6 +303,35 @@ function buildTree(data) {
         // still renders as a device instead of silently disappearing.
     });
     topoInterlinks = interlinks;
+
+    // STP/guard/link overlay: latest status per port, keyed by the switch's
+    // tree node name. A port counts as blocked when STP put it out of
+    // forwarding (discarding/blocking state, alternate/backup/disabled role)
+    // or a BPDU/loop/root guard triggered.
+    const dispName = ref => resolveSwitchName(switches, ref) || ref;
+    topoStpIdx = {};
+    (topoStp || []).forEach(s => {
+        const disp = resolveSwitchName(switches, s.switch_name) ||
+            resolveSwitchName(switches, s.serial) || s.switch_name;
+        const state = (s.state || "").toLowerCase();
+        const role = (s.role || "").toLowerCase();
+        topoStpIdx[disp + "|" + s.port] = {
+            role: s.role, state: s.state, guard: s.guard, link: s.link, last: s.last_change,
+            blocked: !!s.guard || state === "discarding" || state === "blocking" ||
+                role === "alternate" || role === "backup" || role === "disabled"
+        };
+    });
+    // Port event history (48h), newest first per port.
+    topoStpEventsIdx = {};
+    (topoStpEvents || []).forEach(ev => {
+        const key = dispName(ev.switch_name) + "|" + ev.port;
+        (topoStpEventsIdx[key] = topoStpEventsIdx[key] || []).push(ev);
+    });
+    // Multi-MAC ports (mini-switch/AP suspected), by display name and raw id.
+    topoMultiMacIdx = {};
+    (topoMultiMac || []).forEach(m => {
+        topoMultiMacIdx[dispName(m.switch_id) + "|" + m.port] = m.mac_count;
+    });
 
     const mclagNames = new Set();
     interlinks.filter(l => l.kind === "mclag-icl").forEach(l => { mclagNames.add(l.from); mclagNames.add(l.to); });
@@ -363,7 +433,6 @@ function buildTree(data) {
 
     function intfNode(i) {
         const isWan = wanDevices.has(i.name);
-        const vpn = vpnByName[i.name];
         const sdw = sdwanByIntf[i.name];
         const isDown = i.status === "down";
         const children = [];
@@ -372,17 +441,13 @@ function buildTree(data) {
             const apg = apGroupNode();
             if (apg) children.push(apg);
         }
-        // IPsec tunnels egressing here that have no own interface entry.
-        (data.vpns || []).forEach(t => {
-            if (t.interface !== i.name || interfaceNames.has(t.name)) return;
-            children.push(vpnNode(t, null));
-        });
         const vlanKids = !topoFilters.vlans ? [] : (vlansByParent[i.name] || []).map(v => ({
             name: v.name, kind: "vlan", data: v,
             info: `VLAN-ID: ${v.vlan_id}\nIP: ${v.ip ? v.ip + "/" + v.mask : "—"}\n${tt("topo.parent")}: ${v.interface}` +
                 dhcpLine(v.name) +
                 (nacFeature(v.switch_feature) ? `\n☑ ${tt("topo.nac")}` : ""),
             badge: "VLAN " + v.vlan_id + (nacFeature(v.switch_feature) ? " · NAC" : ""),
+            strokeColor: vlanColor(v.name),
             faded: v.status === "down"
         }));
         // Many VLANs (typical on the FortiLink interface) collapse into one
@@ -406,8 +471,6 @@ function buildTree(data) {
                 });
             });
         }
-        if (vpn) return vpnNode(vpn, { intf: i, children: children });
-
         let info = `${isWan ? "WAN-" : ""}Interface\nIP: ${i.ip ? i.ip + "/" + i.mask : "—"}` +
             `${i.alias ? "\nAlias: " + i.alias : ""}` +
             (isDown ? `\n⏻ ${tt("topo.status_down")}` : "") +
@@ -431,7 +494,7 @@ function buildTree(data) {
     function vpnNode(t, ctx) {
         const i = ctx && ctx.intf;
         return {
-            name: t.name, kind: "vpn", data: i || t,
+            name: t.name, kind: "vpn", data: i ? { ...t, ...i } : t,
             info: `IPsec VPN\n${tt("topo.remote_gw")}: ${t.remote_gw || "—"}` +
                 (t.ike_version ? `\nIKE v${t.ike_version}` : "") +
                 `\n${tt("topo.egress")}: ${t.interface || "—"}` +
@@ -440,6 +503,52 @@ function buildTree(data) {
             badge: t.remote_gw || null,
             children: (ctx && ctx.children) || []
         };
+    }
+
+    // vpnBranches builds the Internet-side VPN limbs: tunnels terminate at
+    // remote peers across the internet, so they hang off the Internet node —
+    // grouped by their zone when zoned, one "IPsec VPN" group otherwise.
+    function vpnBranches() {
+        const vpns = data.vpns || [];
+        if (!vpns.length) return [];
+        const mkVpn = t => {
+            const i = interfaces.find(x => x.name === t.name) || null;
+            const kids = [];
+            if (topoFilters.routes) {
+                (routesByDevice[t.name] || []).forEach(r => {
+                    kids.push({
+                        name: r.dst && !r.dst.startsWith("0.0.0.0") ? r.dst : "default",
+                        kind: "route", data: r,
+                        info: `${tt("topo.route")}\n${tt("topo.route_dst")}: ${r.dst || "0.0.0.0/0 (default)"}\n${tt("topo.gateway")}: ${r.gateway || tt("topo.direct")}\nInterface: ${r.device}`
+                    });
+                });
+            }
+            return vpnNode(t, { intf: i, children: kids });
+        };
+        const byZone = {};
+        const unzoned = [];
+        vpns.forEach(t => {
+            const zn = zoneOf[t.name];
+            if (zn) (byZone[zn] = byZone[zn] || []).push(t);
+            else unzoned.push(t);
+        });
+        const branches = Object.entries(byZone).map(([zn, list]) => ({
+            name: zn, kind: "vpngroup",
+            info: `${tt("topo.zone")} · IPsec VPN\n${list.length} Tunnel`,
+            badge: list.length + " VPN",
+            children: list.map(mkVpn)
+        }));
+        if (unzoned.length > 3) {
+            branches.push({
+                name: "IPsec VPN", kind: "vpngroup",
+                info: `${unzoned.length} IPsec VPN`,
+                badge: String(unzoned.length),
+                children: unzoned.map(mkVpn)
+            });
+        } else {
+            branches.push(...unzoned.map(mkVpn));
+        }
+        return branches;
     }
 
     function switchNode(sw) {
@@ -468,13 +577,19 @@ function buildTree(data) {
             // Trunk-ish ports also carry tagged VLANs: list them per port.
             const taggedLines = ps.filter(taggedVlans)
                 .map(p => `${p.name}: +${taggedVlans(p)}`);
+            // Ports hiding several MACs (mini-switch / AP suspected).
+            const multiLines = ps
+                .filter(p => topoMultiMacIdx[swName(sw) + "|" + p.name])
+                .map(p => `${p.name}: ${topoMultiMacIdx[swName(sw) + "|" + p.name]} MACs`);
             return {
                 name: vlan === "—" ? tt("topo.no_vlan") : "VLAN " + vlan,
                 kind: "port", data: { vlan, ports: ps },
                 info: `${ps.length} ${tt("topo.ports")}\n${ps.map(p => p.name).join(", ")}` +
                     (taggedLines.length ? `\n${tt("topo.tagged")}:\n${taggedLines.join("\n")}` : "") +
+                    (multiLines.length ? `\n⚠ ${tt("topo.multi_mac")}:\n${multiLines.join("\n")}` : "") +
                     (groupDevs.length ? `\n${groupDevs.length} ${tt("topo.devices")}` : ""),
                 badge: ps.length + " " + tt("topo.ports") + (groupDevs.length ? " · " + groupDevs.length + " " + tt("topo.devices") : ""),
+                strokeColor: vlan === "—" ? null : vlanColor(vlan),
                 children: groupDevs.map(deviceNode)
             };
         });
@@ -485,6 +600,12 @@ function buildTree(data) {
 
         const devCount = swDevs.length;
         const group = swGroupOf[swName(sw)] || swGroupOf[sw.switch_id] || "";
+        const blockedPorts = ports
+            .filter(p => (topoStpIdx[swName(sw) + "|" + p.name] || {}).blocked)
+            .map(p => {
+                const st = topoStpIdx[swName(sw) + "|" + p.name];
+                return `${p.name} (${st.guard || st.state || st.role})`;
+            });
         return {
             name: swName(sw), kind: "switch", data: sw,
             info: `FortiSwitch${sw.model ? " " + sw.model : ""}\n${tt("topo.serial")}: ${sw.serial || sw.switch_id}` +
@@ -492,8 +613,10 @@ function buildTree(data) {
                 (sw.description ? `\n${sw.description}` : "") +
                 `\n${tt("topo.ports")}: ${ports.length}` +
                 (nested.length ? `\nDownstream: ${nested.map(swName).join(", ")}` : "") +
+                (blockedPorts.length ? `\n⃠ ${tt("topo.stp_blocked")}: ${blockedPorts.join(", ")}` : "") +
                 (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
             badge: [sw.model, group].filter(Boolean).join(" · ") || null,
+            hasBlocked: blockedPorts.length > 0,
             children: [...nested.map(switchNode), ...children]
         };
     }
@@ -507,15 +630,19 @@ function buildTree(data) {
     });
 
     // Zoned interfaces are grouped under one node per zone, placed where the
-    // zone's first member would have appeared in the sort order.
+    // zone's first member would have appeared in the sort order. Tunnel
+    // interfaces are excluded here — VPNs render on the Internet side — and
+    // zones consisting only of tunnels move there with them.
     const fwChildren = [];
     const zoneEmitted = new Set();
     sorted.forEach(i => {
+        if (vpnByName[i.name]) return;
         const zn = zoneOf[i.name];
         if (!zn) { fwChildren.push(intfNode(i)); return; }
         if (zoneEmitted.has(zn)) return;
         zoneEmitted.add(zn);
-        const members = sorted.filter(m => zoneOf[m.name] === zn);
+        const members = sorted.filter(m => zoneOf[m.name] === zn && !vpnByName[m.name]);
+        if (!members.length) return;
         fwChildren.push({
             name: zn, kind: "zone",
             info: `${tt("topo.zone")}\n${members.length} Interfaces`,
@@ -546,6 +673,9 @@ function buildTree(data) {
         children: fwChildren
     }];
 
+    // IPsec VPNs live between the Internet and their remote peers.
+    rootChildren.push(...vpnBranches());
+
     // HA peer: the standby unit of an a-p / a-a cluster.
     if (data.ha) {
         const ha = data.ha;
@@ -575,9 +705,9 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        // Collapse port/route/VLAN groups by default to keep the initial view
-        // tidy (their devices/details expand on click).
-        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup") d.children = null;
+        // Collapse port/route/VLAN/VPN groups by default to keep the initial
+        // view tidy (their devices/details expand on click).
+        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup") d.children = null;
     });
 
     gRoot = svg.append("g");
@@ -624,8 +754,9 @@ function renderTree(data) {
             const isMajor = d.data.kind === "firewall" || d.data.kind === "internet" || d.data.kind === "switch";
             const w = isMajor ? 150 : 120, h = isMajor ? 40 : 30;
 
-            // Shared MAC/IP devices get a red dashed border so conflicts stand out.
-            const stroke = d.data.highlight ? "#ef4444" : st.stroke;
+            // Shared MAC/IP devices get a red dashed border so conflicts stand
+            // out; VLAN nodes carry their hashed per-VLAN color.
+            const stroke = d.data.highlight ? "#ef4444" : (d.data.strokeColor || st.stroke);
             const rect = g.append("rect")
                 .attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h)
                 .attr("rx", 7)
@@ -660,6 +791,17 @@ function renderTree(data) {
                     .attr("fill", "rgba(255,255,255,0.5)").attr("font-size", "10px")
                     .text(d.children ? "▾" : "▸");
             }
+
+            // Switches with STP/guard-blocked ports carry a blinking marker.
+            if (d.data.hasBlocked) {
+                const dot = g.append("circle")
+                    .attr("cx", w / 2 - 4).attr("cy", -h / 2 + 4).attr("r", 4.5)
+                    .attr("fill", "#f97316").attr("stroke", "#0c0f14").attr("stroke-width", 1.2);
+                dot.append("animate")
+                    .attr("attributeName", "opacity")
+                    .attr("values", "1;0.15;1").attr("dur", "1s")
+                    .attr("repeatCount", "indefinite");
+            }
         });
 
         const nodeUpdate = nodeEnter.merge(node);
@@ -682,21 +824,89 @@ function renderTree(data) {
             .transition().duration(220).attr("d", diagonal);
         link.exit().remove();
 
-        // Switch interlinks: dashed edges bowing right of the deeper switch,
-        // drawn between the switch nodes currently visible.
+        // Switch interlinks: orthogonal edges anchored at per-port stubs on
+        // the switch nodes' right edges (like the FortiGate GUI). Each link
+        // gets its own vertical lane so parallel links do not overlap.
         const swPos = {};
         nodes.forEach(d => { if (d.data.kind === "switch") swPos[d.data.name] = d; });
-        const interPath = l => {
-            const a = swPos[l.from], b = swPos[l.to];
-            const x1 = a.y + 75, y1 = a.x, x2 = b.y + 75, y2 = b.x;
-            const mx = Math.max(x1, x2) + 46 + Math.abs(y2 - y1) / 8;
-            return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
-        };
         // Skip pairs already connected by a tree edge (uplink-nested switches).
         const treePair = l => swPos[l.from].parent === swPos[l.to] || swPos[l.to].parent === swPos[l.from];
-        const ilink = gInter.selectAll("path.interlink")
-            .data(topoInterlinks.filter(l => swPos[l.from] && swPos[l.to] && !treePair(l)),
-                l => l.from + "|" + l.to + "|" + l.kind);
+        const activeLinks = topoInterlinks.filter(l => swPos[l.from] && swPos[l.to] && !treePair(l));
+        const linkKey = l => l.from + "|" + l.to + "|" + l.kind;
+
+        // Port stubs: every port referenced by a visible link, stacked on the
+        // switch node's right edge in numeric order.
+        const stubList = []; // { sw, port, x, y }
+        const stubPos = {};  // "sw|port" → {x, y}
+        {
+            const portsBySwitch = {};
+            activeLinks.forEach(l => {
+                (l.from_ports || []).forEach(p => (portsBySwitch[l.from] = portsBySwitch[l.from] || new Set()).add(p));
+                (l.to_ports || []).forEach(p => (portsBySwitch[l.to] = portsBySwitch[l.to] || new Set()).add(p));
+            });
+            const portNum = p => Number((/\d+/.exec(p) || [0])[0]);
+            Object.entries(portsBySwitch).forEach(([sw, set]) => {
+                const d = swPos[sw];
+                if (!d) return;
+                const ports = [...set].sort((a, b) => portNum(a) - portNum(b));
+                const step = Math.min(12, 30 / Math.max(1, ports.length - 1) || 12);
+                ports.forEach((p, i) => {
+                    const y = d.x - ((ports.length - 1) * step) / 2 + i * step;
+                    const s = { sw, port: p, x: d.y + 75, y };
+                    stubList.push(s);
+                    stubPos[sw + "|" + p] = s;
+                });
+            });
+        }
+        // anchor: average stub position of a link endpoint's ports (node edge
+        // when the ports are unknown).
+        const anchor = (sw, ports) => {
+            const d = swPos[sw];
+            const pts = (ports || []).map(p => stubPos[sw + "|" + p]).filter(Boolean);
+            if (!pts.length) return { x: d.y + 75, y: d.x };
+            return { x: pts[0].x, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
+        };
+        // Orthogonal route: out of A, right to the link's lane, vertical,
+        // left/right into B. Lanes sit right of the deeper node, one per link.
+        const laneOf = {};
+        activeLinks.forEach((l, i) => { laneOf[linkKey(l)] = i; });
+        const laneX = l => {
+            const a = swPos[l.from], b = swPos[l.to];
+            return Math.max(a.y, b.y) + 75 + 26 + laneOf[linkKey(l)] * 12;
+        };
+        const interPath = l => {
+            const p1 = anchor(l.from, l.from_ports), p2 = anchor(l.to, l.to_ports);
+            const lx = laneX(l);
+            return `M${p1.x},${p1.y} H${lx} V${p2.y} H${p2.x}`;
+        };
+        const interMid = l => {
+            const p1 = anchor(l.from, l.from_ports), p2 = anchor(l.to, l.to_ports);
+            return [laneX(l), (p1.y + p2.y) / 2];
+        };
+
+        // Stub chips (port numbers at the node edge).
+        const stub = gInter.selectAll("g.interstub")
+            .data(stubList, s => s.sw + "|" + s.port);
+        const stubEnter = stub.enter().append("g")
+            .attr("class", "interstub")
+            .style("pointer-events", "none")
+            .attr("transform", s => `translate(${s.x},${s.y})`);
+        stubEnter.append("rect")
+            .attr("x", 0).attr("y", -5).attr("width", 22).attr("height", 10)
+            .attr("rx", 3)
+            .attr("fill", "#1c1917").attr("stroke", "#f59e0b").attr("stroke-width", 1)
+            .attr("stroke-opacity", 0.7);
+        stubEnter.append("text")
+            .attr("x", 11).attr("y", 3)
+            .attr("text-anchor", "middle")
+            .attr("fill", "#fde68a").attr("font-size", "7.5px").attr("font-family", "monospace")
+            .text(s => String((/\d+/.exec(s.port) || [s.port])[0]));
+        stubEnter.merge(stub)
+            .transition().duration(220)
+            .attr("transform", s => `translate(${s.x},${s.y})`);
+        stub.exit().remove();
+
+        const ilink = gInter.selectAll("path.interlink").data(activeLinks, linkKey);
         ilink.enter().append("path")
             .attr("class", "interlink")
             .attr("fill", "none")
@@ -711,6 +921,28 @@ function renderTree(data) {
           .merge(ilink)
             .transition().duration(220).attr("d", interPath);
         ilink.exit().remove();
+
+        // Links with an STP/guard-blocked endpoint carry a blinking ⃠ marker
+        // on the lane's vertical segment (like the FortiGate GUI).
+        const bmark = gInter.selectAll("g.interlink-block")
+            .data(activeLinks.filter(l => stpBlockedPorts(l).length), linkKey);
+        const bmarkEnter = bmark.enter().append("g")
+            .attr("class", "interlink-block")
+            .style("pointer-events", "none");
+        bmarkEnter.append("circle")
+            .attr("r", 7.5).attr("fill", "#1c1917")
+            .attr("stroke", "#f97316").attr("stroke-width", 1.8);
+        bmarkEnter.append("line")
+            .attr("x1", -4).attr("y1", 4).attr("x2", 4).attr("y2", -4)
+            .attr("stroke", "#f97316").attr("stroke-width", 1.8);
+        bmarkEnter.append("animate")
+            .attr("attributeName", "opacity")
+            .attr("values", "1;0.2;1").attr("dur", "0.9s")
+            .attr("repeatCount", "indefinite");
+        bmarkEnter.merge(bmark)
+            .transition().duration(220)
+            .attr("transform", l => { const [mx, my] = interMid(l); return `translate(${mx},${my})`; });
+        bmark.exit().remove();
 
         nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
     }
@@ -880,23 +1112,36 @@ function portColor(p) {
     if (p.isInterlink) return "#f59e0b";
     if (p.isWan) return "#f59e0b";
     if (p.isFortilink) return "#10b981";
-    if (p.vlans > 0) return "#8b5cf6";
+    if (p.vlans > 0) return p.vlanName ? vlanColor(p.vlanName) : "#8b5cf6";
     if (p.hasIP) return "#3b82f6";
     return "#374151";
 }
 
 // portCellSVG renders one faceplate port cell. idx indexes the panel's port
 // array (click handler lookup); the cyan corner square marks 802.1X ports,
-// down ports render dimmed with the LED off.
+// down ports render dimmed with the LED off. Ports blocked by STP or a
+// BPDU/loop/root guard blink orange.
 function portCellSVG(p, idx, x, y, cell) {
-    const col = portColor(p);
-    const active = !p.isDown && (p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink);
+    const col = p.stpBlocked ? "#f97316" : portColor(p);
+    const active = !p.isDown && !p.liveDown && (p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink);
+    const led = p.stpBlocked ? "#f97316" : (p.liveDown ? "#4b5563" : (active ? "#22c55e" : "#4b5563"));
+    const blink = p.stpBlocked
+        ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#f97316" stroke-width="2">
+             <animate attributeName="opacity" values="1;0.1;1" dur="0.9s" repeatCount="indefinite"/>
+           </rect>`
+        : "";
+    const multiMac = p.multiMac
+        ? `<circle cx="${x + cell - 7}" cy="${y + cell - 7}" r="5.5" fill="#22d3ee"/>
+           <text x="${x + cell - 7}" y="${y + cell - 4.5}" text-anchor="middle" fill="#083344" font-size="7.5" font-weight="bold" font-family="monospace">${p.multiMac > 9 ? "9+" : p.multiMac}</text>`
+        : "";
     return `
-    <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${p.isDown ? " opacity: 0.45;" : ""}">
+    <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${(p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : ""}">
         <rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="4" fill="rgba(0,0,0,0.55)" stroke="${col}" stroke-width="1.6"/>
+        ${blink}
         <rect x="${x + 8}" y="${y + cell - 11}" width="${cell - 16}" height="6" rx="1.5" fill="${col}" opacity="0.85"/>
-        <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${active ? "#22c55e" : "#4b5563"}"/>
+        <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${led}">${p.stpBlocked ? `<animate attributeName="opacity" values="1;0.15;1" dur="0.9s" repeatCount="indefinite"/>` : ""}</circle>
         ${p.dot1x ? `<rect x="${x + cell - 11}" y="${y + 4}" width="7" height="7" rx="1.5" fill="#38bdf8"/>` : ""}
+        ${multiMac}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -955,7 +1200,7 @@ function switchFaceplateSVG(copper, sfp, title) {
 
 function faceplateLegend(kind) {
     const items = kind === "switch"
-        ? [["#f59e0b", tt("topo.interlink")], ["#8b5cf6", tt("topo.legend_vlan")], ["#38bdf8", "802.1X"], ["#4b5563", tt("topo.status_down")], ["#374151", tt("topo.legend_none")]]
+        ? [["#f97316", tt("topo.stp_blocked")], ["#f59e0b", tt("topo.interlink")], ["#8b5cf6", tt("topo.legend_vlan")], ["#38bdf8", "802.1X"], ["#4b5563", tt("topo.status_down")], ["#374151", tt("topo.legend_none")]]
         : [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 0.78em;">
         ${items.map(([c, t]) => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${c}; margin-right: 5px; vertical-align: -1px;"></span>${t}</span>`).join("")}
@@ -1000,26 +1245,41 @@ function showFaceplate(nodeData) {
             if (l.from === title) (l.from_ports || []).forEach((p, i) => { inter[p] = l.to + ((l.to_ports || [])[i] ? " " + l.to_ports[i] : ""); });
             if (l.to === title) (l.to_ports || []).forEach((p, i) => { inter[p] = l.from + ((l.from_ports || [])[i] ? " " + l.from_ports[i] : ""); });
         });
-        ports = (sw.ports || []).map(p => ({
-            label: p.name,
-            hasIP: false,
-            isWan: false,
-            isFortilink: false,
-            isInterlink: !!inter[p.name],
-            isDown: p.status === "down",
-            dot1x: !!p.security_policy,
-            isTrunk: p.type === "trunk",
-            vlans: (p.vlan ? 1 : 0) + (p.allowed_vlans || []).length + (p.allowed_vlans_all ? 1 : 0),
-            detail: `VLAN: ${p.vlan || "—"}` +
-                (taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
-                (inter[p.name] ? `\n${tt("topo.interlink")}: ${inter[p.name]}` : "") +
-                (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
-                (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
-                (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
-                (p.description ? `\n${p.description}` : "") +
-                (p.mac ? `\nMAC: ${p.mac}` : "") +
-                (p.speed ? `\nSpeed: ${p.speed}` : "")
-        }));
+        ports = (sw.ports || []).map(p => {
+            const st = topoStpIdx[title + "|" + p.name];
+            const multiMac = topoMultiMacIdx[title + "|" + p.name] || 0;
+            // Port event history (48h): the newest transitions, one per line.
+            const history = (topoStpEventsIdx[title + "|" + p.name] || []).slice(0, 6)
+                .map(ev => `  ${(ev.time || "").replace("T", " ").slice(5, 16)} ${ev.kind}: ${ev.from ? ev.from + " → " : ""}${ev.to}`);
+            return {
+                label: p.name,
+                hasIP: false,
+                isWan: false,
+                isFortilink: false,
+                isInterlink: !!inter[p.name],
+                isDown: p.status === "down",
+                liveDown: !!(st && st.link === "down"),
+                dot1x: !!p.security_policy,
+                isTrunk: p.type === "trunk",
+                stpBlocked: !!(st && st.blocked),
+                multiMac: multiMac,
+                vlanName: p.vlan || "",
+                vlans: (p.vlan ? 1 : 0) + (p.allowed_vlans || []).length + (p.allowed_vlans_all ? 1 : 0),
+                detail: `VLAN: ${p.vlan || "—"}` +
+                    (taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
+                    (inter[p.name] ? `\n${tt("topo.interlink")}: ${inter[p.name]}` : "") +
+                    (st && st.link ? `\nLink: ${st.link}` : "") +
+                    (st ? `\nSTP: ${stpLabel(st)}${st.last ? " (" + st.last + ")" : ""}` : "") +
+                    (multiMac ? `\n⚠ ${multiMac} MACs — ${tt("topo.multi_mac")}` : "") +
+                    (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
+                    (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
+                    (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
+                    (p.description ? `\n${p.description}` : "") +
+                    (p.mac ? `\nMAC: ${p.mac}` : "") +
+                    (p.speed ? `\nSpeed: ${p.speed}` : "") +
+                    (history.length ? `\n${tt("topo.history")}:\n${history.join("\n")}` : "")
+            };
+        });
     }
 
     document.getElementById("faceTitle").textContent = title;
@@ -1100,6 +1360,9 @@ async function loadDeviceData() {
         const data = await resp.json();
         const btn = document.getElementById("fetchDevBtn");
         if (btn) btn.style.display = "";
+        topoStp = data.stp || [];
+        topoStpEvents = data.stp_events || [];
+        topoMultiMac = data.multi_mac_ports || [];
         return data.devices || [];
     } catch (e) {
         return null;
@@ -1122,9 +1385,14 @@ async function fetchDevicesNow() {
         const data = await resp.json();
         if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
         topoDevices = data.devices || [];
+        topoStp = data.stp || [];
+        topoStpEvents = data.stp_events || [];
+        topoMultiMac = data.multi_mac_ports || [];
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();
-        if (meta) meta.textContent = topoMetaText() + " · " + tt("topo.dev_updated");
+        if (meta) meta.textContent = topoDevices.length
+            ? topoMetaText() + " · " + tt("topo.dev_updated")
+            : tt("topo.no_devices");
     } catch (e) {
         console.error("device fetch failed", e);
         if (meta) meta.textContent = tt("topo.fetch_failed");

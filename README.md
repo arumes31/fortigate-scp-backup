@@ -313,7 +313,7 @@ FortiSafe is configured entirely via environment variables.
 | `GRAYLOG_TOKEN` | *(Unset)* | Graylog authentication token. |
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
 | `EXT_GRAYLOG_DEVICE_DATA` | `false` | Enable the Graylog switch-device inventory extension (topology device data). |
-| `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND mac:*` | Graylog query template for device logs; `%s` is the firewall's short hostname. |
+| `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` | Graylog query template for device logs; `%s` is the firewall's short hostname. Must match logs containing MAC address fields. |
 | `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per device fetch. |
 | `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background device refresh interval in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |

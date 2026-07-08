@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
@@ -38,6 +39,45 @@ type dashboardData struct {
 	NextBackupISO string // RFC3339 (UTC) or "" when nothing is scheduled
 	Running       []runningView
 	ClusterAlert  bool
+	BlockedPorts  []blockedPortIssue
+}
+
+// blockedPortIssue is one switch port currently blocked by STP or a
+// BPDU/loop/root guard, surfaced as a dashboard issue. The data comes from
+// the graylog_device_data extension's store (empty when the extension is
+// disabled or has not fetched yet).
+type blockedPortIssue struct {
+	FwID   int    `json:"fw_id"`
+	FQDN   string `json:"fqdn"`
+	Switch string `json:"switch"`
+	Port   string `json:"port"`
+	Reason string `json:"reason"` // guard kind, or STP state/role
+	Since  string `json:"since,omitempty"`
+}
+
+// blockedPortIssues asks the graylog_device_data extension for the switch ports
+// currently out of forwarding (STP block or BPDU/loop/root guard). The extension
+// owns the storage; the dashboard only decorates each result with its firewall's
+// FQDN. Any error (extension disabled, DB missing, old schema) yields an empty
+// list — the dashboard renders fine without the card.
+func (s *Server) blockedPortIssues(fqdnByID map[int]string) []blockedPortIssue {
+	ports, err := graylogdevicedata.ListBlockedPorts(s.cfg.DataDir)
+	if err != nil {
+		s.logger.Warn("dashboard blocked-port lookup failed", "err", err)
+		return nil
+	}
+	out := make([]blockedPortIssue, 0, len(ports))
+	for _, p := range ports {
+		out = append(out, blockedPortIssue{
+			FwID:   p.FwID,
+			FQDN:   fqdnByID[p.FwID],
+			Switch: p.Switch,
+			Port:   p.Port,
+			Reason: p.Reason,
+			Since:  p.Since,
+		})
+	}
+	return out
 }
 
 // clusterFailThreshold: a fleet-wide alert fires when at least this many
@@ -118,6 +158,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		NextBackupISO: nextISO,
 		Running:       running,
 		ClusterAlert:  clusterAlert,
+		BlockedPorts:  s.blockedPortIssues(fqdnByID),
 	}
 }
 
@@ -151,6 +192,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"nextBackup":    d.NextBackupISO,
 		"clusterAlert":  d.ClusterAlert,
 		"running":       d.Running,
+		"blockedPorts":  d.BlockedPorts,
 	})
 }
 
