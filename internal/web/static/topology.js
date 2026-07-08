@@ -17,6 +17,7 @@ let topoStpIdx = {};    // "switchDisplayName|port" → { role, state, guard, li
 let topoStpEvents = []; // raw port event history (48h) from the extension
 let topoStpEventsIdx = {}; // "switchDisplayName|port" → [events, newest first]
 let topoMultiMac = [];  // ports with several MACs behind them (extension-computed)
+let topoEdges = [];     // switch-edge observations (STP trunk names + LAG legs) from the extension
 let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
 let topoVpn = [];       // VPN tunnel up/down states from the extension
 let topoVpnIdx = {};    // tunnel name → { status, remip, type }
@@ -130,6 +131,7 @@ function resolveSwitchName(switches, id) {
 function addInterlink(links, l) {
     const ex = links.find(e => (e.from === l.from && e.to === l.to) || (e.from === l.to && e.to === l.from));
     if (!ex) { links.push(l); return; }
+    if (l.parent && !ex.parent) ex.parent = l.parent; // uplink direction survives merging
     const merge = (arr, add) => { (add || []).forEach(p => { if (!arr.includes(p)) arr.push(p); }); };
     ex.from_ports = ex.from_ports || [];
     ex.to_ports = ex.to_ports || [];
@@ -252,7 +254,18 @@ function buildTree(data) {
     const routesByDevice = {};
     routes.forEach(r => (routesByDevice[r.device] = routesByDevice[r.device] || []).push(r));
 
-    const fortilinkHost = physical.find(i => i.name.toLowerCase().includes("fortilink"))?.name || null;
+    // FortiLink host: prefer the interface the config itself declares (managed-
+    // switch `fsw-wan1-peer` / switch-group `fortilink`) — on many models the
+    // FortiLink interface is a plain port name like "a" or "flink", so the
+    // name heuristic alone misses it and the whole switch stack vanishes.
+    const fortilinkNames = new Set();
+    switches.forEach(sw => { if (sw.fortilink) fortilinkNames.add(sw.fortilink); });
+    (data.switch_groups || []).forEach(g => { if (g.fortilink) fortilinkNames.add(g.fortilink); });
+    const fortilinkHost =
+        physical.find(i => fortilinkNames.has(i.name))?.name ||
+        physical.find(i => i.name.toLowerCase().includes("fortilink"))?.name ||
+        null;
+    let switchesHosted = false; // set when an interface node adopts the stack
 
     // Graylog device inventory: assign each device to its switch / VLAN group.
     const devices = topoFilters.devices ? (topoDevices || []) : [];
@@ -308,6 +321,42 @@ function buildTree(data) {
         }
         // Otherwise the record is unattributable — leave it unassigned so it
         // still renders as a device instead of silently disappearing.
+    });
+    // Graylog switch-edge observations (STP/link events): FortiSwitch names
+    // auto-ISL trunks after the PEER's serial fragment, so the trunk name
+    // resolves the neighbor, and an STP root role marks the trunk as the
+    // owner's UPLINK — orienting the tree even between same-tier switches.
+    const trunkPeer = ref => {
+        if (!ref || /^port\d+$/i.test(ref) || /^_FlInK/i.test(ref)) return null; // FortiLink LAG/ICL: peer not encoded
+        const frag = ref.replace(/-\d+$/, "").toUpperCase();
+        if (frag.length < 8) return null;
+        const sw = switches.find(x => (x.serial || x.switch_id || "").toUpperCase().endsWith(frag));
+        return sw ? swName(sw) : null;
+    };
+    const iclOwners = {}; // ICL trunk name → owners; exactly two = MC-LAG peer pair
+    (topoEdges || []).forEach(g => {
+        const from = resolveSwitchName(switches, g.switch_sn) || resolveSwitchName(switches, g.switch_name);
+        if (!from) return;
+        if (/_ICL\d*_?$/i.test(g.trunk)) {
+            (iclOwners[g.trunk] = iclOwners[g.trunk] || []).push({ from: from, ports: g.ports || [] });
+            return;
+        }
+        const to = trunkPeer(g.trunk);
+        if (!to || to === from) return;
+        addInterlink(interlinks, {
+            from: from, from_ports: (g.ports && g.ports.length) ? g.ports : [g.trunk],
+            to: to, to_ports: [],
+            kind: "stp",
+            parent: g.role === "root" ? to : null // my root port points AT the upstream switch
+        });
+    });
+    Object.values(iclOwners).forEach(owners => {
+        if (owners.length !== 2 || owners[0].from === owners[1].from) return;
+        addInterlink(interlinks, {
+            from: owners[0].from, from_ports: owners[0].ports,
+            to: owners[1].from, to_ports: owners[1].ports,
+            kind: "mclag-icl"
+        });
     });
     topoInterlinks = interlinks;
 
@@ -370,10 +419,18 @@ function buildTree(data) {
         if (l.kind === "mclag-icl") return;
         const a = swByName[l.from], b = swByName[l.to];
         if (!a || !b) return;
-        const ra = switchTierRank(a), rb = switchTierRank(b);
-        if (ra === rb) return;
-        const parent = ra < rb ? l.from : l.to;
-        const child = ra < rb ? l.to : l.from;
+        let parent, child;
+        if (l.parent === l.from || l.parent === l.to) {
+            // STP root role told us the uplink direction — trust it, even
+            // between same-tier switches (access→access chains).
+            parent = l.parent;
+            child = l.parent === l.from ? l.to : l.from;
+        } else {
+            const ra = switchTierRank(a), rb = switchTierRank(b);
+            if (ra === rb) return;
+            parent = ra < rb ? l.from : l.to;
+            child = ra < rb ? l.to : l.from;
+        }
         if (nestedSw.has(child)) return; // first uplink wins
         nestedSw.add(child);
         (swKidsOf[parent] = swKidsOf[parent] || []).push(swByName[child]);
@@ -447,6 +504,7 @@ function buildTree(data) {
         const isDown = i.status === "down";
         const children = [];
         if (i.name === fortilinkHost) {
+            switchesHosted = true;
             pushSwitchNodes(children);
             const apg = apGroupNode();
             if (apg) children.push(apg);
@@ -671,6 +729,16 @@ function buildTree(data) {
             children: members.map(intfNode)
         });
     });
+
+    // Safety net: when no interface adopted the FortiLink stack (unidentified
+    // or WAN-classified fortilink interface), host the managed switches — and
+    // the FortiAP group that rides with them — directly under the firewall
+    // rather than silently dropping them from the tree.
+    if (!switchesHosted) {
+        if (switches.length) pushSwitchNodes(fwChildren);
+        const apg = apGroupNode();
+        if (apg) fwChildren.push(apg);
+    }
 
     // Devices that could not be attributed to any switch get their own group
     // under the firewall so they never disappear.
@@ -1423,6 +1491,7 @@ async function loadDeviceData() {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoEdges = data.edges || [];
         topoVpn = data.vpn || [];
         topoHaDetail = data.ha_detail || "";
         return data.devices || [];
@@ -1452,6 +1521,7 @@ async function fetchDevicesNow(rangeSec) {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoEdges = data.edges || [];
         topoVpn = data.vpn || [];
         topoHaDetail = data.ha_detail || "";
         if (topo && topo.has_config) renderTree(topo);

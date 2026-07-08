@@ -91,6 +91,7 @@ type parsedConfig struct {
 	Policies     []Policy
 	Switches     []FortiSwitch
 	SwitchGroups []SwitchGroup
+	IslCustom    []IslBinding
 	Zones        []Zone
 	DhcpServers  []DhcpServer
 	Sdwan        *Sdwan
@@ -247,6 +248,17 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		}
 		g.Members = doc.settingFields(b, "members")
 		groups = append(groups, g)
+	}
+
+	// Auto-ISL trunk custom entries: FortiOS names auto-ISL trunks after the
+	// PEER switch's serial fragment (e.g. "8EN0000000003-0" → peer serial
+	// S108EN0000000003) and switch-binding records which switch the trunk
+	// lives ON — a deterministic switch↔switch edge straight from the backup.
+	var islCustom []IslBinding
+	for _, b := range doc.blocksUnder("config switch-controller auto-config custom") {
+		for _, sb := range doc.blocksUnder(b.Path + " > config switch-binding") {
+			islCustom = append(islCustom, IslBinding{Trunk: b.Name, Switch: sb.Name})
+		}
 	}
 
 	var zones []Zone
@@ -409,6 +421,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		Policies:     policies,
 		Switches:     switches,
 		SwitchGroups: groups,
+		IslCustom:    islCustom,
 		Zones:        zones,
 		DhcpServers:  dhcp,
 		Sdwan:        sdwan,
@@ -424,7 +437,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 var reFswSerial = regexp.MustCompile(`^S(\d{3})([A-Z])([A-Z]*)`)
 
 // fswModelFromSerial derives a display model from the serial number:
-// "S524DN5020000043" → "FS-524D", "S424EP0000000001" → "FS-424E-POE".
+// "S524DN0000000001" → "FS-524D", "S424EP0000001234" → "FS-424E-POE".
 func fswModelFromSerial(serial string) string {
 	m := reFswSerial.FindStringSubmatch(strings.ToUpper(serial))
 	if m == nil {
@@ -461,16 +474,48 @@ func isIclPort(p SwitchPort) bool {
 	return p.MclagIcl || strings.Contains(strings.ToLower(p.LldpProfile), "mclag-icl")
 }
 
+// reTrunkSuffix strips the trailing "-N" trunk index from an auto-ISL trunk
+// name, leaving the peer-serial fragment ("8EN0000000003-0" → "8EN0000000003").
+var reTrunkSuffix = regexp.MustCompile(`-\d+$`)
+
+// switchByRef finds a switch by any of its identities (name / edit key /
+// serial), or by serial SUFFIX when ref is an auto-ISL trunk fragment (FortiOS
+// truncates the peer serial when naming the trunk).
+func switchByRef(switches []FortiSwitch, ref string) *FortiSwitch {
+	if ref == "" {
+		return nil
+	}
+	for i := range switches {
+		if switches[i].Name == ref || switches[i].SwitchID == ref || switches[i].Serial == ref {
+			return &switches[i]
+		}
+	}
+	frag := strings.ToUpper(reTrunkSuffix.ReplaceAllString(ref, ""))
+	if len(frag) >= 8 {
+		for i := range switches {
+			if strings.HasSuffix(strings.ToUpper(switches[i].Serial), frag) {
+				return &switches[i]
+			}
+		}
+	}
+	return nil
+}
+
 // buildSwitchLinks derives switch interlinks from the parsed switches.
-// Config backups carry no live LLDP neighbor table, so two signals are used:
+// Config backups carry no live LLDP neighbor table, so three signals are used:
 //
 //  1. Persisted auto-ISL/ICL trunk entries (`set isl-peer-device-name` /
 //     `set isl-peer-port-name`) — exact, including the peer port.
-//  2. MC-LAG ICL port profiles: when exactly two switches carry ICL-profiled
-//     ports, they form the MC-LAG peer pair and those ports are the ICL.
+//  2. Auto-config custom trunk bindings (`config switch-controller auto-config
+//     custom`): the trunk name carries the PEER's serial fragment and the
+//     switch-binding names the switch the trunk lives on.
+//  3. MC-LAG ICL port profiles: two switches carrying ICL-profiled ports form
+//     an MC-LAG peer pair and those ports are the ICL. With more than two
+//     ICL switches (several MC-LAG pairs in one fabric) the peers are paired
+//     within their switch-group — MC-LAG peers always share one.
 //
 // Links reported by both sides are deduplicated (side order ignored).
-func buildSwitchLinks(switches []FortiSwitch) []SwitchLink {
+func buildSwitchLinks(switches []FortiSwitch, groups []SwitchGroup, islCustom []IslBinding) []SwitchLink {
 	var links []SwitchLink
 	seen := map[string]bool{}
 	add := func(l SwitchLink) {
@@ -485,6 +530,19 @@ func buildSwitchLinks(switches []FortiSwitch) []SwitchLink {
 		}
 		seen[key] = true
 		links = append(links, l)
+	}
+
+	// Signal 2 first: exact edges recorded by the config itself.
+	for _, ib := range islCustom {
+		owner := switchByRef(switches, ib.Switch)
+		peer := switchByRef(switches, ib.Trunk)
+		if owner == nil || peer == nil || owner == peer {
+			continue
+		}
+		add(SwitchLink{
+			From: switchDisplayName(*owner), FromPorts: []string{ib.Trunk},
+			To: switchDisplayName(*peer), Kind: "isl",
+		})
 	}
 
 	for _, sw := range switches {
@@ -510,6 +568,7 @@ func buildSwitchLinks(switches []FortiSwitch) []SwitchLink {
 
 	type iclSide struct {
 		name  string
+		keys  map[string]bool // switch-id / serial / name, for group-member matching
 		ports []string
 	}
 	var sides []iclSide
@@ -539,11 +598,40 @@ func buildSwitchLinks(switches []FortiSwitch) []SwitchLink {
 			addPort(p.Name)
 		}
 		if len(ports) > 0 {
-			sides = append(sides, iclSide{name: switchDisplayName(sw), ports: ports})
+			keys := map[string]bool{}
+			for _, k := range []string{sw.SwitchID, sw.Serial, sw.Name} {
+				if k != "" {
+					keys[k] = true
+				}
+			}
+			sides = append(sides, iclSide{name: switchDisplayName(sw), keys: keys, ports: ports})
 		}
 	}
-	if len(sides) == 2 {
-		add(SwitchLink{From: sides[0].name, FromPorts: sides[0].ports, To: sides[1].name, ToPorts: sides[1].ports, Kind: "mclag-icl"})
+	pairICL := func(a, b iclSide) {
+		add(SwitchLink{From: a.name, FromPorts: a.ports, To: b.name, ToPorts: b.ports, Kind: "mclag-icl"})
+	}
+	switch {
+	case len(sides) == 2:
+		pairICL(sides[0], sides[1])
+	case len(sides) > 2:
+		// Several ICL-carrying switches — e.g. two MC-LAG pairs in one fabric.
+		// MC-LAG peers always share a switch-group, so pair within each group
+		// that contains exactly two ICL sides (a global "exactly 2" would
+		// otherwise yield no links at all).
+		for _, g := range groups {
+			var grouped []iclSide
+			for _, s := range sides {
+				for _, m := range g.Members {
+					if s.keys[m] {
+						grouped = append(grouped, s)
+						break
+					}
+				}
+			}
+			if len(grouped) == 2 {
+				pairICL(grouped[0], grouped[1])
+			}
+		}
 	}
 	return links
 }

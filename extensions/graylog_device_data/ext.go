@@ -77,10 +77,15 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		createTableSQL,
 		createStpTableSQL,
 		createStpEventsSQL,
-		createMacPortsSQL,
+		createMacSightingsSQL,
+		createSwitchEdgesSQL,
 		createWifiSQL,
 		createVpnStatusSQL,
 		createHaStatusSQL,
+		// Legacy single-row-per-MAC binding table, superseded by mac_sightings
+		// (per-switch rows preserve the transit signal). Cache data only —
+		// repopulated by the next refresh.
+		`DROP TABLE IF EXISTS mac_ports`,
 	} {
 		if _, execErr := db.Exec(q); execErr != nil {
 			_ = db.Close()
@@ -166,17 +171,36 @@ const createStpTableSQL = `CREATE TABLE IF NOT EXISTS stp_ports (
 	PRIMARY KEY (fw_id, switch_name, port)
 )`
 
-// mac_ports holds the latest wired switch + physical port per client MAC,
-// derived from FortiSwitch MAC add/move events (the piece traffic logs lack).
-// listDevices joins this over the inventory so devices pin to real ports.
-const createMacPortsSQL = `CREATE TABLE IF NOT EXISTS mac_ports (
+// mac_sightings holds the latest port per (client MAC, switch), derived from
+// FortiSwitch MAC add/move/delete and NAC device events. One row per switch:
+// every switch a frame transits learns the MAC, and that per-switch spread is
+// exactly the signal that separates access ports (few MACs) from uplinks
+// (many MACs) — bestMacPins picks the access port, listMultiMacPorts ranks
+// the trunks.
+const createMacSightingsSQL = `CREATE TABLE IF NOT EXISTS mac_sightings (
 	fw_id       INTEGER NOT NULL,
 	mac         TEXT NOT NULL,
 	switch_name TEXT NOT NULL DEFAULT '',
 	port        TEXT NOT NULL DEFAULT '',
 	vlan        TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
-	PRIMARY KEY (fw_id, mac)
+	PRIMARY KEY (fw_id, mac, switch_name)
+)`
+
+// switch_edges holds the switch-side trunk observations from STP/link events:
+// the trunk NAME identifies the peer (auto-ISL trunks carry the peer serial
+// fragment; FortiLink MLAG/ICL trunks their role), the STP role orients the
+// edge (root = uplink), and ports are the physical LAG legs from
+// trunk-membership events — the data that resolves dual-homed uplinks.
+const createSwitchEdgesSQL = `CREATE TABLE IF NOT EXISTS switch_edges (
+	fw_id       INTEGER NOT NULL,
+	switch_sn   TEXT NOT NULL,
+	switch_name TEXT NOT NULL DEFAULT '',
+	trunk       TEXT NOT NULL,
+	role        TEXT NOT NULL DEFAULT '',
+	ports       TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_sn, trunk)
 )`
 
 // wifi_clients holds the latest wireless association per client MAC

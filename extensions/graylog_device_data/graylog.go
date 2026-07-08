@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,11 +44,14 @@ type Device struct {
 
 // MacPort is one client MAC's current wired switch + physical port, derived
 // from FortiSwitch MAC add/move events (the port lives in free-text msg).
+// Deleted marks a MAC-delete tombstone: the newest event for the MAC says it
+// left the table, so any stored binding must be dropped, not updated.
 type MacPort struct {
 	Mac        string
 	Port       string
 	Vlan       string
 	SwitchName string
+	Deleted    bool
 }
 
 // WifiClient is one wireless client's live association (client↔AP↔SSID).
@@ -66,6 +70,21 @@ type VpnStatus struct {
 	RemIP  string `json:"remip,omitempty"`
 	Type   string `json:"type,omitempty"`   // ipsec | ssl
 	Status string `json:"status,omitempty"` // up | down
+}
+
+// SwitchEdge is one switch-side trunk observed in STP/link events — the log
+// signal that reveals the switch-to-switch wiring. FortiSwitch names auto-ISL
+// trunks after the PEER's serial fragment (e.g. "8EN0000000003-0"), and
+// FortiLink MC-LAG trunks "_FlInK…_MLAG…_" / ICL trunks "…_ICL…_". Role is
+// the newest STP role on the trunk ("root" = this switch's uplink TOWARD the
+// peer); Ports are the physical member legs from trunk-membership link events
+// ("Physical port (portN) became active member of trunk (T)").
+type SwitchEdge struct {
+	SwitchSN   string   `json:"switch_sn"`
+	SwitchName string   `json:"switch_name,omitempty"`
+	Trunk      string   `json:"trunk"`
+	Role       string   `json:"role,omitempty"`
+	Ports      []string `json:"ports,omitempty"`
 }
 
 // escapeGraylogValue escapes backslashes and double quotes so a value stays
@@ -303,23 +322,67 @@ type stpEvent struct {
 	value string // role/state/link value, or guard kind ("" = guard cleared)
 }
 
+// rePhysPort matches plain physical port names ("port11"); anything else in
+// switchphysicalport is a trunk whose NAME identifies the peer (auto-ISL
+// trunks carry the peer serial fragment, FortiLink MLAG/ICL trunks their role).
+var rePhysPort = regexp.MustCompile(`(?i)^port\d+$`)
+
+// reTrunkMember parses trunk-membership link events, the only signal that
+// resolves an MC-LAG/LAG trunk into its physical member legs:
+// "Physical port (port27) became active member of trunk (_FlInK1_MLAG0_)".
+var reTrunkMember = regexp.MustCompile(`(?i)physical port \(?"?([^\s"()]+)"?\)? became (?:an )?(?:active )?member of trunk \(?"?([^\s"()]+)"?\)?`)
+
 // fetchStpStates queries the STP/guard/port-status event logs and folds them
 // into the latest status per switch port (messages arrive newest-first, so
 // the first event of each kind seen per port wins). The full event list is
-// returned alongside for the port history.
-func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent, error) {
+// returned alongside for the port history, plus the switch-edge observations
+// (trunk-named STP ports and trunk memberships) for interlink detection.
+func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent, []SwitchEdge, error) {
 	msgs, err := e.queryGraylog(e.cfg.GraylogStpQuery, "GRAYLOG_STP_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	byPort := map[string]*StpPort{}
 	seenKind := map[string]bool{} // key: port-key + "|" + kind
 	var order []*StpPort
 	var events []StpEvent
+	edges := map[string]*SwitchEdge{} // key: sn + "|" + trunk
+	var edgeOrder []*SwitchEdge
+	edgeFor := func(sn, name, trunk string) *SwitchEdge {
+		key := sn + "|" + trunk
+		if g := edges[key]; g != nil {
+			return g
+		}
+		g := &SwitchEdge{SwitchSN: sn, SwitchName: name, Trunk: trunk}
+		edges[key] = g
+		edgeOrder = append(edgeOrder, g)
+		return g
+	}
 	for _, m := range msgs {
+		// Switch-edge observations ride along on the same message stream.
+		if sn := field(m, "sn", "name"); sn != "" {
+			name := field(m, "name")
+			text := field(m, "msg", "message")
+			if mm := reTrunkMember.FindStringSubmatch(text); mm != nil {
+				g := edgeFor(sn, name, mm[2])
+				if !slices.Contains(g.Ports, mm[1]) {
+					g.Ports = append(g.Ports, mm[1])
+				}
+			}
+			if port := field(m, "switchphysicalport"); port != "" && !rePhysPort.MatchString(port) {
+				edgeFor(sn, name, port)
+			}
+		}
 		p, ev := stpFromMessage(m)
 		if p == nil {
 			continue
+		}
+		// Newest STP role per trunk orients the edge (root = uplink).
+		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
+			g := edgeFor(p.Serial, p.SwitchName, p.Port)
+			if g.Role == "" {
+				g.Role = ev.value
+			}
 		}
 		to := ev.value
 		if ev.kind == "guard" && to == "" {
@@ -356,12 +419,16 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	for _, p := range order {
 		out = append(out, *p)
 	}
-	return out, events, nil
+	edgeOut := make([]SwitchEdge, 0, len(edgeOrder))
+	for _, g := range edgeOrder {
+		edgeOut = append(edgeOut, *g)
+	}
+	return out, events, edgeOut, nil
 }
 
-// fetchMacPorts pulls the FortiSwitch MAC add/move events and returns the
-// latest wired switch-port binding per client MAC (messages are newest-first,
-// so the first binding seen per MAC wins).
+// fetchMacPorts pulls the FortiSwitch MAC add/move/delete events and returns
+// the latest state per client MAC (messages are newest-first, so the first
+// event seen per MAC wins — a delete tombstone shadows older add/move events).
 func (e *Extension) fetchMacPorts(fqdn, rangeSec string) ([]MacPort, error) {
 	msgs, err := e.queryGraylog(e.cfg.GraylogMacQuery, "GRAYLOG_MAC_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
 	if err != nil {
@@ -369,13 +436,32 @@ func (e *Extension) fetchMacPorts(fqdn, rangeSec string) ([]MacPort, error) {
 	}
 	seen := map[string]bool{}
 	var out []MacPort
+	tombstones := 0
 	for _, m := range msgs {
 		mp, ok := macEventFromMessage(m)
 		if !ok || seen[mp.Mac] {
 			continue
 		}
 		seen[mp.Mac] = true
+		if mp.Deleted {
+			tombstones++
+		}
 		out = append(out, mp)
+	}
+	// Make an empty result diagnosable: "no events at all" means the FortiGate
+	// is not logging FortiSwitch MAC-table events (device→switch-port pinning
+	// has no data source), while "events but nothing parsed" means the msg
+	// wording drifted from what reMacEvent expects.
+	switch {
+	case len(msgs) == 0:
+		e.logger.Info("graylog mac-ports: no FortiSwitch MAC-table events — device→switch-port pinning unavailable; enable 'set mac-event-logging enable' under 'config switch-controller global' on the FortiGate",
+			"fqdn", fqdn)
+	case len(out) == 0:
+		e.logger.Warn("graylog mac-ports: messages returned but none parsed — the log wording may have changed; adjust GRAYLOG_MAC_QUERY or report the msg format",
+			"fqdn", fqdn, "messages", len(msgs), "sample", field(msgs[0], "msg", "message"))
+	default:
+		e.logger.Debug("graylog mac-ports parsed",
+			"fqdn", fqdn, "messages", len(msgs), "bindings", len(out)-tombstones, "tombstones", tombstones)
 	}
 	return out, nil
 }
@@ -535,28 +621,67 @@ func deviceFromMessage(msg map[string]any) (Device, bool) {
 }
 
 // reMacEvent parses FortiSwitch MAC add/move messages, which carry the client
-// MAC, physical port and VLAN only in free-text (add: "…discovered on interface
-// portN in vlan V on Switch NAME"; move: "…moved from interface X to interface
-// portN in vlan V on Switch NAME"). Delete events have no port and are ignored.
-var reMacEvent = regexp.MustCompile(`(?i)^([0-9a-f:]{17})\b.*?\binterface (\S+?)(?:\s+in vlan (\d+))?(?: on Switch (\S+))?\s*$`)
+// MAC, physical port and VLAN only in free-text. Live FortiOS 7.x wording
+// (verified against a production Graylog):
+//
+//	add:    "50:4f:94:…:e8 discovered on interface port11 in vlan 1 on Switch NAME"
+//	move:   "46:a8:d4:…:39 moved from interface port11 to interface port8 in vlan 100 on Switch NAME"
+//	delete: "fa:40:d7:…:2a deleted from vlan 300 on Switch NAME"   (no port)
+//
+// The MAC is not anchored to the start so label-prefixed variants ("MAC xx:…
+// has added on interface …") parse too, and the port tolerates quoting.
+var reMacEvent = regexp.MustCompile(`(?i)\b([0-9a-f]{2}(?::[0-9a-f]{2}){5})\b.*?\binterface "?([^\s"]+?)"?(?:\s+in vlan (\d+))?(?: on Switch (\S+))?\s*$`)
+
+// reMacAddr extracts a bare colon-separated MAC (used for delete tombstones,
+// whose messages carry no interface for reMacEvent to hook onto).
+var reMacAddr = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
 
 // macEventFromMessage extracts the client MAC → physical port / VLAN / switch
-// binding from one FortiSwitch MAC add/move log. `name`/`sn` carry the switch
-// as indexed fields (preferred over the name parsed from msg). Returns false
-// for delete events (no port) and anything unparsable.
+// binding from one FortiSwitch MAC add/move/delete or NAC device add/delete
+// log. The switch prefers the indexed `sn` field (the FortiSwitch serial — the
+// key the config backup's managed-switch entries use, so the frontend can
+// match it exactly), then the friendly `name`, then the free-text tail. Delete
+// events return Deleted=true so the caller can tombstone the MAC (messages are
+// newest-first, so a delete newer than the last add/move means the MAC left).
 func macEventFromMessage(msg map[string]any) (MacPort, bool) {
 	text := field(msg, "msg", "message")
-	// A "moved to interface X" message has two "interface" tokens; keep the last
-	// (the current port) by trimming everything up to the final "to interface".
 	lower := strings.ToLower(text)
-	if i := strings.LastIndex(lower, "to interface "); i >= 0 {
-		text = text[:strings.Index(lower, " ")+1] + text[i+len("to "):]
+	sw := field(msg, "sn", "name", "sw")
+	// "delet" covers both "FortiSwitch MAC delete" and "NAC device deletion";
+	// NAC deletions also flag themselves via action=nac-device-del.
+	deleted := strings.Contains(strings.ToLower(field(msg, "logdesc")), "delet") ||
+		strings.HasSuffix(strings.ToLower(field(msg, "action")), "-del") ||
+		strings.Contains(lower, " deleted ")
+	// NAC device events (logid 0115022861/2) carry everything as indexed
+	// fields — no free-text parsing needed (vlan holds the VLAN *name*).
+	if mac := strings.ToLower(reMacAddr.FindString(field(msg, "MAC", "mac"))); mac != "" {
+		if deleted {
+			return MacPort{Mac: mac, SwitchName: sw, Deleted: true}, true
+		}
+		if port := field(msg, "port"); port != "" {
+			return MacPort{Mac: mac, Port: port, Vlan: field(msg, "vlan"), SwitchName: sw}, true
+		}
+	}
+	// Delete events carry no interface token — emit a tombstone.
+	if deleted {
+		mac := strings.ToLower(reMacAddr.FindString(text))
+		if mac == "" {
+			return MacPort{}, false
+		}
+		return MacPort{Mac: mac, SwitchName: sw, Deleted: true}, true
+	}
+	// A move has two "interface" tokens ("… from interface OLD to interface
+	// NEW …"); cut the "from interface OLD to " span so the regex captures the
+	// NEW (current) port. Byte offsets are safe: these messages are ASCII.
+	if i := strings.Index(lower, "from interface "); i >= 0 {
+		if j := strings.LastIndex(lower, "to interface "); j > i {
+			text = text[:i] + text[j+len("to "):]
+		}
 	}
 	m := reMacEvent.FindStringSubmatch(text)
 	if m == nil || m[2] == "" {
 		return MacPort{}, false
 	}
-	sw := field(msg, "name", "sn")
 	if sw == "" {
 		sw = m[4]
 	}

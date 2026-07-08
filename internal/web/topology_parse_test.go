@@ -28,22 +28,22 @@ const nestedConfig = `config system interface
 end
 config switch-controller managed-switch
     edit "SW-CORE01"
-        set sn "S524DN5020000043"
+        set sn "S524DN0000000001"
         set fsw-wan1-peer "FortiLink"
         config ports
             edit "port1"
                 set vlan "VL100"
-                set mac-addr e0:23:ff:52:47:98
+                set mac-addr e0:23:ff:00:00:01
             next
             edit "port29"
                 set vlan "_default"
                 set lldp-profile "default-auto-mclag-icl"
-                set mac-addr e0:23:ff:52:47:b4
+                set mac-addr e0:23:ff:00:00:02
             next
             edit "port30"
                 set vlan "_default"
                 set lldp-profile "default-auto-mclag-icl"
-                set mac-addr e0:23:ff:52:47:b5
+                set mac-addr e0:23:ff:00:00:03
             next
         end
         config igmp-snooping
@@ -51,7 +51,7 @@ config switch-controller managed-switch
         end
     next
     edit "SW-CORE02"
-        set sn "S524DN5020000027"
+        set sn "S524DN0000000002"
         set fsw-wan1-peer "FortiLink"
         config ports
             edit "port29"
@@ -190,11 +190,11 @@ func TestParseConfigDataNestedBlocks(t *testing.T) {
 		t.Fatalf("switches = %d, want 3 (%+v)", len(switches), switches)
 	}
 	core1 := switches[0]
-	if core1.SwitchID != "SW-CORE01" || core1.Serial != "S524DN5020000043" || core1.Model != "FS-524D" ||
+	if core1.SwitchID != "SW-CORE01" || core1.Serial != "S524DN0000000001" || core1.Model != "FS-524D" ||
 		core1.Fortilink != "FortiLink" || len(core1.Ports) != 3 {
 		t.Fatalf("SW-CORE01 parse wrong: %+v", core1)
 	}
-	if p := core1.Ports[1]; p.Name != "port29" || p.LldpProfile != "default-auto-mclag-icl" || p.Mac != "e0:23:ff:52:47:b4" {
+	if p := core1.Ports[1]; p.Name != "port29" || p.LldpProfile != "default-auto-mclag-icl" || p.Mac != "e0:23:ff:00:00:02" {
 		t.Fatalf("port29 parse wrong: %+v", p)
 	}
 	acc := switches[2]
@@ -265,7 +265,7 @@ func TestParseConfigDataSections(t *testing.T) {
 }
 
 func TestBuildSwitchLinks(t *testing.T) {
-	links := buildSwitchLinks(parseConfigData(parseCfg(nestedConfig)).Switches)
+	links := buildSwitchLinks(parseConfigData(parseCfg(nestedConfig)).Switches, nil, nil)
 	if len(links) != 2 {
 		t.Fatalf("links = %d, want 2 (%+v)", len(links), links)
 	}
@@ -293,7 +293,7 @@ func TestBuildSwitchLinksDedup(t *testing.T) {
 		{SwitchID: "A", Ports: []SwitchPort{{Name: "A-0", Type: "trunk", Members: []string{"port1"}, IslPeerDevice: "B", IslPeerPort: "port2"}}},
 		{SwitchID: "B", Ports: []SwitchPort{{Name: "B-0", Type: "trunk", Members: []string{"port2"}, IslPeerDevice: "A", IslPeerPort: "port1"}}},
 	}
-	links := buildSwitchLinks(switches)
+	links := buildSwitchLinks(switches, nil, nil)
 	if len(links) != 1 {
 		t.Fatalf("links = %d, want 1 (%+v)", len(links), links)
 	}
@@ -327,7 +327,7 @@ func TestBuildSwitchLinksTrunkIcl(t *testing.T) {
 			{Name: "B-ICL", Type: "trunk", MclagIcl: true, Members: []string{"port27", "port28"}},
 		}},
 	}
-	links := buildSwitchLinks(switches)
+	links := buildSwitchLinks(switches, nil, nil)
 	if len(links) != 1 || links[0].Kind != "mclag-icl" {
 		t.Fatalf("links = %+v, want one mclag-icl link", links)
 	}
@@ -337,6 +337,76 @@ func TestBuildSwitchLinksTrunkIcl(t *testing.T) {
 	}
 	if len(links[0].ToPorts) != 2 {
 		t.Fatalf("ToPorts = %v, want [port27 port28]", links[0].ToPorts)
+	}
+}
+
+// TestBuildSwitchLinksIslCustom: `config switch-controller auto-config custom`
+// records auto-ISL trunks named after the PEER's serial fragment, bound to the
+// owning switch — must yield an isl link owner→peer (serial suffix match).
+func TestBuildSwitchLinksIslCustom(t *testing.T) {
+	cfg := `config switch-controller managed-switch
+    edit "S424EP0000000004"
+        set name "SW-ACCESS04"
+    next
+    edit "S108EN0000000003"
+        set name "SW-EDGE03"
+    next
+end
+config switch-controller auto-config custom
+    edit "8EN0000000003-0"
+        config switch-binding
+            edit "SW-ACCESS04"
+                set policy "pse"
+            next
+        end
+    next
+end
+`
+	pc := parseConfigData(parseCfg(cfg))
+	if len(pc.IslCustom) != 1 || pc.IslCustom[0].Trunk != "8EN0000000003-0" || pc.IslCustom[0].Switch != "SW-ACCESS04" {
+		t.Fatalf("isl custom parse wrong: %+v", pc.IslCustom)
+	}
+	links := buildSwitchLinks(pc.Switches, pc.SwitchGroups, pc.IslCustom)
+	if len(links) != 1 {
+		t.Fatalf("links = %d, want 1 (%+v)", len(links), links)
+	}
+	l := links[0]
+	if l.Kind != "isl" || l.From != "SW-ACCESS04" || l.To != "SW-EDGE03" ||
+		len(l.FromPorts) != 1 || l.FromPorts[0] != "8EN0000000003-0" {
+		t.Fatalf("isl custom link wrong: %+v", l)
+	}
+}
+
+// TestBuildSwitchLinksTwoMclagPairs: four ICL switches (two MC-LAG pairs) must
+// pair within their switch-groups — the old global "exactly two" rule yielded
+// zero links for such fabrics.
+func TestBuildSwitchLinksTwoMclagPairs(t *testing.T) {
+	icl := func(id string) FortiSwitch {
+		return FortiSwitch{SwitchID: id, Ports: []SwitchPort{{Name: "port29", LldpProfile: "default-auto-mclag-icl"}}}
+	}
+	switches := []FortiSwitch{icl("CORE01"), icl("CORE02"), icl("DIST01"), icl("DIST02")}
+	groups := []SwitchGroup{
+		{Name: "core", Members: []string{"CORE01", "CORE02"}},
+		{Name: "dist", Members: []string{"DIST01", "DIST02"}},
+		{Name: "edge", Members: []string{"EDGE01"}}, // no ICL sides: ignored
+	}
+	links := buildSwitchLinks(switches, groups, nil)
+	if len(links) != 2 {
+		t.Fatalf("links = %d, want 2 (%+v)", len(links), links)
+	}
+	pairs := map[string]bool{}
+	for _, l := range links {
+		if l.Kind != "mclag-icl" {
+			t.Fatalf("kind = %q, want mclag-icl", l.Kind)
+		}
+		pairs[l.From+"-"+l.To] = true
+	}
+	if !pairs["CORE01-CORE02"] || !pairs["DIST01-DIST02"] {
+		t.Fatalf("wrong pairing: %+v", pairs)
+	}
+	// Without groups, >2 ICL sides stay unpaired (no reliable signal).
+	if got := buildSwitchLinks(switches, nil, nil); len(got) != 0 {
+		t.Fatalf("ungrouped >2 sides must yield no links, got %+v", got)
 	}
 }
 
@@ -384,7 +454,7 @@ func TestParseConfigDataExample2(t *testing.T) {
 	if len(pc.Vpns) < 10 {
 		t.Fatalf("vpns = %d, want >= 10", len(pc.Vpns))
 	}
-	if pc.HA == nil || pc.HA.Mode != "a-p" || pc.HA.GroupName != "example-ha-ro" ||
+	if pc.HA == nil || pc.HA.Mode != "a-p" || pc.HA.GroupName == "" ||
 		len(pc.HA.Hbdev) != 2 || pc.HA.Hbdev[0] != "port5" {
 		t.Fatalf("ha wrong: %+v", pc.HA)
 	}
@@ -409,12 +479,14 @@ func TestParseConfigDataExample2(t *testing.T) {
 		t.Fatal("no port-security-policy parsed")
 	}
 
-	links := buildSwitchLinks(switches)
+	links := buildSwitchLinks(switches, nil, nil)
 	if len(links) != 1 {
 		t.Fatalf("links = %d, want 1 MC-LAG ICL (%+v)", len(links), links)
 	}
+	// Real-fixture assertions stay name-agnostic: no customer identifiers in
+	// the repo. The ICL must join two distinct parsed switches.
 	icl := links[0]
-	if icl.Kind != "mclag-icl" || icl.From != "SW-CORE01" || icl.To != "SW-CORE02" {
+	if icl.Kind != "mclag-icl" || icl.From == "" || icl.To == "" || icl.From == icl.To {
 		t.Fatalf("ICL link wrong: %+v", icl)
 	}
 	if len(icl.FromPorts) != 2 || icl.FromPorts[0] != "port29" || icl.FromPorts[1] != "port30" ||

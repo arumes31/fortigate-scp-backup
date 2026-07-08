@@ -83,7 +83,7 @@ func (s *Server) buildTopologyJSON(ctx context.Context, db *sql.DB, fwID int) to
 		out.SwitchGroups = res.SwitchGroups
 		// Derived at read time (cheap) so interlink-detection improvements do
 		// not depend on cached parses.
-		out.SwitchLinks = buildSwitchLinks(res.Switches)
+		out.SwitchLinks = buildSwitchLinks(res.Switches, res.SwitchGroups, res.IslCustom)
 		out.Zones = res.Zones
 		out.DhcpServers = res.DhcpServers
 		out.Sdwan = res.Sdwan

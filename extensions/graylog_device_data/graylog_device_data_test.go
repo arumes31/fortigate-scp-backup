@@ -103,9 +103,50 @@ func TestMacEventFromMessage(t *testing.T) {
 	if !ok || mp.Port != "port8" || mp.Vlan != "100" || mp.SwitchName != "SW-SERIAL-01" {
 		t.Fatalf("move parse wrong: %+v ok=%t", mp, ok)
 	}
-	// MAC delete has no port → skipped.
-	if _, ok := macEventFromMessage(map[string]any{"msg": "fa:40:d7:3f:63:2a deleted from vlan 300 on Switch X"}); ok {
-		t.Error("delete event must be skipped (no port)")
+	// MAC delete has no port → tombstone so the stored binding is dropped.
+	mp, ok = macEventFromMessage(map[string]any{"msg": "fa:40:d7:3f:63:2a deleted from vlan 300 on Switch X"})
+	if !ok || !mp.Deleted || mp.Mac != "fa:40:d7:3f:63:2a" || mp.Port != "" {
+		t.Fatalf("delete parse wrong: %+v ok=%t", mp, ok)
+	}
+	// Label-prefixed wording (MAC not at position 0) must still parse.
+	mp, ok = macEventFromMessage(map[string]any{
+		"msg": "MAC 00:11:22:33:44:55 has added on interface port3 in vlan 20 on Switch SW-ACCESS02",
+	})
+	if !ok || mp.Mac != "00:11:22:33:44:55" || mp.Port != "port3" || mp.Vlan != "20" || mp.SwitchName != "SW-ACCESS02" {
+		t.Fatalf("label-prefixed parse wrong: %+v ok=%t", mp, ok)
+	}
+	// The indexed serial (sn) outranks the friendly name: it is the key the
+	// config backup's managed-switch entries use, so the frontend can match it.
+	mp, _ = macEventFromMessage(map[string]any{
+		"sn": "SW-SERIAL-01", "name": "SW-ACCESS01",
+		"msg": "50:4f:94:a2:df:e8 discovered on interface port11 in vlan 1 on Switch SW-ACCESS01",
+	})
+	if mp.SwitchName != "SW-SERIAL-01" {
+		t.Fatalf("sn must outrank name: %+v", mp)
+	}
+	// NAC device addition: fully structured fields (MAC/sn/port/vlan), no
+	// free-text parsing; vlan carries the VLAN *name*.
+	mp, ok = macEventFromMessage(map[string]any{
+		"MAC": "00:0C:42:AA:87:8E", "sn": "SW-SERIAL-01", "sw": "SW-ACCESS01",
+		"port": "port4", "vlan": "VL100", "action": "nac-device-add",
+		"logdesc": "NAC device addition",
+		"msg":     "New NAC device added with MAC=00:0c:42:aa:87:8e sw=SW-ACCESS01 port=port4 vlan=VL100",
+	})
+	if !ok || mp.Deleted || mp.Mac != "00:0c:42:aa:87:8e" || mp.Port != "port4" ||
+		mp.Vlan != "VL100" || mp.SwitchName != "SW-SERIAL-01" {
+		t.Fatalf("nac add parse wrong: %+v ok=%t", mp, ok)
+	}
+	// NAC device deletion → tombstone.
+	mp, ok = macEventFromMessage(map[string]any{
+		"MAC": "00:0c:42:aa:87:8e", "sn": "SW-SERIAL-01",
+		"action": "nac-device-del", "logdesc": "NAC device deletion",
+	})
+	if !ok || !mp.Deleted || mp.Mac != "00:0c:42:aa:87:8e" {
+		t.Fatalf("nac delete parse wrong: %+v ok=%t", mp, ok)
+	}
+	// Unparsable free text → skipped.
+	if _, ok := macEventFromMessage(map[string]any{"msg": "spanning tree state change"}); ok {
+		t.Error("non-MAC event must be skipped")
 	}
 }
 
@@ -251,7 +292,7 @@ func testExt(t *testing.T, graylogURL string) *Extension {
 	db.SetMaxOpenConns(1)
 	for _, q := range []string{
 		createTableSQL, createStpTableSQL, createStpEventsSQL,
-		createMacPortsSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
+		createMacSightingsSQL, createSwitchEdgesSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -421,6 +462,17 @@ func TestFetchStpStatesFold(t *testing.T) {
 		// link events: newest (down) wins over the older up
 		{"name": "SW3", "switchphysicalport": "port7", "status": "down", "msg": "port7 status down"},
 		{"name": "SW3", "switchphysicalport": "port7", "status": "up", "msg": "port7 status up"},
+		// switch-edge observations: a trunk named after the peer's serial
+		// fragment with an STP root role (= SW-ACCESS04's uplink toward it),
+		// plus MC-LAG trunk membership legs on two switches.
+		{"name": "SW-ACCESS04", "sn": "S424EP0000000004", "switchphysicalport": "8EN0000000003-0",
+			"msg": "primary port 8EN0000000003-0 instance 0 changed role from designated to root"},
+		{"name": "SW-CORE01", "sn": "S524DN0000000001",
+			"msg": "Physical port (port27) became active member of trunk (_FlInK1_MLAG0_)"},
+		{"name": "SW-CORE01", "sn": "S524DN0000000001",
+			"msg": "Physical port (port28) became active member of trunk (_FlInK1_MLAG0_)"},
+		{"name": "SW-CORE02", "sn": "S524DN0000000002",
+			"msg": "Physical port (port28) became active member of trunk (_FlInK1_MLAG0_)"},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type m struct {
@@ -441,7 +493,7 @@ func TestFetchStpStatesFold(t *testing.T) {
 		GraylogStpQuery: `source:"%s"`,
 	}, logger: slog.New(slog.DiscardHandler)}
 
-	stp, events, err := e.fetchStpStates("fw1.example.com", "")
+	stp, events, edges, err := e.fetchStpStates("fw1.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,11 +514,72 @@ func TestFetchStpStatesFold(t *testing.T) {
 		t.Fatalf("port7 link = %q, want down (newest wins)", p.Link)
 	}
 	// Every parsed message lands in the event history.
-	if len(events) != 8 {
-		t.Fatalf("events = %d, want 8", len(events))
+	if len(events) != 9 {
+		t.Fatalf("events = %d, want 9", len(events))
 	}
 	if events[0].Kind != "role" || events[0].To != "designated" || events[0].From != "disabled" {
 		t.Fatalf("first event wrong: %+v", events[0])
+	}
+	// Switch-edge observations: the serial-fragment trunk with its root role
+	// (physical "portN" ports must NOT create edges), and the MC-LAG trunk
+	// resolved into its member legs on both cores.
+	edgeByKey := map[string]SwitchEdge{}
+	for _, g := range edges {
+		edgeByKey[g.SwitchSN+"|"+g.Trunk] = g
+	}
+	if len(edges) != 3 {
+		t.Fatalf("edges = %d, want 3 (%+v)", len(edges), edges)
+	}
+	up := edgeByKey["S424EP0000000004|8EN0000000003-0"]
+	if up.Role != "root" || up.SwitchName != "SW-ACCESS04" {
+		t.Fatalf("uplink edge wrong: %+v", up)
+	}
+	c1 := edgeByKey["S524DN0000000001|_FlInK1_MLAG0_"]
+	if len(c1.Ports) != 2 || c1.Ports[0] != "port27" || c1.Ports[1] != "port28" {
+		t.Fatalf("core1 mlag legs wrong: %+v", c1)
+	}
+	if c2 := edgeByKey["S524DN0000000002|_FlInK1_MLAG0_"]; len(c2.Ports) != 1 || c2.Ports[0] != "port28" {
+		t.Fatalf("core2 mlag legs wrong: %+v", c2)
+	}
+}
+
+// TestBestMacPins: a client seen on its access port AND on the uplink ports
+// its frames transit must pin to the access port (fewest distinct MACs), and
+// a per-switch delete tombstone must only clear that switch's sighting.
+func TestBestMacPins(t *testing.T) {
+	e := testExt(t, "http://unused.invalid")
+	now := time.Now().Format("2006-01-02 15:04:05")
+	sightings := []MacPort{
+		// client-01: true access port on SW-ACCESS01 port7 (1 MAC there)...
+		{Mac: "00:11:22:00:00:01", SwitchName: "SW-ACCESS01", Port: "port7", Vlan: "100"},
+		// ...also learned on the core uplink port, which carries many MACs.
+		{Mac: "00:11:22:00:00:01", SwitchName: "SW-CORE01", Port: "port26"},
+		{Mac: "00:11:22:00:00:02", SwitchName: "SW-CORE01", Port: "port26"},
+		{Mac: "00:11:22:00:00:03", SwitchName: "SW-CORE01", Port: "port26"},
+	}
+	if err := e.storeMacSightings(1, sightings, now); err != nil {
+		t.Fatal(err)
+	}
+	pins, err := e.bestMacPins(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := pins["00:11:22:00:00:01"]; p.SwitchName != "SW-ACCESS01" || p.Port != "port7" || p.Vlan != "100" {
+		t.Fatalf("client must pin to the access port, got %+v", p)
+	}
+	// Tombstone on the access switch only: the pin falls back to the
+	// remaining (uplink) sighting rather than vanishing entirely.
+	if err := e.storeMacSightings(1, []MacPort{
+		{Mac: "00:11:22:00:00:01", SwitchName: "SW-ACCESS01", Deleted: true},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	pins, err = e.bestMacPins(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := pins["00:11:22:00:00:01"]; p.SwitchName != "SW-CORE01" || p.Port != "port26" {
+		t.Fatalf("after tombstone the core sighting must remain, got %+v", p)
 	}
 }
 
