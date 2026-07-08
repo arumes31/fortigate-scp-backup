@@ -83,8 +83,10 @@ func (s *Server) handleTopologyData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db, dbErr := s.insightsDB()
-	if dbErr != nil {
+	if dbErr != nil || db == nil {
 		s.logger.Error("insights db unavailable", "err", dbErr)
+		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
+		return
 	}
 	out := s.buildTopologyJSON(r.Context(), db, fwID)
 	w.Header().Set("Content-Type", "application/json")
@@ -152,7 +154,11 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now()
 	expiresAt := ""
-	if hours, herr := strconv.Atoi(r.FormValue("expiry_hours")); herr == nil && hours > 0 {
+	hours, herr := strconv.Atoi(r.FormValue("expiry_hours"))
+	if herr != nil || hours < 0 {
+		hours = 0 // never expires
+	}
+	if hours > 0 {
 		expiresAt = now.Add(time.Duration(hours) * time.Hour).Format(insightsTimeLayout)
 	}
 	if _, err := db.Exec("INSERT INTO topology_shares (token, fw_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
@@ -160,8 +166,9 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "failed to store share", http.StatusInternalServerError)
 		return
 	}
+	// Log the parsed value, never the raw form input (log injection).
 	s.store.LogActivity(s.sess.User(r).Username, "topology_share_created",
-		"fw_id="+strconv.Itoa(fwID)+" expiry="+r.FormValue("expiry_hours")+"h")
+		"fw_id="+strconv.Itoa(fwID)+" expiry="+strconv.Itoa(hours)+"h")
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(topologyShare{Token: token, FwID: fwID,
@@ -251,9 +258,15 @@ func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request
 	}
 
 	out := s.buildTopologyJSON(r.Context(), db, fwID)
-	// The public view only needs per-interface policy counts: strip the rule
-	// details (addresses, services, actions) so a share link never discloses
-	// the firewall's ruleset.
+	// A share link intentionally shows the network structure (interfaces,
+	// VLANs, addressing, routes, switches) — that IS the shared topology. But
+	// it must not disclose the attack surface beyond that: strip policy rule
+	// details (addresses, services, actions), management-access lists, and the
+	// exact firmware version (which fingerprints CVE exposure).
+	out.Version = ""
+	for i := range out.Interfaces {
+		out.Interfaces[i].AllowAccess = nil
+	}
 	for i := range out.Policies {
 		out.Policies[i] = Policy{
 			ID:      out.Policies[i].ID,

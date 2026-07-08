@@ -502,8 +502,12 @@ func TestAuditTicketEndpoint(t *testing.T) {
 func TestExemptionAndRuleDelete(t *testing.T) {
 	srv := testServerData(t)
 	db, _ := srv.insightsDB()
-	_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, 'k', 't', 'r', '2026-07-08 00:00:00')")
-	_, _ = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES ('r', 'p', 'info', 'x')")
+	if _, err := db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, 'k', 't', 'r', '2026-07-08 00:00:00')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES ('r', 'p', 'info', 'x')"); err != nil {
+		t.Fatal(err)
+	}
 
 	post := func(path string, form url.Values, h http.HandlerFunc) int {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
@@ -730,7 +734,9 @@ func TestExemptionRestoresComplianceScore(t *testing.T) {
 	// Exempt every finding of the firewall: the served scores must recover to
 	// 100 even though the cached (pre-exemption) scores are lower.
 	for _, f := range res.Findings {
-		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, ?, ?, 'r', '2026-01-01 00:00:00')", f.Key, f.Text)
+		if _, err := db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, ?, ?, 'r', '2026-01-01 00:00:00')", f.Key, f.Text); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rr := httptest.NewRecorder()
 	srv.handleAuditResults(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/audit/results/1", nil), "fwID", "1"))
@@ -755,7 +761,9 @@ func TestCustomRuleFingerprintInvalidatesCache(t *testing.T) {
 	// Insert a rule WITHOUT the handler's cache bust: the fingerprint alone
 	// must force a recompute (this is the race fix — a stale entry stored
 	// after the bust is detected too).
-	_, _ = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES ('r1', 'set admin-sport 9443', 'info', 'x')")
+	if _, err := db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES ('r1', 'set admin-sport 9443', 'info', 'x')"); err != nil {
+		t.Fatal(err)
+	}
 	res, _ := srv.auditResultFor(db, 1)
 	var hit bool
 	for _, f := range res.Findings {
@@ -790,6 +798,14 @@ func TestSharedTopologyHidesPolicyDetails(t *testing.T) {
 	for _, p := range out.Policies {
 		if len(p.SrcAddr) != 0 || len(p.DstAddr) != 0 || len(p.Service) != 0 || p.Action != "" {
 			t.Fatalf("shared payload must not leak rule details: %+v", p)
+		}
+	}
+	if out.Version != "" {
+		t.Fatalf("shared payload must not leak the firmware version: %q", out.Version)
+	}
+	for _, in := range out.Interfaces {
+		if len(in.AllowAccess) != 0 {
+			t.Fatalf("shared payload must not leak management access lists: %+v", in)
 		}
 	}
 	// The authenticated endpoint still carries them.

@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 let topo = null;        // current topology JSON
 let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
+let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let svg, gRoot, zoomBehavior;
 
 // esc() and tt() come from ui.js, which every topology page loads first.
@@ -498,6 +499,7 @@ async function fetchDevicesNow() {
         const resp = await fetch(cfg.devicesBase + "/refresh/" + fwid, { method: "POST" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
+        if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
         topoDevices = data.devices || [];
         if (topo && topo.has_config) renderTree(topo);
         if (meta) meta.textContent = topoMetaText() + " · " + tt("topo.dev_updated");
@@ -521,6 +523,9 @@ function topoMetaText() {
 async function loadTopology() {
     const url = topoDataURL();
     if (!url) return;
+    // Switching the firewall selector mid-flight starts a new load; any older
+    // in-flight load must not overwrite the newer result.
+    const seq = ++topoLoadSeq;
     closeFaceplate();
     const meta = document.getElementById("topoMeta");
     if (meta) meta.textContent = tt("topo.loading");
@@ -530,7 +535,9 @@ async function loadTopology() {
             loadDeviceData()
         ]);
         if (!resp.ok) throw new Error("HTTP " + resp.status);
-        topo = await resp.json();
+        const data = await resp.json();
+        if (seq !== topoLoadSeq) return; // superseded by a newer load
+        topo = data;
         topoDevices = devices;
         if (!topo.has_config) {
             if (meta) meta.textContent = tt("topo.no_backup");
@@ -540,6 +547,7 @@ async function loadTopology() {
         if (meta) meta.textContent = topoMetaText();
         renderTree(topo);
     } catch (e) {
+        if (seq !== topoLoadSeq) return; // stale failure: a newer load owns the UI
         console.error("topology load failed", e);
         if (meta) meta.textContent = tt("topo.load_error");
     }
