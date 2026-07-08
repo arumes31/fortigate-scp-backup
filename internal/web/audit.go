@@ -258,6 +258,7 @@ type Interface struct {
 	Interface   string   `json:"interface"` // Parent interface
 	Role        string   `json:"role"`
 	Alias       string   `json:"alias"`
+	Members     []string `json:"members,omitempty"` // aggregate/FortiLink member ports
 }
 
 type StaticRoute struct {
@@ -278,14 +279,36 @@ type Policy struct {
 }
 
 type SwitchPort struct {
-	Name string `json:"name"`
-	Vlan string `json:"vlan"`
+	Name        string `json:"name"`
+	Vlan        string `json:"vlan"`
+	Description string `json:"description,omitempty"`
+	Mac         string `json:"mac,omitempty"`
+	LldpProfile string `json:"lldp_profile,omitempty"`
+	Speed       string `json:"speed,omitempty"`
+	// Trunk entries (present when FortiOS persisted auto-generated ISL/ICL
+	// trunks into the backup).
+	Type          string   `json:"type,omitempty"` // "" (physical) or "trunk"
+	Members       []string `json:"members,omitempty"`
+	MclagIcl      bool     `json:"mclag_icl,omitempty"`
+	IslPeerDevice string   `json:"isl_peer_device,omitempty"`
+	IslPeerPort   string   `json:"isl_peer_port,omitempty"`
 }
 
 type FortiSwitch struct {
-	SwitchID string       `json:"switch_id"`
-	Name     string       `json:"name"`
-	Ports    []SwitchPort `json:"ports"`
+	SwitchID    string       `json:"switch_id"`
+	Name        string       `json:"name"`
+	Serial      string       `json:"serial,omitempty"`
+	Model       string       `json:"model,omitempty"` // derived from the serial prefix
+	Description string       `json:"description,omitempty"`
+	Fortilink   string       `json:"fortilink,omitempty"` // fsw-wan1-peer interface
+	Ports       []SwitchPort `json:"ports"`
+}
+
+// SwitchGroup mirrors `config switch-controller switch-group`.
+type SwitchGroup struct {
+	Name      string   `json:"name"`
+	Fortilink string   `json:"fortilink,omitempty"`
+	Members   []string `json:"members,omitempty"`
 }
 
 var reConfigVersion = regexp.MustCompile(`(?i)#config-version=([A-Za-z0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)`)
@@ -457,217 +480,6 @@ func (s *Server) handleAuditTicket(w http.ResponseWriter, r *http.Request) {
 		filename, ticketID, details)
 
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
-}
-
-// parseConfigData extracts structured details for topology mapping including switches and VLANs
-func parseConfigData(cfg string) ([]Interface, []StaticRoute, []Policy, []FortiSwitch) {
-	var interfaces []Interface
-	var routes []StaticRoute
-	var policies []Policy
-	var switches []FortiSwitch
-
-	lines := strings.Split(cfg, "\n")
-	var currentSection string
-	var currentInterface *Interface
-	var currentRoute *StaticRoute
-	var currentPolicy *Policy
-	var currentSwitch *FortiSwitch
-	var currentPort *SwitchPort
-	var inPorts bool
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if trimmed == "" {
-			continue
-		}
-
-		if trimmed == "config system interface" {
-			currentSection = "interface"
-			continue
-		} else if trimmed == "config router static" {
-			currentSection = "route"
-			continue
-		} else if trimmed == "config firewall policy" {
-			currentSection = "policy"
-			continue
-		} else if trimmed == "config switch-controller managed-switch" {
-			currentSection = "switch"
-			continue
-		} else if trimmed == "end" {
-			if currentSection == "interface" && currentInterface != nil {
-				interfaces = append(interfaces, *currentInterface)
-				currentInterface = nil
-			}
-			if currentSection == "route" && currentRoute != nil {
-				routes = append(routes, *currentRoute)
-				currentRoute = nil
-			}
-			if currentSection == "policy" && currentPolicy != nil {
-				policies = append(policies, *currentPolicy)
-				currentPolicy = nil
-			}
-			if currentSection == "switch" {
-				if inPorts {
-					inPorts = false
-					continue
-				}
-				if currentSwitch != nil {
-					switches = append(switches, *currentSwitch)
-					currentSwitch = nil
-				}
-			}
-			currentSection = ""
-			continue
-		}
-
-		switch currentSection {
-		case "interface":
-			if strings.HasPrefix(lower, "edit ") {
-				if currentInterface != nil {
-					interfaces = append(interfaces, *currentInterface)
-				}
-				name := strings.Trim(trimmed[5:], `"`+"'")
-				currentInterface = &Interface{Name: name}
-			} else if strings.HasPrefix(lower, "next") {
-				if currentInterface != nil {
-					interfaces = append(interfaces, *currentInterface)
-					currentInterface = nil
-				}
-			} else if currentInterface != nil {
-				if strings.HasPrefix(lower, "set ip ") {
-					parts := strings.Fields(trimmed[7:])
-					if len(parts) >= 1 {
-						currentInterface.IP = parts[0]
-					}
-					if len(parts) >= 2 {
-						currentInterface.Mask = parts[1]
-					}
-				} else if strings.HasPrefix(lower, "set allowaccess ") {
-					currentInterface.AllowAccess = strings.Fields(trimmed[16:])
-				} else if strings.HasPrefix(lower, "set vlanid ") {
-					vlanID, _ := strconv.Atoi(strings.TrimSpace(trimmed[11:]))
-					currentInterface.VlanID = vlanID
-				} else if strings.HasPrefix(lower, "set interface ") {
-					currentInterface.Interface = strings.Trim(trimmed[14:], `"`+"'")
-				} else if strings.HasPrefix(lower, "set role ") {
-					currentInterface.Role = strings.ToLower(strings.Trim(trimmed[9:], `"`+"'"))
-				} else if strings.HasPrefix(lower, "set alias ") {
-					currentInterface.Alias = strings.Trim(trimmed[10:], `"`+"'")
-				}
-			}
-
-		case "route":
-			if strings.HasPrefix(lower, "edit ") {
-				if currentRoute != nil {
-					routes = append(routes, *currentRoute)
-				}
-				id := strings.Trim(trimmed[5:], `"`+"'")
-				currentRoute = &StaticRoute{ID: id}
-			} else if strings.HasPrefix(lower, "next") {
-				if currentRoute != nil {
-					routes = append(routes, *currentRoute)
-					currentRoute = nil
-				}
-			} else if currentRoute != nil {
-				if strings.HasPrefix(lower, "set dst ") {
-					currentRoute.Dst = trimmed[8:]
-				} else if strings.HasPrefix(lower, "set gateway ") {
-					currentRoute.Gateway = trimmed[12:]
-				} else if strings.HasPrefix(lower, "set device ") {
-					currentRoute.Device = strings.Trim(trimmed[11:], `"`+"'")
-				}
-			}
-
-		case "policy":
-			if strings.HasPrefix(lower, "edit ") {
-				if currentPolicy != nil {
-					policies = append(policies, *currentPolicy)
-				}
-				idStr := strings.Trim(trimmed[5:], `"`+"'")
-				id, _ := strconv.Atoi(idStr)
-				currentPolicy = &Policy{ID: id}
-			} else if strings.HasPrefix(lower, "next") {
-				if currentPolicy != nil {
-					policies = append(policies, *currentPolicy)
-					currentPolicy = nil
-				}
-			} else if currentPolicy != nil {
-				if strings.HasPrefix(lower, "set srcintf ") {
-					fields := strings.Fields(trimmed[12:])
-					for _, f := range fields {
-						currentPolicy.SrcIntf = append(currentPolicy.SrcIntf, strings.Trim(f, `"`+"'"))
-					}
-				} else if strings.HasPrefix(lower, "set dstintf ") {
-					fields := strings.Fields(trimmed[12:])
-					for _, f := range fields {
-						currentPolicy.DstIntf = append(currentPolicy.DstIntf, strings.Trim(f, `"`+"'"))
-					}
-				} else if strings.HasPrefix(lower, "set srcaddr ") {
-					fields := strings.Fields(trimmed[12:])
-					for _, f := range fields {
-						currentPolicy.SrcAddr = append(currentPolicy.SrcAddr, strings.Trim(f, `"`+"'"))
-					}
-				} else if strings.HasPrefix(lower, "set dstaddr ") {
-					fields := strings.Fields(trimmed[12:])
-					for _, f := range fields {
-						currentPolicy.DstAddr = append(currentPolicy.DstAddr, strings.Trim(f, `"`+"'"))
-					}
-				} else if strings.HasPrefix(lower, "set service ") {
-					fields := strings.Fields(trimmed[12:])
-					for _, f := range fields {
-						currentPolicy.Service = append(currentPolicy.Service, strings.Trim(f, `"`+"'"))
-					}
-				} else if strings.HasPrefix(lower, "set action ") {
-					currentPolicy.Action = strings.TrimSpace(trimmed[11:])
-				}
-			}
-
-		case "switch":
-			if strings.HasPrefix(lower, "config ports") {
-				inPorts = true
-				continue
-			}
-
-			if inPorts {
-				if strings.HasPrefix(lower, "edit ") {
-					if currentPort != nil && currentSwitch != nil {
-						currentSwitch.Ports = append(currentSwitch.Ports, *currentPort)
-					}
-					name := strings.Trim(trimmed[5:], `"`+"'")
-					currentPort = &SwitchPort{Name: name}
-				} else if strings.HasPrefix(lower, "next") {
-					if currentPort != nil && currentSwitch != nil {
-						currentSwitch.Ports = append(currentSwitch.Ports, *currentPort)
-						currentPort = nil
-					}
-				} else if currentPort != nil {
-					if strings.HasPrefix(lower, "set vlan ") {
-						currentPort.Vlan = strings.Trim(trimmed[9:], `"`+"'")
-					}
-				}
-			} else {
-				if strings.HasPrefix(lower, "edit ") {
-					if currentSwitch != nil {
-						switches = append(switches, *currentSwitch)
-					}
-					id := strings.Trim(trimmed[5:], `"`+"'")
-					currentSwitch = &FortiSwitch{SwitchID: id}
-				} else if strings.HasPrefix(lower, "next") {
-					if currentSwitch != nil {
-						switches = append(switches, *currentSwitch)
-						currentSwitch = nil
-					}
-				} else if currentSwitch != nil {
-					if strings.HasPrefix(lower, "set name ") {
-						currentSwitch.Name = strings.Trim(trimmed[9:], `"`+"'")
-					}
-				}
-			}
-		}
-	}
-
-	return interfaces, routes, policies, switches
 }
 
 // findShadowRules implements Category 1 Feature 1. Policy attributes are

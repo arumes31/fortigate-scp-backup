@@ -39,15 +39,17 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 
 // topologyJSON is the /topology/data/{fwID} response consumed by the D3 tree.
 type topologyJSON struct {
-	FwID       int           `json:"fw_id"`
-	FQDN       string        `json:"fqdn"`
-	HasConfig  bool          `json:"has_config"`
-	Model      string        `json:"model,omitempty"`
-	Version    string        `json:"version,omitempty"`
-	Interfaces []Interface   `json:"interfaces,omitempty"`
-	Routes     []StaticRoute `json:"routes,omitempty"`
-	Policies   []Policy      `json:"policies,omitempty"`
-	Switches   []FortiSwitch `json:"switches,omitempty"`
+	FwID         int           `json:"fw_id"`
+	FQDN         string        `json:"fqdn"`
+	HasConfig    bool          `json:"has_config"`
+	Model        string        `json:"model,omitempty"`
+	Version      string        `json:"version,omitempty"`
+	Interfaces   []Interface   `json:"interfaces,omitempty"`
+	Routes       []StaticRoute `json:"routes,omitempty"`
+	Policies     []Policy      `json:"policies,omitempty"`
+	Switches     []FortiSwitch `json:"switches,omitempty"`
+	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
+	SwitchLinks  []SwitchLink  `json:"switch_links,omitempty"`
 }
 
 // buildTopologyJSON assembles the topology payload for one firewall from the
@@ -71,6 +73,10 @@ func (s *Server) buildTopologyJSON(ctx context.Context, db *sql.DB, fwID int) to
 		out.Routes = res.Routes
 		out.Policies = res.Policies
 		out.Switches = res.Switches
+		out.SwitchGroups = res.SwitchGroups
+		// Derived at read time (cheap) so interlink-detection improvements do
+		// not depend on cached parses.
+		out.SwitchLinks = buildSwitchLinks(res.Switches)
 	}
 	return out
 }
@@ -259,11 +265,10 @@ func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request
 
 	out := s.buildTopologyJSON(r.Context(), db, fwID)
 	// A share link intentionally shows the network structure (interfaces,
-	// VLANs, addressing, routes, switches) — that IS the shared topology. But
-	// it must not disclose the attack surface beyond that: strip policy rule
-	// details (addresses, services, actions), management-access lists, and the
-	// exact firmware version (which fingerprints CVE exposure).
-	out.Version = ""
+	// VLANs, addressing, routes, switches, model and firmware version) — that
+	// IS the shared topology. But it must not disclose the attack surface
+	// beyond that: strip policy rule details (addresses, services, actions)
+	// and management-access lists.
 	for i := range out.Interfaces {
 		out.Interfaces[i].AllowAccess = nil
 	}

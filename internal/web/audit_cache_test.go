@@ -800,9 +800,6 @@ func TestSharedTopologyHidesPolicyDetails(t *testing.T) {
 			t.Fatalf("shared payload must not leak rule details: %+v", p)
 		}
 	}
-	if out.Version != "" {
-		t.Fatalf("shared payload must not leak the firmware version: %q", out.Version)
-	}
 	for _, in := range out.Interfaces {
 		if len(in.AllowAccess) != 0 {
 			t.Fatalf("shared payload must not leak management access lists: %+v", in)
