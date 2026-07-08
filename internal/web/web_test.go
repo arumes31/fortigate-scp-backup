@@ -724,6 +724,12 @@ func TestLoginPageAnimation(t *testing.T) {
 		`@keyframes scan`,
 		`matrixRain`,
 		`id="logo-text"`,
+		`id="loginShader"`,
+		`class="shader-backdrop"`,
+		`fsBeams`,
+		`fsFlow`,
+		`Math.random() < 0.1 ? fsFlow : fsBeams`,
+		`prefers-reduced-motion`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("login page missing %q", want)
@@ -741,5 +747,8 @@ func TestLoginPageAnimation(t *testing.T) {
 	}
 	if strings.Contains(html, ".pulse-circle:nth-child(1) ") || strings.Contains(html, ".pulse-circle:nth-child(2) ") {
 		t.Error("position rules target children 1-2 (grid/scan) — rings are children 3-12")
+	}
+	if strings.Contains(html, "src=\"http") || strings.Contains(html, "cdn.") {
+		t.Error("login page must not reference external scripts (same-origin CSP)")
 	}
 }
