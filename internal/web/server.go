@@ -73,10 +73,13 @@ type Server struct {
 	pages map[string]pageTmpl
 
 	// Insights SQLite handle (audit cache, custom rules, exemptions,
-	// topology shares), opened lazily once per Server. See insightsDB().
-	insightsOnce sync.Once
-	insights     *sql.DB
-	insightsErr  error
+	// topology shares), opened lazily per Server. See insightsDB().
+	insightsMu sync.Mutex
+	insights   *sql.DB
+
+	// warmSem bounds concurrent audit-cache warms (full config parses) so a
+	// fleet-wide backup burst cannot pile up dozens of parses at once.
+	warmSem chan struct{}
 }
 
 type pageTmpl struct {
@@ -96,6 +99,7 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
 		limiter: newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		hub:     newSSEHub(),
+		warmSem: make(chan struct{}, 2),
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err

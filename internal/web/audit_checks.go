@@ -253,29 +253,34 @@ func checkPasswordPolicy(doc *cfgDoc) []auditFinding {
 	return nil
 }
 
-// checkVPNCrypto audits IPsec proposals and DH groups line by line.
+// checkVPNCrypto audits IPsec proposals and DH groups line by line. Each of
+// the three findings fires at most once; the scan stops as soon as all are
+// recorded, and the (linear) enclosingBlock lookup runs only for an actual
+// match, so large tunnel counts do not turn this quadratic.
 func checkVPNCrypto(doc *cfgDoc) []auditFinding {
 	var out []auditFinding
 	seen := map[string]bool{}
 	for i, raw := range doc.lines {
+		if len(seen) == 3 {
+			break
+		}
 		trimmed := strings.TrimSpace(raw)
 		lower := strings.ToLower(trimmed)
 
 		if strings.HasPrefix(lower, "set proposal") {
-			blk := enclosingBlock(doc, i)
-			if (reDES.MatchString(lower) || re3DES.MatchString(lower)) && !seen["vpn-weak-cipher"] {
+			if !seen["vpn-weak-cipher"] && (reDES.MatchString(lower) || re3DES.MatchString(lower)) {
 				seen["vpn-weak-cipher"] = true
 				out = append(out, doc.findingAt("vpn-weak-cipher", "vpn-weak-cipher", "critical",
 					"Weak IPsec encryption (DES/3DES) enabled in proposals",
 					"Schwache IPsec-Verschlüsselung (DES/3DES) in Proposals aktiviert",
-					"config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes256-sha256 aes128gcm-prfsha256\nnext\nend", i, blk))
+					"config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes256-sha256 aes128gcm-prfsha256\nnext\nend", i, enclosingBlock(doc, i)))
 			}
-			if reMD5.MatchString(lower) && !seen["vpn-weak-hash"] {
+			if !seen["vpn-weak-hash"] && reMD5.MatchString(lower) {
 				seen["vpn-weak-hash"] = true
 				out = append(out, doc.findingAt("vpn-weak-hash", "vpn-weak-hash", "warning",
 					"Weak IPsec integrity (MD5) enabled in proposals",
 					"Schwache IPsec-Integrität (MD5) in Proposals aktiviert",
-					"config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes256-sha256\nnext\nend", i, blk))
+					"config vpn ipsec phase1-interface\n  edit <tunnel>\n  set proposal aes256-sha256\nnext\nend", i, enclosingBlock(doc, i)))
 			}
 		}
 
@@ -607,7 +612,11 @@ func splitVersion(v string) (major, minor, patch int, ok bool) {
 }
 
 // cveRange marks a train as vulnerable below a fixed patch level.
+// fixedPatch == neverFixed marks a train where every patch is vulnerable
+// (Fortinet remediation: migrate to a newer train).
 type cveRange struct{ major, minor, fixedPatch int }
+
+const neverFixed = 1 << 30
 
 type cveDef struct {
 	id          string
@@ -634,8 +643,8 @@ var cveDefs = []cveDef{
 		summaryEN:   "SSL-VPN heap overflow RCE (actively exploited)",
 		summaryDE:   "SSL-VPN Heap-Overflow RCE (aktiv ausgenutzt)",
 		severity:    "critical",
-		remediation: "Upgrade to FortiOS >= 7.2.3 / 7.0.9 / 6.4.11 / 6.2.12 or disable SSL-VPN.",
-		ranges:      []cveRange{{7, 2, 3}, {7, 0, 9}, {6, 4, 11}, {6, 2, 12}},
+		remediation: "Upgrade to FortiOS >= 7.2.3 / 7.0.9 / 6.4.11 / 6.2.12 or disable SSL-VPN. FortiOS 6.0 has no fix: migrate.",
+		ranges:      []cveRange{{7, 2, 3}, {7, 0, 9}, {6, 4, 11}, {6, 2, 12}, {6, 0, neverFixed}},
 	},
 	{
 		id:          "CVE-2023-27997",
@@ -650,8 +659,8 @@ var cveDefs = []cveDef{
 		summaryEN:   "SSL-VPN out-of-bounds write RCE (actively exploited)",
 		summaryDE:   "SSL-VPN Out-of-bounds Write RCE (aktiv ausgenutzt)",
 		severity:    "critical",
-		remediation: "Upgrade to FortiOS >= 7.4.3 / 7.2.7 / 7.0.14 / 6.4.15 or disable SSL-VPN web mode.",
-		ranges:      []cveRange{{7, 4, 3}, {7, 2, 7}, {7, 0, 14}, {6, 4, 15}},
+		remediation: "Upgrade to FortiOS >= 7.4.3 / 7.2.7 / 7.0.14 / 6.4.15 or disable SSL-VPN web mode. FortiOS 6.0/6.2 have no fix: migrate.",
+		ranges:      []cveRange{{7, 4, 3}, {7, 2, 7}, {7, 0, 14}, {6, 4, 15}, {6, 2, neverFixed}, {6, 0, neverFixed}},
 	},
 	{
 		id:          "CVE-2024-23113",

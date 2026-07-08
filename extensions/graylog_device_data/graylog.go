@@ -59,6 +59,12 @@ func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
 	}
 
 	query := fmt.Sprintf(e.cfg.GraylogDeviceQuery, escapeGraylogValue(sourceHost(fqdn)))
+	// A template without exactly one %s verb produces fmt error markers; catch
+	// the misconfiguration here instead of sending a garbage query (which
+	// Graylog may answer with every firewall's devices).
+	if strings.Contains(query, "%!") {
+		return nil, fmt.Errorf("GRAYLOG_DEVICE_QUERY template is invalid (needs exactly one %%s): %q", e.cfg.GraylogDeviceQuery)
+	}
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("range", timeframe)

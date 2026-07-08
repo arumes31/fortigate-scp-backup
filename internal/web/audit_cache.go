@@ -1,8 +1,11 @@
 package web
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,10 +18,16 @@ import (
 
 // auditResult is the cached per-firewall audit computation: everything derived
 // from one backup file. Exemptions are applied at read time, so toggling an
-// exemption never triggers a recompute; custom rule changes bust the cache.
+// exemption never triggers a recompute; custom rule changes invalidate the
+// entry via RulesFingerprint.
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
 	ComputedAt     time.Time `json:"computed_at"`
+	// RulesFingerprint identifies the custom-rule set the result was computed
+	// with; a mismatch forces a recompute (also closes the race where an
+	// in-flight compute stores results made with an outdated rule set after
+	// the rule-change cache bust).
+	RulesFingerprint string `json:"rules_fingerprint,omitempty"`
 
 	Model   string `json:"model"`
 	Version string `json:"version"`
@@ -37,11 +46,22 @@ type auditResult struct {
 	Switches   []FortiSwitch `json:"switches"`
 }
 
+// rulesFingerprint hashes the custom-rule set so cached results can detect
+// rule changes.
+func rulesFingerprint(rules []customRule) string {
+	h := sha256.New()
+	for _, r := range rules {
+		_, _ = fmt.Fprintf(h, "%d\x00%s\x00%s\x00%s\x00%s\x00", r.ID, r.Name, r.Pattern, r.Severity, r.Remediation)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:12])
+}
+
 // computeAudit runs the full audit for one decrypted configuration.
 func computeAudit(fwID int, filename, plain string, customRules []customRule) *auditResult {
 	res := &auditResult{
-		BackupFilename: filename,
-		ComputedAt:     time.Now(),
+		BackupFilename:   filename,
+		ComputedAt:       time.Now(),
+		RulesFingerprint: rulesFingerprint(customRules),
 	}
 	res.Model, res.Version = parseFortiOSVersion(plain)
 	res.Interfaces, res.Routes, res.Policies, res.Switches = parseConfigData(plain)
@@ -113,39 +133,50 @@ func storeAudit(db *sql.DB, fwID int, res *auditResult) {
 }
 
 // auditResultFor returns the audit result for a firewall, computing and
-// caching it when the cache is missing or refers to an older backup.
+// caching it when the cache is missing, refers to an older backup, or was
+// computed with a different custom-rule set.
 func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 	filename, ok := s.latestConfigFilename(fwID)
 	if !ok {
 		return nil, false
 	}
-	if cached, hit := getCachedAudit(db, fwID); hit && cached.BackupFilename == filename {
+	rules := loadCustomRules(db)
+	if cached, hit := getCachedAudit(db, fwID); hit &&
+		cached.BackupFilename == filename && cached.RulesFingerprint == rulesFingerprint(rules) {
 		return cached, true
 	}
-	plain, filename, ok := s.latestConfig(fwID)
+	plain, ok := s.readConfig(fwID, filename)
 	if !ok {
 		return nil, false
 	}
-	res := computeAudit(fwID, filename, plain, loadCustomRules(db))
+	res := computeAudit(fwID, filename, plain, rules)
 	storeAudit(db, fwID, res)
 	return res, true
 }
 
 // WarmAuditCache pre-computes the audit for a firewall (called after a
-// successful backup so the audit page is instant). Safe to run concurrently;
-// errors only cost the pre-warming.
+// successful backup so the audit page is instant). Concurrency is bounded by
+// warmSem so a fleet-wide backup burst cannot pile up dozens of full-config
+// parses; errors only cost the pre-warming.
 func (s *Server) WarmAuditCache(fwID int) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("audit cache warm panicked", "fw_id", fwID, "panic", r)
 		}
 	}()
+	s.warmSem <- struct{}{}
+	defer func() { <-s.warmSem }()
+
 	db, err := s.insightsDB()
 	if err != nil || db == nil {
 		return
 	}
 	// Force recompute: a fresh backup just landed.
-	plain, filename, ok := s.latestConfig(fwID)
+	filename, ok := s.latestConfigFilename(fwID)
+	if !ok {
+		return
+	}
+	plain, ok := s.readConfig(fwID, filename)
 	if !ok {
 		return
 	}
@@ -178,21 +209,28 @@ type auditRowJSON struct {
 }
 
 // splitExemptions partitions raw findings into active and exempted using the
-// stable finding key (legacy rows fall back to exact text matching).
+// stable finding key. Keys with the "check:" prefix (from the legacy-text
+// backfill) exempt every instance of that check; rows without a key fall back
+// to exact text matching.
 func splitExemptions(findings []models.AuditFinding, exemptions []exemption, fwID int) (active, exempted []models.AuditFinding) {
-	for _, f := range findings {
-		isExempt := false
-		for _, ex := range exemptions {
-			if ex.FwID != fwID {
-				continue
-			}
-			if (ex.FindingKey != "" && ex.FindingKey == f.Key) ||
-				(ex.FindingKey == "" && ex.FindingText == f.Text) {
-				isExempt = true
-				break
-			}
+	byKey := map[string]bool{}
+	byCheck := map[string]bool{}
+	byText := map[string]bool{}
+	for _, ex := range exemptions {
+		if ex.FwID != fwID {
+			continue
 		}
-		if isExempt {
+		switch {
+		case strings.HasPrefix(ex.FindingKey, "check:"):
+			byCheck[strings.TrimPrefix(ex.FindingKey, "check:")] = true
+		case ex.FindingKey != "":
+			byKey[ex.FindingKey] = true
+		case ex.FindingText != "":
+			byText[ex.FindingText] = true
+		}
+	}
+	for _, f := range findings {
+		if byKey[f.Key] || (f.CheckID != "" && byCheck[f.CheckID]) || byText[f.Text] {
 			exempted = append(exempted, f)
 		} else {
 			active = append(active, f)
@@ -226,13 +264,15 @@ func (s *Server) handleAuditResults(w http.ResponseWriter, r *http.Request) {
 		out.Model = res.Model
 		out.Version = res.Version
 		out.Backup = res.BackupFilename
-		out.ComputedAt = res.ComputedAt.Format("2006-01-02 15:04:05")
+		out.ComputedAt = res.ComputedAt.Format(insightsTimeLayout)
 		out.UpgradePath = res.UpgradePath
 		if lang == "de" && len(res.UpgradePathDE) > 0 {
 			out.UpgradePath = res.UpgradePathDE
 		}
-		out.PciScore, out.CisScore, out.HipaaScore = res.PciScore, res.CisScore, res.HipaaScore
-		active, exempted := splitExemptions(res.Findings, loadExemptions(db), fwID)
+		active, exempted := splitExemptions(res.Findings, loadExemptionsFor(db, fwID), fwID)
+		// Scores reflect the ACTIVE findings: exempting a finding restores the
+		// compliance score (the cached scores are pre-exemption).
+		out.PciScore, out.CisScore, out.HipaaScore = calculateComplianceScores(active)
 		out.Findings = localizeFindings(active, lang)
 		out.Exempted = localizeFindings(exempted, lang)
 

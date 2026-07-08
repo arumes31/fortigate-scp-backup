@@ -119,24 +119,18 @@
     </div>
 </div>
 
+<script>window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script src="/static/ui.js"></script>
 <script>
-window.I18N = {{i18nJSON .Base.Lang}};
 // ---------------------------------------------------------------------------
 // Async audit loading: the page shell renders instantly; per-firewall results
 // are fetched from /audit/results/{id} with limited concurrency and rendered
-// as they arrive.
+// as they arrive. esc()/tt() come from ui.js.
 // ---------------------------------------------------------------------------
 const auditRows = Array.from(document.querySelectorAll("tr.audit-row-item"));
-const auditState = {};       // fwid -> result JSON
+const auditState = {};        // fwid -> result JSON
+const failedRows = new Set(); // fwids whose fetch failed (excluded from totals)
 let totals = { critical: 0, warning: 0, loaded: 0 };
-
-function tt(key) { return (window.I18N && window.I18N[key]) || key; }
-
-function esc(s) {
-    return String(s ?? "").replace(/[&<>"']/g, c => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    })[c]);
-}
 
 function sevColor(sev) {
     return sev === "critical" ? "#ef4444" : sev === "warning" ? "#f59e0b" : "#3b82f6";
@@ -160,12 +154,14 @@ function contextView(f) {
     if (!f.context) return "";
     const lines = f.context.split("\n");
     let num = f.context_start || 1;
+    let afterGap = false; // past the "..." the true line numbers are unknown
     let html = "";
     for (const line of lines) {
         const isEllipsis = line.trim() === "...";
-        const isMatch = !isEllipsis && num === f.line;
+        if (isEllipsis) afterGap = true;
+        const isMatch = !isEllipsis && !afterGap && num === f.line;
         html += `<div style="display: flex; ${isMatch ? "background: rgba(239, 68, 68, 0.12); border-left: 2px solid " + sevColor(f.severity) + ";" : "border-left: 2px solid transparent;"}">
-            <span style="width: 48px; text-align: right; padding-right: 10px; color: rgba(255,255,255,0.25); user-select: none; flex-shrink: 0;">${isEllipsis ? "" : num}</span>
+            <span style="width: 48px; text-align: right; padding-right: 10px; color: rgba(255,255,255,0.25); user-select: none; flex-shrink: 0;">${isEllipsis || afterGap ? "" : num}</span>
             <span style="white-space: pre; color: ${isMatch ? "#fecaca" : "#9ca3af"};">${esc(line)}</span>
         </div>`;
         if (!isEllipsis) num++;
@@ -283,9 +279,13 @@ function updateTotals() {
             else if (f.severity === "warning") totals.warning++;
         }
     }
-    document.getElementById("statCritical").textContent = totals.critical;
-    document.getElementById("statWarnings").textContent = totals.warning;
-    document.getElementById("statLoaded").textContent = totals.loaded + "/" + auditRows.length;
+    // Rows that failed to load are NOT counted: mark the tiles so a partial
+    // failure can never read as a fleet-wide all-clear.
+    const failMark = failedRows.size ? " ⚠" : "";
+    document.getElementById("statCritical").textContent = totals.critical + failMark;
+    document.getElementById("statWarnings").textContent = totals.warning + failMark;
+    document.getElementById("statLoaded").textContent =
+        totals.loaded + "/" + auditRows.length + (failedRows.size ? " ⚠" + failedRows.size : "");
 }
 
 async function loadRow(fwid, recompute) {
@@ -297,9 +297,11 @@ async function loadRow(fwid, recompute) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const res = await resp.json();
         auditState[fwid] = res;
+        failedRows.delete(String(fwid));
         renderRow(tr, res);
     } catch (e) {
         console.error("audit load failed", fwid, e);
+        failedRows.add(String(fwid));
         renderError(tr, fwid);
     } finally {
         totals.loaded = Object.keys(auditState).length;

@@ -620,6 +620,224 @@ func TestChangePWHiddenForRadiusUsers(t *testing.T) {
 	}
 }
 
+func TestVDOMConfigsAreAudited(t *testing.T) {
+	// Multi-VDOM configs nest the sections under "config global" /
+	// "config vdom > edit <name>"; the checks must still fire (regression:
+	// they used to silently no-op, reporting a false-clean audit).
+	cfg := `#config-version=FGT100F-7.2.5-FW-build1517-230608:opmode=0:vdom=1:user=admin
+config vdom
+edit root
+config system interface
+    edit "wan1"
+        set allowaccess ping https ssh telnet
+        set role wan
+    next
+end
+config firewall policy
+    edit 1
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set action accept
+    next
+end
+next
+end
+config global
+config system global
+    set admintimeout 480
+end
+config system admin
+    edit "admin"
+        set accprofile "super_admin"
+    next
+end
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	for _, want := range []string{"intf-telnet", "intf-wan-mgmt", "global-admintimeout", "admin-no-2fa", "policy-any-any"} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("VDOM config should raise %s, got %v", want, keysOf(ids))
+		}
+	}
+}
+
+func keysOf(m map[string]auditFinding) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestLegacyExemptionBackfill(t *testing.T) {
+	srv := testServerData(t)
+	db, err := srv.insightsDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate pre-upgrade rows: German texts, empty finding_key.
+	legacy := []string{
+		"Telnet-Management aktiviert (allowaccess telnet)",
+		"Administrator 'daniel' hat keine Zwei-Faktor-Authentifizierung (2FA) aktiviert",
+		"Shadow-Rule ID 12: wird durch ID 3 blockiert",
+		"Kritische Sicherheitslücke CVE-2024-21762 (SSL-VPN Out-of-bounds Write RCE)",
+		"völlig unbekannter Text",
+	}
+	for _, text := range legacy {
+		if _, err := db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, '', ?, 'r', '2026-01-01 00:00:00')", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv.backfillExemptionKeys(db)
+
+	got := map[string]string{}
+	for _, ex := range loadExemptions(db) {
+		got[ex.FindingText] = ex.FindingKey
+	}
+	want := map[string]string{
+		legacy[0]: "check:intf-telnet",
+		legacy[1]: "admin-no-2fa:daniel",
+		legacy[2]: "shadow-rule:12-3",
+		legacy[3]: "cve:CVE-2024-21762",
+		legacy[4]: "", // unmapped rows stay visible but keyless
+	}
+	for text, key := range want {
+		if got[text] != key {
+			t.Errorf("backfill(%q) = %q, want %q", text, got[text], key)
+		}
+	}
+
+	// A backfilled check:-key exempts every instance of that check.
+	findings := []auditFinding{
+		{FwID: 1, CheckID: "intf-telnet", Key: "intf-telnet:wan1", Text: "Telnet management enabled on interface 'wan1' (unencrypted)"},
+		{FwID: 1, CheckID: "intf-telnet", Key: "intf-telnet:dmz", Text: "Telnet management enabled on interface 'dmz' (unencrypted)"},
+		{FwID: 1, CheckID: "intf-http", Key: "intf-http:wan1", Text: "Plaintext HTTP management enabled on interface 'wan1'"},
+	}
+	active, exempted := splitExemptions(findings, loadExemptions(db), 1)
+	if len(exempted) != 2 {
+		t.Fatalf("check:intf-telnet should exempt both telnet findings, got %d", len(exempted))
+	}
+	if len(active) != 1 || active[0].CheckID != "intf-http" {
+		t.Fatalf("http finding must stay active, got %+v", active)
+	}
+}
+
+func TestExemptionRestoresComplianceScore(t *testing.T) {
+	srv := testServerData(t)
+	db, _ := srv.insightsDB()
+	res, _ := srv.auditResultFor(db, 1)
+
+	// Exempt every finding of the firewall: the served scores must recover to
+	// 100 even though the cached (pre-exemption) scores are lower.
+	for _, f := range res.Findings {
+		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (1, ?, ?, 'r', '2026-01-01 00:00:00')", f.Key, f.Text)
+	}
+	rr := httptest.NewRecorder()
+	srv.handleAuditResults(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/audit/results/1", nil), "fwID", "1"))
+	var out auditRowJSON
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("all findings should be exempted, %d active", len(out.Findings))
+	}
+	if out.PciScore != 100 || out.CisScore != 100 || out.HipaaScore != 100 {
+		t.Fatalf("exempting everything must restore scores to 100, got %d/%d/%d", out.PciScore, out.CisScore, out.HipaaScore)
+	}
+}
+
+func TestCustomRuleFingerprintInvalidatesCache(t *testing.T) {
+	srv := testServerData(t)
+	db, _ := srv.insightsDB()
+	if _, ok := srv.auditResultFor(db, 1); !ok {
+		t.Fatal("compute failed")
+	}
+	// Insert a rule WITHOUT the handler's cache bust: the fingerprint alone
+	// must force a recompute (this is the race fix — a stale entry stored
+	// after the bust is detected too).
+	_, _ = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES ('r1', 'set admin-sport 9443', 'info', 'x')")
+	res, _ := srv.auditResultFor(db, 1)
+	var hit bool
+	for _, f := range res.Findings {
+		if f.CheckID == "custom" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatal("rule-set change must invalidate the cached audit via fingerprint")
+	}
+}
+
+func TestSharedTopologyHidesPolicyDetails(t *testing.T) {
+	srv := testServerData(t)
+	form := url.Values{"fw_id": {"1"}, "expiry_hours": {"24"}}
+	req := httptest.NewRequest(http.MethodPost, "/topology/share", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.handleTopologyShareCreate(rr, req)
+	var share topologyShare
+	_ = json.Unmarshal(rr.Body.Bytes(), &share)
+
+	rr = httptest.NewRecorder()
+	srv.handleTopologySharedData(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/x", nil), "token", share.Token))
+	var out topologyJSON
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Policies) == 0 {
+		t.Fatal("shared payload should keep policy counts")
+	}
+	for _, p := range out.Policies {
+		if len(p.SrcAddr) != 0 || len(p.DstAddr) != 0 || len(p.Service) != 0 || p.Action != "" {
+			t.Fatalf("shared payload must not leak rule details: %+v", p)
+		}
+	}
+	// The authenticated endpoint still carries them.
+	rr = httptest.NewRecorder()
+	srv.handleTopologyData(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/data/1", nil), "fwID", "1"))
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if len(out.Policies) == 0 || len(out.Policies[0].SrcAddr) == 0 {
+		t.Fatal("authenticated payload should keep full policies")
+	}
+}
+
+func TestSetLangRejectsExternalRedirects(t *testing.T) {
+	srv := testServerData(t)
+	for back, want := range map[string]string{
+		"/audit":          "/audit",
+		"//evil.example":  "/",
+		"/\\evil.example": "/",
+		"https://evil":    "/",
+		"":                "/",
+	} {
+		form := url.Values{"lang": {"de"}, "back": {back}}
+		req := httptest.NewRequest(http.MethodPost, "/lang", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.handleSetLang(rr, req)
+		if loc := rr.Header().Get("Location"); loc != want {
+			t.Errorf("back=%q redirected to %q, want %q", back, loc, want)
+		}
+	}
+}
+
+func TestGetCVEsNeverFixedTrains(t *testing.T) {
+	keys := map[string]bool{}
+	for _, f := range getCVEs("6.2.16") {
+		keys[f.Key] = true
+	}
+	if !keys["cve:CVE-2024-21762"] {
+		t.Error("6.2 has no fix for CVE-2024-21762 and must be flagged")
+	}
+	keys = map[string]bool{}
+	for _, f := range getCVEs("6.0.17") {
+		keys[f.Key] = true
+	}
+	if !keys["cve:CVE-2022-42475"] || !keys["cve:CVE-2024-21762"] {
+		t.Errorf("6.0 must be flagged for never-fixed CVEs, got %v", keys)
+	}
+}
+
 func TestComputeAuditExampleConf(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "example.conf"))
 	if err != nil {

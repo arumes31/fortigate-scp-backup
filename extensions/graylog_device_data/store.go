@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -37,48 +39,62 @@ func (e *Extension) switchFirewalls() ([]firewallRef, error) {
 		all = append(all, fw)
 	}
 
-	insights, err := e.openInsights()
+	withSwitches, err := e.switchCapableIDs()
 	if err != nil {
 		// Without the audit cache we cannot tell which firewalls have
-		// switches; fetch none rather than hammering Graylog for all.
+		// switches; fetch none rather than hammering Graylog for all — but
+		// say so, otherwise an empty inventory is undiagnosable.
+		e.logger.Warn("graylog device worker: audit cache unavailable, skipping sweep", "err", err)
 		return nil, err
 	}
-	defer func() { _ = insights.Close() }()
 
 	var out []firewallRef
 	for _, fw := range all {
-		if e.hasSwitches(insights, fw.ID) {
+		if withSwitches[fw.ID] {
 			out = append(out, fw)
 		}
 	}
 	return out, nil
 }
 
-// openInsights opens the core insights SQLite database read-only.
-func (e *Extension) openInsights() (*sql.DB, error) {
-	dsn := "file:" + filepath.ToSlash(filepath.Join(e.dataDir, "forti-insights.db")) + "?mode=ro"
-	db, err := sql.Open("sqlite", dsn)
+// switchCapableIDs returns the ids of every firewall whose cached audit
+// result contains managed FortiSwitches, from one pass over the core's
+// insights database. The core creates that database lazily, so a missing
+// file is reported as an error (the caller logs it) instead of being
+// mistaken for "no switches anywhere".
+func (e *Extension) switchCapableIDs() (map[int]bool, error) {
+	dbFile := filepath.Join(e.dataDir, "forti-insights.db")
+	if _, err := os.Stat(dbFile); err != nil {
+		return nil, fmt.Errorf("insights cache not available yet: %w", err)
+	}
+	insights, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	return db, nil
-}
+	defer func() { _ = insights.Close() }()
+	insights.SetMaxOpenConns(1)
 
-// hasSwitches reports whether the cached audit result of a firewall contains
-// managed FortiSwitches.
-func (e *Extension) hasSwitches(insights *sql.DB, fwID int) bool {
-	var blob string
-	if err := insights.QueryRow("SELECT results_json FROM audit_cache WHERE fw_id = ?", fwID).Scan(&blob); err != nil {
-		return false
+	rows, err := insights.Query("SELECT fw_id, results_json FROM audit_cache")
+	if err != nil {
+		return nil, err
 	}
-	var res struct {
-		Switches []json.RawMessage `json:"switches"`
+	defer func() { _ = rows.Close() }()
+
+	out := map[int]bool{}
+	for rows.Next() {
+		var fwID int
+		var blob string
+		if scanErr := rows.Scan(&fwID, &blob); scanErr != nil {
+			continue
+		}
+		var res struct {
+			Switches []json.RawMessage `json:"switches"`
+		}
+		if jsonErr := json.Unmarshal([]byte(blob), &res); jsonErr == nil && len(res.Switches) > 0 {
+			out[fwID] = true
+		}
 	}
-	if err := json.Unmarshal([]byte(blob), &res); err != nil {
-		return false
-	}
-	return len(res.Switches) > 0
+	return out, rows.Err()
 }
 
 // refreshFirewall fetches the device inventory for one firewall from Graylog
