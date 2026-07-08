@@ -76,6 +76,32 @@
     {{end}}
 </div>
 
+{{if .BlockedPorts}}
+<div class="card pad-0" style="border: 1px solid rgba(249,115,22,0.45);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #fb923c;">⃠ {{T .Base.Lang "dashboard.blocked_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;">{{len .BlockedPorts}} {{T .Base.Lang "dashboard.blocked_unit"}}</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_switch"}}</th><th>{{T .Base.Lang "dashboard.col_port"}}</th><th>{{T .Base.Lang "dashboard.col_reason"}}</th><th>{{T .Base.Lang "dashboard.col_since"}}</th><th></th></tr></thead>
+            <tbody>
+            {{range .BlockedPorts}}
+                <tr>
+                    <td>{{if .FQDN}}{{.FQDN}}{{else}}#{{.FwID}}{{end}}</td>
+                    <td>{{.Switch}}</td>
+                    <td><code>{{.Port}}</code></td>
+                    <td><span class="pill pill-failed" style="background: rgba(249,115,22,0.15); color: #fb923c; border-color: rgba(249,115,22,0.4);">{{.Reason}}</span></td>
+                    <td class="muted">{{.Since}}</td>
+                    <td><a class="btn btn-sm" href="/topology?fw={{.FwID}}">{{T $.Base.Lang "dashboard.topology"}}</a></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
 <div class="panel">
     <div class="panel-head">SYS_STDOUT_</div>
     <div class="stdout" id="stdout">
