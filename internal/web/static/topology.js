@@ -830,9 +830,12 @@ function renderDevicePanel() {
         [d.mac, d.ip, d.hostname, d.vlan, d.switch_id, d.port]
             .some(v => String(v || "").toLowerCase().includes(q)));
     document.getElementById("devPanelCount").textContent = `${rows.length} / ${devices.length}`;
+    // The MAC travels via a data attribute, never interpolated into inline
+    // JS: esc() is safe for attribute/text context but not for a script
+    // string literal (the browser decodes entities before the JS parser).
     body.innerHTML = rows.slice(0, 500).map(d => {
         const stale = isStaleDevice(d);
-        return `<div onclick="locateDeviceByMac('${esc(d.mac)}')" style="display: flex; gap: 10px; padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 0.8em; ${stale ? "opacity: 0.5;" : ""}" onmouseenter="this.style.background='rgba(255,255,255,0.05)'" onmouseleave="this.style.background=''">
+        return `<div class="dev-row" data-mac="${esc(d.mac)}" style="display: flex; gap: 10px; padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 0.8em; ${stale ? "opacity: 0.5;" : ""}">
             <span style="color: #a5f3fc; min-width: 130px; font-family: monospace;">${esc(d.mac)}</span>
             <span style="min-width: 110px;">${esc(d.ip || "—")}</span>
             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${esc(d.hostname || "—")}</span>
@@ -841,6 +844,11 @@ function renderDevicePanel() {
             ${stale ? `<span style="color: #f59e0b;">⏱ ${tt("topo.stale")}</span>` : ""}
         </div>`;
     }).join("");
+    body.querySelectorAll(".dev-row").forEach(el => {
+        el.addEventListener("click", () => locateDeviceByMac(el.getAttribute("data-mac") || ""));
+        el.addEventListener("mouseenter", () => el.style.background = "rgba(255,255,255,0.05)");
+        el.addEventListener("mouseleave", () => el.style.background = "");
+    });
 }
 
 function resetZoom() {
