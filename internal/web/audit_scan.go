@@ -165,6 +165,69 @@ func (d *cfgDoc) settingDirect(b cfgBlock, name string) (string, int, bool) {
 	return strings.Trim(val, `"'`), idx, true
 }
 
+// settingFields returns the values of `set <name> …` directly inside the
+// block as a list, or nil when the setting is absent. Quoted values keep
+// embedded spaces ("Internal Net" stays one value) and backslash escapes
+// inside quotes are resolved.
+func (d *cfgDoc) settingFields(b cfgBlock, name string) []string {
+	_, line, ok := d.findDirect(b, "set "+name+" ")
+	if !ok {
+		return nil
+	}
+	return splitCfgValues(strings.TrimSpace(line[len("set "+name+" "):]))
+}
+
+// findAllInBlock returns every trimmed line with the given prefix
+// (case-insensitive) anywhere inside the block, including nested child
+// blocks — unlike findDirect, which skips them. Used for radio-level
+// settings of wtp-profiles.
+func (d *cfgDoc) findAllInBlock(b cfgBlock, prefix string) []string {
+	lp := strings.ToLower(prefix)
+	var out []string
+	for i := b.Start + 1; i < b.End && i < len(d.lines); i++ {
+		trimmed := strings.TrimSpace(d.lines[i])
+		if strings.HasPrefix(strings.ToLower(trimmed), lp) {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// splitCfgValues tokenizes a FortiGate `set` value list: whitespace-separated
+// tokens, with double/single-quoted strings kept as single values and
+// backslash escapes (\" \\) unescaped inside quotes.
+func splitCfgValues(s string) []string {
+	var out []string
+	for i := 0; i < len(s); {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		if q := s[i]; q == '"' || q == '\'' {
+			i++
+			var sb strings.Builder
+			for i < len(s) && s[i] != q {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				sb.WriteByte(s[i])
+				i++
+			}
+			i++ // closing quote (or past end when unterminated)
+			out = append(out, sb.String())
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+			i++
+		}
+		out = append(out, s[start:i])
+	}
+	return out
+}
+
 // context renders the detected line ±3 lines. When the enclosing block's
 // closing line lies beyond the window it is appended after an ellipsis so the
 // block ending stays visible. Returns the snippet and the 1-based number of

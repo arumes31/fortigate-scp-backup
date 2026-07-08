@@ -1,15 +1,22 @@
 {{define "content"}}
+<style>
+    body.topo-embed .page-title, body.topo-embed nav, body.topo-embed header,
+    body.topo-embed #topoControls, body.topo-embed #devPanel, body.topo-embed footer { display: none !important; }
+</style>
 <h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "topo.title"}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
-<div class="card" style="margin-bottom: 16px;">
+<div class="card" id="topoControls" style="margin-bottom: 16px;">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
             <label for="topoSelect" style="font-size: 0.9em;">{{T .Base.Lang "topo.firewall"}}</label>
             <select id="topoSelect" onchange="loadTopology(); refreshShares();" style="padding: 6px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; min-width: 220px;">
                 {{range .Firewalls}}<option value="{{.ID}}">{{.FQDN}}</option>{{end}}
             </select>
+            <input id="topoSearch" type="search" placeholder="{{T .Base.Lang "topo.search_ph"}}"
+                onkeydown="if (event.key === 'Enter') searchTopo(this.value)"
+                style="padding: 6px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; min-width: 200px;">
             <span id="topoMeta" class="muted" style="font-size: 0.85em;"></span>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; font-size: 0.82em;">
@@ -19,16 +26,24 @@
         </div>
     </div>
 
+    <!-- View filters -->
+    <div style="margin-top: 10px; display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.82em;" class="muted">
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('devices', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.devices"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('vlans', this.checked)" style="vertical-align: -2px;"> VLANs</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('routes', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.routes"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('edge', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.edge_switches"}}</label>
+    </div>
+
     <!-- Public share link -->
     <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span style="font-size: 0.85em; color: var(--accent-color);">[⚭] {{T .Base.Lang "topo.share"}}</span>
-        <select id="shareExpiry" style="padding: 5px 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; font-size: 0.85em;">
+        <span style="font-size: 0.85em; color: var(--accent);">[⚭] {{T .Base.Lang "topo.share"}}</span>
+        <select id="shareExpiry" style="width: auto; padding: 5px 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; font-size: 0.85em;">
             <option value="24">{{T .Base.Lang "topo.share_24h"}}</option>
             <option value="168" selected>{{T .Base.Lang "topo.share_7d"}}</option>
             <option value="720">{{T .Base.Lang "topo.share_30d"}}</option>
             <option value="0">{{T .Base.Lang "topo.share_never"}}</option>
         </select>
-        <button class="btn btn-small" onclick="createShare()" style="background: var(--accent-color); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
+        <button class="btn btn-small" onclick="createShare()" style="background: var(--accent); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
         <div id="shareResult" style="display: none; flex: 1; min-width: 280px; display: none; align-items: center; gap: 6px;">
             <input id="shareUrl" type="text" readonly onclick="this.select()" style="flex: 1; padding: 5px 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); color: #34d399; border-radius: 4px; font-size: 0.82em; font-family: monospace;">
             <button class="btn btn-small" onclick="copyShare()" id="copyBtn" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px;">{{T .Base.Lang "topo.copy"}}</button>
@@ -57,6 +72,20 @@
         </div>
         <div id="faceBody" style="padding: 16px; overflow-y: auto; flex: 1;"></div>
     </div>
+
+    <!-- Right-click context menu -->
+    <div id="topoCtx" style="position: absolute; display: none; background: rgba(10,12,18,0.97); border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; font-size: 0.82em; z-index: 40; box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px 0; min-width: 180px;"></div>
+</div>
+
+<!-- Device inventory panel (Graylog extension; hidden when no data) -->
+<div class="card" id="devPanel" style="margin-top: 16px; display: none;">
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+        <strong style="font-size: 0.9em;">◇ {{T .Base.Lang "topo.devices"}}</strong>
+        <span id="devPanelCount" class="muted" style="font-size: 0.8em;"></span>
+        <input id="devFilter" type="search" placeholder="{{T .Base.Lang "topo.dev_filter_ph"}}" oninput="renderDevicePanel()"
+            style="margin-left: auto; padding: 5px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; min-width: 220px; font-size: 0.85em;">
+    </div>
+    <div id="devPanelBody" style="max-height: 300px; overflow-y: auto;"></div>
 </div>
 
 <script>window.TOPO_CONFIG = { dataBase: "/topology/data/", devicesBase: "/graylog-devices" }; window.I18N = {{i18nJSON .Base.Lang}};</script>
