@@ -48,17 +48,17 @@ func (s *Server) handleSetLang(w http.ResponseWriter, r *http.Request) {
 		MaxAge: 365 * 24 * 3600, HttpOnly: true, Secure: s.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	// Only ever redirect to a local, host-less path. url.Parse rejects control
-	// characters and populates Host for "//evil.com"/"https://evil.com" style
-	// targets; backslashes are rejected outright because browsers normalise
-	// "/\evil" to "//evil" (a protocol-relative jump off-site). Rebuilding from
-	// RequestURI() then drops any scheme/host so Location can never point
-	// off-site (open-redirect guard).
-	raw := r.FormValue("back")
-	back := "/"
-	if u, err := url.Parse(raw); err == nil && !strings.Contains(raw, "\\") &&
-		!u.IsAbs() && u.Host == "" && strings.HasPrefix(u.Path, "/") {
-		back = u.RequestURI()
+	// Open-redirect guard: only follow a local, host-less path. url.Parse
+	// populates Scheme/Host for "https://evil.com" and "//evil.com"; the
+	// prefix checks additionally reject "/\evil", which browsers normalise to
+	// "//evil" (a protocol-relative jump off-site). Anything else falls back to
+	// "/". The validated request value itself is redirected (not a
+	// reconstruction) so the check applies to exactly what is emitted.
+	back := r.FormValue("back")
+	if u, err := url.Parse(back); err != nil || u.IsAbs() || u.Hostname() != "" ||
+		!strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") ||
+		strings.HasPrefix(back, "/\\") {
+		back = "/"
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
