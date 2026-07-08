@@ -548,8 +548,9 @@ func macEventFromMessage(msg map[string]any) (MacPort, bool) {
 	text := field(msg, "msg", "message")
 	// A "moved to interface X" message has two "interface" tokens; keep the last
 	// (the current port) by trimming everything up to the final "to interface".
-	if i := strings.LastIndex(strings.ToLower(text), "to interface "); i >= 0 {
-		text = text[:strings.Index(strings.ToLower(text), " ")+1] + text[i+len("to "):]
+	lower := strings.ToLower(text)
+	if i := strings.LastIndex(lower, "to interface "); i >= 0 {
+		text = text[:strings.Index(lower, " ")+1] + text[i+len("to "):]
 	}
 	m := reMacEvent.FindStringSubmatch(text)
 	if m == nil || m[2] == "" {
@@ -584,18 +585,24 @@ func wifiFromMessage(msg map[string]any) (WifiClient, bool) {
 }
 
 // vpnFromMessage normalizes one VPN log into a per-tunnel status. Up/down is
-// inferred from action/logdesc wording; "stats" events count as up.
+// inferred from the controlled `action` and `logdesc` fields only — never the
+// free-text `msg`, which contains negotiation wording like "DH group 14" or
+// "teardown" that would otherwise false-match "up"/"down".
 func vpnFromMessage(msg map[string]any) (VpnStatus, bool) {
 	name := field(msg, "vpntunnel", "tunnelid", "tunnel")
 	if name == "" {
 		return VpnStatus{}, false
 	}
-	blob := strings.ToLower(field(msg, "action") + " " + field(msg, "logdesc") + " " + field(msg, "msg"))
+	act := strings.ToLower(field(msg, "action"))
+	ld := strings.ToLower(field(msg, "logdesc"))
 	status := ""
 	switch {
-	case strings.Contains(blob, "down") || strings.Contains(blob, "deleted") || strings.Contains(blob, "phase 2 down"):
+	case strings.Contains(act, "down") || strings.Contains(ld, "down") ||
+		strings.Contains(ld, "deleted") || strings.Contains(ld, "teardown"):
 		status = "down"
-	case strings.Contains(blob, "up") || strings.Contains(blob, "installed") || strings.Contains(blob, "tunnel-stats") || strings.Contains(blob, "established"):
+	case strings.Contains(act, "up") || strings.Contains(act, "stats") ||
+		strings.Contains(ld, "installed") || strings.Contains(ld, "established") ||
+		strings.Contains(ld, "statistics"):
 		status = "up"
 	}
 	return VpnStatus{
