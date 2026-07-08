@@ -165,6 +165,22 @@ func (d *cfgDoc) settingDirect(b cfgBlock, name string) (string, int, bool) {
 	return strings.Trim(val, `"'`), idx, true
 }
 
+// settingFields returns the values of `set <name> …` directly inside the
+// block as a list with per-token quotes trimmed, or nil when the setting is
+// absent.
+func (d *cfgDoc) settingFields(b cfgBlock, name string) []string {
+	_, line, ok := d.findDirect(b, "set "+name+" ")
+	if !ok {
+		return nil
+	}
+	fields := strings.Fields(strings.TrimSpace(line[len("set "+name+" "):]))
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, strings.Trim(f, `"'`))
+	}
+	return out
+}
+
 // context renders the detected line ±3 lines. When the enclosing block's
 // closing line lies beyond the window it is appended after an ellipsis so the
 // block ending stays visible. Returns the snippet and the 1-based number of

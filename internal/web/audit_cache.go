@@ -20,9 +20,14 @@ import (
 // from one backup file. Exemptions are applied at read time, so toggling an
 // exemption never triggers a recompute; custom rule changes invalidate the
 // entry via RulesFingerprint.
+// auditSchemaVersion invalidates cached results whose parse predates a
+// parser/derivation change (bump when parseConfigData output changes).
+const auditSchemaVersion = 2
+
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
 	ComputedAt     time.Time `json:"computed_at"`
+	SchemaVersion  int       `json:"schema_version,omitempty"`
 	// RulesFingerprint identifies the custom-rule set the result was computed
 	// with; a mismatch forces a recompute (also closes the race where an
 	// in-flight compute stores results made with an outdated rule set after
@@ -40,10 +45,11 @@ type auditResult struct {
 	CisScore   int `json:"cis_score"`
 	HipaaScore int `json:"hipaa_score"`
 
-	Interfaces []Interface   `json:"interfaces"`
-	Routes     []StaticRoute `json:"routes"`
-	Policies   []Policy      `json:"policies"`
-	Switches   []FortiSwitch `json:"switches"`
+	Interfaces   []Interface   `json:"interfaces"`
+	Routes       []StaticRoute `json:"routes"`
+	Policies     []Policy      `json:"policies"`
+	Switches     []FortiSwitch `json:"switches"`
+	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
 }
 
 // rulesFingerprint hashes the custom-rule set so cached results can detect
@@ -61,12 +67,13 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule) *a
 	res := &auditResult{
 		BackupFilename:   filename,
 		ComputedAt:       time.Now(),
+		SchemaVersion:    auditSchemaVersion,
 		RulesFingerprint: rulesFingerprint(customRules),
 	}
 	res.Model, res.Version = parseFortiOSVersion(plain)
-	res.Interfaces, res.Routes, res.Policies, res.Switches = parseConfigData(plain)
 
 	doc := parseCfg(plain)
+	res.Interfaces, res.Routes, res.Policies, res.Switches, res.SwitchGroups = parseConfigData(doc)
 
 	findings := runStructuralChecks(doc, res.Routes)
 	findings = append(findings, findShadowRules(res.Policies)...)
@@ -147,7 +154,8 @@ func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 	}
 	rules := loadCustomRules(db)
 	if cached, hit := getCachedAudit(db, fwID); hit &&
-		cached.BackupFilename == filename && cached.RulesFingerprint == rulesFingerprint(rules) {
+		cached.BackupFilename == filename && cached.RulesFingerprint == rulesFingerprint(rules) &&
+		cached.SchemaVersion == auditSchemaVersion {
 		return cached, true
 	}
 	plain, ok := s.readConfig(fwID, filename)

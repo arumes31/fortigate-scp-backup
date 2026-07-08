@@ -21,14 +21,14 @@
 
     <!-- Public share link -->
     <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span style="font-size: 0.85em; color: var(--accent-color);">[⚭] {{T .Base.Lang "topo.share"}}</span>
-        <select id="shareExpiry" style="padding: 5px 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; font-size: 0.85em;">
+        <span style="font-size: 0.85em; color: var(--accent);">[⚭] {{T .Base.Lang "topo.share"}}</span>
+        <select id="shareExpiry" style="width: auto; padding: 5px 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; font-size: 0.85em;">
             <option value="24">{{T .Base.Lang "topo.share_24h"}}</option>
             <option value="168" selected>{{T .Base.Lang "topo.share_7d"}}</option>
             <option value="720">{{T .Base.Lang "topo.share_30d"}}</option>
             <option value="0">{{T .Base.Lang "topo.share_never"}}</option>
         </select>
-        <button class="btn btn-small" onclick="createShare()" style="background: var(--accent-color); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
+        <button class="btn btn-small" onclick="createShare()" style="background: var(--accent); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
         <div id="shareResult" style="display: none; flex: 1; min-width: 280px; display: none; align-items: center; gap: 6px;">
             <input id="shareUrl" type="text" readonly onclick="this.select()" style="flex: 1; padding: 5px 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); color: #34d399; border-radius: 4px; font-size: 0.82em; font-family: monospace;">
             <button class="btn btn-small" onclick="copyShare()" id="copyBtn" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px;">{{T .Base.Lang "topo.copy"}}</button>

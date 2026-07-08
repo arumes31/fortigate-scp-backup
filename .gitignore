@@ -17,6 +17,7 @@ __pycache__/
 # Project-specific / local files
 docs/
 example.conf
+example2.conf
 example.csv
 .gemini/settings.json
 graphify-out/

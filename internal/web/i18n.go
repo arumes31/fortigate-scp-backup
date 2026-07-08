@@ -168,6 +168,12 @@ var uiMsgs = map[string]map[string]string{
 	"topo.dev_updated":  {"en": "device data updated", "de": "Gerätedaten aktualisiert"},
 	"topo.fetch_failed": {"en": "Device data fetch failed.", "de": "Gerätedaten-Abruf fehlgeschlagen."},
 	"topo.legend_share": {"en": "MAC/IP shared", "de": "MAC/IP geteilt"},
+
+	// Switch interlinks / MC-LAG
+	"topo.interlink":     {"en": "Interlink", "de": "Interlink"},
+	"topo.mclag_group":   {"en": "MC-LAG Peer Group", "de": "MC-LAG-Peer-Gruppe"},
+	"topo.mclag_info":    {"en": "Switches forming an MC-LAG pair (ICL detected)", "de": "Switches im MC-LAG-Verbund (ICL erkannt)"},
+	"topo.link_detected": {"en": "detected via MAC match", "de": "per MAC-Zuordnung erkannt"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by

@@ -1,7 +1,9 @@
 // ---------------------------------------------------------------------------
 // Interactive network topology renderer: D3 tree, Internet → FortiGate →
-// interfaces → VLANs / FortiSwitches → ports. Clicking the firewall or a
-// switch opens an auto-generated faceplate.
+// interfaces → VLANs / FortiSwitches → ports. Switch interlinks (MC-LAG ICL,
+// persisted ISL trunks, MAC-detected links) are drawn as a dashed overlay
+// between switch nodes. Clicking the firewall or a switch opens an
+// auto-generated faceplate.
 //
 // Used by both the authenticated /topology page and the public shared view.
 // Configure via window.TOPO_CONFIG before loading:
@@ -11,6 +13,7 @@
 let topo = null;        // current topology JSON
 let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
+let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
 let svg, gRoot, zoomBehavior;
 
 // esc() and tt() come from ui.js, which every topology page loads first.
@@ -22,6 +25,8 @@ const NODE_STYLE = {
     wan:       { fill: "#1c1917", stroke: "#f59e0b", icon: "☁", label: "#fde68a" },
     vlan:      { fill: "#1e1b4b", stroke: "#8b5cf6", icon: "⌗", label: "#ddd6fe" },
     switch:    { fill: "#064e3b", stroke: "#10b981", icon: "≣", label: "#d1fae5" },
+    mclag:     { fill: "#042f2e", stroke: "#14b8a6", icon: "⇄", label: "#ccfbf1" },
+    vlangroup: { fill: "#1e1b4b", stroke: "#8b5cf6", icon: "⌗", label: "#ddd6fe" },
     port:      { fill: "#0f172a", stroke: "#34d399", icon: "•", label: "#a7f3d0" },
     route:     { fill: "#1e293b", stroke: "#38bdf8", icon: "→", label: "#bae6fd" },
     device:    { fill: "#082f36", stroke: "#22d3ee", icon: "◇", label: "#a5f3fc" },
@@ -67,6 +72,47 @@ function wanSet(interfaces, routes) {
     return wan;
 }
 
+// swName is the display/node name of a switch (matches the Go side's
+// switchDisplayName so server-derived interlinks resolve to tree nodes).
+function swName(sw) { return sw.name || sw.switch_id; }
+
+// resolveSwitchName maps an inventory switch reference (name, switch-id or
+// serial, depending on the log source) to the tree node name.
+function resolveSwitchName(switches, id) {
+    if (!id) return null;
+    const sw = switches.find(s => s.switch_id === id || s.name === id || s.serial === id);
+    return sw ? swName(sw) : null;
+}
+
+// addInterlink merges a link into the list: one edge per switch pair, port
+// lists unioned (an ICL detected from config AND via MAC stays one edge).
+function addInterlink(links, l) {
+    const ex = links.find(e => (e.from === l.from && e.to === l.to) || (e.from === l.to && e.to === l.from));
+    if (!ex) { links.push(l); return; }
+    const merge = (arr, add) => { (add || []).forEach(p => { if (!arr.includes(p)) arr.push(p); }); };
+    ex.from_ports = ex.from_ports || [];
+    ex.to_ports = ex.to_ports || [];
+    if (ex.from === l.from) {
+        merge(ex.from_ports, l.from_ports);
+        merge(ex.to_ports, l.to_ports);
+    } else {
+        merge(ex.from_ports, l.to_ports);
+        merge(ex.to_ports, l.from_ports);
+    }
+}
+
+function interlinkKindLabel(kind) {
+    if (kind === "mclag-icl") return "MC-LAG ICL";
+    if (kind === "isl") return "ISL";
+    return tt("topo.link_detected");
+}
+
+function interlinkTip(l) {
+    return `${tt("topo.interlink")} · ${interlinkKindLabel(l.kind)}\n` +
+        `${l.from}: ${(l.from_ports || []).join(", ") || "—"}\n` +
+        `${l.to}: ${(l.to_ports || []).join(", ") || "—"}`;
+}
+
 // buildTree converts the parsed config into a d3.hierarchy-compatible tree.
 function buildTree(data) {
     const interfaces = data.interfaces || [];
@@ -103,18 +149,73 @@ function buildTree(data) {
     const singleSwitch = switches.length === 1;
     const assigned = new Set();
 
+    // Switch interlinks: config-derived (MC-LAG ICL, persisted ISL trunks)
+    // plus links detected by matching inventory MACs against the switch-port
+    // MACs from the config — a "device" whose MAC belongs to another switch's
+    // port is that switch, wired to the port it was seen on.
+    const interlinks = (data.switch_links || []).map(l => ({ ...l }));
+    const portMacOwner = {};
+    switches.forEach(sw => (sw.ports || []).forEach(p => {
+        if (p.mac) portMacOwner[p.mac.toLowerCase()] = { sw: swName(sw), port: p.name };
+    }));
+    devices.forEach(dv => {
+        const own = portMacOwner[(dv.mac || "").toLowerCase()];
+        if (!own) return;
+        assigned.add(dv); // an interlink endpoint, not a client device
+        const from = resolveSwitchName(switches, dv.switch_id);
+        if (!from || !dv.port || from === own.sw) return;
+        addInterlink(interlinks, { from: from, from_ports: [dv.port], to: own.sw, to_ports: [own.port], kind: "detected" });
+    });
+    topoInterlinks = interlinks;
+
+    const mclagNames = new Set();
+    interlinks.filter(l => l.kind === "mclag-icl").forEach(l => { mclagNames.add(l.from); mclagNames.add(l.to); });
+
+    // Tier rank from the serial prefix digit (S5xx aggregation → S4/2xx access
+    // → S1xx edge) so the stack reads top-down like the physical layout.
+    function switchTierRank(sw) {
+        const m = /^S(\d)/i.exec(sw.serial || sw.switch_id || "");
+        return m ? -Number(m[1]) : 0;
+    }
+
+    // pushSwitchNodes appends the FortiLink stack: the MC-LAG peer group
+    // first (as one group node), then the remaining switches by tier.
+    function pushSwitchNodes(children) {
+        const sorted = [...switches].sort((a, b) =>
+            switchTierRank(a) - switchTierRank(b) || swName(a).localeCompare(swName(b)));
+        const mclag = sorted.filter(sw => mclagNames.has(swName(sw)));
+        const rest = sorted.filter(sw => !mclagNames.has(swName(sw)));
+        if (mclag.length) {
+            children.push({
+                name: tt("topo.mclag_group"), kind: "mclag",
+                info: `${tt("topo.mclag_info")}\n${mclag.map(swName).join(", ")}`,
+                badge: mclag.map(swName).join(" · "),
+                children: mclag.map(switchNode)
+            });
+        }
+        rest.forEach(sw => children.push(switchNode(sw)));
+    }
+
     function intfNode(i) {
         const isWan = wanDevices.has(i.name);
         const children = [];
-        (vlansByParent[i.name] || []).forEach(v => {
+        if (i.name === fortilinkHost) pushSwitchNodes(children);
+        const vlanKids = (vlansByParent[i.name] || []).map(v => ({
+            name: v.name, kind: "vlan", data: v,
+            info: `VLAN-ID: ${v.vlan_id}\nIP: ${v.ip ? v.ip + "/" + v.mask : "—"}\n${tt("topo.parent")}: ${v.interface}`,
+            badge: "VLAN " + v.vlan_id
+        }));
+        // Many VLANs (typical on the FortiLink interface) collapse into one
+        // group node so the switch stack stays readable.
+        if (vlanKids.length > 8) {
             children.push({
-                name: v.name, kind: "vlan", data: v,
-                info: `VLAN-ID: ${v.vlan_id}\nIP: ${v.ip ? v.ip + "/" + v.mask : "—"}\n${tt("topo.parent")}: ${v.interface}`,
-                badge: "VLAN " + v.vlan_id
+                name: "VLANs", kind: "vlangroup",
+                info: vlanKids.length + " VLANs",
+                badge: String(vlanKids.length),
+                children: vlanKids
             });
-        });
-        if (i.name === fortilinkHost) {
-            switches.forEach(sw => children.push(switchNode(sw)));
+        } else {
+            children.push(...vlanKids);
         }
         (routesByDevice[i.name] || []).forEach(r => {
             children.push({
@@ -138,7 +239,8 @@ function buildTree(data) {
         const swDevs = devices.filter(dv => {
             if (assigned.has(dv)) return false;
             if (!dv.switch_id) return singleSwitch;
-            return dv.switch_id === sw.switch_id || (sw.name && dv.switch_id === sw.name) || singleSwitch;
+            return dv.switch_id === sw.switch_id || (sw.name && dv.switch_id === sw.name) ||
+                (sw.serial && dv.switch_id === sw.serial) || singleSwitch;
         });
 
         const byVlan = {};
@@ -166,9 +268,12 @@ function buildTree(data) {
 
         const devCount = swDevs.length;
         return {
-            name: sw.name || sw.switch_id, kind: "switch", data: sw,
-            info: `FortiSwitch\n${tt("topo.serial")}: ${sw.switch_id}\n${tt("topo.ports")}: ${ports.length}` +
+            name: swName(sw), kind: "switch", data: sw,
+            info: `FortiSwitch${sw.model ? " " + sw.model : ""}\n${tt("topo.serial")}: ${sw.serial || sw.switch_id}` +
+                (sw.description ? `\n${sw.description}` : "") +
+                `\n${tt("topo.ports")}: ${ports.length}` +
                 (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
+            badge: sw.model || null,
             children: children
         };
     }
@@ -217,9 +322,9 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        // Collapse port/route groups by default to keep the initial view tidy
-        // (their devices/details expand on click).
-        if (d.data.kind === "port" || d.data.kind === "route") d.children = null;
+        // Collapse port/route/VLAN groups by default to keep the initial view
+        // tidy (their devices/details expand on click).
+        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup") d.children = null;
     });
 
     gRoot = svg.append("g");
@@ -227,6 +332,7 @@ function renderTree(data) {
     svg.call(zoomBehavior);
 
     const gLinks = gRoot.append("g");
+    const gInter = gRoot.append("g"); // switch interlink overlay (above tree links, below nodes)
     const gNodes = gRoot.append("g");
 
     const tree = d3.tree().nodeSize([44, 210]);
@@ -321,6 +427,34 @@ function renderTree(data) {
             .transition().duration(220).attr("d", diagonal);
         link.exit().remove();
 
+        // Switch interlinks: dashed edges bowing right of the deeper switch,
+        // drawn between the switch nodes currently visible.
+        const swPos = {};
+        nodes.forEach(d => { if (d.data.kind === "switch") swPos[d.data.name] = d; });
+        const interPath = l => {
+            const a = swPos[l.from], b = swPos[l.to];
+            const x1 = a.y + 75, y1 = a.x, x2 = b.y + 75, y2 = b.x;
+            const mx = Math.max(x1, x2) + 46 + Math.abs(y2 - y1) / 8;
+            return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+        };
+        const ilink = gInter.selectAll("path.interlink")
+            .data(topoInterlinks.filter(l => swPos[l.from] && swPos[l.to]),
+                l => l.from + "|" + l.to + "|" + l.kind);
+        ilink.enter().append("path")
+            .attr("class", "interlink")
+            .attr("fill", "none")
+            .attr("stroke", "#f59e0b")
+            .attr("stroke-width", 1.7)
+            .attr("stroke-dasharray", "6,4")
+            .attr("stroke-opacity", 0.65)
+            .style("cursor", "pointer")
+            .on("mousemove", (ev, l) => showTip(ev, `${l.from} ⇄ ${l.to}`, interlinkTip(l)))
+            .on("mouseleave", hideTip)
+            .attr("d", interPath)
+          .merge(ilink)
+            .transition().duration(220).attr("d", interPath);
+        ilink.exit().remove();
+
         nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
     }
 
@@ -356,6 +490,7 @@ function hideTip() { document.getElementById("topoTip").style.display = "none"; 
 // Faceplate: auto-generated schematic front panel for firewall / switch.
 // ---------------------------------------------------------------------------
 function portColor(p) {
+    if (p.isInterlink) return "#f59e0b";
     if (p.isWan) return "#f59e0b";
     if (p.isFortilink) return "#10b981";
     if (p.vlans > 0) return "#8b5cf6";
@@ -379,7 +514,7 @@ function faceplateSVG(ports, title) {
         <g class="fp-port" data-idx="${idx}" style="cursor: pointer;">
             <rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="4" fill="rgba(0,0,0,0.55)" stroke="${col}" stroke-width="1.6"/>
             <rect x="${x + 8}" y="${y + cell - 11}" width="${cell - 16}" height="6" rx="1.5" fill="${col}" opacity="0.85"/>
-            <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink ? "#22c55e" : "#4b5563"}"/>
+            <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink ? "#22c55e" : "#4b5563"}"/>
             <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
         </g>`;
     });
@@ -391,8 +526,10 @@ function faceplateSVG(ports, title) {
     </svg>`;
 }
 
-function faceplateLegend() {
-    const items = [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
+function faceplateLegend(kind) {
+    const items = kind === "switch"
+        ? [["#f59e0b", tt("topo.interlink")], ["#8b5cf6", tt("topo.legend_vlan")], ["#374151", tt("topo.legend_none")]]
+        : [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 0.78em;">
         ${items.map(([c, t]) => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${c}; margin-right: 5px; vertical-align: -1px;"></span>${t}</span>`).join("")}
     </div>`;
@@ -428,22 +565,33 @@ function showFaceplate(nodeData) {
         }));
     } else if (nodeData.kind === "switch") {
         const sw = nodeData.data;
-        title = sw.name || sw.switch_id;
-        sub = `FortiSwitch · ${sw.switch_id}`;
+        title = swName(sw);
+        sub = `FortiSwitch${sw.model ? " " + sw.model : ""} · ${sw.serial || sw.switch_id}`;
+        // Interlink ports of this switch → peer label ("EX-CORE02 port29").
+        const inter = {};
+        topoInterlinks.forEach(l => {
+            if (l.from === title) (l.from_ports || []).forEach((p, i) => { inter[p] = l.to + ((l.to_ports || [])[i] ? " " + l.to_ports[i] : ""); });
+            if (l.to === title) (l.to_ports || []).forEach((p, i) => { inter[p] = l.from + ((l.from_ports || [])[i] ? " " + l.from_ports[i] : ""); });
+        });
         ports = (sw.ports || []).map(p => ({
             label: p.name,
             hasIP: false,
             isWan: false,
             isFortilink: false,
+            isInterlink: !!inter[p.name],
             vlans: p.vlan ? 1 : 0,
-            detail: `VLAN: ${p.vlan || "—"}`
+            detail: `VLAN: ${p.vlan || "—"}` +
+                (inter[p.name] ? `\n${tt("topo.interlink")}: ${inter[p.name]}` : "") +
+                (p.description ? `\n${p.description}` : "") +
+                (p.mac ? `\nMAC: ${p.mac}` : "") +
+                (p.speed ? `\nSpeed: ${p.speed}` : "")
         }));
     }
 
     document.getElementById("faceTitle").textContent = title;
     document.getElementById("faceSub").textContent = sub;
     body.innerHTML = ports.length
-        ? faceplateSVG(ports, title) + faceplateLegend() + '<div id="facePortDetail"></div>'
+        ? faceplateSVG(ports, title) + faceplateLegend(nodeData.kind) + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
 
     body.querySelectorAll(".fp-port").forEach(el => {
