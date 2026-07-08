@@ -55,8 +55,8 @@ func TestGraylogSourcesFromVpnConfig(t *testing.T) {
 	}
 	// A cluster (two nodes) matched by dns_name_full, and a standalone matched by firewallname.
 	if _, err := db.Exec(`INSERT INTO vpn_config VALUES
-		('FGT100F_CUST1-HQ', 'cust1-hq', 'cust1-hq.example.com', 'FGT100F_CUST1-HQ-N1, FGT100F_CUST1-HQ-N2'),
-		('FGT40F_CUST2-HL', 'cust2', 'cust2.example.com', '')`); err != nil {
+		('FGT100F-SITE-A', 'site-a', 'site-a.example.com', 'FGT100F-SITE-A-N1, FGT100F-SITE-A-N2'),
+		('FGT40F-SITE-B', 'site-b', 'site-b.example.com', '')`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
@@ -64,12 +64,12 @@ func TestGraylogSourcesFromVpnConfig(t *testing.T) {
 	e := &Extension{dataDir: dir, logger: slog.New(slog.DiscardHandler)}
 
 	// Cluster: both node hostnames returned (matched via dns_name_full).
-	got := e.graylogSources("cust1-hq.example.com")
-	if len(got) != 2 || got[0] != "FGT100F_CUST1-HQ-N1" || got[1] != "FGT100F_CUST1-HQ-N2" {
+	got := e.graylogSources("site-a.example.com")
+	if len(got) != 2 || got[0] != "FGT100F-SITE-A-N1" || got[1] != "FGT100F-SITE-A-N2" {
 		t.Fatalf("cluster sources wrong: %v", got)
 	}
 	// Standalone (no cluster_hostnames): the firewallname, matched case-insensitively.
-	if got := e.graylogSources("cust2.example.com"); len(got) != 1 || got[0] != "FGT40F_CUST2-HL" {
+	if got := e.graylogSources("site-b.example.com"); len(got) != 1 || got[0] != "FGT40F-SITE-B" {
 		t.Fatalf("standalone source wrong: %v", got)
 	}
 	// No matching row: fall back to the FQDN short host.
@@ -83,6 +83,52 @@ func TestGraylogSourcesFallbackNoDB(t *testing.T) {
 	e := &Extension{dataDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
 	if got := e.graylogSources("fw2.example.com"); len(got) != 1 || got[0] != "fw2" {
 		t.Fatalf("fallback wrong: %v", got)
+	}
+}
+
+func TestMacEventFromMessage(t *testing.T) {
+	// MAC add: mac + port + vlan + switch parsed from free-text msg.
+	mp, ok := macEventFromMessage(map[string]any{
+		"name": "SW-ACCESS01",
+		"msg":  "50:4f:94:a2:df:e8 discovered on interface port11 in vlan 1 on Switch SW-ACCESS01",
+	})
+	if !ok || mp.Mac != "50:4f:94:a2:df:e8" || mp.Port != "port11" || mp.Vlan != "1" || mp.SwitchName != "SW-ACCESS01" {
+		t.Fatalf("add parse wrong: %+v ok=%t", mp, ok)
+	}
+	// MAC move: the destination (newest) port wins; indexed sn is the switch.
+	mp, ok = macEventFromMessage(map[string]any{
+		"sn":  "SW-SERIAL-01",
+		"msg": "46:a8:d4:89:ff:39 moved from interface port11 to interface port8 in vlan 100 on Switch SW-ACCESS03",
+	})
+	if !ok || mp.Port != "port8" || mp.Vlan != "100" || mp.SwitchName != "SW-SERIAL-01" {
+		t.Fatalf("move parse wrong: %+v ok=%t", mp, ok)
+	}
+	// MAC delete has no port → skipped.
+	if _, ok := macEventFromMessage(map[string]any{"msg": "fa:40:d7:3f:63:2a deleted from vlan 300 on Switch X"}); ok {
+		t.Error("delete event must be skipped (no port)")
+	}
+}
+
+func TestVpnFromMessage(t *testing.T) {
+	v, ok := vpnFromMessage(map[string]any{"vpntunnel": "site-a", "remip": "1.2.3.4", "tunneltype": "ipsec", "action": "tunnel-up"})
+	if !ok || v.Status != "up" || v.RemIP != "1.2.3.4" || v.Type != "ipsec" {
+		t.Fatalf("vpn up wrong: %+v ok=%t", v, ok)
+	}
+	if v, _ := vpnFromMessage(map[string]any{"tunnelid": "9", "logdesc": "IPsec phase 2 down"}); v.Status != "down" {
+		t.Fatalf("vpn down wrong: %+v", v)
+	}
+	if _, ok := vpnFromMessage(map[string]any{"remip": "1.2.3.4"}); ok {
+		t.Error("record without a tunnel name/id must be skipped")
+	}
+}
+
+func TestWifiFromMessage(t *testing.T) {
+	w, ok := wifiFromMessage(map[string]any{"stamac": "CA:02:3A:6E:E7:2C", "ap": "AP-01", "ssid": "GuestWiFi", "signal": "-37", "channel": "1"})
+	if !ok || w.Mac != "ca:02:3a:6e:e7:2c" || w.Ap != "AP-01" || w.Ssid != "GuestWiFi" || w.Signal != "-37" {
+		t.Fatalf("wifi parse wrong: %+v ok=%t", w, ok)
+	}
+	if _, ok := wifiFromMessage(map[string]any{"ssid": "x"}); ok {
+		t.Error("record without a station MAC must be skipped")
 	}
 }
 
@@ -203,8 +249,13 @@ func testExt(t *testing.T, graylogURL string) *Extension {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(createTableSQL); err != nil {
-		t.Fatal(err)
+	for _, q := range []string{
+		createTableSQL, createStpTableSQL, createStpEventsSQL,
+		createMacPortsSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	e.db = db

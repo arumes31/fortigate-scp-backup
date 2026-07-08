@@ -18,6 +18,9 @@ let topoStpEvents = []; // raw port event history (48h) from the extension
 let topoStpEventsIdx = {}; // "switchDisplayName|port" → [events, newest first]
 let topoMultiMac = [];  // ports with several MACs behind them (extension-computed)
 let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
+let topoVpn = [];       // VPN tunnel up/down states from the extension
+let topoVpnIdx = {};    // tunnel name → { status, remip, type }
+let topoHaDetail = "";  // newest HA event summary from the extension
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
 let topoRootNode = null;// d3 hierarchy root of the current render (search/locate)
@@ -71,6 +74,10 @@ function deviceNode(d) {
     let info = `${tt("topo.device")}\nMAC: ${d.mac}\nIP: ${d.ip || "—"}\nVLAN: ${d.vlan || "—"}\nPort: ${d.port || "—"}`;
     if (d.hostname) info += `\nHost: ${d.hostname}`;
     if (d.switch_id) info += `\nSwitch: ${d.switch_id}`;
+    // Endpoint fingerprint (device-identification) and wireless association.
+    const fp = [d.devtype, d.osname && (d.osname + (d.osversion ? " " + d.osversion : "")), d.vendor].filter(Boolean).join(" · ");
+    if (fp) info += `\n${fp}`;
+    if (d.ap) info += `\n${tt("topo.ap") || "AP"}: ${d.ap}${d.ssid ? " · " + d.ssid : ""}${d.signal ? " · " + d.signal + " dBm" : ""}`;
     if (d.first_seen) info += `\n${tt("topo.first_seen")}: ${d.first_seen}`;
     if (d.last_seen) info += `\n${tt("topo.seen")}: ${d.last_seen}`;
     if (stale) info += `\n⏱ ${tt("topo.stale")}`;
@@ -332,6 +339,9 @@ function buildTree(data) {
     (topoMultiMac || []).forEach(m => {
         topoMultiMacIdx[dispName(m.switch_id) + "|" + m.port] = m.mac_count;
     });
+    // VPN tunnel up/down states, keyed by tunnel name for vpnNode() lookup.
+    topoVpnIdx = {};
+    (topoVpn || []).forEach(v => { topoVpnIdx[v.name] = v; });
 
     const mclagNames = new Set();
     interlinks.filter(l => l.kind === "mclag-icl").forEach(l => { mclagNames.add(l.from); mclagNames.add(l.to); });
@@ -493,14 +503,21 @@ function buildTree(data) {
     // entry and children when the tunnel exists as an interface.
     function vpnNode(t, ctx) {
         const i = ctx && ctx.intf;
+        // Live tunnel state from the extension's VPN logs (up/down), matched by
+        // tunnel name; falls back to no annotation when nothing was logged.
+        const vs = topoVpnIdx[t.name];
+        const up = vs && vs.status === "up", down = vs && vs.status === "down";
         return {
             name: t.name, kind: "vpn", data: i ? { ...t, ...i } : t,
             info: `IPsec VPN\n${tt("topo.remote_gw")}: ${t.remote_gw || "—"}` +
                 (t.ike_version ? `\nIKE v${t.ike_version}` : "") +
                 `\n${tt("topo.egress")}: ${t.interface || "—"}` +
                 (i && i.ip ? `\nIP: ${i.ip}/${i.mask}` : "") +
+                (vs ? `\nStatus: ${vs.status}${vs.remip ? " · " + vs.remip : ""}` : "") +
                 `\nPolicies: ${policyCount[t.name] || 0}`,
-            badge: t.remote_gw || null,
+            badge: (up ? "▲ " : down ? "▼ " : "") + (t.remote_gw || (vs && vs.remip) || "VPN"),
+            strokeColor: up ? "#10b981" : down ? "#ef4444" : null,
+            faded: down,
             children: (ctx && ctx.children) || []
         };
     }
@@ -692,7 +709,8 @@ function buildTree(data) {
             info: `${tt("topo.ha_standby")}\nHA: ${ha.mode}` +
                 (ha.group_name ? `\n${tt("topo.group")}: ${ha.group_name}` : "") +
                 ((ha.hbdev || []).length ? `\nHeartbeat: ${ha.hbdev.join(", ")}` : "") +
-                ((ha.monitor || []).length ? `\nMonitor: ${ha.monitor.join(", ")}` : ""),
+                ((ha.monitor || []).length ? `\nMonitor: ${ha.monitor.join(", ")}` : "") +
+                (topoHaDetail ? `\n${topoHaDetail}` : ""),
             badge: "HA " + ha.mode,
             children: []
         });
@@ -1405,6 +1423,8 @@ async function loadDeviceData() {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoVpn = data.vpn || [];
+        topoHaDetail = data.ha_detail || "";
         return data.devices || [];
     } catch (e) {
         return null;
@@ -1432,6 +1452,8 @@ async function fetchDevicesNow(rangeSec) {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoVpn = data.vpn || [];
+        topoHaDetail = data.ha_detail || "";
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();
         if (meta) meta.textContent = topoDevices.length
