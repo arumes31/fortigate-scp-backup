@@ -70,6 +70,11 @@ func (e *Extension) switchFirewalls() ([]firewallRef, error) {
 func (e *Extension) vpnConfigSources(fqdn string) []string {
 	dbFile := filepath.Join(e.dataDir, "fgt-adm-vpn-conf-db.db")
 	if _, err := os.Stat(dbFile); err != nil {
+		// Missing DB is normal (fall back to the FQDN); a permission/I/O error
+		// is not — log it so a silent empty source resolution is diagnosable.
+		if !os.IsNotExist(err) {
+			e.logger.Warn("graylog devices: cannot stat adm-vpn-conf db", "path", dbFile, "err", err)
+		}
 		return nil
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
@@ -347,7 +352,10 @@ type BlockedPort struct {
 func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	dbFile := filepath.Join(dataDir, "graylog-device-data.db")
 	if _, err := os.Stat(dbFile); err != nil {
-		return nil, nil
+		if os.IsNotExist(err) {
+			return nil, nil // extension disabled or never fetched: no blocked ports
+		}
+		return nil, err // permission / I/O error: surface it, don't hide as "none"
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
 	if err != nil {

@@ -26,7 +26,10 @@ type GraylogIssue struct {
 func ListGraylogIssues(dataDir string) ([]GraylogIssue, error) {
 	dbFile := filepath.Join(dataDir, "fgt-adm-vpn-conf-db.db")
 	if _, err := os.Stat(dbFile); err != nil {
-		return nil, nil
+		if os.IsNotExist(err) {
+			return nil, nil // extension disabled or not yet initialised: no card
+		}
+		return nil, err // permission / I/O error: surface it, don't hide as "no issues"
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
 	if err != nil {
