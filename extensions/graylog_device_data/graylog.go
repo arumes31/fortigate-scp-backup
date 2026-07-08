@@ -47,6 +47,55 @@ func sourceHost(fqdn string) string {
 	return fqdn
 }
 
+// graylogSources returns the Graylog `source` value(s) to match for a firewall:
+// the operator-maintained hostnames from the fgt_adm_vpn_conf extension (which
+// include both HA cluster nodes) when available, otherwise the short hostname
+// derived from the FQDN.
+func (e *Extension) graylogSources(fqdn string) []string {
+	if hs := e.vpnConfigSources(fqdn); len(hs) > 0 {
+		return hs
+	}
+	return []string{sourceHost(fqdn)}
+}
+
+// buildSourceQuery substitutes the `source:"%s"` term of a query template with
+// the resolved source(s). A single source keeps the original form; multiple
+// sources (an HA cluster) become a grouped OR so the rest of the template's
+// filter still applies to all of them, e.g.
+// `(source:"fw-n1" OR source:"fw-n2") AND (mac:* OR …)`.
+func buildSourceQuery(template string, sources []string) string {
+	parts := make([]string, 0, len(sources))
+	for _, s := range sources {
+		parts = append(parts, fmt.Sprintf(`source:"%s"`, escapeGraylogValue(s)))
+	}
+	var clause string
+	switch len(parts) {
+	case 0:
+		return template // nothing resolved: leave %s so the caller errors visibly
+	case 1:
+		clause = parts[0]
+	default:
+		clause = "(" + strings.Join(parts, " OR ") + ")"
+	}
+	if strings.Contains(template, `source:"%s"`) {
+		return strings.Replace(template, `source:"%s"`, clause, 1)
+	}
+	// Template without the standard source token: AND the clause in front.
+	return clause + " AND (" + template + ")"
+}
+
+// effectiveRange picks the Graylog search window in seconds: a per-request
+// override (e.g. a live refresh) wins, else the configured default, else 24h.
+func effectiveRange(override, cfg string) string {
+	if override != "" {
+		return override
+	}
+	if cfg != "" {
+		return cfg
+	}
+	return "86400"
+}
+
 // fetchDevices queries Graylog for the firewall's device logs and returns the
 // normalized, de-duplicated device list (most recent record per MAC+IP wins;
 // Graylog returns messages newest-first).
@@ -56,8 +105,9 @@ func sourceHost(fqdn string) string {
 // portname, switchid), DHCP assignment (srcmac, assignedip), traffic logs
 // (srcmac, dstmac), and device-identification (macaddr). The default query
 // `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` catches all of these.
-func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
-	msgs, err := e.queryGraylog(e.cfg.GraylogDeviceQuery, "GRAYLOG_DEVICE_QUERY", fqdn)
+func (e *Extension) fetchDevices(fqdn, rangeSec string) ([]Device, error) {
+	sources := e.graylogSources(fqdn)
+	msgs, err := e.queryGraylog(e.cfg.GraylogDeviceQuery, "GRAYLOG_DEVICE_QUERY", fqdn, sources, rangeSec)
 	if err != nil {
 		return nil, err
 	}
@@ -77,14 +127,22 @@ func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
 		out = append(out, d)
 	}
 
-	// Diagnostic: when Graylog returns messages but none contain a MAC, log
-	// at Warn so the operator can adjust GRAYLOG_DEVICE_QUERY or enable
-	// device-detection / DHCP logging on the FortiGate.
-	if len(msgs) > 0 && len(out) == 0 {
-		e.logger.Warn("graylog returned messages but none contained a MAC address",
-			"fqdn", fqdn, "total_messages", len(msgs), "query_template", e.cfg.GraylogDeviceQuery,
-			"hint", "ensure GRAYLOG_DEVICE_QUERY matches logs with mac/srcmac/macaddr fields; "+
-				"check that device-detection or DHCP logging is enabled on the FortiGate")
+	// Visibility into why the inventory may be empty. 0 messages almost always
+	// means the log "source" does not match the firewall's short hostname (the
+	// GRAYLOG_DEVICE_QUERY `source:"%s"` filter) or the time range excludes
+	// them; messages-but-no-MAC means the matched logs carry no MAC field.
+	src := strings.Join(sources, ",")
+	e.logger.Info("graylog device fetch",
+		"fqdn", fqdn, "sources", src,
+		"messages", len(msgs), "devices", len(out))
+	switch {
+	case len(msgs) == 0:
+		e.logger.Warn("graylog device fetch returned 0 messages — verify the Graylog 'source' matches this firewall (set cluster_hostnames in the FGT ADM VPN config for HA pairs) and that the search window covers it",
+			"fqdn", fqdn, "sources", src,
+			"query_template", e.cfg.GraylogDeviceQuery, "range_seconds", effectiveRange(rangeSec, e.cfg.GraylogDeviceRange))
+	case len(out) == 0:
+		e.logger.Warn("graylog returned messages but none contained a MAC address — adjust GRAYLOG_DEVICE_QUERY or enable device-detection / DHCP logging on the FortiGate",
+			"fqdn", fqdn, "total_messages", len(msgs), "query_template", e.cfg.GraylogDeviceQuery)
 	}
 
 	return out, nil
@@ -92,22 +150,21 @@ func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
 
 // queryGraylog runs one relative-range search with the given query template
 // (%s = source host) and returns the raw messages, newest first.
-func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[string]any, error) {
+func (e *Extension) queryGraylog(template, templateName, fqdn string, sources []string, rangeSec string) ([]map[string]any, error) {
 	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
 	if graylogURL == "" || e.cfg.GraylogToken == "" {
 		return nil, errors.New("graylog not configured (GRAYLOG_URL/GRAYLOG_TOKEN)")
 	}
-	timeframe := e.cfg.GraylogDeviceRange
-	if timeframe == "" {
-		timeframe = "86400"
-	}
+	// rangeSec (set by e.g. a live topology refresh) overrides the configured
+	// window so frequent polls scan only recent logs instead of the full range.
+	timeframe := effectiveRange(rangeSec, e.cfg.GraylogDeviceRange)
 
-	query := fmt.Sprintf(template, escapeGraylogValue(sourceHost(fqdn)))
-	// A template without exactly one %s verb produces fmt error markers; catch
-	// the misconfiguration here instead of sending a garbage query (which
-	// Graylog may answer with every firewall's logs).
-	if strings.Contains(query, "%!") {
-		return nil, fmt.Errorf("%s template is invalid (needs exactly one %%s): %q", templateName, template)
+	query := buildSourceQuery(template, sources)
+	// A leftover %s / fmt error marker means the template's source term was not
+	// `source:"%s"`; catch the misconfiguration here instead of sending a
+	// garbage query (which Graylog may answer with every firewall's logs).
+	if strings.Contains(query, "%s") || strings.Contains(query, "%!") {
+		return nil, fmt.Errorf(`%s template is invalid (needs a source:"%%s" term): %q`, templateName, template)
 	}
 	params := url.Values{}
 	params.Set("query", query)
@@ -115,7 +172,8 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 	params.Set("limit", "1000")
 	apiURL := graylogURL + "/api/search/universal/relative?" + params.Encode()
 
-	e.logger.Debug("graylog fetch", "template", templateName, "fqdn", fqdn, "source", sourceHost(fqdn), "query", query, "range", timeframe)
+	e.logger.Debug("graylog fetch: sending query", "template", templateName, "fqdn", fqdn,
+		"sources", strings.Join(sources, ","), "query", query, "range", timeframe)
 
 	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -128,11 +186,15 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("graylog request failed (%s): %w", templateName, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("graylog returned HTTP %d", resp.StatusCode)
+		// Surface Graylog's own error text (e.g. a query-syntax complaint)
+		// instead of a bare status code — that is what the operator needs.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("graylog %s returned HTTP %d for source %q: %s",
+			templateName, resp.StatusCode, sourceHost(fqdn), strings.TrimSpace(string(snippet)))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
@@ -145,12 +207,14 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode graylog response (%s): %w", templateName, err)
 	}
 	out := make([]map[string]any, 0, len(data.Messages))
 	for _, m := range data.Messages {
 		out = append(out, m.Message)
 	}
+	e.logger.Debug("graylog fetch: response received", "template", templateName, "fqdn", fqdn,
+		"status", resp.StatusCode, "messages", len(out))
 	return out, nil
 }
 
@@ -205,8 +269,8 @@ type stpEvent struct {
 // into the latest status per switch port (messages arrive newest-first, so
 // the first event of each kind seen per port wins). The full event list is
 // returned alongside for the port history.
-func (e *Extension) fetchStpStates(fqdn string) ([]StpPort, []StpEvent, error) {
-	msgs, err := e.queryGraylog(e.cfg.GraylogStpQuery, "GRAYLOG_STP_QUERY", fqdn)
+func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogStpQuery, "GRAYLOG_STP_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
 	if err != nil {
 		return nil, nil, err
 	}

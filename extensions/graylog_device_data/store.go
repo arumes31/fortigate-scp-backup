@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -55,6 +56,64 @@ func (e *Extension) switchFirewalls() ([]firewallRef, error) {
 		}
 	}
 	return out, nil
+}
+
+// vpnConfigSources resolves the Graylog `source` name(s) for a firewall from
+// the fgt_adm_vpn_conf extension's database, where operators record each
+// firewall's real log source — including both node hostnames of an HA cluster
+// (cluster_hostnames). Graylog `source` is the FortiGate's devname/hostname,
+// which frequently differs from the backup FQDN, so this mapping is what makes
+// the device/STP queries match. The firewall is matched by FQDN (and its short
+// host) against the unique firewallname / dns_name / dns_name_full columns,
+// case-insensitively. Returns nil when that DB is absent or nothing matches, so
+// the caller falls back to deriving the source from the FQDN.
+func (e *Extension) vpnConfigSources(fqdn string) []string {
+	dbFile := filepath.Join(e.dataDir, "fgt-adm-vpn-conf-db.db")
+	if _, err := os.Stat(dbFile); err != nil {
+		return nil
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
+	if err != nil {
+		e.logger.Debug("graylog devices: cannot open adm-vpn-conf db", "err", err)
+		return nil
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+
+	short := sourceHost(fqdn)
+	var firewallname, clusters string
+	err = db.QueryRow(`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'')
+		FROM vpn_config
+		WHERE lower(firewallname) IN (lower(?), lower(?))
+		   OR lower(dns_name)      IN (lower(?), lower(?))
+		   OR lower(dns_name_full) IN (lower(?), lower(?))
+		LIMIT 1`,
+		fqdn, short, fqdn, short, fqdn, short).Scan(&firewallname, &clusters)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			e.logger.Debug("graylog devices: adm-vpn-conf lookup failed", "fqdn", fqdn, "err", err)
+		}
+		return nil
+	}
+	if hs := splitHostnames(clusters); len(hs) > 0 {
+		return hs
+	}
+	if firewallname != "" {
+		return []string{firewallname}
+	}
+	return nil
+}
+
+// splitHostnames splits a comma-separated cluster-hostname list, trimming
+// blanks (mirrors the fgt_adm_vpn_conf helper of the same name).
+func splitHostnames(s string) []string {
+	var out []string
+	for _, h := range strings.Split(s, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // switchCapableIDs returns the ids of every firewall whose cached audit
@@ -106,9 +165,10 @@ const deviceRetention = 30 * 24 * time.Hour
 // refreshFirewall fetches the device inventory for one firewall from Graylog
 // and upserts its stored rows: known devices keep their first_seen, unseen
 // devices survive until deviceRetention. Returns the number of devices in
-// this fetch.
-func (e *Extension) refreshFirewall(fwID int, fqdn string) (int, error) {
-	devices, err := e.fetchDevices(fqdn)
+// this fetch. rangeSec optionally narrows the Graylog search window (used by
+// the live topology refresh); "" uses the configured default.
+func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error) {
+	devices, err := e.fetchDevices(fqdn, rangeSec)
 	if err != nil {
 		return 0, err
 	}
@@ -153,7 +213,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn string) (int, error) {
 
 	// STP/guard/link port states ride along on the same refresh; a failure
 	// only costs the STP overlay (stale rows are kept), never the inventory.
-	if stp, events, serr := e.fetchStpStates(fqdn); serr != nil {
+	if stp, events, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog stp fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else {
 		if serr := e.storeStp(fwID, stp, now); serr != nil {

@@ -1207,6 +1207,19 @@ function faceplateLegend(kind) {
     </div>`;
 }
 
+// vlanColorLegend maps the hashed per-VLAN port colors on a switch faceplate
+// back to VLAN names, so the colors the port cells use are readable. Returns
+// "" when no port carries an (untagged) VLAN name.
+function vlanColorLegend(ports) {
+    const names = [...new Set((ports || []).map(p => p.vlanName).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (!names.length) return "";
+    return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.78em; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+        <span class="muted">${tt("topo.vlan_colors")}:</span>
+        ${names.map(n => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${vlanColor(n)}; margin-right: 5px; vertical-align: -1px;"></span>${esc(n)}</span>`).join("")}
+    </div>`;
+}
+
 function portDetailHTML(p) {
     return `<div style="margin-top: 14px; padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.85em;">
         <strong style="color: #fff;">${esc(p.label)}</strong>
@@ -1314,8 +1327,10 @@ function showFaceplate(nodeData) {
     }
     if (!panelHTML && ports.length) panelHTML = faceplateSVG(ports, title);
 
+    const legend = faceplateLegend(nodeData.kind) +
+        (nodeData.kind === "switch" ? vlanColorLegend(ports) : "");
     body.innerHTML = panelHTML
-        ? panelHTML + faceplateLegend(nodeData.kind) + '<div id="facePortDetail"></div>'
+        ? panelHTML + legend + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
 
     body.querySelectorAll(".fp-port").forEach(el => {
@@ -1372,8 +1387,9 @@ async function loadDeviceData() {
 }
 
 // fetchDevicesNow triggers an immediate Graylog fetch for the viewed firewall
-// ("fetch device data now" button) and re-renders the tree.
-async function fetchDevicesNow() {
+// ("fetch device data now" button) and re-renders the tree. rangeSec, when
+// given (live mode), narrows the Graylog search window to recent logs only.
+async function fetchDevicesNow(rangeSec) {
     const cfg = window.TOPO_CONFIG || {};
     const fwid = selectedFwID();
     if (!cfg.devicesBase || !fwid) return;
@@ -1382,7 +1398,8 @@ async function fetchDevicesNow() {
     if (btn) btn.disabled = true;
     if (meta) meta.textContent = tt("topo.fetching");
     try {
-        const resp = await fetch(cfg.devicesBase + "/refresh/" + fwid, { method: "POST" });
+        const url = cfg.devicesBase + "/refresh/" + fwid + (rangeSec ? "?range=" + rangeSec : "");
+        const resp = await fetch(url, { method: "POST" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
         if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
@@ -1412,6 +1429,10 @@ async function fetchDevicesNow() {
 // selected, so switching the selector keeps live mode following the view.
 const LIVE_INTERVAL_MS = 60000;  // poll cadence (~1 min)
 const LIVE_MAX_MS = 600000;      // safety cap: auto-stop after 10 min
+const LIVE_RANGE_SEC = 300;      // live polls scan only the last 5 min of logs
+                                 // (vs the full default window) — retention keeps
+                                 // everything already fetched, so a short window
+                                 // is enough and far cheaper on Graylog.
 let liveTimer = null;            // setInterval handle for the poll
 let liveCountdown = null;        // setInterval handle for the 1s button label
 let liveDeadline = 0;            // epoch ms at which live mode auto-stops
@@ -1441,7 +1462,7 @@ async function livePoll() {
     if (Date.now() >= liveDeadline) { stopLiveDevices(); return; }
     if (liveInFlight) return; // a previous fetch is still running — skip this tick
     liveInFlight = true;
-    try { await fetchDevicesNow(); }
+    try { await fetchDevicesNow(LIVE_RANGE_SEC); }
     finally { liveInFlight = false; }
 }
 

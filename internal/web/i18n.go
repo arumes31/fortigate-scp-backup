@@ -164,6 +164,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.legend_ip":   {"en": "IP configured", "de": "IP konfiguriert"},
 	"topo.legend_none": {"en": "unconfigured", "de": "unkonfiguriert"},
 	"topo.legend_vlan": {"en": "VLAN parent", "de": "VLAN-Parent"},
+	"topo.vlan_colors": {"en": "VLANs", "de": "VLANs"},
 
 	// Graylog device inventory (extension)
 	"topo.device":       {"en": "Device", "de": "Gerät"},

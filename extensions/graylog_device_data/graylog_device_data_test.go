@@ -26,6 +26,66 @@ func TestSourceHost(t *testing.T) {
 	}
 }
 
+func TestBuildSourceQuery(t *testing.T) {
+	tmpl := `source:"%s" AND (mac:* OR srcmac:*)`
+	if got := buildSourceQuery(tmpl, []string{"FW-N1"}); got != `source:"FW-N1" AND (mac:* OR srcmac:*)` {
+		t.Errorf("single source wrong: %q", got)
+	}
+	// HA cluster: grouped OR so the mac filter applies to both nodes.
+	got := buildSourceQuery(tmpl, []string{"FW-N1", "FW-N2"})
+	want := `(source:"FW-N1" OR source:"FW-N2") AND (mac:* OR srcmac:*)`
+	if got != want {
+		t.Errorf("cluster source wrong:\n got %q\nwant %q", got, want)
+	}
+	// A double quote in a source name must be escaped, not break out of the term.
+	if got := buildSourceQuery(tmpl, []string{`a"b`}); got != `source:"a\"b" AND (mac:* OR srcmac:*)` {
+		t.Errorf("escaping wrong: %q", got)
+	}
+}
+
+func TestGraylogSourcesFromVpnConfig(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "fgt-adm-vpn-conf-db.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE vpn_config (
+		firewallname TEXT, dns_name TEXT, dns_name_full TEXT, cluster_hostnames TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	// A cluster (two nodes) matched by dns_name_full, and a standalone matched by firewallname.
+	if _, err := db.Exec(`INSERT INTO vpn_config VALUES
+		('FGT100F_CUST1-HQ', 'cust1-hq', 'cust1-hq.example.com', 'FGT100F_CUST1-HQ-N1, FGT100F_CUST1-HQ-N2'),
+		('FGT40F_CUST2-HL', 'cust2', 'cust2.example.com', '')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	e := &Extension{dataDir: dir, logger: slog.New(slog.DiscardHandler)}
+
+	// Cluster: both node hostnames returned (matched via dns_name_full).
+	got := e.graylogSources("cust1-hq.example.com")
+	if len(got) != 2 || got[0] != "FGT100F_CUST1-HQ-N1" || got[1] != "FGT100F_CUST1-HQ-N2" {
+		t.Fatalf("cluster sources wrong: %v", got)
+	}
+	// Standalone (no cluster_hostnames): the firewallname, matched case-insensitively.
+	if got := e.graylogSources("cust2.example.com"); len(got) != 1 || got[0] != "FGT40F_CUST2-HL" {
+		t.Fatalf("standalone source wrong: %v", got)
+	}
+	// No matching row: fall back to the FQDN short host.
+	if got := e.graylogSources("unknown-fw.example.com"); len(got) != 1 || got[0] != "unknown-fw" {
+		t.Fatalf("fallback source wrong: %v", got)
+	}
+}
+
+func TestGraylogSourcesFallbackNoDB(t *testing.T) {
+	// No adm-vpn-conf DB present → derive from the FQDN.
+	e := &Extension{dataDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
+	if got := e.graylogSources("fw2.example.com"); len(got) != 1 || got[0] != "fw2" {
+		t.Fatalf("fallback wrong: %v", got)
+	}
+}
+
 func TestDeviceFromMessage(t *testing.T) {
 	d, ok := deviceFromMessage(map[string]any{
 		"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.10.5", "vlan": "10",
@@ -163,7 +223,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 	defer srv.Close()
 
 	e := testExt(t, srv.URL)
-	n, err := e.refreshFirewall(1, "fw1.example.com")
+	n, err := e.refreshFirewall(1, "fw1.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +258,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 	srv2 := graylogFake(t, []map[string]any{{"mac": "dd:dd:dd:dd:dd:04", "ip": "10.0.30.1", "timestamp": "T9"}})
 	defer srv2.Close()
 	e.cfg.GraylogURL = srv2.URL
-	if _, err := e.refreshFirewall(1, "fw1.example.com"); err != nil {
+	if _, err := e.refreshFirewall(1, "fw1.example.com", ""); err != nil {
 		t.Fatal(err)
 	}
 	devices, _, _ = e.listDevices(1)
@@ -219,7 +279,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 
 func TestFetchDevicesUnconfigured(t *testing.T) {
 	e := testExt(t, "")
-	if _, err := e.fetchDevices("fw1"); err == nil {
+	if _, err := e.fetchDevices("fw1", ""); err == nil {
 		t.Fatal("missing graylog config must error")
 	}
 }
@@ -330,7 +390,7 @@ func TestFetchStpStatesFold(t *testing.T) {
 		GraylogStpQuery: `source:"%s"`,
 	}, logger: slog.New(slog.DiscardHandler)}
 
-	stp, events, err := e.fetchStpStates("fw1.example.com")
+	stp, events, err := e.fetchStpStates("fw1.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -161,6 +161,10 @@ func (e *Extension) worker() {
 	if interval < time.Minute {
 		interval = time.Hour
 	}
+	e.logger.Info("graylog device worker started",
+		"interval", interval.String(), "range_seconds", e.cfg.GraylogDeviceRange,
+		"graylog_configured", e.cfg.GraylogURL != "" && e.cfg.GraylogToken != "",
+		"device_query", e.cfg.GraylogDeviceQuery, "stp_query", e.cfg.GraylogStpQuery)
 	for {
 		fws, err := e.switchFirewalls()
 		if err != nil {
@@ -175,10 +179,10 @@ func (e *Extension) worker() {
 		// Stagger fetches across the interval so Graylog is not hit in a burst.
 		delay := interval / time.Duration(len(fws)+1)
 		for _, fw := range fws {
-			if n, ferr := e.refreshFirewall(fw.ID, fw.FQDN); ferr != nil {
+			if n, ferr := e.refreshFirewall(fw.ID, fw.FQDN, ""); ferr != nil {
 				e.logger.Warn("graylog device fetch failed", "fw_id", fw.ID, "fqdn", fw.FQDN, "err", ferr)
 			} else {
-				e.logger.Debug("graylog devices refreshed", "fw_id", fw.ID, "devices", n)
+				e.logger.Info("graylog devices refreshed", "fw_id", fw.ID, "fqdn", fw.FQDN, "devices", n)
 			}
 			time.Sleep(delay)
 		}
