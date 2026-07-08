@@ -5,6 +5,7 @@ package web
 
 import (
 	"bytes"
+	"database/sql"
 	"embed"
 	"fmt"
 	"html/template"
@@ -13,6 +14,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -50,6 +52,8 @@ type BaseData struct {
 	Title      string
 	Username   string
 	ExtEnabled bool
+	IsRadius   bool   // RADIUS users cannot change their password locally
+	Lang       string // UI language: "en" (default) or "de"
 	Active     string // nav key: firewalls|search|activity|admvpn|password
 }
 
@@ -67,6 +71,15 @@ type Server struct {
 	logger  *slog.Logger
 
 	pages map[string]pageTmpl
+
+	// Insights SQLite handle (audit cache, custom rules, exemptions,
+	// topology shares), opened lazily per Server. See insightsDB().
+	insightsMu sync.Mutex
+	insights   *sql.DB
+
+	// warmSem bounds concurrent audit-cache warms (full config parses) so a
+	// fleet-wide backup burst cannot pile up dozens of parses at once.
+	warmSem chan struct{}
 }
 
 type pageTmpl struct {
@@ -86,6 +99,7 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
 		limiter: newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		hub:     newSSEHub(),
+		warmSem: make(chan struct{}, 2),
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
@@ -94,8 +108,13 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 }
 
 // BroadcastStatus pushes a firewall status change to any connected SSE clients.
+// On a successful backup it also pre-warms the audit cache in the background so
+// the audit and topology pages stay instant.
 func (s *Server) BroadcastStatus(fwID int, status string) {
 	s.hub.broadcast(fwID, status)
+	if status == "Success" {
+		go s.WarmAuditCache(fwID)
+	}
 }
 
 var funcMap = template.FuncMap{
@@ -109,6 +128,8 @@ var funcMap = template.FuncMap{
 	"sub":       func(a, b int) int { return a - b },
 	"fmtTime":   fmtTime,
 	"fmtBytes":  fmtBytes,
+	"T":         tr,
+	"i18nJSON":  i18nJSON,
 	"isZero":    func(t time.Time) bool { return t.IsZero() },
 }
 
@@ -199,6 +220,8 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 		Title:      title,
 		Username:   d.Username,
 		ExtEnabled: s.cfg.ExtAdmVpnConf,
+		IsRadius:   d.IsRadiusUser,
+		Lang:       langFromRequest(r),
 		Active:     active,
 	}
 }
@@ -222,6 +245,9 @@ func (s *Server) Routes() chi.Router {
 	r.HandleFunc("/login", s.handleLogin)
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
+	// Shared topology views: access is granted by an unguessable token.
+	r.Get("/topology/shared/{token}", s.handleTopologyShared)
+	r.Get("/topology/shared/{token}/data", s.handleTopologySharedData)
 
 	// Authenticated.
 	r.Group(func(pr chi.Router) {
@@ -230,14 +256,21 @@ func (s *Server) Routes() chi.Router {
 		// plain GET navigation/prefetch/<img> (SameSite=Lax then blocks the
 		// cross-site POST). The templates submit these via forms.
 		pr.Post("/logout", s.handleLogout)
+		pr.Post("/lang", s.handleSetLang)
 		pr.HandleFunc("/", s.handleIndex)
 		pr.Get("/dashboard", s.handleDashboard)
 		pr.Get("/dashboard/stats", s.handleDashboardStats)
 		pr.Post("/backup_now_all_failed", s.handleRetryAllFailed)
 		pr.Get("/audit", s.handleAudit)
+		pr.Get("/audit/results/{fwID}", s.handleAuditResults)
 		pr.HandleFunc("/audit/exemption", s.handleAuditExemption)
 		pr.HandleFunc("/audit/custom_rule", s.handleAuditCustomRule)
 		pr.HandleFunc("/audit/ticket", s.handleAuditTicket)
+		pr.Get("/topology", s.handleTopology)
+		pr.Get("/topology/data/{fwID}", s.handleTopologyData)
+		pr.Post("/topology/share", s.handleTopologyShareCreate)
+		pr.Get("/topology/shares", s.handleTopologyShareList)
+		pr.Post("/topology/share/revoke", s.handleTopologyShareRevoke)
 		pr.Get("/download_bundle", s.handleDownloadBundle)
 		pr.Get("/backups/{fwID}", s.handleListBackups)
 		pr.Get("/download/*", s.handleDownload)

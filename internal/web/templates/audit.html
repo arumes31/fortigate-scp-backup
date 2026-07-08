@@ -1,22 +1,23 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Audit & Compliance Insights</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "audit.title"}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <div class="stat-grid">
-    <div class="stat-tile fail"><div class="n">{{.Critical}}</div><div class="l">Kritische Findings</div></div>
-    <div class="stat-tile new"><div class="n">{{.Warnings}}</div><div class="l">Warnungen</div></div>
-    <div class="stat-tile"><div class="n">{{len .Rows}}</div><div class="l">Firewalls Auditiert</div></div>
+    <div class="stat-tile fail"><div class="n" id="statCritical">…</div><div class="l">{{T .Base.Lang "audit.critical"}}</div></div>
+    <div class="stat-tile new"><div class="n" id="statWarnings">…</div><div class="l">{{T .Base.Lang "audit.warnings"}}</div></div>
+    <div class="stat-tile"><div class="n">{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.firewalls"}}</div></div>
+    <div class="stat-tile"><div class="n" id="statLoaded">0/{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.audited"}}</div></div>
 </div>
 
 <div class="grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
     <!-- Custom Rule Builder -->
     <div class="card">
-        <h2 class="mt-0"><span style="color: var(--accent-color);">[+]</span> Eigene Audit-Regeln</h2>
+        <h2 class="mt-0"><span style="color: var(--accent-color);">[+]</span> {{T .Base.Lang "audit.custom_rules"}}</h2>
         <form method="post" action="/audit/custom_rule" style="display: flex; flex-direction: column; gap: 10px;">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <input type="text" name="name" placeholder="Regel-Name (z.B. SSH Port Check)" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
-                <input type="text" name="pattern" placeholder="Such-Muster (z.B. set admin-sport 443)" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <input type="text" name="name" placeholder="{{T .Base.Lang "audit.rule_name"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <input type="text" name="pattern" placeholder="{{T .Base.Lang "audit.rule_pattern"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
             </div>
             <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
                 <select name="severity" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
@@ -24,14 +25,14 @@
                     <option value="warning" selected>Warning</option>
                     <option value="info">Info</option>
                 </select>
-                <input type="text" name="remediation" placeholder="Behebung (CLI Kommandos)" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <input type="text" name="remediation" placeholder="{{T .Base.Lang "audit.rule_remediation"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
             </div>
-            <button type="submit" class="btn" style="align-self: flex-start; background: var(--accent-color); color: #000; font-weight: bold; padding: 8px 16px;">Regel hinzufügen</button>
+            <button type="submit" class="btn" style="align-self: flex-start; background: var(--accent-color); color: #000; font-weight: bold; padding: 8px 16px;">{{T .Base.Lang "audit.rule_add"}}</button>
         </form>
-        
+
         {{if .CustomRules}}
         <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
-            <h4 class="mt-0">Konfigurierte Regeln:</h4>
+            <h4 class="mt-0">{{T .Base.Lang "audit.rules_configured"}}</h4>
             <div style="max-height: 150px; overflow-y: auto;">
                 {{range .CustomRules}}
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; background: rgba(255,255,255,0.02); margin-bottom: 4px; border-radius: 4px; font-size: 0.85em;">
@@ -41,7 +42,7 @@
                     <form method="post" action="/audit/custom_rule" style="margin: 0;">
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" value="{{.ID}}">
-                        <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 1.1em;" title="Regel löschen">&times;</button>
+                        <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 1.1em;" title="{{T $.Base.Lang "audit.rule_delete"}}">&times;</button>
                     </form>
                 </div>
                 {{end}}
@@ -52,279 +53,295 @@
 
     <!-- Exemptions List -->
     <div class="card">
-        <h2 class="mt-0"><span style="color: var(--accent-color);">[#]</span> Aktive Ausnahmen (Exemptions)</h2>
+        <h2 class="mt-0"><span style="color: var(--accent-color);">[#]</span> {{T .Base.Lang "audit.exemptions"}}</h2>
         {{if .Exemptions}}
         <div style="max-height: 250px; overflow-y: auto;">
             {{range .Exemptions}}
             <div style="padding: 8px; background: rgba(255,255,255,0.02); border-left: 3px solid #f59e0b; margin-bottom: 6px; border-radius: 4px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center;">
                 <div>
                     <div><strong>Firewall ID: {{.FwID}}</strong> - <em>{{.FindingText}}</em></div>
-                    <div class="muted" style="font-size: 0.9em; margin-top: 2px;">Grund: {{.Reason}}</div>
+                    <div class="muted" style="font-size: 0.9em; margin-top: 2px;">{{T $.Base.Lang "audit.exemption_reason"}} {{.Reason}}</div>
                 </div>
                 <form method="post" action="/audit/exemption" style="margin: 0;">
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="id" value="{{.ID}}">
-                    <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">Aufheben</button>
+                    <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">{{T $.Base.Lang "audit.exemption_revoke"}}</button>
                 </form>
             </div>
             {{end}}
         </div>
         {{else}}
-        <p class="muted">Keine Ausnahmen definiert. Verwenden Sie den "Ausnahme"-Button bei den Findings einer Firewall.</p>
+        <p class="muted">{{T .Base.Lang "audit.exemption_none"}}</p>
         {{end}}
-    </div>
-</div>
-
-<!-- Network Topology Visualizer (SVG) -->
-<div class="card" style="margin-bottom: 20px;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-        <h2 class="mt-0 mb-0"><span style="color: var(--accent-color);">[&gamma;]</span> Interaktive Netzwerk-Topologie</h2>
-        <div>
-            <label for="topoSelect" style="font-size: 0.9em; margin-right: 8px;">Firewall wählen:</label>
-            <select id="topoSelect" onchange="renderTopology()" style="padding: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
-                {{range .Rows}}
-                    {{if .HasConfig}}<option value="{{.FwID}}">{{.FQDN}}</option>{{end}}
-                {{end}}
-            </select>
-        </div>
-    </div>
-    <div style="position: relative; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; min-height: 400px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
-        <svg id="topologySvg" width="100%" height="400" style="background: transparent;">
-            <!-- Will be rendered dynamically via JS -->
-        </svg>
-        <div id="topoInfo" style="position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 4px; font-size: 0.85em; max-width: 300px; pointer-events: none; display: none;">
-            <strong id="topoInfoTitle"></strong>
-            <div id="topoInfoBody" class="muted" style="margin-top: 4px; white-space: pre-wrap;"></div>
-        </div>
     </div>
 </div>
 
 <div class="card pad-0">
     <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
-            <h2 class="mt-0 mb-0">Compliance & Audit je Firewall</h2>
-            <span class="muted">Auswertung der neuesten Konfigurationen</span>
+            <h2 class="mt-0 mb-0">{{T .Base.Lang "audit.per_firewall"}}</h2>
+            <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent-color);">{{T .Base.Lang "audit.topology_link"}}</a></span>
         </div>
-        <input type="text" id="auditSearch" placeholder="Suche FQDN, Modell, Ticket oder Finding..." onkeyup="filterAuditTable()" style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
+        <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
     </div>
 
     <div class="table-wrap">
         <table class="data">
             <thead>
                 <tr>
-                    <th>Firewall</th>
-                    <th>Systemdaten</th>
-                    <th>Compliance Scores</th>
-                    <th>Change Ticket</th>
-                    <th>Aktionen & Details</th>
+                    <th>{{T .Base.Lang "audit.col_firewall"}}</th>
+                    <th>{{T .Base.Lang "audit.col_system"}}</th>
+                    <th>{{T .Base.Lang "audit.col_scores"}}</th>
+                    <th>{{T .Base.Lang "audit.col_ticket"}}</th>
+                    <th>{{T .Base.Lang "audit.col_actions"}}</th>
                 </tr>
             </thead>
-            <tbody>
-            {{range .Rows}}
-                <tr class="audit-row-item" data-fwid="{{.FwID}}">
+            <tbody id="auditBody">
+            {{range .Firewalls}}
+                <tr class="audit-row-item" data-fwid="{{.ID}}" data-fqdn="{{.FQDN}}">
                     <td style="vertical-align: top; padding-top: 15px;">
                         <strong style="font-size: 1.1em; color: #fff;">{{.FQDN}}</strong>
-                        <div class="muted" style="font-size: 0.85em; margin-top: 4px;">ID: {{.FwID}}</div>
+                        <div class="muted" style="font-size: 0.85em; margin-top: 4px;">ID: {{.ID}}</div>
                     </td>
-                    <td style="vertical-align: top; padding-top: 15px; font-size: 0.9em;">
-                        {{if .HasConfig}}
-                            <div>Modell: <strong style="color: #fff;">{{if .Model}}{{.Model}}{{else}}—{{end}}</strong></div>
-                            <div style="margin-top: 3px;">FortiOS: <code>{{.Version}}</code></div>
-                        {{else}}
-                            <span class="muted">— Kein Backup —</span>
-                        {{end}}
-                    </td>
-                    <td style="vertical-align: top; padding-top: 15px; width: 220px;">
-                        {{if .HasConfig}}
-                            <div style="margin-bottom: 8px;">
-                                <div style="display: flex; justify-content: space-between; font-size: 0.8em; margin-bottom: 2px;">
-                                    <span>PCI-DSS</span><strong>{{.PciScore}}%</strong>
-                                </div>
-                                <div style="height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden;">
-                                    <div style="height: 100%; width: {{.PciScore}}%; background: {{if lt .PciScore 50}}#ef4444{{else if lt .PciScore 80}}#f59e0b{{else}}#10b981{{end}};"></div>
-                                </div>
-                            </div>
-                            <div style="margin-bottom: 8px;">
-                                <div style="display: flex; justify-content: space-between; font-size: 0.8em; margin-bottom: 2px;">
-                                    <span>CIS Benchmark</span><strong>{{.CisScore}}%</strong>
-                                </div>
-                                <div style="height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden;">
-                                    <div style="height: 100%; width: {{.CisScore}}%; background: {{if lt .CisScore 50}}#ef4444{{else if lt .CisScore 80}}#f59e0b{{else}}#10b981{{end}};"></div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="display: flex; justify-content: space-between; font-size: 0.8em; margin-bottom: 2px;">
-                                    <span>HIPAA</span><strong>{{.HipaaScore}}%</strong>
-                                </div>
-                                <div style="height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden;">
-                                    <div style="height: 100%; width: {{.HipaaScore}}%; background: {{if lt .HipaaScore 50}}#ef4444{{else if lt .HipaaScore 80}}#f59e0b{{else}}#10b981{{end}};"></div>
-                                </div>
-                            </div>
-                        {{else}}
-                            <span class="muted">—</span>
-                        {{end}}
-                    </td>
-                    <td style="vertical-align: top; padding-top: 15px; font-size: 0.85em;">
-                        {{if .HasConfig}}
-                            <form method="post" action="/audit/ticket" style="margin: 0; display: flex; flex-direction: column; gap: 4px;">
-                                <input type="hidden" name="backup_filename" value="{{(index .Findings 0).BackupFilename}}">
-                                <input type="text" name="ticket_id" value="{{.TicketID}}" placeholder="z.B. INC-10298" style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
-                                <input type="text" name="details" value="{{.TicketDetail}}" placeholder="Kommentar..." style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
-                                <button type="submit" class="btn btn-small" style="padding: 2px; font-size: 0.8em; width: 60px;">Link</button>
-                            </form>
-                        {{else}}
-                            <span class="muted">—</span>
-                        {{end}}
-                    </td>
-                    <td style="vertical-align: top; padding-top: 15px;">
-                        {{if .HasConfig}}
-                            <button class="btn btn-small" onclick="toggleDetails({{.FwID}})" id="btn-{{.FwID}}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">Details anzeigen</button>
-                        {{else}}
-                            <span class="muted">—</span>
-                        {{end}}
-                    </td>
+                    <td class="cell-sys" style="vertical-align: top; padding-top: 15px; font-size: 0.9em;"><span class="spinner"></span></td>
+                    <td class="cell-scores" style="vertical-align: top; padding-top: 15px; width: 220px;"><span class="muted">…</span></td>
+                    <td class="cell-ticket" style="vertical-align: top; padding-top: 15px; font-size: 0.85em;"><span class="muted">…</span></td>
+                    <td class="cell-actions" style="vertical-align: top; padding-top: 15px;"><span class="muted">{{T $.Base.Lang "audit.loading"}}</span></td>
                 </tr>
-
-                <!-- Collapsible detail block -->
-                {{if .HasConfig}}
-                <tr class="detail-row" id="detail-{{.FwID}}" style="display: none; background: rgba(0,0,0,0.15);">
-                    <td colspan="5" style="padding: 20px;">
-                        <div class="grid-2" style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
-                            
-                            <!-- Findings & Remediation -->
-                            <div>
-                                <h3 class="mt-0">Sicherheits- & Compliance-Findings</h3>
-                                {{if .Findings}}
-                                    {{range .Findings}}
-                                    <div class="finding finding-{{.Severity}}" style="padding: 10px; margin-bottom: 8px; border-radius: 4px; background: rgba(255,255,255,0.02); border-left: 4px solid {{if eq .Severity "critical"}}#ef4444{{else if eq .Severity "warning"}}#f59e0b{{else}}#3b82f6{{end}};">
-                                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                                            <strong style="color: #fff;">{{.Text}}</strong>
-                                            
-                                            <!-- Exemption Form -->
-                                            <form method="post" action="/audit/exemption" style="margin: 0; display: flex; gap: 4px;">
-                                                <input type="hidden" name="fw_id" value="{{.FwID}}">
-                                                <input type="hidden" name="finding_text" value="{{.Text}}">
-                                                <input type="text" name="reason" placeholder="Grund für Ausnahme..." required style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
-                                                <button type="submit" class="btn btn-small" style="font-size: 0.8em; padding: 2px 6px;">Ausnahme</button>
-                                            </form>
-                                        </div>
-                                        {{if ne .Remediation "Keine Aktion erforderlich."}}
-                                        <details style="margin-top: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; border: 1px solid rgba(255,255,255,0.03);">
-                                            <summary style="font-size: 0.8em; cursor: pointer; color: rgba(255,255,255,0.4); padding: 4px 8px;">Behebung (CLI) anzeigen</summary>
-                                            <pre style="margin: 0; padding: 8px; font-family: monospace; font-size: 0.85em; color: #34d399; white-space: pre-wrap; border-top: 1px solid rgba(255,255,255,0.03);">{{.Remediation}}</pre>
-                                        </details>
-                                        {{end}}
-                                    </div>
-                                    {{end}}
-                                {{else}}
-                                    <div class="alert alert-success" style="padding: 10px;">Keine aktiven Findings für diese Firewall vorhanden!</div>
-                                {{end}}
-
-                                <!-- Exempted list inside firewall details -->
-                                {{if .Exempted}}
-                                <h4 style="margin-top: 15px; margin-bottom: 5px; color: #f59e0b;">Ignorierte Findings (Exempted):</h4>
-                                {{range .Exempted}}
-                                <div style="font-size: 0.85em; padding: 6px; background: rgba(245, 158, 11, 0.05); margin-bottom: 4px; border-radius: 4px; border-left: 3px solid #f59e0b;">
-                                    {{.Text}} <span class="muted">(Als Ausnahme registriert)</span>
-                                </div>
-                                {{end}}
-                                {{end}}
-                            </div>
-
-                            <!-- Upgrade Path & Lifecycle -->
-                            <div style="border-left: 1px solid rgba(255,255,255,0.05); padding-left: 20px;">
-                                <h3 class="mt-0">FortiOS Upgrade-Pfad</h3>
-                                <p class="muted" style="font-size: 0.85em;">Empfohlener Pfad zur Aktualisierung des Betriebssystems:</p>
-                                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
-                                    {{range $i, $step := .UpgradePath}}
-                                        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em;">
-                                            <span style="background: rgba(255,255,255,0.1); border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 0.8em; font-weight: bold; color: var(--accent-color);">{{add $i 1}}</span>
-                                            <code>{{$step}}</code>
-                                        </div>
-                                    {{end}}
-                                </div>
-                            </div>
-
-                        </div>
-                    </td>
+                <tr class="detail-row" id="detail-{{.ID}}" style="display: none; background: rgba(0,0,0,0.15);">
+                    <td colspan="5" style="padding: 20px;"></td>
                 </tr>
-                {{end}}
-
             {{else}}
-                <tr><td colspan="5" class="empty">Keine Firewalls konfiguriert.</td></tr>
+                <tr><td colspan="5" class="empty">{{T $.Base.Lang "audit.no_firewalls"}}</td></tr>
             {{end}}
             </tbody>
         </table>
     </div>
 </div>
 
+<script>window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script src="/static/ui.js"></script>
 <script>
-// JSON topologies injected from Go templates
-const topologies = {
-    {{range .Rows}}
-    {{if .HasConfig}}
-    "{{.FwID}}": {
-        fqdn: "{{.FQDN}}",
-        interfaces: [
-            {{range .Interfaces}}
-            { name: "{{.Name}}", ip: "{{.IP}}", mask: "{{.Mask}}", allowAccess: [{{range $j, $a := .AllowAccess}}{{if $j}},{{end}}"{{$a}}"{{end}}], vlan_id: {{.VlanID}}, interface: "{{.Interface}}" },
-            {{end}}
-        ],
-        routes: [
-            {{range .Routes}}
-            { id: "{{.ID}}", dst: "{{.Dst}}", gateway: "{{.Gateway}}", device: "{{.Device}}" },
-            {{end}}
-        ],
-        policies: [
-            {{range .Policies}}
-            { id: {{.ID}}, srcIntf: [{{range $j, $s := .SrcIntf}}{{if $j}},{{end}}"{{$s}}"{{end}}], dstIntf: [{{range $j, $d := .DstIntf}}{{if $j}},{{end}}"{{$d}}"{{end}}], srcAddr: [{{range $j, $s := .SrcAddr}}{{if $j}},{{end}}"{{$s}}"{{end}}], dstAddr: [{{range $j, $d := .DstAddr}}{{if $j}},{{end}}"{{$d}}"{{end}}], service: [{{range $j, $s := .Service}}{{if $j}},{{end}}"{{$s}}"{{end}}], action: "{{.Action}}" },
-            {{end}}
-        ],
-        switches: [
-            {{range .Switches}}
-            { switch_id: "{{.SwitchID}}", name: "{{.Name}}", ports: [
-                {{range .Ports}}
-                { name: "{{.Name}}", vlan: "{{.Vlan}}" },
-                {{end}}
-            ] },
-            {{end}}
-        ]
-    },
-    {{end}}
-    {{end}}
-};
+// ---------------------------------------------------------------------------
+// Async audit loading: the page shell renders instantly; per-firewall results
+// are fetched from /audit/results/{id} with limited concurrency and rendered
+// as they arrive. esc()/tt() come from ui.js.
+// ---------------------------------------------------------------------------
+const auditRows = Array.from(document.querySelectorAll("tr.audit-row-item"));
+const auditState = {};        // fwid -> result JSON
+const failedRows = new Set(); // fwids whose fetch failed (excluded from totals)
+let totals = { critical: 0, warning: 0, loaded: 0 };
+
+function sevColor(sev) {
+    return sev === "critical" ? "#ef4444" : sev === "warning" ? "#f59e0b" : "#3b82f6";
+}
+
+function scoreBar(label, score) {
+    const color = score < 50 ? "#ef4444" : score < 80 ? "#f59e0b" : "#10b981";
+    return `<div style="margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.8em; margin-bottom: 2px;">
+            <span>${label}</span><strong>${score}%</strong>
+        </div>
+        <div style="height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden;">
+            <div style="height: 100%; width: ${score}%; background: ${color};"></div>
+        </div>
+    </div>`;
+}
+
+// Renders the config context snippet with a line-number gutter and the
+// detected line highlighted.
+function contextView(f) {
+    if (!f.context) return "";
+    const lines = f.context.split("\n");
+    let num = f.context_start || 1;
+    let afterGap = false; // past the "..." the true line numbers are unknown
+    let html = "";
+    for (const line of lines) {
+        const isEllipsis = line.trim() === "...";
+        if (isEllipsis) afterGap = true;
+        const isMatch = !isEllipsis && !afterGap && num === f.line;
+        html += `<div style="display: flex; ${isMatch ? "background: rgba(239, 68, 68, 0.12); border-left: 2px solid " + sevColor(f.severity) + ";" : "border-left: 2px solid transparent;"}">
+            <span style="width: 48px; text-align: right; padding-right: 10px; color: rgba(255,255,255,0.25); user-select: none; flex-shrink: 0;">${isEllipsis || afterGap ? "" : num}</span>
+            <span style="white-space: pre; color: ${isMatch ? "#fecaca" : "#9ca3af"};">${esc(line)}</span>
+        </div>`;
+        if (!isEllipsis) num++;
+    }
+    return `<details style="margin-top: 6px; background: rgba(0,0,0,0.25); border-radius: 4px; border: 1px solid rgba(255,255,255,0.04);">
+        <summary style="font-size: 0.8em; cursor: pointer; color: rgba(255,255,255,0.4); padding: 4px 8px;">${tt("audit.show_context").replace("%d", f.line)}</summary>
+        <div style="padding: 8px 0; font-family: monospace; font-size: 0.82em; overflow-x: auto;">${html}</div>
+    </details>`;
+}
+
+function findingCard(f, fwid) {
+    return `<div class="finding finding-${esc(f.severity)}" style="padding: 10px; margin-bottom: 8px; border-radius: 4px; background: rgba(255,255,255,0.02); border-left: 4px solid ${sevColor(f.severity)};">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+            <strong style="color: #fff;">${esc(f.text)}</strong>
+            <form method="post" action="/audit/exemption" style="margin: 0; display: flex; gap: 4px; flex-shrink: 0;">
+                <input type="hidden" name="fw_id" value="${fwid}">
+                <input type="hidden" name="finding_key" value="${esc(f.key || "")}">
+                <input type="hidden" name="finding_text" value="${esc(f.text)}">
+                <input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <button type="submit" class="btn btn-small" style="font-size: 0.8em; padding: 2px 6px;">${tt("audit.exempt")}</button>
+            </form>
+        </div>
+        ${f.remediation ? `<details style="margin-top: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; border: 1px solid rgba(255,255,255,0.03);">
+            <summary style="font-size: 0.8em; cursor: pointer; color: rgba(255,255,255,0.4); padding: 4px 8px;">${tt("audit.show_cli")}</summary>
+            <pre style="margin: 0; padding: 8px; font-family: monospace; font-size: 0.85em; color: #34d399; white-space: pre-wrap; border-top: 1px solid rgba(255,255,255,0.03);">${esc(f.remediation)}</pre>
+        </details>` : ""}
+        ${contextView(f)}
+    </div>`;
+}
+
+function renderRow(tr, res) {
+    const fwid = tr.getAttribute("data-fwid");
+    const sysCell = tr.querySelector(".cell-sys");
+    const scoreCell = tr.querySelector(".cell-scores");
+    const ticketCell = tr.querySelector(".cell-ticket");
+    const actionCell = tr.querySelector(".cell-actions");
+
+    if (!res.has_config) {
+        sysCell.innerHTML = `<span class="muted">${tt("audit.no_backup")}</span>`;
+        scoreCell.innerHTML = '<span class="muted">—</span>';
+        ticketCell.innerHTML = '<span class="muted">—</span>';
+        actionCell.innerHTML = '<span class="muted">—</span>';
+        return;
+    }
+
+    sysCell.innerHTML = `
+        <div>${tt("audit.model")} <strong style="color: #fff;">${res.model ? esc(res.model) : "—"}</strong></div>
+        <div style="margin-top: 3px;">FortiOS: <code>${esc(res.version)}</code></div>
+        <div class="muted" style="margin-top: 3px; font-size: 0.85em;" title="${tt("audit.computed")} ${esc(res.computed_at || "")}">${tt("audit.backup")} ${esc(res.backup_filename || "")}</div>`;
+
+    scoreCell.innerHTML = scoreBar("PCI-DSS", res.pci_score) + scoreBar("CIS Benchmark", res.cis_score) + scoreBar("HIPAA", res.hipaa_score);
+
+    ticketCell.innerHTML = `
+        <form method="post" action="/audit/ticket" style="margin: 0; display: flex; flex-direction: column; gap: 4px;">
+            <input type="hidden" name="backup_filename" value="${esc(res.backup_filename)}">
+            <input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
+            <input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
+            <button type="submit" class="btn btn-small" style="padding: 2px; font-size: 0.8em; width: 60px;">Link</button>
+        </form>`;
+
+    const nCrit = (res.findings || []).filter(f => f.severity === "critical").length;
+    const nWarn = (res.findings || []).filter(f => f.severity === "warning").length;
+    actionCell.innerHTML = `
+        <button class="btn btn-small" onclick="toggleDetails(${fwid})" id="btn-${fwid}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">${tt("audit.details_show")}</button>
+        <div style="margin-top: 6px; font-size: 0.82em;">
+            ${nCrit ? `<span style="color: #ef4444;">● ${nCrit} ${tt("audit.n_critical")}</span> ` : ""}
+            ${nWarn ? `<span style="color: #f59e0b;">● ${nWarn} ${tt("audit.n_warnings")}</span>` : ""}
+            ${!nCrit && !nWarn ? `<span style="color: #10b981;">● ${tt("audit.clean")}</span>` : ""}
+        </div>
+        <button class="btn btn-small" onclick="recompute(${fwid})" title="${tt("audit.recheck_title")}" style="margin-top: 6px; background: none; color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.1); padding: 2px 8px; font-size: 0.78em;">${tt("audit.recheck")}</button>`;
+
+    const detail = document.getElementById("detail-" + fwid).firstElementChild;
+    let findingsHtml;
+    if (res.findings && res.findings.length) {
+        findingsHtml = res.findings.map(f => findingCard(f, fwid)).join("");
+    } else {
+        findingsHtml = `<div class="alert alert-success" style="padding: 10px;">${tt("audit.findings_none")}</div>`;
+    }
+    let exemptedHtml = "";
+    if (res.exempted && res.exempted.length) {
+        exemptedHtml = `<h4 style="margin-top: 15px; margin-bottom: 5px; color: #f59e0b;">${tt("audit.exempted_title")}</h4>` +
+            res.exempted.map(f => `<div style="font-size: 0.85em; padding: 6px; background: rgba(245, 158, 11, 0.05); margin-bottom: 4px; border-radius: 4px; border-left: 3px solid #f59e0b;">${esc(f.text)} <span class="muted">${tt("audit.exempted_note")}</span></div>`).join("");
+    }
+    const upgradeHtml = (res.upgrade_path || []).map((step, i) => `
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em;">
+            <span style="background: rgba(255,255,255,0.1); border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 0.8em; font-weight: bold; color: var(--accent-color); flex-shrink: 0;">${i + 1}</span>
+            <code>${esc(step)}</code>
+        </div>`).join("");
+
+    detail.innerHTML = `
+        <div class="grid-2" style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+            <div>
+                <h3 class="mt-0">${tt("audit.findings_title")}</h3>
+                ${findingsHtml}
+                ${exemptedHtml}
+            </div>
+            <div style="border-left: 1px solid rgba(255,255,255,0.05); padding-left: 20px;">
+                <h3 class="mt-0">${tt("audit.upgrade_title")}</h3>
+                <p class="muted" style="font-size: 0.85em;">${tt("audit.upgrade_note")}</p>
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">${upgradeHtml}</div>
+            </div>
+        </div>`;
+}
+
+function renderError(tr, fwid) {
+    tr.querySelector(".cell-sys").innerHTML = `<span style="color: #ef4444;">${tt("audit.load_error")}</span>`;
+    tr.querySelector(".cell-actions").innerHTML = `<button class="btn btn-small" onclick="loadRow(${fwid})" style="background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); padding: 4px 10px;">${tt("audit.retry")}</button>`;
+}
+
+function updateTotals() {
+    totals.critical = 0; totals.warning = 0;
+    for (const res of Object.values(auditState)) {
+        for (const f of (res.findings || [])) {
+            if (f.severity === "critical") totals.critical++;
+            else if (f.severity === "warning") totals.warning++;
+        }
+    }
+    // Rows that failed to load are NOT counted: mark the tiles so a partial
+    // failure can never read as a fleet-wide all-clear.
+    const failMark = failedRows.size ? " ⚠" : "";
+    document.getElementById("statCritical").textContent = totals.critical + failMark;
+    document.getElementById("statWarnings").textContent = totals.warning + failMark;
+    document.getElementById("statLoaded").textContent =
+        totals.loaded + "/" + auditRows.length + (failedRows.size ? " ⚠" + failedRows.size : "");
+}
+
+async function loadRow(fwid, recompute) {
+    const tr = document.querySelector(`tr.audit-row-item[data-fwid="${fwid}"]`);
+    if (!tr) return;
+    try {
+        const url = "/audit/results/" + fwid + (recompute ? "?recompute=1" : "");
+        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const res = await resp.json();
+        auditState[fwid] = res;
+        failedRows.delete(String(fwid));
+        renderRow(tr, res);
+    } catch (e) {
+        console.error("audit load failed", fwid, e);
+        failedRows.add(String(fwid));
+        renderError(tr, fwid);
+    } finally {
+        totals.loaded = Object.keys(auditState).length;
+        updateTotals();
+    }
+}
+
+function recompute(fwid) {
+    const tr = document.querySelector(`tr.audit-row-item[data-fwid="${fwid}"]`);
+    if (tr) tr.querySelector(".cell-sys").innerHTML = '<span class="spinner"></span>';
+    loadRow(fwid, true);
+}
+
+// Fetch all rows with limited concurrency (4 at a time).
+async function loadAll() {
+    const ids = auditRows.map(tr => tr.getAttribute("data-fwid"));
+    let idx = 0;
+    async function worker() {
+        while (idx < ids.length) {
+            const id = ids[idx++];
+            await loadRow(id);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+}
 
 function filterAuditTable() {
     const input = document.getElementById("auditSearch").value.toUpperCase();
-    const table = document.querySelector("table.data");
-    const trs = table.getElementsByTagName("tbody")[0].getElementsByClassName("audit-row-item");
-
-    for (let i = 0; i < trs.length; i++) {
-        const tr = trs[i];
+    for (const tr of auditRows) {
         const fwid = tr.getAttribute("data-fwid");
-        const fqdnCol = tr.getElementsByTagName("td")[0];
-        const sysCol = tr.getElementsByTagName("td")[1];
-        const ticketCol = tr.getElementsByTagName("td")[3];
-        
-        if (!fqdnCol) continue;
-        
-        const text = (fqdnCol.textContent + " " + sysCol.textContent + " " + ticketCol.textContent).toUpperCase();
-        
-        // Check matching collapsibles as well
         const detailsRow = document.getElementById("detail-" + fwid);
-        let detailsText = "";
-        if (detailsRow) {
-            detailsText = detailsRow.textContent.toUpperCase();
-        }
-
-        if (text.indexOf(input) > -1 || detailsText.indexOf(input) > -1) {
+        const text = (tr.textContent + " " + (detailsRow ? detailsRow.textContent : "")).toUpperCase();
+        if (text.indexOf(input) > -1) {
             tr.style.display = "";
         } else {
             tr.style.display = "none";
             if (detailsRow) {
                 detailsRow.style.display = "none";
                 const btn = document.getElementById("btn-" + fwid);
-                if (btn) btn.textContent = "Details anzeigen";
+                if (btn) btn.textContent = tt("audit.details_show");
             }
         }
     }
@@ -335,427 +352,13 @@ function toggleDetails(fwID) {
     const btn = document.getElementById("btn-" + fwID);
     if (row.style.display === "none") {
         row.style.display = "table-row";
-        btn.textContent = "Details ausblenden";
+        btn.textContent = tt("audit.details_hide");
     } else {
         row.style.display = "none";
-        btn.textContent = "Details anzeigen";
+        btn.textContent = tt("audit.details_show");
     }
 }
 
-// Render dynamic network topology SVG supporting FortiSwitches & VLANs
-function renderTopology() {
-    const fwID = document.getElementById("topoSelect").value;
-    const data = topologies[fwID];
-    const svg = document.getElementById("topologySvg");
-    svg.innerHTML = ""; // Clear
-    
-    if (!data) return;
-
-    const width = svg.clientWidth || 800;
-    const height = 400;
-    
-    // Center node (FortiGate)
-    const centerX = width / 2;
-    const centerY = height / 2;
-    
-    // Filter physical vs VLAN interfaces
-    const physicalIntfs = data.interfaces.filter(i => i.vlan_id === 0);
-    const vlanIntfs = data.interfaces.filter(i => i.vlan_id > 0);
-    
-    // Extract other interface names from policies
-    const allIntfNames = new Set();
-    data.interfaces.forEach(i => allIntfNames.add(i.name));
-    data.policies.forEach(p => {
-        p.srcIntf.forEach(i => allIntfNames.add(i));
-        p.dstIntf.forEach(i => allIntfNames.add(i));
-    });
-
-    // Make sure we have coordinates mapped
-    const coords = {};
-    
-    // Layout physical ports in inner circle
-    const physList = physicalIntfs.map(i => i.name);
-    allIntfNames.forEach(name => {
-        // If not explicit VLAN and not in physicalIntfs, treat as physical
-        const isVlan = vlanIntfs.some(v => v.name === name);
-        if (!isVlan && !physList.includes(name)) {
-            physList.push(name);
-        }
-    });
-
-    const numPhys = physList.length || 1;
-    physList.forEach((name, idx) => {
-        const angle = (idx * 2 * Math.PI) / numPhys - Math.PI / 2;
-        coords[name] = {
-            x: centerX + 100 * Math.cos(angle),
-            y: centerY + 100 * Math.sin(angle),
-            angle: angle,
-            radius: 100,
-            isVlan: false
-        };
-    });
-
-    // Layout VLAN ports in outer circle, fanning off their parent physical ports
-    const vlanCounts = {};
-    vlanIntfs.forEach(v => {
-        const parent = v.interface || "internal";
-        const parentCoord = coords[parent] || { angle: 0 };
-        
-        if (!vlanCounts[parent]) {
-            vlanCounts[parent] = 0;
-        }
-        
-        const count = vlanCounts[parent];
-        vlanCounts[parent]++;
-        
-        // Offset angle slightly if multiple VLANs share same physical port
-        const angleOffset = (count - 0.5) * 0.25; 
-        const angle = parentCoord.angle + angleOffset;
-        
-        coords[v.name] = {
-            x: centerX + 155 * Math.cos(angle),
-            y: centerY + 155 * Math.sin(angle),
-            angle: angle,
-            radius: 155,
-            isVlan: true,
-            parent: parent
-        };
-    });
-
-    // Layout FortiSwitches in an outer sector
-    const switches = data.switches || [];
-    switches.forEach((sw, idx) => {
-        const angle = (idx * 0.5) + Math.PI / 4; // placed bottom-right
-        coords[sw.switch_id] = {
-            x: centerX + 210 * Math.cos(angle),
-            y: centerY + 210 * Math.sin(angle),
-            angle: angle,
-            radius: 210,
-            isSwitch: true
-        };
-    });
-
-    // Generate links (Policies)
-    const links = [];
-    data.policies.forEach(p => {
-        p.srcIntf.forEach(src => {
-            p.dstIntf.forEach(dst => {
-                if (src !== dst) {
-                    links.push({ src, dst, service: p.service, action: p.action, id: p.id });
-                }
-            });
-        });
-    });
-
-    // Draw link arrow definition
-    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-    const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
-    marker.setAttribute("id", "arrow");
-    marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "16");
-    marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "6");
-    marker.setAttribute("markerHeight", "6");
-    marker.setAttribute("orient", "auto-start-reverse");
-    const markerPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    markerPath.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-    markerPath.setAttribute("fill", "rgba(255,255,255,0.4)");
-    marker.appendChild(markerPath);
-    defs.appendChild(marker);
-    svg.appendChild(defs);
-
-    // Draw policy links (curves between interfaces)
-    links.forEach(l => {
-        const srcCoord = coords[l.src];
-        const dstCoord = coords[l.dst];
-        if (!srcCoord || !dstCoord) return;
-
-        const x1 = srcCoord.x;
-        const y1 = srcCoord.y;
-        const x2 = dstCoord.x;
-        const y2 = dstCoord.y;
-
-        const dx = x2 - x1;
-        const dy = y2 - y1;
-        const dr = Math.sqrt(dx * dx + dy * dy) * 1.3;
-
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M ${x1} ${y1} A ${dr} ${dr} 0 0 1 ${x2} ${y2}`);
-        path.setAttribute("fill", "none");
-        path.setAttribute("stroke", l.action === "accept" ? "rgba(52, 211, 153, 0.4)" : "rgba(239, 68, 68, 0.4)");
-        path.setAttribute("stroke-width", "1.5");
-        path.setAttribute("marker-end", "url(#arrow)");
-        path.style.cursor = "pointer";
-        
-        path.addEventListener("mouseover", () => {
-            path.setAttribute("stroke-width", "3");
-            path.setAttribute("stroke", l.action === "accept" ? "rgba(52, 211, 153, 0.9)" : "rgba(239, 68, 68, 0.9)");
-            showTopoInfo(`Policy ID: ${l.id}`, `Aktion: ${l.action.toUpperCase()}\nVon: ${l.src}\nNach: ${l.dst}\nDienste: ${l.service.join(", ")}`);
-        });
-        path.addEventListener("mouseout", () => {
-            path.setAttribute("stroke-width", "1.5");
-            path.setAttribute("stroke", l.action === "accept" ? "rgba(52, 211, 153, 0.4)" : "rgba(239, 68, 68, 0.4)");
-            hideTopoInfo();
-        });
-
-        svg.appendChild(path);
-    });
-
-    // Draw central node (FortiGate)
-    const fwG = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const fwCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    fwCircle.setAttribute("cx", centerX);
-    fwCircle.setAttribute("cy", centerY);
-    fwCircle.setAttribute("r", "28");
-    fwCircle.setAttribute("fill", "#1e293b");
-    fwCircle.setAttribute("stroke", "var(--accent-color)");
-    fwCircle.setAttribute("stroke-width", "3");
-    
-    const fwText = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    fwText.setAttribute("x", centerX);
-    fwText.setAttribute("y", centerY + 4);
-    fwText.setAttribute("text-anchor", "middle");
-    fwText.setAttribute("fill", "#fff");
-    fwText.setAttribute("font-size", "9px");
-    fwText.setAttribute("font-weight", "bold");
-    fwText.textContent = "FortiGate";
-
-    fwG.appendChild(fwCircle);
-    fwG.appendChild(fwText);
-    
-    fwG.addEventListener("mouseover", () => {
-        showTopoInfo(data.fqdn, `FortiGate Firewall Unit\nPhys. Interfaces: ${physicalIntfs.length}\nVLAN Interfaces: ${vlanIntfs.length}\nManaged Switches: ${switches.length}`);
-    });
-    fwG.addEventListener("mouseout", hideTopoInfo);
-
-    // Draw Physical Interfaces (Inner Circle)
-    physList.forEach(name => {
-        const coord = coords[name];
-        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        
-        // Line to center
-        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        line.setAttribute("x1", centerX);
-        line.setAttribute("y1", centerY);
-        line.setAttribute("x2", coord.x);
-        line.setAttribute("y2", coord.y);
-        line.setAttribute("stroke", "rgba(255,255,255,0.06)");
-        svg.appendChild(line);
-
-        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        circle.setAttribute("cx", coord.x);
-        circle.setAttribute("cy", coord.y);
-        circle.setAttribute("r", "15");
-        circle.setAttribute("fill", "#0f172a");
-        circle.setAttribute("stroke", "#3b82f6");
-        circle.setAttribute("stroke-width", "2");
-        circle.style.cursor = "pointer";
-
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        text.setAttribute("x", coord.x);
-        text.setAttribute("y", coord.y + 3);
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("fill", "#fff");
-        text.setAttribute("font-size", "7.5px");
-        text.textContent = name.substring(0, 5);
-
-        g.appendChild(circle);
-        g.appendChild(text);
-
-        const details = data.interfaces.find(i => i.name === name) || {};
-        const ipText = details.ip ? `${details.ip}/${details.mask}` : "Keine IP";
-        
-        g.addEventListener("mouseover", () => {
-            circle.setAttribute("fill", "#1d4ed8");
-            showTopoInfo(`Phys. Port: ${name}`, `Typ: Physikalisch\nIP-Adresse: ${ipText}\nManagement: ${details.allowaccess ? details.allowaccess.join(", ") : "Nein"}`);
-        });
-        g.addEventListener("mouseout", () => {
-            circle.setAttribute("fill", "#0f172a");
-            hideTopoInfo();
-        });
-
-        svg.appendChild(g);
-    });
-
-    // Draw VLAN Interfaces (Outer Circle, fanned)
-    vlanIntfs.forEach(v => {
-        const coord = coords[v.name];
-        if (!coord) return;
-
-        const parentCoord = coords[coord.parent];
-        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-
-        // Line to parent physical port
-        if (parentCoord) {
-            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-            line.setAttribute("x1", parentCoord.x);
-            line.setAttribute("y1", parentCoord.y);
-            line.setAttribute("x2", coord.x);
-            line.setAttribute("y2", coord.y);
-            line.setAttribute("stroke", "rgba(59, 130, 246, 0.3)");
-            line.setAttribute("stroke-width", "1");
-            svg.appendChild(line);
-        }
-
-        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        circle.setAttribute("cx", coord.x);
-        circle.setAttribute("cy", coord.y);
-        circle.setAttribute("r", "11");
-        circle.setAttribute("fill", "#1e1b4b");
-        circle.setAttribute("stroke", "#8b5cf6");
-        circle.setAttribute("stroke-width", "1.5");
-        circle.style.cursor = "pointer";
-
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        text.setAttribute("x", coord.x);
-        text.setAttribute("y", coord.y + 3);
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("fill", "#ddd");
-        text.setAttribute("font-size", "6px");
-        text.textContent = `v${v.vlan_id}`;
-
-        g.appendChild(circle);
-        g.appendChild(text);
-
-        const ipText = v.ip ? `${v.ip}/${v.mask}` : "Keine IP";
-        g.addEventListener("mouseover", () => {
-            circle.setAttribute("fill", "#4c1d95");
-            showTopoInfo(`VLAN Interface: ${v.name}`, `VLAN-ID: ${v.vlan_id}\nPhysischer Port: ${v.interface}\nIP-Adresse: ${ipText}`);
-        });
-        g.addEventListener("mouseout", () => {
-            circle.setAttribute("fill", "#1e1b4b");
-            hideTopoInfo();
-        });
-
-        svg.appendChild(g);
-    });
-
-    // Draw FortiSwitches
-    switches.forEach(sw => {
-        const coord = coords[sw.switch_id];
-        if (!coord) return;
-
-        // Try to connect to fortilink interface, otherwise to center
-        let parentX = centerX;
-        let parentY = centerY;
-        const fortilinkCoord = coords["fortilink"];
-        if (fortilinkCoord) {
-            parentX = fortilinkCoord.x;
-            parentY = fortilinkCoord.y;
-        }
-
-        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        line.setAttribute("x1", parentX);
-        line.setAttribute("y1", parentY);
-        line.setAttribute("x2", coord.x);
-        line.setAttribute("y2", coord.y);
-        line.setAttribute("stroke", "#10b981");
-        line.setAttribute("stroke-width", "2");
-        svg.appendChild(line);
-
-        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        
-        // Draw Switch as a box
-        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        rect.setAttribute("x", coord.x - 18);
-        rect.setAttribute("y", coord.y - 12);
-        rect.setAttribute("width", "36");
-        rect.setAttribute("height", "24");
-        rect.setAttribute("rx", "4");
-        rect.setAttribute("fill", "#064e3b");
-        rect.setAttribute("stroke", "#10b981");
-        rect.setAttribute("stroke-width", "2");
-        rect.style.cursor = "pointer";
-
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        text.setAttribute("x", coord.x);
-        text.setAttribute("y", coord.y + 4);
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("fill", "#fff");
-        text.setAttribute("font-size", "7px");
-        text.setAttribute("font-weight", "bold");
-        text.textContent = "FSW";
-
-        g.appendChild(rect);
-        g.appendChild(text);
-
-        const portsText = sw.ports.map(p => `  • ${p.name}: VLAN ${p.vlan}`).join("\n");
-        g.addEventListener("mouseover", () => {
-            rect.setAttribute("fill", "#047857");
-            showTopoInfo(`FortiSwitch: ${sw.name || sw.switch_id}`, `Modell: Managed Switch\nSeriennummer: ${sw.switch_id}\nPorts:\n${portsText || "  Keine Ports konfiguriert"}`);
-        });
-        g.addEventListener("mouseout", () => {
-            rect.setAttribute("fill", "#064e3b");
-            hideTopoInfo();
-        });
-
-        svg.appendChild(g);
-    });
-
-    // Draw static routes (Diamonds furthest out)
-    data.routes.forEach((route, rIdx) => {
-        const devCoord = coords[route.device];
-        if (!devCoord) return;
-
-        // Position routes diamond fanned out from interface
-        const routeAngle = devCoord.angle + (rIdx - (data.routes.length - 1) / 2) * 0.2;
-        const rx = centerX + (devCoord.radius + 40) * Math.cos(routeAngle);
-        const ry = centerY + (devCoord.radius + 40) * Math.sin(routeAngle);
-
-        const rLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        rLine.setAttribute("x1", devCoord.x);
-        rLine.setAttribute("y1", devCoord.y);
-        rLine.setAttribute("x2", rx);
-        rLine.setAttribute("y2", ry);
-        rLine.setAttribute("stroke", "rgba(59, 130, 246, 0.4)");
-        rLine.setAttribute("stroke-width", "1.5");
-        rLine.setAttribute("stroke-dasharray", "3,3");
-        svg.appendChild(rLine);
-
-        const rg = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        const diamond = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        diamond.setAttribute("x", rx - 5);
-        diamond.setAttribute("y", ry - 5);
-        diamond.setAttribute("width", "10");
-        diamond.setAttribute("height", "10");
-        diamond.setAttribute("fill", "#1e293b");
-        diamond.setAttribute("stroke", "#10b981");
-        diamond.setAttribute("stroke-width", "1.5");
-        diamond.setAttribute("transform", `rotate(45 ${rx} ${ry})`);
-        diamond.style.cursor = "pointer";
-
-        rg.appendChild(diamond);
-
-        rg.addEventListener("mouseover", () => {
-            diamond.setAttribute("fill", "#065f46");
-            showTopoInfo(`Statische Route: ${route.dst}`, `Gateway: ${route.gateway || "Direkt verbunden"}\nÜber Interface: ${route.device}`);
-        });
-        rg.addEventListener("mouseout", () => {
-            diamond.setAttribute("fill", "#1e293b");
-            hideTopoInfo();
-        });
-
-        svg.appendChild(rg);
-    });
-
-    // Re-draw central node to keep on top
-    svg.appendChild(fwG);
-}
-
-function showTopoInfo(title, body) {
-    const info = document.getElementById("topoInfo");
-    document.getElementById("topoInfoTitle").textContent = title;
-    document.getElementById("topoInfoBody").textContent = body;
-    info.style.display = "block";
-}
-
-function hideTopoInfo() {
-    document.getElementById("topoInfo").style.display = "none";
-}
-
-// Initial topology rendering on page load
-document.addEventListener("DOMContentLoaded", () => {
-    renderTopology();
-});
+document.addEventListener("DOMContentLoaded", loadAll);
 </script>
 {{end}}
