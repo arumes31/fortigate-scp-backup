@@ -22,7 +22,7 @@ import (
 // entry via RulesFingerprint.
 // auditSchemaVersion invalidates cached results whose parse predates a
 // parser/derivation change (bump when parseConfigData output changes).
-const auditSchemaVersion = 4
+const auditSchemaVersion = 6
 
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
@@ -50,6 +50,7 @@ type auditResult struct {
 	Policies     []Policy      `json:"policies"`
 	Switches     []FortiSwitch `json:"switches"`
 	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
+	IslCustom    []IslBinding  `json:"isl_custom,omitempty"`
 	Zones        []Zone        `json:"zones,omitempty"`
 	DhcpServers  []DhcpServer  `json:"dhcp_servers,omitempty"`
 	Sdwan        *Sdwan        `json:"sdwan,omitempty"`
@@ -82,7 +83,7 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule) *a
 	doc := parseCfg(plain)
 	pc := parseConfigData(doc)
 	res.Interfaces, res.Routes, res.Policies = pc.Interfaces, pc.Routes, pc.Policies
-	res.Switches, res.SwitchGroups = pc.Switches, pc.SwitchGroups
+	res.Switches, res.SwitchGroups, res.IslCustom = pc.Switches, pc.SwitchGroups, pc.IslCustom
 	res.Zones, res.DhcpServers, res.Sdwan = pc.Zones, pc.DhcpServers, pc.Sdwan
 	res.Vpns, res.HA, res.APs, res.SSIDs = pc.Vpns, pc.HA, pc.APs, pc.SSIDs
 

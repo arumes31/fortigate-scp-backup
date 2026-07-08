@@ -30,6 +30,9 @@
 }
 
 :root {
+  /* Native widgets (select popups, scrollbars, form controls) must follow the
+     dark theme — without this the <select> option list renders light-on-light. */
+  color-scheme: dark;
   --bg: #0b0505;
   --surface: #191111;
   --surface-2: #221919;
@@ -287,6 +290,12 @@ input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
+}
+/* The dropdown's option list is painted by the OS/UA; give it explicit dark
+   colors (color-scheme above covers Chromium, this covers the rest). */
+select option, select optgroup {
+  background-color: var(--surface-2);
+  color: var(--text);
 }
 /* Custom square terminal checkbox (native rounded box replaced): a glowing red
    cell when checked. */

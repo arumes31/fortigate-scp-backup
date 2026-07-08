@@ -299,6 +299,7 @@ type SwitchPort struct {
 	MclagIcl      bool     `json:"mclag_icl,omitempty"`
 	IslPeerDevice string   `json:"isl_peer_device,omitempty"`
 	IslPeerPort   string   `json:"isl_peer_port,omitempty"`
+	AccessMode    string   `json:"access_mode,omitempty"` // normal | nac | dynamic | static
 }
 
 type FortiSwitch struct {
@@ -316,6 +317,14 @@ type SwitchGroup struct {
 	Name      string   `json:"name"`
 	Fortilink string   `json:"fortilink,omitempty"`
 	Members   []string `json:"members,omitempty"`
+}
+
+// IslBinding is one `config switch-controller auto-config custom` entry:
+// an auto-ISL trunk (named after the PEER switch's serial fragment) bound to
+// the switch it exists on — a config-recorded switch↔switch edge.
+type IslBinding struct {
+	Trunk  string `json:"trunk"`  // e.g. "8EN0000000003-0" → peer serial …8EN0000000003
+	Switch string `json:"switch"` // owning switch (name or serial, as configured)
 }
 
 var reConfigVersion = regexp.MustCompile(`(?i)#config-version=([A-Za-z0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)`)
