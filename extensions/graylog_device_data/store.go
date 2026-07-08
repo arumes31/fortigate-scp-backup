@@ -223,7 +223,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 
 	// STP/guard/link port states ride along on the same refresh; a failure
 	// only costs the STP overlay (stale rows are kept), never the inventory.
-	if stp, events, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
+	if stp, events, edges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog stp fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else {
 		if serr := e.storeStp(fwID, stp, now); serr != nil {
@@ -232,12 +232,15 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 		if serr := e.storeStpEvents(fwID, events, now); serr != nil {
 			e.logger.Warn("graylog stp event store failed", "fw_id", fwID, "err", serr)
 		}
+		if serr := e.storeSwitchEdges(fwID, edges, now); serr != nil {
+			e.logger.Warn("graylog switch-edge store failed", "fw_id", fwID, "err", serr)
+		}
 	}
 
-	// MAC add/move → wired switch-port bindings (the piece traffic logs lack).
+	// MAC add/move → wired switch-port sightings (the piece traffic logs lack).
 	if mp, serr := e.fetchMacPorts(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog mac-port fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
-	} else if serr := e.storeMacPorts(fwID, mp, now); serr != nil {
+	} else if serr := e.storeMacSightings(fwID, mp, now); serr != nil {
 		e.logger.Warn("graylog mac-port store failed", "fw_id", fwID, "err", serr)
 	}
 
@@ -479,12 +482,13 @@ type MultiMacPort struct {
 const multiMacThreshold = 3
 
 // listMultiMacPorts returns the ports of a firewall with at least
-// multiMacThreshold distinct MACs behind them.
+// multiMacThreshold distinct MACs behind them, computed over the full MAC
+// sighting graph (transit/uplink and AP ports naturally rank highest).
 func (e *Extension) listMultiMacPorts(fwID int) ([]MultiMacPort, error) {
-	rows, err := e.db.Query(`SELECT switch_id, port, COUNT(DISTINCT mac) AS macs
-		FROM devices
-		WHERE fw_id = ? AND port != '' AND switch_id != ''
-		GROUP BY switch_id, port
+	rows, err := e.db.Query(`SELECT switch_name, port, COUNT(DISTINCT mac) AS macs
+		FROM mac_sightings
+		WHERE fw_id = ? AND port != '' AND switch_name != ''
+		GROUP BY switch_name, port
 		HAVING macs >= ?
 		ORDER BY macs DESC`, fwID, multiMacThreshold)
 	if err != nil {
@@ -502,35 +506,157 @@ func (e *Extension) listMultiMacPorts(fwID int) ([]MultiMacPort, error) {
 	return out, rows.Err()
 }
 
-// storeMacPorts upserts the latest wired switch-port binding per MAC and prunes
-// bindings unseen past the retention window. port is replaced (it is the whole
-// point of the row); switch_name/vlan keep their last non-empty value.
-func (e *Extension) storeMacPorts(fwID int, ports []MacPort, now string) error {
+// storeMacSightings upserts the latest port per (MAC, switch) and prunes
+// sightings unseen past the retention window. Every switch a frame transits
+// learns the MAC, so keeping one row per switch preserves the topology signal
+// (transit ports = uplinks) that a single-row-per-MAC table destroyed. A
+// delete tombstone drops the MAC's row on that switch only (the MAC left THAT
+// table; it may still be live elsewhere) — or everywhere when the event named
+// no switch.
+func (e *Extension) storeMacSightings(fwID int, ports []MacPort, now string) error {
 	tx, err := e.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, p := range ports {
-		if p.Mac == "" || p.Port == "" {
+		if p.Mac == "" {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO mac_ports (fw_id, mac, switch_name, port, vlan, updated_at)
+		if p.Deleted {
+			if p.SwitchName != "" {
+				if _, err := tx.Exec("DELETE FROM mac_sightings WHERE fw_id = ? AND mac = ? AND switch_name = ?",
+					fwID, p.Mac, p.SwitchName); err != nil {
+					return err
+				}
+			} else if _, err := tx.Exec("DELETE FROM mac_sightings WHERE fw_id = ? AND mac = ?", fwID, p.Mac); err != nil {
+				return err
+			}
+			continue
+		}
+		if p.Port == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO mac_sightings (fw_id, mac, switch_name, port, vlan, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(fw_id, mac) DO UPDATE SET
-				switch_name = CASE WHEN excluded.switch_name != '' THEN excluded.switch_name ELSE switch_name END,
-				port        = excluded.port,
-				vlan        = CASE WHEN excluded.vlan != '' THEN excluded.vlan ELSE vlan END,
-				updated_at  = excluded.updated_at`,
+			ON CONFLICT(fw_id, mac, switch_name) DO UPDATE SET
+				port       = excluded.port,
+				vlan       = CASE WHEN excluded.vlan != '' THEN excluded.vlan ELSE vlan END,
+				updated_at = excluded.updated_at`,
 			fwID, p.Mac, p.SwitchName, p.Port, p.Vlan, now); err != nil {
 			return err
 		}
 	}
 	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
-	if _, err := tx.Exec("DELETE FROM mac_ports WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+	if _, err := tx.Exec("DELETE FROM mac_sightings WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// bestMacPins picks each MAC's most credible access-port sighting: the port
+// carrying the FEWEST distinct MACs (a client port, not an uplink/AP trunk —
+// a transit port sees every MAC crossing it), ties broken by recency. MACs
+// whose every sighting is on a many-MAC port keep the least-crowded one; the
+// multi-MAC flag in the UI marks the residual uncertainty.
+func (e *Extension) bestMacPins(fwID int) (map[string]MacPort, error) {
+	rows, err := e.db.Query(`SELECT mac, switch_name, port, vlan, updated_at
+		FROM mac_sightings WHERE fw_id = ? AND port != ''`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type sighting struct {
+		MacPort
+		updatedAt string
+	}
+	var all []sighting
+	portMacs := map[string]int{} // "switch|port" → distinct MACs
+	seenPortMac := map[string]bool{}
+	for rows.Next() {
+		var s sighting
+		if scanErr := rows.Scan(&s.Mac, &s.SwitchName, &s.Port, &s.Vlan, &s.updatedAt); scanErr != nil {
+			return nil, scanErr
+		}
+		all = append(all, s)
+		pk := s.SwitchName + "|" + s.Port
+		if !seenPortMac[pk+"|"+s.Mac] {
+			seenPortMac[pk+"|"+s.Mac] = true
+			portMacs[pk]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	best := map[string]MacPort{}
+	bestScore := map[string]int{}
+	bestTime := map[string]string{}
+	for _, s := range all {
+		score := portMacs[s.SwitchName+"|"+s.Port]
+		if _, ok := best[s.Mac]; !ok || score < bestScore[s.Mac] ||
+			(score == bestScore[s.Mac] && s.updatedAt > bestTime[s.Mac]) {
+			best[s.Mac] = s.MacPort
+			bestScore[s.Mac] = score
+			bestTime[s.Mac] = s.updatedAt
+		}
+	}
+	return best, nil
+}
+
+// storeSwitchEdges upserts the observed switch-side trunks (role updates only
+// when the newer fetch carries one; member ports merge) and prunes stale rows.
+func (e *Extension) storeSwitchEdges(fwID int, edges []SwitchEdge, now string) error {
+	if len(edges) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, g := range edges {
+		if g.SwitchSN == "" || g.Trunk == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO switch_edges (fw_id, switch_sn, switch_name, trunk, role, ports, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, switch_sn, trunk) DO UPDATE SET
+				switch_name = CASE WHEN excluded.switch_name != '' THEN excluded.switch_name ELSE switch_name END,
+				role        = CASE WHEN excluded.role != '' THEN excluded.role ELSE role END,
+				ports       = CASE WHEN excluded.ports != '' THEN excluded.ports ELSE ports END,
+				updated_at  = excluded.updated_at`,
+			fwID, g.SwitchSN, g.SwitchName, g.Trunk, g.Role, strings.Join(g.Ports, ","), now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM switch_edges WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// listSwitchEdges returns the stored switch-edge observations for a firewall.
+func (e *Extension) listSwitchEdges(fwID int) ([]SwitchEdge, error) {
+	rows, err := e.db.Query(`SELECT switch_sn, switch_name, trunk, role, ports
+		FROM switch_edges WHERE fw_id = ? ORDER BY switch_name, trunk`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SwitchEdge
+	for rows.Next() {
+		var g SwitchEdge
+		var ports string
+		if scanErr := rows.Scan(&g.SwitchSN, &g.SwitchName, &g.Trunk, &g.Role, &ports); scanErr != nil {
+			return nil, scanErr
+		}
+		if ports != "" {
+			g.Ports = strings.Split(ports, ",")
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // storeWifi upserts the latest wireless association per MAC (full field replace,
@@ -634,12 +760,17 @@ func (e *Extension) listVpn(fwID int) ([]VpnStatus, error) {
 // The wired switch/port comes from the mac_ports join (FortiSwitch MAC events)
 // when present, and wireless AP/SSID/signal from the wifi_clients join.
 func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
+	// Best access-port pin per MAC from the sighting graph (fewest-MACs port,
+	// so a client is never pinned onto the uplink ports its frames transit).
+	pins, err := e.bestMacPins(fwID)
+	if err != nil {
+		return nil, "", err
+	}
+
 	rows, err := e.db.Query(`SELECT d.mac, d.ip, d.vlan, d.port, d.switch_id, d.hostname,
 			d.devtype, d.osname, d.osversion, d.vendor, d.first_seen, d.last_seen, d.updated_at,
-			COALESCE(mp.switch_name, ''), COALESCE(mp.port, ''), COALESCE(mp.vlan, ''),
 			COALESCE(w.ap, ''), COALESCE(w.ssid, ''), COALESCE(w.signal, '')
 		FROM devices d
-		LEFT JOIN mac_ports mp ON mp.fw_id = d.fw_id AND mp.mac = d.mac
 		LEFT JOIN wifi_clients w ON w.fw_id = d.fw_id AND w.mac = d.mac
 		WHERE d.fw_id = ? ORDER BY d.vlan, d.port, d.mac`, fwID)
 	if err != nil {
@@ -651,22 +782,21 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 	updatedAt := ""
 	for rows.Next() {
 		var d Device
-		var mpSwitch, mpPort, mpVlan string
 		if scanErr := rows.Scan(&d.Mac, &d.IP, &d.Vlan, &d.Port, &d.SwitchID, &d.Hostname,
 			&d.DevType, &d.OsName, &d.OsVersion, &d.Vendor, &d.FirstSeen, &d.LastSeen, &updatedAt,
-			&mpSwitch, &mpPort, &mpVlan, &d.Ap, &d.Ssid, &d.Signal); scanErr != nil {
+			&d.Ap, &d.Ssid, &d.Signal); scanErr != nil {
 			return nil, "", scanErr
 		}
-		// The FortiSwitch MAC-event binding is the authoritative wired location:
+		// The FortiSwitch MAC-event pin is the authoritative wired location:
 		// it carries the real switch + physical port, which the traffic-log
 		// inventory lacks (its "port" is only the VLAN interface).
-		if mpPort != "" {
-			d.Port = mpPort
-			if mpSwitch != "" {
-				d.SwitchID = mpSwitch
+		if mp, ok := pins[d.Mac]; ok && mp.Port != "" {
+			d.Port = mp.Port
+			if mp.SwitchName != "" {
+				d.SwitchID = mp.SwitchName
 			}
-			if mpVlan != "" {
-				d.Vlan = mpVlan
+			if mp.Vlan != "" {
+				d.Vlan = mp.Vlan
 			}
 		}
 		devices = append(devices, d)

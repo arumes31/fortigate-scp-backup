@@ -80,7 +80,7 @@ type Config struct {
 	ExtGraylogDeviceData  bool
 	GraylogDeviceQuery    string // Graylog query template, %s = source host
 	GraylogStpQuery       string // Graylog query template for FortiSwitch STP/link events, %s = source host
-	GraylogMacQuery       string // FortiSwitch MAC add/move/delete events (device→switch-port), %s = source host
+	GraylogMacQuery       string // FortiSwitch MAC add/move/delete + NAC device add/delete events (device→switch-port), %s = source host
 	GraylogWifiQuery      string // wireless client↔AP↔SSID association events, %s = source host
 	GraylogVpnQuery       string // IPsec/SSL VPN tunnel up/down events, %s = source host
 	GraylogHaQuery        string // HA member/role events, %s = source host
@@ -163,7 +163,7 @@ func Load(logger *slog.Logger) *Config {
 		ExtGraylogDeviceData:  boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
 		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
 		GraylogStpQuery:       getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
-		GraylogMacQuery:       getenv("GRAYLOG_MAC_QUERY", `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616)`),
+		GraylogMacQuery:       getenv("GRAYLOG_MAC_QUERY", `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616 OR logid:0115022861 OR logid:0115022862)`),
 		GraylogWifiQuery:      getenv("GRAYLOG_WIFI_QUERY", `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)`),
 		GraylogVpnQuery:       getenv("GRAYLOG_VPN_QUERY", `source:"%s" AND subtype:"vpn" AND tunnelid:*`),
 		GraylogHaQuery:        getenv("GRAYLOG_HA_QUERY", `source:"%s" AND subtype:"ha"`),

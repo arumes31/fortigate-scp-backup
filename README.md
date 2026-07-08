@@ -92,7 +92,8 @@ graph TD
   - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login (firmware version and VPN remote gateways are redacted).
   - **Live device & state overlay** (optional `graylog_device_data` extension) — derived purely from **config backups + Graylog logs**, with *no REST API and no SSH connection to the firewall*. For firewalls with managed FortiSwitches it adds, refreshed hourly (or on demand):
     - **Client devices** under their switch/VLAN with MAC, IP, and an OS/vendor **fingerprint**; devices sharing a MAC/IP are highlighted;
-    - **Device → switch-port pinning** derived from FortiSwitch MAC-table events (add / move / delete);
+    - **Device → switch-port pinning** derived from FortiSwitch MAC-table events (add / move / delete) and NAC device events, with per-switch sighting analysis so a client is pinned to its true access port — never the uplink ports its frames transit;
+    - **Automatic switch-tree detection**: switch↔switch wiring from the config's auto-ISL trunk bindings plus STP events — FortiSwitch names inter-switch trunks after the peer's serial, and a trunk's STP *root* role marks it as the uplink, orienting the tree (including access→access chains and dual-homed uplinks to an MC-LAG core pair, whose LAG legs come from trunk-membership events);
     - **Wireless clients** linked to their AP and SSID, with signal strength;
     - **Port link up/down** and **FortiSwitch STP / loop / root-guard** state — blocked ports blink orange on faceplates and mark their switch and interlinks;
     - **VPN tunnel up/down** and **HA member/role** status;
@@ -384,7 +385,7 @@ Powers the live device & state overlay on the [topology page](#-network-topology
 | `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background refresh interval in seconds for all signals below. |
 | `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per background fetch. (The topology "Live" button overrides this with a narrower window, clamped to 60–3600 s.) |
 | `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` | Client-device logs (MAC/IP/VLAN + OS fingerprint). |
-| `GRAYLOG_MAC_QUERY` | `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616)` | FortiSwitch MAC-table add / move / delete events → device-to-switch-port pinning. |
+| `GRAYLOG_MAC_QUERY` | *(FortiSwitch MAC-table add/move/delete + NAC device add/delete logids)* | Device-to-switch-port pinning from FortiSwitch MAC-table events (requires `set mac-event-logging enable` under `config switch-controller global`) and NAC device events. |
 | `GRAYLOG_STP_QUERY` | *(FortiSwitch spanning-tree / port-status / link / BPDU / loop- & root-guard filter)* | Port link up/down and STP / guard state (blocked ports blink on faceplates). |
 | `GRAYLOG_WIFI_QUERY` | `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)` | Wireless client ↔ AP ↔ SSID associations with signal strength. |
 | `GRAYLOG_VPN_QUERY` | `source:"%s" AND subtype:"vpn" AND tunnelid:*` | IPsec / SSL-VPN tunnel up/down status. |
