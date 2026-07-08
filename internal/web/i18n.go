@@ -178,6 +178,32 @@ var uiMsgs = map[string]map[string]string{
 	"topo.isl":           {"en": "ISL", "de": "ISL"},
 	"topo.tagged":        {"en": "Tagged VLANs", "de": "Tagged VLANs"},
 	"topo.all_vlans":     {"en": "all", "de": "alle"},
+
+	// Zones / DHCP / SD-WAN / VPN / HA / wireless
+	"topo.zone":       {"en": "Zone", "de": "Zone"},
+	"topo.checks":     {"en": "Health checks", "de": "Health-Checks"},
+	"topo.remote_gw":  {"en": "Remote gateway", "de": "Remote-Gateway"},
+	"topo.egress":     {"en": "Egress interface", "de": "Egress-Interface"},
+	"topo.ha_standby": {"en": "HA peer (standby)", "de": "HA-Peer (Standby)"},
+	"topo.group":      {"en": "Group", "de": "Gruppe"},
+	"topo.nac":        {"en": "NAC segment", "de": "NAC-Segment"},
+	"topo.aps":        {"en": "Access Points", "de": "Access Points"},
+	"topo.profile":    {"en": "Profile", "de": "Profil"},
+	"topo.ssid_name":  {"en": "SSID", "de": "SSID"},
+	"topo.security":   {"en": "Security", "de": "Sicherheit"},
+
+	// Search / filters / device panel / context menu
+	"topo.status_down":   {"en": "administratively down", "de": "administrativ deaktiviert"},
+	"topo.stale":         {"en": "stale (>24h)", "de": "veraltet (>24h)"},
+	"topo.search_ph":     {"en": "Search name / IP / MAC…", "de": "Suche Name / IP / MAC…"},
+	"topo.no_match":      {"en": "no match", "de": "kein Treffer"},
+	"topo.routes":        {"en": "Routes", "de": "Routen"},
+	"topo.edge_switches": {"en": "Edge switches", "de": "Edge-Switches"},
+	"topo.dev_filter_ph": {"en": "Filter MAC / IP / host / VLAN…", "de": "Filter MAC / IP / Host / VLAN…"},
+	"topo.ctx_copy":      {"en": "Copy", "de": "Kopieren"},
+	"topo.ctx_faceplate": {"en": "Open faceplate", "de": "Frontblende öffnen"},
+	"topo.ctx_expand":    {"en": "Expand", "de": "Aufklappen"},
+	"topo.ctx_collapse":  {"en": "Collapse", "de": "Zuklappen"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by

@@ -250,15 +250,17 @@ type auditData struct {
 
 // Model structures for parsed config elements
 type Interface struct {
-	Name        string   `json:"name"`
-	IP          string   `json:"ip"`
-	Mask        string   `json:"mask"`
-	AllowAccess []string `json:"allowaccess"`
-	VlanID      int      `json:"vlan_id"`
-	Interface   string   `json:"interface"` // Parent interface
-	Role        string   `json:"role"`
-	Alias       string   `json:"alias"`
-	Members     []string `json:"members,omitempty"` // aggregate/FortiLink member ports
+	Name          string   `json:"name"`
+	IP            string   `json:"ip"`
+	Mask          string   `json:"mask"`
+	AllowAccess   []string `json:"allowaccess"`
+	VlanID        int      `json:"vlan_id"`
+	Interface     string   `json:"interface"` // Parent interface
+	Role          string   `json:"role"`
+	Alias         string   `json:"alias"`
+	Members       []string `json:"members,omitempty"`        // aggregate/FortiLink member ports
+	Status        string   `json:"status,omitempty"`         // "down" when administratively disabled
+	SwitchFeature string   `json:"switch_feature,omitempty"` // switch-controller-feature (nac, nac-segment, voice, …)
 }
 
 type StaticRoute struct {
@@ -288,6 +290,8 @@ type SwitchPort struct {
 	// Tagged VLANs carried on the port.
 	AllowedVlans    []string `json:"allowed_vlans,omitempty"`
 	AllowedVlansAll bool     `json:"allowed_vlans_all,omitempty"`
+	Status          string   `json:"status,omitempty"`          // "down" when administratively disabled
+	SecurityPolicy  string   `json:"security_policy,omitempty"` // 802.1X port-security-policy
 	// Trunk entries (present when FortiOS persisted auto-generated ISL/ICL
 	// trunks into the backup).
 	Type          string   `json:"type,omitempty"` // "" (physical) or "trunk"

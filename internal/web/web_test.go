@@ -260,8 +260,7 @@ func TestParseFortiOSVersion(t *testing.T) {
 // computeAudit does.
 func structuralFindings(cfg string) []auditFinding {
 	doc := parseCfg(cfg)
-	_, routes, _, _, _ := parseConfigData(doc)
-	return runStructuralChecks(doc, routes)
+	return runStructuralChecks(doc, parseConfigData(doc).Routes)
 }
 
 // findingIDs collects the CheckIDs of a finding list.

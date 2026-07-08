@@ -177,6 +177,22 @@ func (d *cfgDoc) settingFields(b cfgBlock, name string) []string {
 	return splitCfgValues(strings.TrimSpace(line[len("set "+name+" "):]))
 }
 
+// findAllInBlock returns every trimmed line with the given prefix
+// (case-insensitive) anywhere inside the block, including nested child
+// blocks — unlike findDirect, which skips them. Used for radio-level
+// settings of wtp-profiles.
+func (d *cfgDoc) findAllInBlock(b cfgBlock, prefix string) []string {
+	lp := strings.ToLower(prefix)
+	var out []string
+	for i := b.Start + 1; i < b.End && i < len(d.lines); i++ {
+		trimmed := strings.TrimSpace(d.lines[i])
+		if strings.HasPrefix(strings.ToLower(trimmed), lp) {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // splitCfgValues tokenizes a FortiGate `set` value list: whitespace-separated
 // tokens, with double/single-quoted strings kept as single values and
 // backslash escapes (\" \\) unescaped inside quotes.

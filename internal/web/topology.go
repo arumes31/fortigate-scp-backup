@@ -50,6 +50,13 @@ type topologyJSON struct {
 	Switches     []FortiSwitch `json:"switches,omitempty"`
 	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
 	SwitchLinks  []SwitchLink  `json:"switch_links,omitempty"`
+	Zones        []Zone        `json:"zones,omitempty"`
+	DhcpServers  []DhcpServer  `json:"dhcp_servers,omitempty"`
+	Sdwan        *Sdwan        `json:"sdwan,omitempty"`
+	Vpns         []VpnTunnel   `json:"vpns,omitempty"`
+	HA           *HAInfo       `json:"ha,omitempty"`
+	APs          []FortiAP     `json:"aps,omitempty"`
+	SSIDs        []WifiSSID    `json:"ssids,omitempty"`
 }
 
 // buildTopologyJSON assembles the topology payload for one firewall from the
@@ -77,6 +84,13 @@ func (s *Server) buildTopologyJSON(ctx context.Context, db *sql.DB, fwID int) to
 		// Derived at read time (cheap) so interlink-detection improvements do
 		// not depend on cached parses.
 		out.SwitchLinks = buildSwitchLinks(res.Switches)
+		out.Zones = res.Zones
+		out.DhcpServers = res.DhcpServers
+		out.Sdwan = res.Sdwan
+		out.Vpns = res.Vpns
+		out.HA = res.HA
+		out.APs = res.APs
+		out.SSIDs = res.SSIDs
 	}
 	return out
 }
@@ -268,9 +282,12 @@ func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request
 	// VLANs, addressing, routes, switches and model) — that IS the shared
 	// topology. But it must not disclose the attack surface beyond that:
 	// strip the firmware version (model + exact version hands a link-holder
-	// the CVE surface), policy rule details (addresses, services, actions)
-	// and management-access lists.
+	// the CVE surface), VPN peer addresses, policy rule details (addresses,
+	// services, actions) and management-access lists.
 	out.Version = ""
+	for i := range out.Vpns {
+		out.Vpns[i].RemoteGw = ""
+	}
 	for i := range out.Interfaces {
 		out.Interfaces[i].AllowAccess = nil
 	}
