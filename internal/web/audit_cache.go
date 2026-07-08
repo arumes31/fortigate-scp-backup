@@ -22,7 +22,7 @@ import (
 // entry via RulesFingerprint.
 // auditSchemaVersion invalidates cached results whose parse predates a
 // parser/derivation change (bump when parseConfigData output changes).
-const auditSchemaVersion = 3
+const auditSchemaVersion = 4
 
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
@@ -50,6 +50,13 @@ type auditResult struct {
 	Policies     []Policy      `json:"policies"`
 	Switches     []FortiSwitch `json:"switches"`
 	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
+	Zones        []Zone        `json:"zones,omitempty"`
+	DhcpServers  []DhcpServer  `json:"dhcp_servers,omitempty"`
+	Sdwan        *Sdwan        `json:"sdwan,omitempty"`
+	Vpns         []VpnTunnel   `json:"vpns,omitempty"`
+	HA           *HAInfo       `json:"ha,omitempty"`
+	APs          []FortiAP     `json:"aps,omitempty"`
+	SSIDs        []WifiSSID    `json:"ssids,omitempty"`
 }
 
 // rulesFingerprint hashes the custom-rule set so cached results can detect
@@ -73,7 +80,11 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule) *a
 	res.Model, res.Version = parseFortiOSVersion(plain)
 
 	doc := parseCfg(plain)
-	res.Interfaces, res.Routes, res.Policies, res.Switches, res.SwitchGroups = parseConfigData(doc)
+	pc := parseConfigData(doc)
+	res.Interfaces, res.Routes, res.Policies = pc.Interfaces, pc.Routes, pc.Policies
+	res.Switches, res.SwitchGroups = pc.Switches, pc.SwitchGroups
+	res.Zones, res.DhcpServers, res.Sdwan = pc.Zones, pc.DhcpServers, pc.Sdwan
+	res.Vpns, res.HA, res.APs, res.SSIDs = pc.Vpns, pc.HA, pc.APs, pc.SSIDs
 
 	findings := runStructuralChecks(doc, res.Routes)
 	findings = append(findings, findShadowRules(res.Policies)...)

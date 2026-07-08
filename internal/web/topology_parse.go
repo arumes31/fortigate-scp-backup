@@ -7,15 +7,105 @@ import (
 )
 
 // This file extracts the structured topology model (interfaces, routes,
-// policies, managed switches, switch groups) from a configuration and derives
-// the switch-to-switch interlinks shown on the topology page.
+// policies, managed switches, switch groups, zones, DHCP, SD-WAN, VPN, HA and
+// wireless) from a configuration and derives the switch-to-switch interlinks
+// shown on the topology page.
+
+// Zone mirrors `config system zone`.
+type Zone struct {
+	Name       string   `json:"name"`
+	Interfaces []string `json:"interfaces,omitempty"`
+}
+
+// DhcpServer is one `config system dhcp server` entry.
+type DhcpServer struct {
+	ID        string   `json:"id"`
+	Interface string   `json:"interface"`
+	Gateway   string   `json:"gateway,omitempty"`
+	Netmask   string   `json:"netmask,omitempty"`
+	Ranges    []string `json:"ranges,omitempty"` // "start – end"
+}
+
+// SdwanMember is one `config system sdwan > config members` entry.
+type SdwanMember struct {
+	Seq       string `json:"seq"`
+	Interface string `json:"interface"`
+	Gateway   string `json:"gateway,omitempty"`
+	Zone      string `json:"zone,omitempty"` // "" = default virtual-wan-link
+}
+
+// SdwanHealthCheck is one SD-WAN health check with its probed servers and the
+// member sequence numbers it applies to.
+type SdwanHealthCheck struct {
+	Name    string   `json:"name"`
+	Servers []string `json:"servers,omitempty"`
+	Members []string `json:"members,omitempty"`
+}
+
+// Sdwan is the parsed `config system sdwan` section (nil when absent).
+type Sdwan struct {
+	Status       string             `json:"status,omitempty"`
+	Zones        []string           `json:"zones,omitempty"`
+	Members      []SdwanMember      `json:"members,omitempty"`
+	HealthChecks []SdwanHealthCheck `json:"health_checks,omitempty"`
+}
+
+// VpnTunnel is one `config vpn ipsec phase1-interface` entry.
+type VpnTunnel struct {
+	Name       string `json:"name"`
+	Interface  string `json:"interface,omitempty"` // egress interface
+	RemoteGw   string `json:"remote_gw,omitempty"`
+	IkeVersion string `json:"ike_version,omitempty"`
+}
+
+// HAInfo is the parsed `config system ha` section (nil when absent or
+// standalone).
+type HAInfo struct {
+	Mode      string   `json:"mode"`
+	GroupName string   `json:"group_name,omitempty"`
+	Hbdev     []string `json:"hbdev,omitempty"`   // heartbeat interfaces
+	Monitor   []string `json:"monitor,omitempty"` // monitored interfaces
+}
+
+// FortiAP is one managed access point (`config wireless-controller wtp`).
+type FortiAP struct {
+	WtpID    string   `json:"wtp_id"` // serial
+	Name     string   `json:"name,omitempty"`
+	Profile  string   `json:"profile,omitempty"`
+	Platform string   `json:"platform,omitempty"` // e.g. "231F"
+	SSIDs    []string `json:"ssids,omitempty"`    // vap entry names via the profile
+}
+
+// WifiSSID is one `config wireless-controller vap` entry.
+type WifiSSID struct {
+	Name     string `json:"name"` // vap entry name (referenced by profiles)
+	SSID     string `json:"ssid"` // broadcast name
+	VlanID   int    `json:"vlan_id,omitempty"`
+	Security string `json:"security,omitempty"`
+}
+
+// parsedConfig is everything parseConfigData extracts for the topology.
+type parsedConfig struct {
+	Interfaces   []Interface
+	Routes       []StaticRoute
+	Policies     []Policy
+	Switches     []FortiSwitch
+	SwitchGroups []SwitchGroup
+	Zones        []Zone
+	DhcpServers  []DhcpServer
+	Sdwan        *Sdwan
+	Vpns         []VpnTunnel
+	HA           *HAInfo
+	APs          []FortiAP
+	SSIDs        []WifiSSID
+}
 
 // parseConfigData extracts structured details for topology mapping. It runs
 // on the structural block scanner, so nested blocks (`config ipv6` inside an
 // interface, `config igmp-snooping` inside a switch, VDOM wrapping) cannot
 // derail section parsing — the previous line-based parser lost every
 // interface/switch that followed the first nested block.
-func parseConfigData(doc *cfgDoc) ([]Interface, []StaticRoute, []Policy, []FortiSwitch, []SwitchGroup) {
+func parseConfigData(doc *cfgDoc) *parsedConfig {
 	var interfaces []Interface
 	for _, b := range doc.blocksUnder("config system interface") {
 		it := Interface{Name: b.Name}
@@ -41,6 +131,12 @@ func parseConfigData(doc *cfgDoc) ([]Interface, []StaticRoute, []Policy, []Forti
 			it.Alias = v
 		}
 		it.Members = doc.settingFields(b, "member")
+		if v, _, ok := doc.settingDirect(b, "status"); ok {
+			it.Status = strings.ToLower(v)
+		}
+		if v, _, ok := doc.settingDirect(b, "switch-controller-feature"); ok {
+			it.SwitchFeature = strings.ToLower(v)
+		}
 		interfaces = append(interfaces, it)
 	}
 
@@ -119,6 +215,12 @@ func parseConfigData(doc *cfgDoc) ([]Interface, []StaticRoute, []Policy, []Forti
 			if v, _, ok := doc.settingDirect(pb, "allowed-vlans-all"); ok && strings.EqualFold(v, "enable") {
 				p.AllowedVlansAll = true
 			}
+			if v, _, ok := doc.settingDirect(pb, "status"); ok {
+				p.Status = strings.ToLower(v)
+			}
+			if v, _, ok := doc.settingDirect(pb, "port-security-policy"); ok {
+				p.SecurityPolicy = v
+			}
 			if v, _, ok := doc.settingDirect(pb, "type"); ok {
 				p.Type = strings.ToLower(v)
 			}
@@ -147,7 +249,174 @@ func parseConfigData(doc *cfgDoc) ([]Interface, []StaticRoute, []Policy, []Forti
 		groups = append(groups, g)
 	}
 
-	return interfaces, routes, policies, switches, groups
+	var zones []Zone
+	for _, b := range doc.blocksUnder("config system zone") {
+		zones = append(zones, Zone{Name: b.Name, Interfaces: doc.settingFields(b, "interface")})
+	}
+
+	var dhcp []DhcpServer
+	for _, b := range doc.blocksUnder("config system dhcp server") {
+		d := DhcpServer{ID: b.Name}
+		if v, _, ok := doc.settingDirect(b, "interface"); ok {
+			d.Interface = v
+		}
+		if v, _, ok := doc.settingDirect(b, "default-gateway"); ok {
+			d.Gateway = v
+		}
+		if v, _, ok := doc.settingDirect(b, "netmask"); ok {
+			d.Netmask = v
+		}
+		for _, rb := range doc.blocksUnder(b.Path + " > config ip-range") {
+			start, _, _ := doc.settingDirect(rb, "start-ip")
+			end, _, _ := doc.settingDirect(rb, "end-ip")
+			if start != "" || end != "" {
+				d.Ranges = append(d.Ranges, start+" – "+end)
+			}
+		}
+		if d.Interface != "" {
+			dhcp = append(dhcp, d)
+		}
+	}
+
+	var sdwan *Sdwan
+	if b, ok := doc.block("config system sdwan"); ok {
+		sd := &Sdwan{}
+		if v, _, sok := doc.settingDirect(b, "status"); sok {
+			sd.Status = strings.ToLower(v)
+		}
+		for _, zb := range doc.blocksUnder(b.Path + " > config zone") {
+			sd.Zones = append(sd.Zones, zb.Name)
+		}
+		for _, mb := range doc.blocksUnder(b.Path + " > config members") {
+			m := SdwanMember{Seq: mb.Name}
+			if v, _, mok := doc.settingDirect(mb, "interface"); mok {
+				m.Interface = v
+			}
+			if v, _, mok := doc.settingDirect(mb, "gateway"); mok {
+				m.Gateway = v
+			}
+			if v, _, mok := doc.settingDirect(mb, "zone"); mok {
+				m.Zone = v
+			}
+			if m.Interface != "" {
+				sd.Members = append(sd.Members, m)
+			}
+		}
+		for _, hb := range doc.blocksUnder(b.Path + " > config health-check") {
+			sd.HealthChecks = append(sd.HealthChecks, SdwanHealthCheck{
+				Name:    hb.Name,
+				Servers: doc.settingFields(hb, "server"),
+				Members: doc.settingFields(hb, "members"),
+			})
+		}
+		if len(sd.Members) > 0 || len(sd.Zones) > 0 {
+			sdwan = sd
+		}
+	}
+
+	var vpns []VpnTunnel
+	for _, b := range doc.blocksUnder("config vpn ipsec phase1-interface") {
+		t := VpnTunnel{Name: b.Name}
+		if v, _, ok := doc.settingDirect(b, "interface"); ok {
+			t.Interface = v
+		}
+		if v, _, ok := doc.settingDirect(b, "remote-gw"); ok {
+			t.RemoteGw = v
+		}
+		if v, _, ok := doc.settingDirect(b, "ike-version"); ok {
+			t.IkeVersion = v
+		}
+		vpns = append(vpns, t)
+	}
+
+	var ha *HAInfo
+	if b, ok := doc.block("config system ha"); ok {
+		if mode, _, mok := doc.settingDirect(b, "mode"); mok && !strings.EqualFold(mode, "standalone") {
+			h := &HAInfo{Mode: strings.ToLower(mode)}
+			if v, _, hok := doc.settingDirect(b, "group-name"); hok {
+				h.GroupName = v
+			}
+			// hbdev alternates interface names and priorities: keep the names.
+			for _, f := range doc.settingFields(b, "hbdev") {
+				if _, err := strconv.Atoi(f); err != nil {
+					h.Hbdev = append(h.Hbdev, f)
+				}
+			}
+			h.Monitor = doc.settingFields(b, "monitor")
+			ha = h
+		}
+	}
+
+	var ssids []WifiSSID
+	for _, b := range doc.blocksUnder("config wireless-controller vap") {
+		s := WifiSSID{Name: b.Name}
+		if v, _, ok := doc.settingDirect(b, "ssid"); ok {
+			s.SSID = v
+		}
+		if v, _, ok := doc.settingDirect(b, "vlanid"); ok {
+			s.VlanID, _ = strconv.Atoi(v)
+		}
+		if v, _, ok := doc.settingDirect(b, "security"); ok {
+			s.Security = strings.ToLower(v)
+		}
+		ssids = append(ssids, s)
+	}
+
+	// WTP profiles: platform type and the union of the radios' vap lists
+	// (`set vaps` lives in nested `config radio-N` blocks).
+	type profileInfo struct {
+		platform string
+		vaps     []string
+	}
+	profiles := map[string]profileInfo{}
+	for _, b := range doc.blocksUnder("config wireless-controller wtp-profile") {
+		pi := profileInfo{}
+		seenVap := map[string]bool{}
+		for _, line := range doc.findAllInBlock(b, "set type ") {
+			pi.platform = strings.Trim(strings.TrimSpace(line[len("set type "):]), `"'`)
+			break
+		}
+		for _, line := range doc.findAllInBlock(b, "set vaps ") {
+			for _, v := range splitCfgValues(line[len("set vaps "):]) {
+				if !seenVap[v] {
+					seenVap[v] = true
+					pi.vaps = append(pi.vaps, v)
+				}
+			}
+		}
+		profiles[b.Name] = pi
+	}
+
+	var aps []FortiAP
+	for _, b := range doc.blocksUnder("config wireless-controller wtp") {
+		ap := FortiAP{WtpID: b.Name}
+		if v, _, ok := doc.settingDirect(b, "name"); ok {
+			ap.Name = v
+		}
+		if v, _, ok := doc.settingDirect(b, "wtp-profile"); ok {
+			ap.Profile = v
+		}
+		if pi, ok := profiles[ap.Profile]; ok {
+			ap.Platform = pi.platform
+			ap.SSIDs = pi.vaps
+		}
+		aps = append(aps, ap)
+	}
+
+	return &parsedConfig{
+		Interfaces:   interfaces,
+		Routes:       routes,
+		Policies:     policies,
+		Switches:     switches,
+		SwitchGroups: groups,
+		Zones:        zones,
+		DhcpServers:  dhcp,
+		Sdwan:        sdwan,
+		Vpns:         vpns,
+		HA:           ha,
+		APs:          aps,
+		SSIDs:        ssids,
+	}
 }
 
 // reFswSerial matches FortiSwitch serial prefixes, e.g. "S524DN…" → model
