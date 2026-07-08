@@ -188,16 +188,21 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 		// Newer log records may lack fields older ones had (hostname, VLAN):
 		// only overwrite with non-empty values.
 		if _, err := tx.Exec(`INSERT INTO devices
-			(fw_id, mac, ip, vlan, port, switch_id, hostname, first_seen, last_seen, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(fw_id, mac, ip, vlan, port, switch_id, hostname, devtype, osname, osversion, vendor, first_seen, last_seen, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(fw_id, mac, ip) DO UPDATE SET
 				vlan       = CASE WHEN excluded.vlan != '' THEN excluded.vlan ELSE vlan END,
 				port       = CASE WHEN excluded.port != '' THEN excluded.port ELSE port END,
 				switch_id  = CASE WHEN excluded.switch_id != '' THEN excluded.switch_id ELSE switch_id END,
 				hostname   = CASE WHEN excluded.hostname != '' THEN excluded.hostname ELSE hostname END,
+				devtype    = CASE WHEN excluded.devtype != '' THEN excluded.devtype ELSE devtype END,
+				osname     = CASE WHEN excluded.osname != '' THEN excluded.osname ELSE osname END,
+				osversion  = CASE WHEN excluded.osversion != '' THEN excluded.osversion ELSE osversion END,
+				vendor     = CASE WHEN excluded.vendor != '' THEN excluded.vendor ELSE vendor END,
 				last_seen  = excluded.last_seen,
 				updated_at = excluded.updated_at`,
-			fwID, d.Mac, d.IP, d.Vlan, d.Port, d.SwitchID, d.Hostname, firstSeen, d.LastSeen, now); err != nil {
+			fwID, d.Mac, d.IP, d.Vlan, d.Port, d.SwitchID, d.Hostname,
+			d.DevType, d.OsName, d.OsVersion, d.Vendor, firstSeen, d.LastSeen, now); err != nil {
 			return 0, err
 		}
 	}
@@ -224,7 +229,48 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 		}
 	}
 
+	// MAC add/move → wired switch-port bindings (the piece traffic logs lack).
+	if mp, serr := e.fetchMacPorts(fqdn, rangeSec); serr != nil {
+		e.logger.Warn("graylog mac-port fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else if serr := e.storeMacPorts(fwID, mp, now); serr != nil {
+		e.logger.Warn("graylog mac-port store failed", "fw_id", fwID, "err", serr)
+	}
+
+	// Wireless client ↔ AP ↔ SSID associations.
+	if wc, serr := e.fetchWifiClients(fqdn, rangeSec); serr != nil {
+		e.logger.Warn("graylog wifi fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else if serr := e.storeWifi(fwID, wc, now); serr != nil {
+		e.logger.Warn("graylog wifi store failed", "fw_id", fwID, "err", serr)
+	}
+
+	// VPN tunnel up/down state.
+	if vs, serr := e.fetchVpnStatuses(fqdn, rangeSec); serr != nil {
+		e.logger.Warn("graylog vpn fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else if serr := e.storeVpn(fwID, vs, now); serr != nil {
+		e.logger.Warn("graylog vpn store failed", "fw_id", fwID, "err", serr)
+	}
+
+	// HA liveness (newest HA event summary).
+	if detail, serr := e.fetchHaDetail(fqdn, rangeSec); serr != nil {
+		e.logger.Warn("graylog ha fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else if detail != "" {
+		if _, serr := e.db.Exec(`INSERT INTO ha_status (fw_id, detail, updated_at) VALUES (?, ?, ?)
+			ON CONFLICT(fw_id) DO UPDATE SET detail=excluded.detail, updated_at=excluded.updated_at`,
+			fwID, detail, now); serr != nil {
+			e.logger.Warn("graylog ha store failed", "fw_id", fwID, "err", serr)
+		}
+	}
+
 	return len(devices), nil
+}
+
+// haDetail returns the stored HA event summary for a firewall ("" when none).
+func (e *Extension) haDetail(fwID int) string {
+	var detail string
+	if err := e.db.QueryRow("SELECT detail FROM ha_status WHERE fw_id = ?", fwID).Scan(&detail); err != nil {
+		return ""
+	}
+	return detail
 }
 
 // stpRetention bounds how long a port's STP/guard state survives without being
@@ -448,11 +494,146 @@ func (e *Extension) listMultiMacPorts(fwID int) ([]MultiMacPort, error) {
 	return out, rows.Err()
 }
 
+// storeMacPorts upserts the latest wired switch-port binding per MAC and prunes
+// bindings unseen past the retention window. port is replaced (it is the whole
+// point of the row); switch_name/vlan keep their last non-empty value.
+func (e *Extension) storeMacPorts(fwID int, ports []MacPort, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, p := range ports {
+		if p.Mac == "" || p.Port == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO mac_ports (fw_id, mac, switch_name, port, vlan, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, mac) DO UPDATE SET
+				switch_name = CASE WHEN excluded.switch_name != '' THEN excluded.switch_name ELSE switch_name END,
+				port        = excluded.port,
+				vlan        = CASE WHEN excluded.vlan != '' THEN excluded.vlan ELSE vlan END,
+				updated_at  = excluded.updated_at`,
+			fwID, p.Mac, p.SwitchName, p.Port, p.Vlan, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM mac_ports WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// storeWifi upserts the latest wireless association per MAC (full field replace,
+// since it is a live snapshot) and prunes stale rows.
+func (e *Extension) storeWifi(fwID int, clients []WifiClient, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, w := range clients {
+		if w.Mac == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO wifi_clients (fw_id, mac, ap, ssid, signal, channel, vlan, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, mac) DO UPDATE SET
+				ap=excluded.ap, ssid=excluded.ssid, signal=excluded.signal,
+				channel=excluded.channel,
+				vlan=CASE WHEN excluded.vlan != '' THEN excluded.vlan ELSE vlan END,
+				updated_at=excluded.updated_at`,
+			fwID, w.Mac, w.Ap, w.Ssid, w.Signal, w.Channel, w.Vlan, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM wifi_clients WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// storeVpn upserts the latest up/down state per tunnel and prunes stale rows.
+func (e *Extension) storeVpn(fwID int, statuses []VpnStatus, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, v := range statuses {
+		if v.Name == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO vpn_status (fw_id, name, remip, type, status, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, name) DO UPDATE SET
+				remip=CASE WHEN excluded.remip != '' THEN excluded.remip ELSE remip END,
+				type=CASE WHEN excluded.type != '' THEN excluded.type ELSE type END,
+				status=excluded.status, updated_at=excluded.updated_at`,
+			fwID, v.Name, v.RemIP, v.Type, v.Status, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM vpn_status WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// listWifi returns the stored wireless associations of a firewall.
+func (e *Extension) listWifi(fwID int) ([]WifiClient, error) {
+	rows, err := e.db.Query(`SELECT mac, ap, ssid, signal, channel, vlan
+		FROM wifi_clients WHERE fw_id = ? ORDER BY ap, ssid, mac`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []WifiClient
+	for rows.Next() {
+		var w WifiClient
+		if scanErr := rows.Scan(&w.Mac, &w.Ap, &w.Ssid, &w.Signal, &w.Channel, &w.Vlan); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// listVpn returns the stored VPN tunnel states of a firewall.
+func (e *Extension) listVpn(fwID int) ([]VpnStatus, error) {
+	rows, err := e.db.Query(`SELECT name, remip, type, status
+		FROM vpn_status WHERE fw_id = ? ORDER BY name`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []VpnStatus
+	for rows.Next() {
+		var v VpnStatus
+		if scanErr := rows.Scan(&v.Name, &v.RemIP, &v.Type, &v.Status); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // listDevices returns the stored inventory of a firewall with MAC/IP sharing
 // flags computed, plus the time of the last refresh ("" when never fetched).
+// The wired switch/port comes from the mac_ports join (FortiSwitch MAC events)
+// when present, and wireless AP/SSID/signal from the wifi_clients join.
 func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
-	rows, err := e.db.Query(`SELECT mac, ip, vlan, port, switch_id, hostname, first_seen, last_seen, updated_at
-		FROM devices WHERE fw_id = ? ORDER BY vlan, port, mac`, fwID)
+	rows, err := e.db.Query(`SELECT d.mac, d.ip, d.vlan, d.port, d.switch_id, d.hostname,
+			d.devtype, d.osname, d.osversion, d.vendor, d.first_seen, d.last_seen, d.updated_at,
+			COALESCE(mp.switch_name, ''), COALESCE(mp.port, ''), COALESCE(mp.vlan, ''),
+			COALESCE(w.ap, ''), COALESCE(w.ssid, ''), COALESCE(w.signal, '')
+		FROM devices d
+		LEFT JOIN mac_ports mp ON mp.fw_id = d.fw_id AND mp.mac = d.mac
+		LEFT JOIN wifi_clients w ON w.fw_id = d.fw_id AND w.mac = d.mac
+		WHERE d.fw_id = ? ORDER BY d.vlan, d.port, d.mac`, fwID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -462,8 +643,21 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 	updatedAt := ""
 	for rows.Next() {
 		var d Device
-		if scanErr := rows.Scan(&d.Mac, &d.IP, &d.Vlan, &d.Port, &d.SwitchID, &d.Hostname, &d.FirstSeen, &d.LastSeen, &updatedAt); scanErr != nil {
+		var mpSwitch, mpPort, mpVlan string
+		if scanErr := rows.Scan(&d.Mac, &d.IP, &d.Vlan, &d.Port, &d.SwitchID, &d.Hostname,
+			&d.DevType, &d.OsName, &d.OsVersion, &d.Vendor, &d.FirstSeen, &d.LastSeen, &updatedAt,
+			&mpSwitch, &mpPort, &mpVlan, &d.Ap, &d.Ssid, &d.Signal); scanErr != nil {
 			return nil, "", scanErr
+		}
+		// The FortiSwitch MAC-event binding is the authoritative wired location:
+		// it carries the real switch + physical port, which the traffic-log
+		// inventory lacks (its "port" is only the VLAN interface).
+		if mpPort != "" {
+			d.SwitchID = mpSwitch
+			d.Port = mpPort
+			if mpVlan != "" {
+				d.Vlan = mpVlan
+			}
 		}
 		devices = append(devices, d)
 	}

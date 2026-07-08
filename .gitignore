@@ -16,9 +16,10 @@ __pycache__/
 
 # Project-specific / local files
 docs/
-example.conf
-example2.conf
-example.csv
+# Local fixtures that contain real customer data — never commit.
+example*.conf
+*.conf.local
+*.csv
 .gemini/settings.json
 graphify-out/
 temp/

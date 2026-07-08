@@ -24,10 +24,48 @@ type Device struct {
 	FirstSeen string `json:"first_seen,omitempty"`
 	LastSeen  string `json:"last_seen"`
 
+	// Endpoint fingerprint from FortiGate device-identification (traffic logs).
+	DevType   string `json:"devtype,omitempty"`
+	OsName    string `json:"osname,omitempty"`
+	OsVersion string `json:"osversion,omitempty"`
+	Vendor    string `json:"vendor,omitempty"`
+
+	// Wireless association (enriched from wireless assoc logs, by MAC).
+	Ap     string `json:"ap,omitempty"`
+	Ssid   string `json:"ssid,omitempty"`
+	Signal string `json:"signal,omitempty"`
+
 	// SharedMac/SharedIP flag devices whose MAC appears with multiple IPs /
 	// whose IP appears with multiple MACs (computed at read time).
 	SharedMac bool `json:"shared_mac,omitempty"`
 	SharedIP  bool `json:"shared_ip,omitempty"`
+}
+
+// MacPort is one client MAC's current wired switch + physical port, derived
+// from FortiSwitch MAC add/move events (the port lives in free-text msg).
+type MacPort struct {
+	Mac        string
+	Port       string
+	Vlan       string
+	SwitchName string
+}
+
+// WifiClient is one wireless client's live association (client↔AP↔SSID).
+type WifiClient struct {
+	Mac     string `json:"mac"`
+	Ap      string `json:"ap"`
+	Ssid    string `json:"ssid"`
+	Signal  string `json:"signal,omitempty"`
+	Channel string `json:"channel,omitempty"`
+	Vlan    string `json:"vlan,omitempty"`
+}
+
+// VpnStatus is one IPsec/SSL tunnel's last-known up/down state and remote peer.
+type VpnStatus struct {
+	Name   string `json:"name"`
+	RemIP  string `json:"remip,omitempty"`
+	Type   string `json:"type,omitempty"`   // ipsec | ssl
+	Status string `json:"status,omitempty"` // up | down
 }
 
 // escapeGraylogValue escapes backslashes and double quotes so a value stays
@@ -321,6 +359,82 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	return out, events, nil
 }
 
+// fetchMacPorts pulls the FortiSwitch MAC add/move events and returns the
+// latest wired switch-port binding per client MAC (messages are newest-first,
+// so the first binding seen per MAC wins).
+func (e *Extension) fetchMacPorts(fqdn, rangeSec string) ([]MacPort, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogMacQuery, "GRAYLOG_MAC_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []MacPort
+	for _, m := range msgs {
+		mp, ok := macEventFromMessage(m)
+		if !ok || seen[mp.Mac] {
+			continue
+		}
+		seen[mp.Mac] = true
+		out = append(out, mp)
+	}
+	return out, nil
+}
+
+// fetchWifiClients pulls wireless association events and returns the latest
+// AP/SSID/signal per client MAC (newest-first).
+func (e *Extension) fetchWifiClients(fqdn, rangeSec string) ([]WifiClient, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogWifiQuery, "GRAYLOG_WIFI_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []WifiClient
+	for _, m := range msgs {
+		w, ok := wifiFromMessage(m)
+		if !ok || w.Ap == "" && w.Ssid == "" || seen[w.Mac] {
+			continue
+		}
+		seen[w.Mac] = true
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// fetchVpnStatuses pulls VPN tunnel events and returns the latest up/down state
+// per tunnel (newest-first).
+func (e *Extension) fetchVpnStatuses(fqdn, rangeSec string) ([]VpnStatus, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogVpnQuery, "GRAYLOG_VPN_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []VpnStatus
+	for _, m := range msgs {
+		v, ok := vpnFromMessage(m)
+		if !ok || v.Status == "" || seen[v.Name] {
+			continue
+		}
+		seen[v.Name] = true
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// fetchHaDetail returns a short summary of the newest HA event for the firewall
+// ("" when none), giving the topology a liveness hint for the HA cluster node.
+func (e *Extension) fetchHaDetail(fqdn, rangeSec string) (string, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogHaQuery, "GRAYLOG_HA_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range msgs { // newest-first
+		if d := field(m, "logdesc", "msg"); d != "" {
+			return d, nil
+		}
+	}
+	return "", nil
+}
+
 // stpFromMessage normalizes one STP/guard/port-status event log message;
 // returns nil when the message carries nothing parsable.
 func stpFromMessage(msg map[string]any) (*StpPort, stpEvent) {
@@ -405,13 +519,89 @@ func deviceFromMessage(msg map[string]any) (Device, bool) {
 		return Device{}, false
 	}
 	d := Device{
-		Mac:      mac,
-		IP:       field(msg, "ip", "assignedip", "srcip", "client_ip", "dstip"),
-		Vlan:     field(msg, "vlan", "vlanid", "vlan_id", "cvid"),
-		Port:     field(msg, "portname", "port", "interface", "srcintf", "switchphysicalport"),
-		SwitchID: field(msg, "switchid", "sn", "swname", "devid_fsw", "switch_sn"),
-		Hostname: field(msg, "hostname", "srcname", "devname_client", "computer", "unauthuser"),
-		LastSeen: field(msg, "timestamp"),
+		Mac:       mac,
+		IP:        field(msg, "ip", "assignedip", "srcip", "client_ip", "dstip"),
+		Vlan:      field(msg, "vlan", "vlanid", "vlan_id", "cvid"),
+		Port:      field(msg, "portname", "port", "interface", "srcintf", "switchphysicalport"),
+		SwitchID:  field(msg, "switchid", "sn", "swname", "devid_fsw", "switch_sn"),
+		Hostname:  field(msg, "hostname", "srcname", "devname_client", "computer", "unauthuser"),
+		DevType:   field(msg, "devtype", "srcfamily", "device_type"),
+		OsName:    field(msg, "osname", "os"),
+		OsVersion: field(msg, "osversion", "os_version"),
+		Vendor:    field(msg, "srchwvendor", "hwvendor", "manuf", "vendor"),
+		LastSeen:  field(msg, "timestamp"),
 	}
 	return d, true
+}
+
+// reMacEvent parses FortiSwitch MAC add/move messages, which carry the client
+// MAC, physical port and VLAN only in free-text (add: "…discovered on interface
+// portN in vlan V on Switch NAME"; move: "…moved from interface X to interface
+// portN in vlan V on Switch NAME"). Delete events have no port and are ignored.
+var reMacEvent = regexp.MustCompile(`(?i)^([0-9a-f:]{17})\b.*?\binterface (\S+?)(?:\s+in vlan (\d+))?(?: on Switch (\S+))?\s*$`)
+
+// macEventFromMessage extracts the client MAC → physical port / VLAN / switch
+// binding from one FortiSwitch MAC add/move log. `name`/`sn` carry the switch
+// as indexed fields (preferred over the name parsed from msg). Returns false
+// for delete events (no port) and anything unparsable.
+func macEventFromMessage(msg map[string]any) (MacPort, bool) {
+	text := field(msg, "msg", "message")
+	// A "moved to interface X" message has two "interface" tokens; keep the last
+	// (the current port) by trimming everything up to the final "to interface".
+	if i := strings.LastIndex(strings.ToLower(text), "to interface "); i >= 0 {
+		text = text[:strings.Index(strings.ToLower(text), " ")+1] + text[i+len("to "):]
+	}
+	m := reMacEvent.FindStringSubmatch(text)
+	if m == nil || m[2] == "" {
+		return MacPort{}, false
+	}
+	sw := field(msg, "name", "sn")
+	if sw == "" {
+		sw = m[4]
+	}
+	return MacPort{
+		Mac:        strings.ToLower(m[1]),
+		Port:       m[2],
+		Vlan:       m[3],
+		SwitchName: sw,
+	}, true
+}
+
+// wifiFromMessage normalizes one wireless association log into a WifiClient.
+func wifiFromMessage(msg map[string]any) (WifiClient, bool) {
+	mac := strings.ToLower(field(msg, "stamac", "mac", "srcmac"))
+	if mac == "" {
+		return WifiClient{}, false
+	}
+	return WifiClient{
+		Mac:     mac,
+		Ap:      field(msg, "ap", "apname", "wtpname"),
+		Ssid:    field(msg, "ssid"),
+		Signal:  field(msg, "signal", "rssi"),
+		Channel: field(msg, "channel"),
+		Vlan:    field(msg, "vlan", "vlanid", "vlan_id"),
+	}, true
+}
+
+// vpnFromMessage normalizes one VPN log into a per-tunnel status. Up/down is
+// inferred from action/logdesc wording; "stats" events count as up.
+func vpnFromMessage(msg map[string]any) (VpnStatus, bool) {
+	name := field(msg, "vpntunnel", "tunnelid", "tunnel")
+	if name == "" {
+		return VpnStatus{}, false
+	}
+	blob := strings.ToLower(field(msg, "action") + " " + field(msg, "logdesc") + " " + field(msg, "msg"))
+	status := ""
+	switch {
+	case strings.Contains(blob, "down") || strings.Contains(blob, "deleted") || strings.Contains(blob, "phase 2 down"):
+		status = "down"
+	case strings.Contains(blob, "up") || strings.Contains(blob, "installed") || strings.Contains(blob, "tunnel-stats") || strings.Contains(blob, "established"):
+		status = "up"
+	}
+	return VpnStatus{
+		Name:   name,
+		RemIP:  field(msg, "remip", "remote_ip"),
+		Type:   field(msg, "tunneltype"),
+		Status: status,
+	}, true
 }

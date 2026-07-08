@@ -77,6 +77,10 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		createTableSQL,
 		createStpTableSQL,
 		createStpEventsSQL,
+		createMacPortsSQL,
+		createWifiSQL,
+		createVpnStatusSQL,
+		createHaStatusSQL,
 	} {
 		if _, execErr := db.Exec(q); execErr != nil {
 			_ = db.Close()
@@ -85,11 +89,16 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	}
 	// Migrations (ignore the duplicate-column error on re-runs): guard column
 	// for BPDU/loop/root-guard blocks, link column for live port status,
-	// first_seen for the retained device inventory.
+	// first_seen for the retained device inventory, plus the endpoint
+	// fingerprint columns (device-identification: type/OS/vendor).
 	for _, alter := range []string{
 		`ALTER TABLE stp_ports ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE stp_ports ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN first_seen TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN devtype TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN osname TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN osversion TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN vendor TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			_ = db.Close()
@@ -117,6 +126,10 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS devices (
 	port      TEXT NOT NULL DEFAULT '',
 	switch_id TEXT NOT NULL DEFAULT '',
 	hostname  TEXT NOT NULL DEFAULT '',
+	devtype   TEXT NOT NULL DEFAULT '',
+	osname    TEXT NOT NULL DEFAULT '',
+	osversion TEXT NOT NULL DEFAULT '',
+	vendor    TEXT NOT NULL DEFAULT '',
 	first_seen TEXT NOT NULL DEFAULT '',
 	last_seen TEXT NOT NULL DEFAULT '',
 	updated_at TEXT NOT NULL,
@@ -151,6 +164,52 @@ const createStpTableSQL = `CREATE TABLE IF NOT EXISTS stp_ports (
 	last_change TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, switch_name, port)
+)`
+
+// mac_ports holds the latest wired switch + physical port per client MAC,
+// derived from FortiSwitch MAC add/move events (the piece traffic logs lack).
+// listDevices joins this over the inventory so devices pin to real ports.
+const createMacPortsSQL = `CREATE TABLE IF NOT EXISTS mac_ports (
+	fw_id       INTEGER NOT NULL,
+	mac         TEXT NOT NULL,
+	switch_name TEXT NOT NULL DEFAULT '',
+	port        TEXT NOT NULL DEFAULT '',
+	vlan        TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, mac)
+)`
+
+// wifi_clients holds the latest wireless association per client MAC
+// (client↔AP↔SSID + signal); joined onto the inventory by MAC.
+const createWifiSQL = `CREATE TABLE IF NOT EXISTS wifi_clients (
+	fw_id      INTEGER NOT NULL,
+	mac        TEXT NOT NULL,
+	ap         TEXT NOT NULL DEFAULT '',
+	ssid       TEXT NOT NULL DEFAULT '',
+	signal     TEXT NOT NULL DEFAULT '',
+	channel    TEXT NOT NULL DEFAULT '',
+	vlan       TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (fw_id, mac)
+)`
+
+// vpn_status holds the latest up/down state per IPsec/SSL tunnel.
+const createVpnStatusSQL = `CREATE TABLE IF NOT EXISTS vpn_status (
+	fw_id      INTEGER NOT NULL,
+	name       TEXT NOT NULL,
+	remip      TEXT NOT NULL DEFAULT '',
+	type       TEXT NOT NULL DEFAULT '',
+	status     TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (fw_id, name)
+)`
+
+// ha_status holds the newest HA event summary per firewall (liveness hint for
+// the HA cluster node, which is otherwise config-derived).
+const createHaStatusSQL = `CREATE TABLE IF NOT EXISTS ha_status (
+	fw_id      INTEGER NOT NULL PRIMARY KEY,
+	detail     TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL
 )`
 
 // worker refreshes the device inventory for every switch-managing firewall on
