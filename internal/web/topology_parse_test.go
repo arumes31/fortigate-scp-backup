@@ -69,8 +69,13 @@ config switch-controller managed-switch
         set sn "S448EN0000000001"
         set description "rack 3"
         config ports
+            edit "port49"
+                set vlan "VL110"
+                set allowed-vlans "VL051" "VL090" "VL100"
+            next
             edit "port50"
                 set vlan "_default"
+                set allowed-vlans-all enable
                 set speed auto-module
             next
             edit "SW-ACCESS01-0"
@@ -119,10 +124,16 @@ func TestParseConfigDataNestedBlocks(t *testing.T) {
 		t.Fatalf("port29 parse wrong: %+v", p)
 	}
 	acc := switches[2]
-	if acc.Description != "rack 3" || len(acc.Ports) != 2 {
+	if acc.Description != "rack 3" || len(acc.Ports) != 3 {
 		t.Fatalf("SW-ACCESS01 parse wrong: %+v", acc)
 	}
-	trunk := acc.Ports[1]
+	if p := acc.Ports[0]; p.Name != "port49" || len(p.AllowedVlans) != 3 || p.AllowedVlans[0] != "VL051" || p.AllowedVlansAll {
+		t.Fatalf("port49 tagged VLANs wrong: %+v", p)
+	}
+	if p := acc.Ports[1]; p.Name != "port50" || !p.AllowedVlansAll || len(p.AllowedVlans) != 0 {
+		t.Fatalf("port50 allowed-vlans-all wrong: %+v", p)
+	}
+	trunk := acc.Ports[2]
 	if trunk.Type != "trunk" || trunk.IslPeerDevice != "SW-CORE01" || trunk.IslPeerPort != "port1" ||
 		len(trunk.Members) != 1 || trunk.Members[0] != "port50" {
 		t.Fatalf("trunk parse wrong: %+v", trunk)
@@ -166,6 +177,47 @@ func TestBuildSwitchLinksDedup(t *testing.T) {
 	links := buildSwitchLinks(switches)
 	if len(links) != 1 {
 		t.Fatalf("links = %d, want 1 (%+v)", len(links), links)
+	}
+}
+
+// TestSplitCfgValues: quoted values with spaces must stay single tokens
+// (address/service/member names regularly contain spaces).
+func TestSplitCfgValues(t *testing.T) {
+	got := splitCfgValues(`"Internal Net" "all" plain 'single quoted' "esc\"aped"`)
+	want := []string{"Internal Net", "all", "plain", "single quoted", `esc"aped`}
+	if len(got) != len(want) {
+		t.Fatalf("splitCfgValues = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("splitCfgValues[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestBuildSwitchLinksTrunkIcl: an MC-LAG ICL persisted only as a trunk with
+// `set mclag-icl enable` (no isl-peer data) must still pair the switches,
+// with the trunk members as the link ports.
+func TestBuildSwitchLinksTrunkIcl(t *testing.T) {
+	switches := []FortiSwitch{
+		{SwitchID: "A", Ports: []SwitchPort{
+			{Name: "port27", LldpProfile: "default-auto-mclag-icl"},
+			{Name: "A-ICL", Type: "trunk", MclagIcl: true, Members: []string{"port27", "port28"}},
+		}},
+		{SwitchID: "B", Ports: []SwitchPort{
+			{Name: "B-ICL", Type: "trunk", MclagIcl: true, Members: []string{"port27", "port28"}},
+		}},
+	}
+	links := buildSwitchLinks(switches)
+	if len(links) != 1 || links[0].Kind != "mclag-icl" {
+		t.Fatalf("links = %+v, want one mclag-icl link", links)
+	}
+	// port27 appears via its LLDP profile AND as trunk member: deduplicated.
+	if len(links[0].FromPorts) != 2 || links[0].FromPorts[0] != "port27" || links[0].FromPorts[1] != "port28" {
+		t.Fatalf("FromPorts = %v, want [port27 port28]", links[0].FromPorts)
+	}
+	if len(links[0].ToPorts) != 2 {
+		t.Fatalf("ToPorts = %v, want [port27 port28]", links[0].ToPorts)
 	}
 }
 

@@ -265,10 +265,12 @@ func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request
 
 	out := s.buildTopologyJSON(r.Context(), db, fwID)
 	// A share link intentionally shows the network structure (interfaces,
-	// VLANs, addressing, routes, switches, model and firmware version) — that
-	// IS the shared topology. But it must not disclose the attack surface
-	// beyond that: strip policy rule details (addresses, services, actions)
+	// VLANs, addressing, routes, switches and model) — that IS the shared
+	// topology. But it must not disclose the attack surface beyond that:
+	// strip the firmware version (model + exact version hands a link-holder
+	// the CVE surface), policy rule details (addresses, services, actions)
 	// and management-access lists.
+	out.Version = ""
 	for i := range out.Interfaces {
 		out.Interfaces[i].AllowAccess = nil
 	}

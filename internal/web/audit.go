@@ -280,11 +280,14 @@ type Policy struct {
 
 type SwitchPort struct {
 	Name        string `json:"name"`
-	Vlan        string `json:"vlan"`
+	Vlan        string `json:"vlan"` // native (untagged) VLAN
 	Description string `json:"description,omitempty"`
 	Mac         string `json:"mac,omitempty"`
 	LldpProfile string `json:"lldp_profile,omitempty"`
 	Speed       string `json:"speed,omitempty"`
+	// Tagged VLANs carried on the port.
+	AllowedVlans    []string `json:"allowed_vlans,omitempty"`
+	AllowedVlansAll bool     `json:"allowed_vlans_all,omitempty"`
 	// Trunk entries (present when FortiOS persisted auto-generated ISL/ICL
 	// trunks into the backup).
 	Type          string   `json:"type,omitempty"` // "" (physical) or "trunk"
