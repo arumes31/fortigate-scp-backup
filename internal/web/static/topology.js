@@ -46,6 +46,15 @@ function deviceNode(d) {
     };
 }
 
+// fwLabel renders "model · FortiOS version", omitting whatever is unknown —
+// the public shared endpoint redacts the firmware version on purpose, so it
+// must not render as "FortiOS ?".
+function fwLabel(d) {
+    let s = d.model || "FortiGate";
+    if (d.version) s += " · FortiOS " + d.version;
+    return s;
+}
+
 // wanSet returns the interface names facing the internet: role wan or device
 // of a default route. Single source of truth for the tree and the faceplate.
 function wanSet(interfaces, routes) {
@@ -191,7 +200,7 @@ function buildTree(data) {
         children: [{
             name: data.fqdn || "FortiGate",
             kind: "firewall", data: data,
-            info: `${data.model || "FortiGate"} · FortiOS ${data.version || "?"}\nInterfaces: ${interfaces.length}\nSwitches: ${switches.length}\nPolicies: ${policies.length}` +
+            info: `${fwLabel(data)}\nInterfaces: ${interfaces.length}\nSwitches: ${switches.length}\nPolicies: ${policies.length}` +
                 (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : ""),
             badge: data.model || null,
             children: fwChildren
@@ -404,7 +413,7 @@ function showFaceplate(nodeData) {
     if (nodeData.kind === "firewall") {
         const d = nodeData.data;
         title = d.fqdn || "FortiGate";
-        sub = `${d.model || "FortiGate"} · FortiOS ${d.version || "?"}`;
+        sub = fwLabel(d);
         const wan = wanSet(d.interfaces, d.routes);
         const vlanCount = {};
         (d.interfaces || []).forEach(i => { if (i.vlan_id > 0 && i.interface) vlanCount[i.interface] = (vlanCount[i.interface] || 0) + 1; });
@@ -513,11 +522,15 @@ async function fetchDevicesNow() {
 
 function topoMetaText() {
     if (!topo) return "";
-    let text = `${topo.model || ""} · FortiOS ${topo.version || "?"} · ${(topo.interfaces || []).length} Interfaces · ${(topo.switches || []).length} Switches`;
+    const parts = [];
+    if (topo.model) parts.push(topo.model);
+    if (topo.version) parts.push("FortiOS " + topo.version);
+    parts.push(`${(topo.interfaces || []).length} Interfaces`);
+    parts.push(`${(topo.switches || []).length} Switches`);
     if (topoDevices && topoDevices.length) {
-        text += ` · ${topoDevices.length} ${tt("topo.devices")}`;
+        parts.push(`${topoDevices.length} ${tt("topo.devices")}`);
     }
-    return text;
+    return parts.join(" · ");
 }
 
 async function loadTopology() {

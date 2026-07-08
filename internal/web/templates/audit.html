@@ -82,7 +82,7 @@
             <h2 class="mt-0 mb-0">{{T .Base.Lang "audit.per_firewall"}}</h2>
             <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent-color);">{{T .Base.Lang "audit.topology_link"}}</a></span>
         </div>
-        <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
+        <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
     </div>
 
     <div class="table-wrap">
@@ -129,6 +129,7 @@
 // ---------------------------------------------------------------------------
 const auditRows = Array.from(document.querySelectorAll("tr.audit-row-item"));
 const auditState = {};        // fwid -> result JSON
+const searchCache = {};       // fwid -> uppercase searchable text of the result
 const failedRows = new Set(); // fwids whose fetch failed (excluded from totals)
 let totals = { critical: 0, warning: 0, loaded: 0 };
 
@@ -180,7 +181,7 @@ function findingCard(f, fwid) {
                 <input type="hidden" name="fw_id" value="${fwid}">
                 <input type="hidden" name="finding_key" value="${esc(f.key || "")}">
                 <input type="hidden" name="finding_text" value="${esc(f.text)}">
-                <input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
                 <button type="submit" class="btn btn-small" style="font-size: 0.8em; padding: 2px 6px;">${tt("audit.exempt")}</button>
             </form>
         </div>
@@ -217,8 +218,8 @@ function renderRow(tr, res) {
     ticketCell.innerHTML = `
         <form method="post" action="/audit/ticket" style="margin: 0; display: flex; flex-direction: column; gap: 4px;">
             <input type="hidden" name="backup_filename" value="${esc(res.backup_filename)}">
-            <input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
-            <input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
+            <input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
+            <input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
             <button type="submit" class="btn btn-small" style="padding: 2px; font-size: 0.8em; width: 60px;">Link</button>
         </form>`;
 
@@ -233,7 +234,26 @@ function renderRow(tr, res) {
         </div>
         <button class="btn btn-small" onclick="recompute(${fwid})" title="${tt("audit.recheck_title")}" style="margin-top: 6px; background: none; color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.1); padding: 2px 8px; font-size: 0.78em;">${tt("audit.recheck")}</button>`;
 
+    // The heavy details DOM (finding cards with per-finding exemption forms)
+    // is built lazily on first expand: building it for every firewall up
+    // front made the whole page unresponsive — hundreds of hidden forms and
+    // inputs, re-scanned by password-manager extensions on every row update.
+    const detailRow = document.getElementById("detail-" + fwid);
+    detailRow.firstElementChild.dataset.built = "";
+    if (detailRow.style.display !== "none") {
+        buildDetail(fwid);
+        document.getElementById("btn-" + fwid).textContent = tt("audit.details_hide");
+    }
+}
+
+// buildDetail renders the findings/upgrade panel for one firewall into its
+// detail row (no-op when already built for the current result).
+function buildDetail(fwid) {
     const detail = document.getElementById("detail-" + fwid).firstElementChild;
+    if (detail.dataset.built === "1") return;
+    const res = auditState[fwid];
+    if (!res) return;
+
     let findingsHtml;
     if (res.findings && res.findings.length) {
         findingsHtml = res.findings.map(f => findingCard(f, fwid)).join("");
@@ -264,6 +284,7 @@ function renderRow(tr, res) {
                 <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">${upgradeHtml}</div>
             </div>
         </div>`;
+    detail.dataset.built = "1";
 }
 
 function renderError(tr, fwid) {
@@ -297,6 +318,9 @@ async function loadRow(fwid, recompute) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const res = await resp.json();
         auditState[fwid] = res;
+        // Search matches result content (findings, model, backup, …) without
+        // requiring the detail DOM to exist.
+        searchCache[fwid] = JSON.stringify(res).toUpperCase();
         failedRows.delete(String(fwid));
         renderRow(tr, res);
     } catch (e) {
@@ -333,7 +357,7 @@ function filterAuditTable() {
     for (const tr of auditRows) {
         const fwid = tr.getAttribute("data-fwid");
         const detailsRow = document.getElementById("detail-" + fwid);
-        const text = (tr.textContent + " " + (detailsRow ? detailsRow.textContent : "")).toUpperCase();
+        const text = tr.textContent.toUpperCase() + " " + (searchCache[fwid] || "");
         if (text.indexOf(input) > -1) {
             tr.style.display = "";
         } else {
@@ -351,6 +375,7 @@ function toggleDetails(fwID) {
     const row = document.getElementById("detail-" + fwID);
     const btn = document.getElementById("btn-" + fwID);
     if (row.style.display === "none") {
+        buildDetail(fwID);
         row.style.display = "table-row";
         btn.textContent = tt("audit.details_hide");
     } else {
