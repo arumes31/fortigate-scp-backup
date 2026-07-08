@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -74,10 +75,25 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA synchronous=NORMAL",
 		createTableSQL,
+		createStpTableSQL,
+		createStpEventsSQL,
 	} {
 		if _, execErr := db.Exec(q); execErr != nil {
 			_ = db.Close()
 			return execErr
+		}
+	}
+	// Migrations (ignore the duplicate-column error on re-runs): guard column
+	// for BPDU/loop/root-guard blocks, link column for live port status,
+	// first_seen for the retained device inventory.
+	for _, alter := range []string{
+		`ALTER TABLE stp_ports ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN first_seen TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			_ = db.Close()
+			return err
 		}
 	}
 	e.db = db
@@ -101,9 +117,40 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS devices (
 	port      TEXT NOT NULL DEFAULT '',
 	switch_id TEXT NOT NULL DEFAULT '',
 	hostname  TEXT NOT NULL DEFAULT '',
+	first_seen TEXT NOT NULL DEFAULT '',
 	last_seen TEXT NOT NULL DEFAULT '',
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (fw_id, mac, ip)
+)`
+
+// stp_events keeps the raw port event history (role/state/guard/link
+// transitions) for the port-detail timeline; rows age out after 48h.
+const createStpEventsSQL = `CREATE TABLE IF NOT EXISTS stp_events (
+	fw_id       INTEGER NOT NULL,
+	switch_name TEXT NOT NULL DEFAULT '',
+	serial      TEXT NOT NULL DEFAULT '',
+	port        TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	from_val    TEXT NOT NULL DEFAULT '',
+	to_val      TEXT NOT NULL DEFAULT '',
+	event_time  TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_name, port, kind, event_time)
+)`
+
+// stp_ports holds the latest spanning-tree role/state per switch port,
+// derived from the FortiGate's switch-controller STP event logs.
+const createStpTableSQL = `CREATE TABLE IF NOT EXISTS stp_ports (
+	fw_id       INTEGER NOT NULL,
+	switch_name TEXT NOT NULL DEFAULT '',
+	serial      TEXT NOT NULL DEFAULT '',
+	port        TEXT NOT NULL,
+	role        TEXT NOT NULL DEFAULT '',
+	state       TEXT NOT NULL DEFAULT '',
+	guard       TEXT NOT NULL DEFAULT '',
+	last_change TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_name, port)
 )`
 
 // worker refreshes the device inventory for every switch-managing firewall on

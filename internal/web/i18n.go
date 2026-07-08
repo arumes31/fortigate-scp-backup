@@ -167,6 +167,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.fetching":     {"en": "fetching device data…", "de": "Gerätedaten werden abgerufen…"},
 	"topo.dev_updated":  {"en": "device data updated", "de": "Gerätedaten aktualisiert"},
 	"topo.fetch_failed": {"en": "Device data fetch failed.", "de": "Gerätedaten-Abruf fehlgeschlagen."},
+	"topo.no_devices":   {"en": "No devices found — check that device-detection / DHCP logging is enabled on the FortiGate.", "de": "Keine Geräte gefunden — prüfen Sie, ob Geräteerkennung / DHCP-Logging auf dem FortiGate aktiviert ist."},
 	"topo.legend_share": {"en": "MAC/IP shared", "de": "MAC/IP geteilt"},
 
 	// Switch interlinks / MC-LAG
@@ -200,10 +201,24 @@ var uiMsgs = map[string]map[string]string{
 	"topo.routes":        {"en": "Routes", "de": "Routen"},
 	"topo.edge_switches": {"en": "Edge switches", "de": "Edge-Switches"},
 	"topo.dev_filter_ph": {"en": "Filter MAC / IP / host / VLAN…", "de": "Filter MAC / IP / Host / VLAN…"},
+	"topo.stp_blocked":   {"en": "Blocked port(s)", "de": "Blockierte(r) Port(s)"},
+	"topo.history":       {"en": "History (48h)", "de": "Verlauf (48h)"},
+	"topo.multi_mac":     {"en": "several MACs — mini-switch/AP?", "de": "mehrere MACs — Mini-Switch/AP?"},
+	"topo.first_seen":    {"en": "First seen", "de": "Zuerst gesehen"},
 	"topo.ctx_copy":      {"en": "Copy", "de": "Kopieren"},
 	"topo.ctx_faceplate": {"en": "Open faceplate", "de": "Frontblende öffnen"},
 	"topo.ctx_expand":    {"en": "Expand", "de": "Aufklappen"},
 	"topo.ctx_collapse":  {"en": "Collapse", "de": "Zuklappen"},
+
+	// Dashboard page (blocked switch ports card)
+	"dashboard.blocked_title": {"en": "Blocked switch ports (STP / BPDU / loop guard)", "de": "Blockierte Switch-Ports (STP / BPDU / Loop Guard)"},
+	"dashboard.blocked_unit":  {"en": "port(s)", "de": "Port(s)"},
+	"dashboard.col_firewall":  {"en": "Firewall", "de": "Firewall"},
+	"dashboard.col_switch":    {"en": "Switch", "de": "Switch"},
+	"dashboard.col_port":      {"en": "Port", "de": "Port"},
+	"dashboard.col_reason":    {"en": "Reason", "de": "Grund"},
+	"dashboard.col_since":     {"en": "Since", "de": "Seit"},
+	"dashboard.topology":      {"en": "Topology", "de": "Topologie"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by
