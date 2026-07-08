@@ -115,6 +115,10 @@ func parseConfigData(doc *cfgDoc) ([]Interface, []StaticRoute, []Policy, []Forti
 			if v, _, ok := doc.settingDirect(pb, "speed"); ok {
 				p.Speed = v
 			}
+			p.AllowedVlans = doc.settingFields(pb, "allowed-vlans")
+			if v, _, ok := doc.settingDirect(pb, "allowed-vlans-all"); ok && strings.EqualFold(v, "enable") {
+				p.AllowedVlansAll = true
+			}
 			if v, _, ok := doc.settingDirect(pb, "type"); ok {
 				p.Type = strings.ToLower(v)
 			}
@@ -242,10 +246,28 @@ func buildSwitchLinks(switches []FortiSwitch) []SwitchLink {
 	var sides []iclSide
 	for _, sw := range switches {
 		var ports []string
-		for _, p := range sw.Ports {
-			if isIclPort(p) && p.IslPeerDevice == "" && p.Type != "trunk" {
-				ports = append(ports, p.Name)
+		seenPort := map[string]bool{}
+		addPort := func(name string) {
+			if name == "" || seenPort[name] {
+				return
 			}
+			seenPort[name] = true
+			ports = append(ports, name)
+		}
+		for _, p := range sw.Ports {
+			if !isIclPort(p) || p.IslPeerDevice != "" {
+				continue
+			}
+			// ICL trunks without persisted peer info still mark the pair; their
+			// physical ports are the members (the member ports often carry the
+			// ICL LLDP profile too — deduplicated via addPort).
+			if p.Type == "trunk" && len(p.Members) > 0 {
+				for _, m := range p.Members {
+					addPort(m)
+				}
+				continue
+			}
+			addPort(p.Name)
 		}
 		if len(ports) > 0 {
 			sides = append(sides, iclSide{name: switchDisplayName(sw), ports: ports})

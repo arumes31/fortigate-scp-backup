@@ -102,9 +102,16 @@ function addInterlink(links, l) {
 }
 
 function interlinkKindLabel(kind) {
-    if (kind === "mclag-icl") return "MC-LAG ICL";
-    if (kind === "isl") return "ISL";
+    if (kind === "mclag-icl") return tt("topo.mclag_icl");
+    if (kind === "isl") return tt("topo.isl");
     return tt("topo.link_detected");
+}
+
+// taggedVlans renders a port's tagged-VLAN set ("" when the port carries
+// none): the explicit allowed-vlans list, or "all" for allowed-vlans-all.
+function taggedVlans(p) {
+    if (p.allowed_vlans_all) return tt("topo.all_vlans");
+    return (p.allowed_vlans || []).join(", ");
 }
 
 function interlinkTip(l) {
@@ -161,10 +168,17 @@ function buildTree(data) {
     devices.forEach(dv => {
         const own = portMacOwner[(dv.mac || "").toLowerCase()];
         if (!own) return;
-        assigned.add(dv); // an interlink endpoint, not a client device
         const from = resolveSwitchName(switches, dv.switch_id);
-        if (!from || !dv.port || from === own.sw) return;
-        addInterlink(interlinks, { from: from, from_ports: [dv.port], to: own.sw, to_ports: [own.port], kind: "detected" });
+        if (from === own.sw) {
+            assigned.add(dv); // a switch's own port MAC, not a client device
+            return;
+        }
+        if (from && dv.port) {
+            addInterlink(interlinks, { from: from, from_ports: [dv.port], to: own.sw, to_ports: [own.port], kind: "detected" });
+            assigned.add(dv); // interlink endpoint, not a client device
+        }
+        // Otherwise the record is unattributable — leave it unassigned so it
+        // still renders as a device instead of silently disappearing.
     });
     topoInterlinks = interlinks;
 
@@ -252,10 +266,14 @@ function buildTree(data) {
                 (dv.vlan && (String(dv.vlan) === vlan || vlan === "vlan" + dv.vlan || vlan.endsWith("." + dv.vlan) || vlan.endsWith("_" + dv.vlan)))
             ));
             groupDevs.forEach(dv => assigned.add(dv));
+            // Trunk-ish ports also carry tagged VLANs: list them per port.
+            const taggedLines = ps.filter(taggedVlans)
+                .map(p => `${p.name}: +${taggedVlans(p)}`);
             return {
                 name: vlan === "—" ? tt("topo.no_vlan") : "VLAN " + vlan,
                 kind: "port", data: { vlan, ports: ps },
                 info: `${ps.length} ${tt("topo.ports")}\n${ps.map(p => p.name).join(", ")}` +
+                    (taggedLines.length ? `\n${tt("topo.tagged")}:\n${taggedLines.join("\n")}` : "") +
                     (groupDevs.length ? `\n${groupDevs.length} ${tt("topo.devices")}` : ""),
                 badge: ps.length + " " + tt("topo.ports") + (groupDevs.length ? " · " + groupDevs.length + " " + tt("topo.devices") : ""),
                 children: groupDevs.map(deviceNode)
@@ -579,8 +597,9 @@ function showFaceplate(nodeData) {
             isWan: false,
             isFortilink: false,
             isInterlink: !!inter[p.name],
-            vlans: p.vlan ? 1 : 0,
+            vlans: (p.vlan ? 1 : 0) + (p.allowed_vlans || []).length + (p.allowed_vlans_all ? 1 : 0),
             detail: `VLAN: ${p.vlan || "—"}` +
+                (taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
                 (inter[p.name] ? `\n${tt("topo.interlink")}: ${inter[p.name]}` : "") +
                 (p.description ? `\n${p.description}` : "") +
                 (p.mac ? `\nMAC: ${p.mac}` : "") +

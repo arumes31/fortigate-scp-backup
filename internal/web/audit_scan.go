@@ -166,17 +166,48 @@ func (d *cfgDoc) settingDirect(b cfgBlock, name string) (string, int, bool) {
 }
 
 // settingFields returns the values of `set <name> …` directly inside the
-// block as a list with per-token quotes trimmed, or nil when the setting is
-// absent.
+// block as a list, or nil when the setting is absent. Quoted values keep
+// embedded spaces ("Internal Net" stays one value) and backslash escapes
+// inside quotes are resolved.
 func (d *cfgDoc) settingFields(b cfgBlock, name string) []string {
 	_, line, ok := d.findDirect(b, "set "+name+" ")
 	if !ok {
 		return nil
 	}
-	fields := strings.Fields(strings.TrimSpace(line[len("set "+name+" "):]))
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		out = append(out, strings.Trim(f, `"'`))
+	return splitCfgValues(strings.TrimSpace(line[len("set "+name+" "):]))
+}
+
+// splitCfgValues tokenizes a FortiGate `set` value list: whitespace-separated
+// tokens, with double/single-quoted strings kept as single values and
+// backslash escapes (\" \\) unescaped inside quotes.
+func splitCfgValues(s string) []string {
+	var out []string
+	for i := 0; i < len(s); {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		if q := s[i]; q == '"' || q == '\'' {
+			i++
+			var sb strings.Builder
+			for i < len(s) && s[i] != q {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				sb.WriteByte(s[i])
+				i++
+			}
+			i++ // closing quote (or past end when unterminated)
+			out = append(out, sb.String())
+			continue
+		}
+		start := i
+		for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+			i++
+		}
+		out = append(out, s[start:i])
 	}
 	return out
 }
