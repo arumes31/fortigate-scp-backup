@@ -176,6 +176,8 @@ var uiMsgs = map[string]map[string]string{
 	"topo.dev_updated":  {"en": "device data updated", "de": "Gerätedaten aktualisiert"},
 	"topo.fetch_failed": {"en": "Device data fetch failed.", "de": "Gerätedaten-Abruf fehlgeschlagen."},
 	"topo.no_devices":   {"en": "No devices found — check that device-detection / DHCP logging is enabled on the FortiGate.", "de": "Keine Geräte gefunden — prüfen Sie, ob Geräteerkennung / DHCP-Logging auf dem FortiGate aktiviert ist."},
+	"topo.live":         {"en": "Live", "de": "Live"},
+	"topo.live_hint":    {"en": "Poll Graylog for device data every minute (auto-stops after 10 min)", "de": "Gerätedaten jede Minute von Graylog abrufen (stoppt automatisch nach 10 Min)"},
 	"topo.legend_share": {"en": "MAC/IP shared", "de": "MAC/IP geteilt"},
 
 	// Switch interlinks / MC-LAG
