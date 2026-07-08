@@ -24,10 +24,48 @@ type Device struct {
 	FirstSeen string `json:"first_seen,omitempty"`
 	LastSeen  string `json:"last_seen"`
 
+	// Endpoint fingerprint from FortiGate device-identification (traffic logs).
+	DevType   string `json:"devtype,omitempty"`
+	OsName    string `json:"osname,omitempty"`
+	OsVersion string `json:"osversion,omitempty"`
+	Vendor    string `json:"vendor,omitempty"`
+
+	// Wireless association (enriched from wireless assoc logs, by MAC).
+	Ap     string `json:"ap,omitempty"`
+	Ssid   string `json:"ssid,omitempty"`
+	Signal string `json:"signal,omitempty"`
+
 	// SharedMac/SharedIP flag devices whose MAC appears with multiple IPs /
 	// whose IP appears with multiple MACs (computed at read time).
 	SharedMac bool `json:"shared_mac,omitempty"`
 	SharedIP  bool `json:"shared_ip,omitempty"`
+}
+
+// MacPort is one client MAC's current wired switch + physical port, derived
+// from FortiSwitch MAC add/move events (the port lives in free-text msg).
+type MacPort struct {
+	Mac        string
+	Port       string
+	Vlan       string
+	SwitchName string
+}
+
+// WifiClient is one wireless client's live association (client↔AP↔SSID).
+type WifiClient struct {
+	Mac     string `json:"mac"`
+	Ap      string `json:"ap"`
+	Ssid    string `json:"ssid"`
+	Signal  string `json:"signal,omitempty"`
+	Channel string `json:"channel,omitempty"`
+	Vlan    string `json:"vlan,omitempty"`
+}
+
+// VpnStatus is one IPsec/SSL tunnel's last-known up/down state and remote peer.
+type VpnStatus struct {
+	Name   string `json:"name"`
+	RemIP  string `json:"remip,omitempty"`
+	Type   string `json:"type,omitempty"`   // ipsec | ssl
+	Status string `json:"status,omitempty"` // up | down
 }
 
 // escapeGraylogValue escapes backslashes and double quotes so a value stays
@@ -47,6 +85,55 @@ func sourceHost(fqdn string) string {
 	return fqdn
 }
 
+// graylogSources returns the Graylog `source` value(s) to match for a firewall:
+// the operator-maintained hostnames from the fgt_adm_vpn_conf extension (which
+// include both HA cluster nodes) when available, otherwise the short hostname
+// derived from the FQDN.
+func (e *Extension) graylogSources(fqdn string) []string {
+	if hs := e.vpnConfigSources(fqdn); len(hs) > 0 {
+		return hs
+	}
+	return []string{sourceHost(fqdn)}
+}
+
+// buildSourceQuery substitutes the `source:"%s"` term of a query template with
+// the resolved source(s). A single source keeps the original form; multiple
+// sources (an HA cluster) become a grouped OR so the rest of the template's
+// filter still applies to all of them, e.g.
+// `(source:"fw-n1" OR source:"fw-n2") AND (mac:* OR …)`.
+func buildSourceQuery(template string, sources []string) string {
+	parts := make([]string, 0, len(sources))
+	for _, s := range sources {
+		parts = append(parts, fmt.Sprintf(`source:"%s"`, escapeGraylogValue(s)))
+	}
+	var clause string
+	switch len(parts) {
+	case 0:
+		return template // nothing resolved: leave %s so the caller errors visibly
+	case 1:
+		clause = parts[0]
+	default:
+		clause = "(" + strings.Join(parts, " OR ") + ")"
+	}
+	if strings.Contains(template, `source:"%s"`) {
+		return strings.Replace(template, `source:"%s"`, clause, 1)
+	}
+	// Template without the standard source token: AND the clause in front.
+	return clause + " AND (" + template + ")"
+}
+
+// effectiveRange picks the Graylog search window in seconds: a per-request
+// override (e.g. a live refresh) wins, else the configured default, else 24h.
+func effectiveRange(override, cfg string) string {
+	if override != "" {
+		return override
+	}
+	if cfg != "" {
+		return cfg
+	}
+	return "86400"
+}
+
 // fetchDevices queries Graylog for the firewall's device logs and returns the
 // normalized, de-duplicated device list (most recent record per MAC+IP wins;
 // Graylog returns messages newest-first).
@@ -56,8 +143,9 @@ func sourceHost(fqdn string) string {
 // portname, switchid), DHCP assignment (srcmac, assignedip), traffic logs
 // (srcmac, dstmac), and device-identification (macaddr). The default query
 // `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` catches all of these.
-func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
-	msgs, err := e.queryGraylog(e.cfg.GraylogDeviceQuery, "GRAYLOG_DEVICE_QUERY", fqdn)
+func (e *Extension) fetchDevices(fqdn, rangeSec string) ([]Device, error) {
+	sources := e.graylogSources(fqdn)
+	msgs, err := e.queryGraylog(e.cfg.GraylogDeviceQuery, "GRAYLOG_DEVICE_QUERY", fqdn, sources, rangeSec)
 	if err != nil {
 		return nil, err
 	}
@@ -77,14 +165,22 @@ func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
 		out = append(out, d)
 	}
 
-	// Diagnostic: when Graylog returns messages but none contain a MAC, log
-	// at Warn so the operator can adjust GRAYLOG_DEVICE_QUERY or enable
-	// device-detection / DHCP logging on the FortiGate.
-	if len(msgs) > 0 && len(out) == 0 {
-		e.logger.Warn("graylog returned messages but none contained a MAC address",
-			"fqdn", fqdn, "total_messages", len(msgs), "query_template", e.cfg.GraylogDeviceQuery,
-			"hint", "ensure GRAYLOG_DEVICE_QUERY matches logs with mac/srcmac/macaddr fields; "+
-				"check that device-detection or DHCP logging is enabled on the FortiGate")
+	// Visibility into why the inventory may be empty. 0 messages almost always
+	// means the log "source" does not match the firewall's short hostname (the
+	// GRAYLOG_DEVICE_QUERY `source:"%s"` filter) or the time range excludes
+	// them; messages-but-no-MAC means the matched logs carry no MAC field.
+	src := strings.Join(sources, ",")
+	e.logger.Info("graylog device fetch",
+		"fqdn", fqdn, "sources", src,
+		"messages", len(msgs), "devices", len(out))
+	switch {
+	case len(msgs) == 0:
+		e.logger.Warn("graylog device fetch returned 0 messages — verify the Graylog 'source' matches this firewall (set cluster_hostnames in the FGT ADM VPN config for HA pairs) and that the search window covers it",
+			"fqdn", fqdn, "sources", src,
+			"query_template", e.cfg.GraylogDeviceQuery, "range_seconds", effectiveRange(rangeSec, e.cfg.GraylogDeviceRange))
+	case len(out) == 0:
+		e.logger.Warn("graylog returned messages but none contained a MAC address — adjust GRAYLOG_DEVICE_QUERY or enable device-detection / DHCP logging on the FortiGate",
+			"fqdn", fqdn, "total_messages", len(msgs), "query_template", e.cfg.GraylogDeviceQuery)
 	}
 
 	return out, nil
@@ -92,22 +188,21 @@ func (e *Extension) fetchDevices(fqdn string) ([]Device, error) {
 
 // queryGraylog runs one relative-range search with the given query template
 // (%s = source host) and returns the raw messages, newest first.
-func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[string]any, error) {
+func (e *Extension) queryGraylog(template, templateName, fqdn string, sources []string, rangeSec string) ([]map[string]any, error) {
 	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
 	if graylogURL == "" || e.cfg.GraylogToken == "" {
 		return nil, errors.New("graylog not configured (GRAYLOG_URL/GRAYLOG_TOKEN)")
 	}
-	timeframe := e.cfg.GraylogDeviceRange
-	if timeframe == "" {
-		timeframe = "86400"
-	}
+	// rangeSec (set by e.g. a live topology refresh) overrides the configured
+	// window so frequent polls scan only recent logs instead of the full range.
+	timeframe := effectiveRange(rangeSec, e.cfg.GraylogDeviceRange)
 
-	query := fmt.Sprintf(template, escapeGraylogValue(sourceHost(fqdn)))
-	// A template without exactly one %s verb produces fmt error markers; catch
-	// the misconfiguration here instead of sending a garbage query (which
-	// Graylog may answer with every firewall's logs).
-	if strings.Contains(query, "%!") {
-		return nil, fmt.Errorf("%s template is invalid (needs exactly one %%s): %q", templateName, template)
+	query := buildSourceQuery(template, sources)
+	// A leftover %s / fmt error marker means the template's source term was not
+	// `source:"%s"`; catch the misconfiguration here instead of sending a
+	// garbage query (which Graylog may answer with every firewall's logs).
+	if strings.Contains(query, "%s") || strings.Contains(query, "%!") {
+		return nil, fmt.Errorf(`%s template is invalid (needs a source:"%%s" term): %q`, templateName, template)
 	}
 	params := url.Values{}
 	params.Set("query", query)
@@ -115,7 +210,8 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 	params.Set("limit", "1000")
 	apiURL := graylogURL + "/api/search/universal/relative?" + params.Encode()
 
-	e.logger.Debug("graylog fetch", "template", templateName, "fqdn", fqdn, "source", sourceHost(fqdn), "query", query, "range", timeframe)
+	e.logger.Debug("graylog fetch: sending query", "template", templateName, "fqdn", fqdn,
+		"sources", strings.Join(sources, ","), "query", query, "range", timeframe)
 
 	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -128,11 +224,15 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("graylog request failed (%s): %w", templateName, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("graylog returned HTTP %d", resp.StatusCode)
+		// Surface Graylog's own error text (e.g. a query-syntax complaint)
+		// instead of a bare status code — that is what the operator needs.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("graylog %s returned HTTP %d for source %q: %s",
+			templateName, resp.StatusCode, sourceHost(fqdn), strings.TrimSpace(string(snippet)))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
@@ -145,12 +245,14 @@ func (e *Extension) queryGraylog(template, templateName, fqdn string) ([]map[str
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode graylog response (%s): %w", templateName, err)
 	}
 	out := make([]map[string]any, 0, len(data.Messages))
 	for _, m := range data.Messages {
 		out = append(out, m.Message)
 	}
+	e.logger.Debug("graylog fetch: response received", "template", templateName, "fqdn", fqdn,
+		"status", resp.StatusCode, "messages", len(out))
 	return out, nil
 }
 
@@ -205,8 +307,8 @@ type stpEvent struct {
 // into the latest status per switch port (messages arrive newest-first, so
 // the first event of each kind seen per port wins). The full event list is
 // returned alongside for the port history.
-func (e *Extension) fetchStpStates(fqdn string) ([]StpPort, []StpEvent, error) {
-	msgs, err := e.queryGraylog(e.cfg.GraylogStpQuery, "GRAYLOG_STP_QUERY", fqdn)
+func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogStpQuery, "GRAYLOG_STP_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -255,6 +357,82 @@ func (e *Extension) fetchStpStates(fqdn string) ([]StpPort, []StpEvent, error) {
 		out = append(out, *p)
 	}
 	return out, events, nil
+}
+
+// fetchMacPorts pulls the FortiSwitch MAC add/move events and returns the
+// latest wired switch-port binding per client MAC (messages are newest-first,
+// so the first binding seen per MAC wins).
+func (e *Extension) fetchMacPorts(fqdn, rangeSec string) ([]MacPort, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogMacQuery, "GRAYLOG_MAC_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []MacPort
+	for _, m := range msgs {
+		mp, ok := macEventFromMessage(m)
+		if !ok || seen[mp.Mac] {
+			continue
+		}
+		seen[mp.Mac] = true
+		out = append(out, mp)
+	}
+	return out, nil
+}
+
+// fetchWifiClients pulls wireless association events and returns the latest
+// AP/SSID/signal per client MAC (newest-first).
+func (e *Extension) fetchWifiClients(fqdn, rangeSec string) ([]WifiClient, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogWifiQuery, "GRAYLOG_WIFI_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []WifiClient
+	for _, m := range msgs {
+		w, ok := wifiFromMessage(m)
+		if !ok || w.Ap == "" && w.Ssid == "" || seen[w.Mac] {
+			continue
+		}
+		seen[w.Mac] = true
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// fetchVpnStatuses pulls VPN tunnel events and returns the latest up/down state
+// per tunnel (newest-first).
+func (e *Extension) fetchVpnStatuses(fqdn, rangeSec string) ([]VpnStatus, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogVpnQuery, "GRAYLOG_VPN_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []VpnStatus
+	for _, m := range msgs {
+		v, ok := vpnFromMessage(m)
+		if !ok || v.Status == "" || seen[v.Name] {
+			continue
+		}
+		seen[v.Name] = true
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// fetchHaDetail returns a short summary of the newest HA event for the firewall
+// ("" when none), giving the topology a liveness hint for the HA cluster node.
+func (e *Extension) fetchHaDetail(fqdn, rangeSec string) (string, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogHaQuery, "GRAYLOG_HA_QUERY", fqdn, e.graylogSources(fqdn), rangeSec)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range msgs { // newest-first
+		if d := field(m, "logdesc", "msg"); d != "" {
+			return d, nil
+		}
+	}
+	return "", nil
 }
 
 // stpFromMessage normalizes one STP/guard/port-status event log message;
@@ -341,13 +519,96 @@ func deviceFromMessage(msg map[string]any) (Device, bool) {
 		return Device{}, false
 	}
 	d := Device{
-		Mac:      mac,
-		IP:       field(msg, "ip", "assignedip", "srcip", "client_ip", "dstip"),
-		Vlan:     field(msg, "vlan", "vlanid", "vlan_id", "cvid"),
-		Port:     field(msg, "portname", "port", "interface", "srcintf", "switchphysicalport"),
-		SwitchID: field(msg, "switchid", "sn", "swname", "devid_fsw", "switch_sn"),
-		Hostname: field(msg, "hostname", "srcname", "devname_client", "computer", "unauthuser"),
-		LastSeen: field(msg, "timestamp"),
+		Mac:       mac,
+		IP:        field(msg, "ip", "assignedip", "srcip", "client_ip", "dstip"),
+		Vlan:      field(msg, "vlan", "vlanid", "vlan_id", "cvid"),
+		Port:      field(msg, "portname", "port", "interface", "srcintf", "switchphysicalport"),
+		SwitchID:  field(msg, "switchid", "sn", "swname", "devid_fsw", "switch_sn"),
+		Hostname:  field(msg, "hostname", "srcname", "devname_client", "computer", "unauthuser"),
+		DevType:   field(msg, "devtype", "srcfamily", "device_type"),
+		OsName:    field(msg, "osname", "os"),
+		OsVersion: field(msg, "osversion", "os_version"),
+		Vendor:    field(msg, "srchwvendor", "hwvendor", "manuf", "vendor"),
+		LastSeen:  field(msg, "timestamp"),
 	}
 	return d, true
+}
+
+// reMacEvent parses FortiSwitch MAC add/move messages, which carry the client
+// MAC, physical port and VLAN only in free-text (add: "…discovered on interface
+// portN in vlan V on Switch NAME"; move: "…moved from interface X to interface
+// portN in vlan V on Switch NAME"). Delete events have no port and are ignored.
+var reMacEvent = regexp.MustCompile(`(?i)^([0-9a-f:]{17})\b.*?\binterface (\S+?)(?:\s+in vlan (\d+))?(?: on Switch (\S+))?\s*$`)
+
+// macEventFromMessage extracts the client MAC → physical port / VLAN / switch
+// binding from one FortiSwitch MAC add/move log. `name`/`sn` carry the switch
+// as indexed fields (preferred over the name parsed from msg). Returns false
+// for delete events (no port) and anything unparsable.
+func macEventFromMessage(msg map[string]any) (MacPort, bool) {
+	text := field(msg, "msg", "message")
+	// A "moved to interface X" message has two "interface" tokens; keep the last
+	// (the current port) by trimming everything up to the final "to interface".
+	lower := strings.ToLower(text)
+	if i := strings.LastIndex(lower, "to interface "); i >= 0 {
+		text = text[:strings.Index(lower, " ")+1] + text[i+len("to "):]
+	}
+	m := reMacEvent.FindStringSubmatch(text)
+	if m == nil || m[2] == "" {
+		return MacPort{}, false
+	}
+	sw := field(msg, "name", "sn")
+	if sw == "" {
+		sw = m[4]
+	}
+	return MacPort{
+		Mac:        strings.ToLower(m[1]),
+		Port:       m[2],
+		Vlan:       m[3],
+		SwitchName: sw,
+	}, true
+}
+
+// wifiFromMessage normalizes one wireless association log into a WifiClient.
+func wifiFromMessage(msg map[string]any) (WifiClient, bool) {
+	mac := strings.ToLower(field(msg, "stamac", "mac", "srcmac"))
+	if mac == "" {
+		return WifiClient{}, false
+	}
+	return WifiClient{
+		Mac:     mac,
+		Ap:      field(msg, "ap", "apname", "wtpname"),
+		Ssid:    field(msg, "ssid"),
+		Signal:  field(msg, "signal", "rssi"),
+		Channel: field(msg, "channel"),
+		Vlan:    field(msg, "vlan", "vlanid", "vlan_id"),
+	}, true
+}
+
+// vpnFromMessage normalizes one VPN log into a per-tunnel status. Up/down is
+// inferred from the controlled `action` and `logdesc` fields only — never the
+// free-text `msg`, which contains negotiation wording like "DH group 14" or
+// "teardown" that would otherwise false-match "up"/"down".
+func vpnFromMessage(msg map[string]any) (VpnStatus, bool) {
+	name := field(msg, "vpntunnel", "tunnelid", "tunnel")
+	if name == "" {
+		return VpnStatus{}, false
+	}
+	act := strings.ToLower(field(msg, "action"))
+	ld := strings.ToLower(field(msg, "logdesc"))
+	status := ""
+	switch {
+	case strings.Contains(act, "down") || strings.Contains(ld, "down") ||
+		strings.Contains(ld, "deleted") || strings.Contains(ld, "teardown"):
+		status = "down"
+	case strings.Contains(act, "up") || strings.Contains(act, "stats") ||
+		strings.Contains(ld, "installed") || strings.Contains(ld, "established") ||
+		strings.Contains(ld, "statistics"):
+		status = "up"
+	}
+	return VpnStatus{
+		Name:   name,
+		RemIP:  field(msg, "remip", "remote_ip"),
+		Type:   field(msg, "tunneltype"),
+		Status: status,
+	}, true
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
@@ -40,6 +41,7 @@ type dashboardData struct {
 	Running       []runningView
 	ClusterAlert  bool
 	BlockedPorts  []blockedPortIssue
+	GraylogIssues []graylogIssue
 }
 
 // blockedPortIssue is one switch port currently blocked by STP or a
@@ -75,6 +77,40 @@ func (s *Server) blockedPortIssues(fqdnByID map[int]string) []blockedPortIssue {
 			Port:   p.Port,
 			Reason: p.Reason,
 			Since:  p.Since,
+		})
+	}
+	return out
+}
+
+// graylogIssue is one VPN device whose Graylog logging status is unhealthy,
+// surfaced from the fgt_adm_vpn_conf extension (which tracks last_graylog_status
+// per device). Empty when that extension is disabled or all devices are online.
+type graylogIssue struct {
+	Firewall  string `json:"firewall"`
+	Site      string `json:"site,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	Status    string `json:"status"` // offline | error | config_missing
+	LastCheck string `json:"last_check,omitempty"`
+}
+
+// graylogIssues asks the fgt_adm_vpn_conf extension for devices whose Graylog
+// logging status is not healthy. The extension owns the storage and the status
+// worker; the dashboard only renders the result. Any error (extension disabled,
+// DB missing) yields an empty list, so the card simply does not appear.
+func (s *Server) graylogIssues() []graylogIssue {
+	rows, err := fgtadmvpnconf.ListGraylogIssues(s.cfg.DataDir)
+	if err != nil {
+		s.logger.Warn("dashboard graylog-status lookup failed", "err", err)
+		return nil
+	}
+	out := make([]graylogIssue, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, graylogIssue{
+			Firewall:  r.Firewall,
+			Site:      r.Site,
+			Cluster:   r.Cluster,
+			Status:    r.Status,
+			LastCheck: r.LastCheck,
 		})
 	}
 	return out
@@ -159,6 +195,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		Running:       running,
 		ClusterAlert:  clusterAlert,
 		BlockedPorts:  s.blockedPortIssues(fqdnByID),
+		GraylogIssues: s.graylogIssues(),
 	}
 }
 
@@ -193,6 +230,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"clusterAlert":  d.ClusterAlert,
 		"running":       d.Running,
 		"blockedPorts":  d.BlockedPorts,
+		"graylogIssues": d.GraylogIssues,
 	})
 }
 

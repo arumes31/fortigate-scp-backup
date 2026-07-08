@@ -26,6 +26,112 @@ func TestSourceHost(t *testing.T) {
 	}
 }
 
+func TestBuildSourceQuery(t *testing.T) {
+	tmpl := `source:"%s" AND (mac:* OR srcmac:*)`
+	if got := buildSourceQuery(tmpl, []string{"FW-N1"}); got != `source:"FW-N1" AND (mac:* OR srcmac:*)` {
+		t.Errorf("single source wrong: %q", got)
+	}
+	// HA cluster: grouped OR so the mac filter applies to both nodes.
+	got := buildSourceQuery(tmpl, []string{"FW-N1", "FW-N2"})
+	want := `(source:"FW-N1" OR source:"FW-N2") AND (mac:* OR srcmac:*)`
+	if got != want {
+		t.Errorf("cluster source wrong:\n got %q\nwant %q", got, want)
+	}
+	// A double quote in a source name must be escaped, not break out of the term.
+	if got := buildSourceQuery(tmpl, []string{`a"b`}); got != `source:"a\"b" AND (mac:* OR srcmac:*)` {
+		t.Errorf("escaping wrong: %q", got)
+	}
+}
+
+func TestGraylogSourcesFromVpnConfig(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "fgt-adm-vpn-conf-db.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE vpn_config (
+		firewallname TEXT, dns_name TEXT, dns_name_full TEXT, cluster_hostnames TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	// A cluster (two nodes) matched by dns_name_full, and a standalone matched by firewallname.
+	if _, err := db.Exec(`INSERT INTO vpn_config VALUES
+		('FGT100F-SITE-A', 'site-a', 'site-a.example.com', 'FGT100F-SITE-A-N1, FGT100F-SITE-A-N2'),
+		('FGT40F-SITE-B', 'site-b', 'site-b.example.com', '')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	e := &Extension{dataDir: dir, logger: slog.New(slog.DiscardHandler)}
+
+	// Cluster: both node hostnames returned (matched via dns_name_full).
+	got := e.graylogSources("site-a.example.com")
+	if len(got) != 2 || got[0] != "FGT100F-SITE-A-N1" || got[1] != "FGT100F-SITE-A-N2" {
+		t.Fatalf("cluster sources wrong: %v", got)
+	}
+	// Standalone (no cluster_hostnames): the firewallname, matched case-insensitively.
+	if got := e.graylogSources("site-b.example.com"); len(got) != 1 || got[0] != "FGT40F-SITE-B" {
+		t.Fatalf("standalone source wrong: %v", got)
+	}
+	// No matching row: fall back to the FQDN short host.
+	if got := e.graylogSources("unknown-fw.example.com"); len(got) != 1 || got[0] != "unknown-fw" {
+		t.Fatalf("fallback source wrong: %v", got)
+	}
+}
+
+func TestGraylogSourcesFallbackNoDB(t *testing.T) {
+	// No adm-vpn-conf DB present → derive from the FQDN.
+	e := &Extension{dataDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
+	if got := e.graylogSources("fw2.example.com"); len(got) != 1 || got[0] != "fw2" {
+		t.Fatalf("fallback wrong: %v", got)
+	}
+}
+
+func TestMacEventFromMessage(t *testing.T) {
+	// MAC add: mac + port + vlan + switch parsed from free-text msg.
+	mp, ok := macEventFromMessage(map[string]any{
+		"name": "SW-ACCESS01",
+		"msg":  "50:4f:94:a2:df:e8 discovered on interface port11 in vlan 1 on Switch SW-ACCESS01",
+	})
+	if !ok || mp.Mac != "50:4f:94:a2:df:e8" || mp.Port != "port11" || mp.Vlan != "1" || mp.SwitchName != "SW-ACCESS01" {
+		t.Fatalf("add parse wrong: %+v ok=%t", mp, ok)
+	}
+	// MAC move: the destination (newest) port wins; indexed sn is the switch.
+	mp, ok = macEventFromMessage(map[string]any{
+		"sn":  "SW-SERIAL-01",
+		"msg": "46:a8:d4:89:ff:39 moved from interface port11 to interface port8 in vlan 100 on Switch SW-ACCESS03",
+	})
+	if !ok || mp.Port != "port8" || mp.Vlan != "100" || mp.SwitchName != "SW-SERIAL-01" {
+		t.Fatalf("move parse wrong: %+v ok=%t", mp, ok)
+	}
+	// MAC delete has no port → skipped.
+	if _, ok := macEventFromMessage(map[string]any{"msg": "fa:40:d7:3f:63:2a deleted from vlan 300 on Switch X"}); ok {
+		t.Error("delete event must be skipped (no port)")
+	}
+}
+
+func TestVpnFromMessage(t *testing.T) {
+	v, ok := vpnFromMessage(map[string]any{"vpntunnel": "site-a", "remip": "1.2.3.4", "tunneltype": "ipsec", "action": "tunnel-up"})
+	if !ok || v.Status != "up" || v.RemIP != "1.2.3.4" || v.Type != "ipsec" {
+		t.Fatalf("vpn up wrong: %+v ok=%t", v, ok)
+	}
+	if v, _ := vpnFromMessage(map[string]any{"tunnelid": "9", "logdesc": "IPsec phase 2 down"}); v.Status != "down" {
+		t.Fatalf("vpn down wrong: %+v", v)
+	}
+	if _, ok := vpnFromMessage(map[string]any{"remip": "1.2.3.4"}); ok {
+		t.Error("record without a tunnel name/id must be skipped")
+	}
+}
+
+func TestWifiFromMessage(t *testing.T) {
+	w, ok := wifiFromMessage(map[string]any{"stamac": "CA:02:3A:6E:E7:2C", "ap": "AP-01", "ssid": "GuestWiFi", "signal": "-37", "channel": "1"})
+	if !ok || w.Mac != "ca:02:3a:6e:e7:2c" || w.Ap != "AP-01" || w.Ssid != "GuestWiFi" || w.Signal != "-37" {
+		t.Fatalf("wifi parse wrong: %+v ok=%t", w, ok)
+	}
+	if _, ok := wifiFromMessage(map[string]any{"ssid": "x"}); ok {
+		t.Error("record without a station MAC must be skipped")
+	}
+}
+
 func TestDeviceFromMessage(t *testing.T) {
 	d, ok := deviceFromMessage(map[string]any{
 		"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.10.5", "vlan": "10",
@@ -143,8 +249,13 @@ func testExt(t *testing.T, graylogURL string) *Extension {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(createTableSQL); err != nil {
-		t.Fatal(err)
+	for _, q := range []string{
+		createTableSQL, createStpTableSQL, createStpEventsSQL,
+		createMacPortsSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	e.db = db
@@ -163,7 +274,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 	defer srv.Close()
 
 	e := testExt(t, srv.URL)
-	n, err := e.refreshFirewall(1, "fw1.example.com")
+	n, err := e.refreshFirewall(1, "fw1.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +309,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 	srv2 := graylogFake(t, []map[string]any{{"mac": "dd:dd:dd:dd:dd:04", "ip": "10.0.30.1", "timestamp": "T9"}})
 	defer srv2.Close()
 	e.cfg.GraylogURL = srv2.URL
-	if _, err := e.refreshFirewall(1, "fw1.example.com"); err != nil {
+	if _, err := e.refreshFirewall(1, "fw1.example.com", ""); err != nil {
 		t.Fatal(err)
 	}
 	devices, _, _ = e.listDevices(1)
@@ -219,7 +330,7 @@ func TestFetchAndStoreDevices(t *testing.T) {
 
 func TestFetchDevicesUnconfigured(t *testing.T) {
 	e := testExt(t, "")
-	if _, err := e.fetchDevices("fw1"); err == nil {
+	if _, err := e.fetchDevices("fw1", ""); err == nil {
 		t.Fatal("missing graylog config must error")
 	}
 }
@@ -330,7 +441,7 @@ func TestFetchStpStatesFold(t *testing.T) {
 		GraylogStpQuery: `source:"%s"`,
 	}, logger: slog.New(slog.DiscardHandler)}
 
-	stp, events, err := e.fetchStpStates("fw1.example.com")
+	stp, events, err := e.fetchStpStates("fw1.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}

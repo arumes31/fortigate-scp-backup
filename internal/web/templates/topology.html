@@ -2,8 +2,17 @@
 <style>
     body.topo-embed .page-title, body.topo-embed nav, body.topo-embed header,
     body.topo-embed #topoControls, body.topo-embed #devPanel, body.topo-embed footer { display: none !important; }
+    /* Maximized view: hide all chrome and let the canvas fill the viewport. */
+    body.topo-max .page-title, body.topo-max nav, body.topo-max header,
+    body.topo-max #topoControls, body.topo-max #devPanel, body.topo-max footer { display: none !important; }
+    body.topo-max #topoRestoreBtn { display: inline-flex !important; }
+    body.topo-max main, body.topo-max .content, body.topo-max #content { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+    #topoRestoreBtn { display: none; position: fixed; top: 10px; right: 12px; z-index: 60;
+        align-items: center; gap: 6px; background: rgba(10,12,18,0.9); color: #fff;
+        border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 </style>
 <h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "topo.title"}}</h1>
+<button id="topoRestoreBtn" onclick="toggleMaximize()">⤡ {{T .Base.Lang "topo.exit_max"}}</button>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
@@ -24,6 +33,7 @@
             <button id="fetchDevBtn" class="btn btn-small" onclick="fetchDevicesNow()" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">{{T .Base.Lang "topo.fetch_now"}}</button>
             <button id="liveDevBtn" class="btn btn-small" onclick="toggleLiveDevices()" title="{{T .Base.Lang "topo.live_hint"}}" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">⟳ {{T .Base.Lang "topo.live"}}</button>
             <button class="btn btn-small" onclick="resetZoom()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⤢ {{T .Base.Lang "topo.reset"}}</button>
+            <button class="btn btn-small" onclick="toggleMaximize()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⛶ {{T .Base.Lang "topo.maximize"}}</button>
         </div>
     </div>
 
@@ -165,5 +175,18 @@ async function revokeShare(token) {
 }
 
 document.addEventListener("DOMContentLoaded", refreshShares);
+
+// toggleMaximize hides all page chrome (menus, controls, device panel) and
+// grows the topology canvas to fill the viewport; a floating button restores it.
+function toggleMaximize() {
+    const on = document.body.classList.toggle("topo-max");
+    const svg = document.getElementById("topoSvg");
+    if (svg) svg.setAttribute("height", on ? Math.max(400, window.innerHeight - 8) : 640);
+    // Re-fit the view to the new canvas size.
+    if (typeof resetZoom === "function") resetZoom();
+}
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && document.body.classList.contains("topo-max")) toggleMaximize();
+});
 </script>
 {{end}}

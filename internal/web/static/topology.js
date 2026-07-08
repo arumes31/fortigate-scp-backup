@@ -18,6 +18,9 @@ let topoStpEvents = []; // raw port event history (48h) from the extension
 let topoStpEventsIdx = {}; // "switchDisplayName|port" → [events, newest first]
 let topoMultiMac = [];  // ports with several MACs behind them (extension-computed)
 let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
+let topoVpn = [];       // VPN tunnel up/down states from the extension
+let topoVpnIdx = {};    // tunnel name → { status, remip, type }
+let topoHaDetail = "";  // newest HA event summary from the extension
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
 let topoRootNode = null;// d3 hierarchy root of the current render (search/locate)
@@ -71,6 +74,10 @@ function deviceNode(d) {
     let info = `${tt("topo.device")}\nMAC: ${d.mac}\nIP: ${d.ip || "—"}\nVLAN: ${d.vlan || "—"}\nPort: ${d.port || "—"}`;
     if (d.hostname) info += `\nHost: ${d.hostname}`;
     if (d.switch_id) info += `\nSwitch: ${d.switch_id}`;
+    // Endpoint fingerprint (device-identification) and wireless association.
+    const fp = [d.devtype, d.osname && (d.osname + (d.osversion ? " " + d.osversion : "")), d.vendor].filter(Boolean).join(" · ");
+    if (fp) info += `\n${fp}`;
+    if (d.ap) info += `\n${tt("topo.ap")}: ${d.ap}${d.ssid ? " · " + d.ssid : ""}${d.signal ? " · " + d.signal + " dBm" : ""}`;
     if (d.first_seen) info += `\n${tt("topo.first_seen")}: ${d.first_seen}`;
     if (d.last_seen) info += `\n${tt("topo.seen")}: ${d.last_seen}`;
     if (stale) info += `\n⏱ ${tt("topo.stale")}`;
@@ -332,6 +339,9 @@ function buildTree(data) {
     (topoMultiMac || []).forEach(m => {
         topoMultiMacIdx[dispName(m.switch_id) + "|" + m.port] = m.mac_count;
     });
+    // VPN tunnel up/down states, keyed by tunnel name for vpnNode() lookup.
+    topoVpnIdx = {};
+    (topoVpn || []).forEach(v => { topoVpnIdx[v.name] = v; });
 
     const mclagNames = new Set();
     interlinks.filter(l => l.kind === "mclag-icl").forEach(l => { mclagNames.add(l.from); mclagNames.add(l.to); });
@@ -493,14 +503,21 @@ function buildTree(data) {
     // entry and children when the tunnel exists as an interface.
     function vpnNode(t, ctx) {
         const i = ctx && ctx.intf;
+        // Live tunnel state from the extension's VPN logs (up/down), matched by
+        // tunnel name; falls back to no annotation when nothing was logged.
+        const vs = topoVpnIdx[t.name];
+        const up = vs && vs.status === "up", down = vs && vs.status === "down";
         return {
             name: t.name, kind: "vpn", data: i ? { ...t, ...i } : t,
             info: `IPsec VPN\n${tt("topo.remote_gw")}: ${t.remote_gw || "—"}` +
                 (t.ike_version ? `\nIKE v${t.ike_version}` : "") +
                 `\n${tt("topo.egress")}: ${t.interface || "—"}` +
                 (i && i.ip ? `\nIP: ${i.ip}/${i.mask}` : "") +
+                (vs ? `\nStatus: ${vs.status}${vs.remip ? " · " + vs.remip : ""}` : "") +
                 `\nPolicies: ${policyCount[t.name] || 0}`,
-            badge: t.remote_gw || null,
+            badge: (up ? "▲ " : down ? "▼ " : "") + (t.remote_gw || (vs && vs.remip) || "VPN"),
+            strokeColor: up ? "#10b981" : down ? "#ef4444" : null,
+            faded: down,
             children: (ctx && ctx.children) || []
         };
     }
@@ -634,14 +651,18 @@ function buildTree(data) {
     // interfaces are excluded here — VPNs render on the Internet side — and
     // zones consisting only of tunnels move there with them.
     const fwChildren = [];
+    const externalIntf = []; // WAN uplinks — rendered on the Internet side (left)
     const zoneEmitted = new Set();
     sorted.forEach(i => {
         if (vpnByName[i.name]) return;
+        // WAN interfaces face the Internet: pull them out of the firewall subtree
+        // so they render on the left alongside the VPN tunnels.
+        if (wanDevices.has(i.name)) { externalIntf.push(intfNode(i)); return; }
         const zn = zoneOf[i.name];
         if (!zn) { fwChildren.push(intfNode(i)); return; }
         if (zoneEmitted.has(zn)) return;
         zoneEmitted.add(zn);
-        const members = sorted.filter(m => zoneOf[m.name] === zn && !vpnByName[m.name]);
+        const members = sorted.filter(m => zoneOf[m.name] === zn && !vpnByName[m.name] && !wanDevices.has(m.name));
         if (!members.length) return;
         fwChildren.push({
             name: zn, kind: "zone",
@@ -673,8 +694,12 @@ function buildTree(data) {
         children: fwChildren
     }];
 
-    // IPsec VPNs live between the Internet and their remote peers.
-    rootChildren.push(...vpnBranches());
+    // External / Internet-facing branches (WAN uplinks + IPsec VPN tunnels)
+    // render to the LEFT of the Internet node (see the mirror step in update());
+    // the firewall and its LAN stay on the right.
+    const externalBranches = [...externalIntf, ...vpnBranches()];
+    externalBranches.forEach(n => { n.side = "left"; });
+    rootChildren.push(...externalBranches);
 
     // HA peer: the standby unit of an a-p / a-a cluster.
     if (data.ha) {
@@ -684,7 +709,8 @@ function buildTree(data) {
             info: `${tt("topo.ha_standby")}\nHA: ${ha.mode}` +
                 (ha.group_name ? `\n${tt("topo.group")}: ${ha.group_name}` : "") +
                 ((ha.hbdev || []).length ? `\nHeartbeat: ${ha.hbdev.join(", ")}` : "") +
-                ((ha.monitor || []).length ? `\nMonitor: ${ha.monitor.join(", ")}` : ""),
+                ((ha.monitor || []).length ? `\nMonitor: ${ha.monitor.join(", ")}` : "") +
+                (topoHaDetail ? `\n${topoHaDetail}` : ""),
             badge: "HA " + ha.mode,
             children: []
         });
@@ -728,6 +754,16 @@ function renderTree(data) {
         const links = root.links();
 
         nodes.forEach(d => { d.y += 60; });
+
+        // Mirror the external branches (WAN uplinks + VPN tunnels, tagged
+        // side:"left" on their depth-1 root) to the left of the Internet node,
+        // so the map reads internet-in-the-middle: WAN/VPN left, LAN right.
+        const rootY = root.y;
+        nodes.forEach(d => {
+            let a = d;
+            while (a.depth > 1) a = a.parent;
+            if (a.depth === 1 && a.data.side === "left") d.y = 2 * rootY - d.y;
+        });
 
         const node = gNodes.selectAll("g.node").data(nodes, d => d.id || (d.id = ++i));
 
@@ -953,7 +989,12 @@ function renderTree(data) {
     topoUpdate = update;
     update(root);
 
-    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(20, height / 2));
+    // Internet sits in the middle now (WAN/VPN mirror to its left), so anchor
+    // the initial view further right than the old left-edge origin to keep the
+    // left arm on-screen.
+    const svgEl0 = svg.node();
+    const originX = Math.round((svgEl0 && svgEl0.clientWidth ? svgEl0.clientWidth : 1000) * 0.42);
+    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(originX, height / 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1126,9 @@ function renderDevicePanel() {
 
 function resetZoom() {
     if (!svg || !zoomBehavior) return;
-    svg.transition().duration(300).call(zoomBehavior.transform, d3.zoomIdentity.translate(20, 320));
+    const el = svg.node();
+    const originX = Math.round((el && el.clientWidth ? el.clientWidth : 1000) * 0.42);
+    svg.transition().duration(300).call(zoomBehavior.transform, d3.zoomIdentity.translate(originX, 320));
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1250,19 @@ function faceplateLegend(kind) {
     </div>`;
 }
 
+// vlanColorLegend maps the hashed per-VLAN port colors on a switch faceplate
+// back to VLAN names, so the colors the port cells use are readable. Returns
+// "" when no port carries an (untagged) VLAN name.
+function vlanColorLegend(ports) {
+    const names = [...new Set((ports || []).map(p => p.vlanName).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (!names.length) return "";
+    return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.78em; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+        <span class="muted">${tt("topo.vlan_colors")}:</span>
+        ${names.map(n => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${vlanColor(n)}; margin-right: 5px; vertical-align: -1px;"></span>${esc(n)}</span>`).join("")}
+    </div>`;
+}
+
 function portDetailHTML(p) {
     return `<div style="margin-top: 14px; padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.85em;">
         <strong style="color: #fff;">${esc(p.label)}</strong>
@@ -1314,8 +1370,10 @@ function showFaceplate(nodeData) {
     }
     if (!panelHTML && ports.length) panelHTML = faceplateSVG(ports, title);
 
+    const legend = faceplateLegend(nodeData.kind) +
+        (nodeData.kind === "switch" ? vlanColorLegend(ports) : "");
     body.innerHTML = panelHTML
-        ? panelHTML + faceplateLegend(nodeData.kind) + '<div id="facePortDetail"></div>'
+        ? panelHTML + legend + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
 
     body.querySelectorAll(".fp-port").forEach(el => {
@@ -1365,6 +1423,8 @@ async function loadDeviceData() {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoVpn = data.vpn || [];
+        topoHaDetail = data.ha_detail || "";
         return data.devices || [];
     } catch (e) {
         return null;
@@ -1372,8 +1432,9 @@ async function loadDeviceData() {
 }
 
 // fetchDevicesNow triggers an immediate Graylog fetch for the viewed firewall
-// ("fetch device data now" button) and re-renders the tree.
-async function fetchDevicesNow() {
+// ("fetch device data now" button) and re-renders the tree. rangeSec, when
+// given (live mode), narrows the Graylog search window to recent logs only.
+async function fetchDevicesNow(rangeSec) {
     const cfg = window.TOPO_CONFIG || {};
     const fwid = selectedFwID();
     if (!cfg.devicesBase || !fwid) return;
@@ -1382,7 +1443,8 @@ async function fetchDevicesNow() {
     if (btn) btn.disabled = true;
     if (meta) meta.textContent = tt("topo.fetching");
     try {
-        const resp = await fetch(cfg.devicesBase + "/refresh/" + fwid, { method: "POST" });
+        const url = cfg.devicesBase + "/refresh/" + fwid + (rangeSec ? "?range=" + rangeSec : "");
+        const resp = await fetch(url, { method: "POST" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
         if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
@@ -1390,6 +1452,8 @@ async function fetchDevicesNow() {
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];
+        topoVpn = data.vpn || [];
+        topoHaDetail = data.ha_detail || "";
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();
         if (meta) meta.textContent = topoDevices.length
@@ -1412,6 +1476,10 @@ async function fetchDevicesNow() {
 // selected, so switching the selector keeps live mode following the view.
 const LIVE_INTERVAL_MS = 60000;  // poll cadence (~1 min)
 const LIVE_MAX_MS = 600000;      // safety cap: auto-stop after 10 min
+const LIVE_RANGE_SEC = 300;      // live polls scan only the last 5 min of logs
+                                 // (vs the full default window) — retention keeps
+                                 // everything already fetched, so a short window
+                                 // is enough and far cheaper on Graylog.
 let liveTimer = null;            // setInterval handle for the poll
 let liveCountdown = null;        // setInterval handle for the 1s button label
 let liveDeadline = 0;            // epoch ms at which live mode auto-stops
@@ -1441,7 +1509,7 @@ async function livePoll() {
     if (Date.now() >= liveDeadline) { stopLiveDevices(); return; }
     if (liveInFlight) return; // a previous fetch is still running — skip this tick
     liveInFlight = true;
-    try { await fetchDevicesNow(); }
+    try { await fetchDevicesNow(LIVE_RANGE_SEC); }
     finally { liveInFlight = false; }
 }
 
