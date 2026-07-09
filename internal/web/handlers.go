@@ -80,10 +80,11 @@ type searchResult struct {
 }
 
 type searchData struct {
-	Base    BaseData
-	Query   string
-	Results []searchResult
-	Error   string
+	Base      BaseData
+	Query     string
+	Results   []searchResult
+	Error     string
+	Truncated bool
 }
 
 // handleLogin renders and processes the login form (public route).
@@ -98,9 +99,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	totpCode := r.FormValue("totp_code")
 
-	// Brute-force guard keyed by client IP + username.
-	rlKey := clientIP(r, s.cfg.TrustProxyHeaders) + "|" + username
-	if !s.limiter.allowed(rlKey) {
+	// Brute-force guard: a per-(IP,username) bucket stops repeated guesses
+	// against one account, and a per-IP aggregate bucket stops a password-spray
+	// across many usernames from a single host (which never trips the former).
+	ipKey := clientIP(r, s.cfg.TrustProxyHeaders)
+	rlKey := ipKey + "|" + username
+	if !s.limiter.allowed(rlKey) || !s.ipLimiter.allowed(ipKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
 		s.render(w, "login.html", s.loginView("Too many failed attempts. Please try again later."))
 		return
@@ -129,12 +133,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if user != nil && user.TOTPSecret != "" {
 			if !s.auth.VerifyTOTP(user.TOTPSecret, totpCode) {
 				s.limiter.fail(rlKey)
+				s.ipLimiter.fail(ipKey)
 				s.store.LogActivity(username, "Login Failed", "Invalid TOTP code")
 				s.render(w, "login.html", s.loginView("Invalid TOTP code"))
 				return
 			}
 		} else {
 			s.limiter.fail(rlKey)
+			s.ipLimiter.fail(ipKey)
 			s.store.LogActivity(username, "Login Failed", "TOTP required but no secret found")
 			s.render(w, "login.html", s.loginView("TOTP required but no secret found"))
 			return
@@ -143,12 +149,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !authenticated {
 		s.limiter.fail(rlKey)
+		s.ipLimiter.fail(ipKey)
 		s.store.LogActivity(username, "Login Failed", "Invalid credentials")
 		s.render(w, "login.html", s.loginView("Invalid credentials"))
 		return
 	}
 
 	s.limiter.reset(rlKey)
+	s.ipLimiter.reset(ipKey)
 	if err := s.sess.Login(w, r, username, isRadius); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
@@ -195,30 +203,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 		_ = r.ParseForm()
 
-		// Branch (b): legacy in-page password change.
-		if r.PostForm.Has("username") && r.PostForm.Has("password") &&
-			r.PostForm.Has("new_password") && r.PostForm.Has("confirm_password") {
-			oldPassword := r.FormValue("password")
-			newPassword := r.FormValue("new_password")
-			confirm := r.FormValue("confirm_password")
-			if newPassword != confirm {
-				http.Error(w, "New passwords do not match", http.StatusBadRequest)
-				return
-			}
-			ok, err := s.store.ChangePassword(ctx, d.Username, oldPassword, newPassword)
-			if err != nil {
-				s.logger.Error("change password failed", "user", d.Username, "err", err)
-			}
-			if ok {
-				s.store.LogActivity(d.Username, "Change Password", "Password changed successfully")
-				http.Redirect(w, r, "/", http.StatusFound)
-				return
-			}
-			http.Error(w, "Old password incorrect or update failed", http.StatusBadRequest)
-			return
-		}
-
-		// Branch (c): single firewall add.
+		// Branch (b): single firewall add. (Password changes go through
+		// /change_password, which enforces the RADIUS-user guard; there is no
+		// in-page password-change form posted here.)
 		fqdn := r.FormValue("fqdn")
 		username := r.FormValue("username")
 		if username == "" {
@@ -231,8 +218,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		intervalMin, ierr := strconv.Atoi(strings.TrimSpace(r.FormValue("interval_minutes")))
 		retention, rerr := strconv.Atoi(strings.TrimSpace(r.FormValue("retention_count")))
 		sshRaw := "9422"
-		if v, ok := r.PostForm["ssh_port"]; ok && len(v) > 0 {
-			sshRaw = v[0]
+		if v := strings.TrimSpace(r.FormValue("ssh_port")); v != "" {
+			sshRaw = v
 		}
 		sshPort, serr := strconv.Atoi(strings.TrimSpace(sshRaw))
 		if ierr != nil || rerr != nil || serr != nil {
@@ -340,9 +327,12 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 
 	var rowErrors []string
 	added := 0
-	for _, row := range records[1:] {
+	for i, row := range records[1:] {
 		fqdnRaw, _ := get(row, "fqdn")
 		fqdn := strings.TrimSpace(fqdnRaw)
+		// Identify the row by line number and FQDN only. Never echo the raw
+		// row, which contains the plaintext SCP password column.
+		rowLabel := fmt.Sprintf("row %d (%s)", i+2, fqdn)
 
 		username := s.cfg.DefaultSCPUser
 		if v, ok := get(row, "username"); ok && strings.TrimSpace(v) != "" {
@@ -356,13 +346,13 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 		intervalRaw, _ := get(row, "interval_minutes")
 		intervalMin, ierr := strconv.Atoi(strings.TrimSpace(intervalRaw))
 		if ierr != nil {
-			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in row %v: %s", row, ierr.Error()))
+			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in %s: %s", rowLabel, ierr.Error()))
 			continue
 		}
 		retentionRaw, _ := get(row, "retention_count")
 		retention, rerr := strconv.Atoi(strings.TrimSpace(retentionRaw))
 		if rerr != nil {
-			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in row %v: %s", row, rerr.Error()))
+			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in %s: %s", rowLabel, rerr.Error()))
 			continue
 		}
 		sshRaw := "9422"
@@ -371,12 +361,12 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 		}
 		sshPort, serr := strconv.Atoi(sshRaw)
 		if serr != nil {
-			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in row %v: %s", row, serr.Error()))
+			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in %s: %s", rowLabel, serr.Error()))
 			continue
 		}
 
 		if fqdn == "" {
-			rowErrors = append(rowErrors, fmt.Sprintf("Missing FQDN in row: %v", row))
+			rowErrors = append(rowErrors, fmt.Sprintf("Missing FQDN in row %d", i+2))
 			continue
 		}
 
@@ -386,7 +376,7 @@ func (s *Server) handleIndexCSV(w http.ResponseWriter, r *http.Request, file mul
 			Status: "New", SSHPort: sshPort,
 		})
 		if aerr != nil {
-			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in row %v: %s", row, aerr.Error()))
+			rowErrors = append(rowErrors, fmt.Sprintf("Invalid data in %s: %s", rowLabel, aerr.Error()))
 			continue
 		}
 		added++
@@ -581,11 +571,21 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			for _, ref := range refs {
 				results := s.searchFirewall(ref, pattern)
 				data.Results = append(data.Results, results...)
+				if len(data.Results) >= maxSearchResults {
+					data.Results = data.Results[:maxSearchResults]
+					data.Truncated = true
+					break
+				}
 			}
 		}
 	}
 	s.render(w, "search.html", data)
 }
+
+// maxSearchResults caps how many matching lines a single search buffers and
+// renders. A broad query (e.g. "*") otherwise matches every line of every
+// firewall's decrypted config, exhausting memory.
+const maxSearchResults = 1000
 
 // buildSearchPattern converts a user query into a case-insensitive regexp where
 // '*' is a wildcard and everything else is treated literally. Invalid UTF-8 in

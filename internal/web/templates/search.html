@@ -74,6 +74,7 @@
         <h2 class="mt-0 mb-0">Results</h2>
         <span class="muted">{{len .Results}} match{{if ne (len .Results) 1}}es{{end}}</span>
     </div>
+    {{if .Truncated}}<div class="alert alert-error">Too many matches — showing the first {{len .Results}}. Please refine your search.</div>{{end}}
     {{if .Results}}
     <div class="table-wrap">
         <table class="data">

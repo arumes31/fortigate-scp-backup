@@ -119,8 +119,12 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	kundenname := r.PostForm.Get("kundenname")
-	standort := r.PostForm.Get("standort")
+	kundenname := strings.TrimSpace(r.PostForm.Get("kundenname"))
+	standort := strings.TrimSpace(r.PostForm.Get("standort"))
+	if kundenname == "" || standort == "" {
+		http.Error(w, "Error: Kundenname and Standort are required.", http.StatusBadRequest)
+		return
+	}
 
 	remoteip, err := e.nextAvailableIP()
 	if err != nil {
@@ -224,8 +228,14 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.Kundenname = r.PostForm.Get("kundenname")
-	c.Standort = r.PostForm.Get("standort")
+	kundenname := strings.TrimSpace(r.PostForm.Get("kundenname"))
+	standort := strings.TrimSpace(r.PostForm.Get("standort"))
+	if kundenname == "" || standort == "" {
+		http.Error(w, "Error: Kundenname and Standort are required.", http.StatusBadRequest)
+		return
+	}
+	c.Kundenname = kundenname
+	c.Standort = standort
 	c.WanInterface = r.PostForm.Get("wan_interface")
 	c.LanInterface = r.PostForm.Get("lan_interface")
 	c.GraylogEnabled = formHas(r, "graylog_enabled")
