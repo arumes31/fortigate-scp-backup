@@ -16,6 +16,11 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
+// maxShareExpiryHours bounds a public share token's lifetime (~10 years). It
+// keeps time.Duration(hours) * time.Hour well within int64 so a large value
+// cannot overflow into a past instant, and rejects absurd expiries.
+const maxShareExpiryHours = 10 * 365 * 24
+
 // topologyData is the topology page shell; the graph itself is fetched from
 // /topology/data/{fwID} and rendered client-side with the vendored D3.
 type topologyData struct {
@@ -181,7 +186,10 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 	hours := 0
 	if raw := strings.TrimSpace(r.FormValue("expiry_hours")); raw != "" {
 		h, herr := strconv.Atoi(raw)
-		if herr != nil || h < 0 {
+		// Reject an out-of-range value rather than let time.Duration(hours) *
+		// time.Hour overflow int64 (which would wrap to a past instant and mint
+		// an already-expired share).
+		if herr != nil || h < 0 || h > maxShareExpiryHours {
 			http.Error(w, "invalid expiry_hours", http.StatusBadRequest)
 			return
 		}

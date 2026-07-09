@@ -8,12 +8,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
-	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/sessions"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/netutil"
 )
 
 const (
@@ -41,23 +41,13 @@ type Manager struct {
 	trustProxy bool
 }
 
-// clientIP returns the address the session is pinned to. It mirrors the web
-// layer's clientIP helper: X-Forwarded-For is honoured only when the app is
-// behind a trusted proxy, otherwise the header is ignored so a direct client
-// cannot spoof (or freeze) its pinned address by sending a fixed header.
+// clientIP returns the address the session is pinned to. It delegates to the
+// shared netutil.ClientIP so session pinning and the login rate limiter resolve
+// the address identically (X-Forwarded-For honoured only behind a trusted
+// proxy, otherwise the header is ignored so a direct client cannot spoof or
+// freeze its pinned address).
 func (m *Manager) clientIP(r *http.Request) string {
-	if m.trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.LastIndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[i+1:])
-			}
-			return strings.TrimSpace(xff)
-		}
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return netutil.ClientIP(r, m.trustProxy)
 }
 
 // New creates a Manager. When key is non-empty it is used to derive stable
