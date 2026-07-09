@@ -72,7 +72,7 @@ type Server struct {
 	// bucket in limiter never reaches its own threshold.
 	ipLimiter *loginLimiter
 	hub       *sseHub
-	logger  *slog.Logger
+	logger    *slog.Logger
 
 	pages map[string]pageTmpl
 
@@ -104,7 +104,7 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		limiter:   newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		ipLimiter: newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		hub:       newSSEHub(),
-		warmSem: make(chan struct{}, 2),
+		warmSem:   make(chan struct{}, 2),
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
