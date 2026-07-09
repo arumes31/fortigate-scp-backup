@@ -111,6 +111,12 @@ func Load(logger *slog.Logger) *Config {
 	totpSecret := os.Getenv("TOTP_SECRET")
 	if totpSecret == "" {
 		totpSecret = randomBase32(16)
+		// Warn but never log the generated secret: writing it to logs would
+		// leak the credential. Operators should set TOTP_SECRET explicitly so
+		// the value is known (and stable across restarts).
+		if boolenv("TOTP_ENABLED", false) {
+			logger.Warn("TOTP_ENABLED but TOTP_SECRET is unset; using a random admin TOTP secret. Set TOTP_SECRET explicitly to make it known and stable across restarts.")
+		}
 	}
 
 	c := &Config{
@@ -140,7 +146,7 @@ func Load(logger *slog.Logger) *Config {
 
 		EncryptionKey: decodeKey(os.Getenv("ENCRYPTION_KEY"), logger),
 
-		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "test"),
+		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "admin"),
 		DefaultSCPPassword:   getenv("DEFAULT_SCP_PASSWORD", ""),
 		FortigateConfigPath:  getenv("FORTIGATE_CONFIG_PATH", "sys_config"),
 		SCPTimeout:           intenv("SCP_TIMEOUT", 60),

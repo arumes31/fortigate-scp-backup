@@ -8,12 +8,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
+
+// maxShareExpiryHours bounds a public share token's lifetime (~10 years). It
+// keeps time.Duration(hours) * time.Hour well within int64 so a large value
+// cannot overflow into a past instant, and rejects absurd expiries.
+const maxShareExpiryHours = 10 * 365 * 24
 
 // topologyData is the topology page shell; the graph itself is fetched from
 // /topology/data/{fwID} and rendered client-side with the vendored D3.
@@ -174,9 +180,20 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now()
 	expiresAt := ""
-	hours, herr := strconv.Atoi(r.FormValue("expiry_hours"))
-	if herr != nil || hours < 0 {
-		hours = 0 // never expires
+	// An empty/absent expiry_hours means "never expires" (documented). A
+	// present-but-malformed value must be rejected rather than silently
+	// degrading to a never-expiring public token.
+	hours := 0
+	if raw := strings.TrimSpace(r.FormValue("expiry_hours")); raw != "" {
+		h, herr := strconv.Atoi(raw)
+		// Reject an out-of-range value rather than let time.Duration(hours) *
+		// time.Hour overflow int64 (which would wrap to a past instant and mint
+		// an already-expired share).
+		if herr != nil || h < 0 || h > maxShareExpiryHours {
+			http.Error(w, "invalid expiry_hours", http.StatusBadRequest)
+			return
+		}
+		hours = h
 	}
 	if hours > 0 {
 		expiresAt = now.Add(time.Duration(hours) * time.Hour).Format(insightsTimeLayout)

@@ -1,34 +1,19 @@
 package web
 
 import (
-	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/netutil"
 )
 
-// clientIP returns the best-guess client address. X-Forwarded-For is honoured
-// only when trustProxy is set (the app is behind a trusted reverse proxy);
-// otherwise the header is ignored so a direct client cannot spoof its address.
+// clientIP returns the best-guess client address, honouring X-Forwarded-For
+// only behind a trusted proxy. Delegates to netutil.ClientIP so the login rate
+// limiter and session IP pinning resolve the address identically.
 func clientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			// XFF is appended left-to-right by each hop, so the leftmost
-			// entries are client-supplied and spoofable. With a single trusted
-			// reverse proxy the rightmost entry is the peer address that proxy
-			// actually observed, so use it as the source IP.
-			if i := strings.LastIndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[i+1:])
-			}
-			return strings.TrimSpace(xff)
-		}
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return netutil.ClientIP(r, trustProxy)
 }
 
 // securityHeaders sets a conservative set of security response headers. The CSP

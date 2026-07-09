@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/sessions"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/netutil"
 )
 
 const (
@@ -35,14 +37,25 @@ type Data struct {
 
 // Manager wraps the cookie store.
 type Manager struct {
-	store *sessions.CookieStore
+	store      *sessions.CookieStore
+	trustProxy bool
+}
+
+// clientIP returns the address the session is pinned to. It delegates to the
+// shared netutil.ClientIP so session pinning and the login rate limiter resolve
+// the address identically (X-Forwarded-For honoured only behind a trusted
+// proxy, otherwise the header is ignored so a direct client cannot spoof or
+// freeze its pinned address).
+func (m *Manager) clientIP(r *http.Request) string {
+	return netutil.ClientIP(r, m.trustProxy)
 }
 
 // New creates a Manager. When key is non-empty it is used to derive stable
 // signing/encryption keys, so sessions survive restarts and are consistent
 // across instances; otherwise random keys are generated per process start
-// (matching the original behaviour). secure sets the cookie Secure flag.
-func New(key []byte, secure bool) *Manager {
+// (matching the original behaviour). secure sets the cookie Secure flag;
+// trustProxy controls whether X-Forwarded-For is trusted for IP pinning.
+func New(key []byte, secure, trustProxy bool) *Manager {
 	var hashKey, blockKey []byte
 	if len(key) > 0 {
 		h := sha512.Sum512(key)
@@ -66,7 +79,7 @@ func New(key []byte, secure bool) *Manager {
 	// codec's cryptographic expiry. Call MaxAge so a captured cookie stops
 	// validating server-side after the idle window, not 30 days later.
 	store.MaxAge(int(idleTimeout.Seconds()))
-	return &Manager{store: store}
+	return &Manager{store: store, trustProxy: trustProxy}
 }
 
 // Login establishes an authenticated session.
@@ -76,7 +89,7 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string,
 	sess.Values[keyUsername] = username
 	sess.Values[keyIsRadius] = isRadius
 	sess.Values[keyLastActive] = time.Now().Unix()
-	sess.Values[keyXForwarded] = r.Header.Get("X-Forwarded-For")
+	sess.Values[keyXForwarded] = m.clientIP(r)
 	return sess.Save(r, w)
 }
 
@@ -131,9 +144,10 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 			}
 		}
 
-		// X-Forwarded-For pinning.
-		xff := r.Header.Get("X-Forwarded-For")
-		if stored, ok := sess.Values[keyXForwarded].(string); ok && stored != xff {
+		// Client-IP pinning (trusted-proxy aware, consistent with the login
+		// rate limiter). A direct client cannot spoof this with a header.
+		clientIP := m.clientIP(r)
+		if stored, ok := sess.Values[keyXForwarded].(string); ok && stored != clientIP {
 			delete(sess.Values, keyLoggedIn)
 			_ = sess.Save(r, w)
 			http.Redirect(w, r, "/login", http.StatusFound)
@@ -141,7 +155,7 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 		}
 
 		sess.Values[keyLastActive] = time.Now().Unix()
-		sess.Values[keyXForwarded] = xff
+		sess.Values[keyXForwarded] = clientIP
 		_ = sess.Save(r, w)
 
 		ctx := context.WithValue(r.Context(), ctxKey{}, d)
