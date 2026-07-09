@@ -261,7 +261,11 @@ func (e *Extension) worker() {
 			time.Sleep(interval)
 			continue
 		}
-		// Stagger fetches across the interval so Graylog is not hit in a burst.
+		// Anchor one full sweep per interval: stagger fetches across the
+		// interval, then sleep whatever time remains. Staggering alone (a delay
+		// after every firewall with no remainder) would make the effective
+		// period interval*n/(n+1), polling Graylog faster than configured.
+		sweepStart := time.Now()
 		delay := interval / time.Duration(len(fws)+1)
 		for _, fw := range fws {
 			if n, ferr := e.refreshFirewall(fw.ID, fw.FQDN, ""); ferr != nil {
@@ -270,6 +274,9 @@ func (e *Extension) worker() {
 				e.logger.Info("graylog devices refreshed", "fw_id", fw.ID, "fqdn", fw.FQDN, "devices", n)
 			}
 			time.Sleep(delay)
+		}
+		if rem := interval - time.Since(sweepStart); rem > 0 {
+			time.Sleep(rem)
 		}
 	}
 }

@@ -225,6 +225,15 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 		return err
 	}
 
+	// A retention count below 1 is invalid: a negative value would panic on the
+	// all[retentionCount:] slice below, and 0 would delete every backup
+	// (including the one just written) while still reporting success. Clamp to
+	// keeping at least the newest backup.
+	if retentionCount < 1 {
+		s.logger.Warn("Invalid retention_count clamped to 1", "fw_id", fwID, "retention_count", retentionCount)
+		retentionCount = 1
+	}
+
 	if len(all) > retentionCount {
 		for _, dbName := range all[retentionCount:] {
 			diskPath := filepath.FromSlash(filepath.Join(s.cfg.BackupDir, dbName))

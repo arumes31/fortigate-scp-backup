@@ -153,6 +153,11 @@
         var el = document.querySelector('[data-k="' + k + '"]');
         if (el && v !== undefined && v !== null) { el.textContent = v; }
     }
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
     function fmtBytes(n) {
         if (n < 1024) { return n + ' B'; }
         var u = ['KB', 'MB', 'GB', 'TB', 'PB']; var i = -1;
@@ -168,7 +173,7 @@
         runningCard.hidden = false;
         running.innerHTML = list.map(function (r) {
             return '<div class="running-row"><span class="spinner"></span><b>' +
-                (r.fqdn || ('fw #' + r.fw_id)) + '</b> <span class="muted">seit ' +
+                esc(r.fqdn || ('fw #' + r.fw_id)) + '</b> <span class="muted">seit ' +
                 new Date(r.since).toLocaleTimeString() + '</span></div>';
         }).join('');
     }
@@ -228,7 +233,7 @@
         if (!stdoutLog) { return; }
         var p = document.createElement('p');
         p.innerHTML = '<span class="ts">[' + new Date().toLocaleTimeString() + ']</span> ' +
-            text.replace(/</g, '&lt;');
+            esc(text);
         stdoutLog.insertBefore(p, stdoutLog.firstChild);
         while (stdoutLog.childElementCount > 200) { stdoutLog.removeChild(stdoutLog.lastChild); }
     }

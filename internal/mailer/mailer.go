@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/smtp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
@@ -38,6 +39,12 @@ func (m *Mailer) Send(subject, body, to string) {
 		return
 	}
 	m.logger.Info("email notification sent", "to", to, "subject", subject)
+}
+
+// sanitizeHeader removes CR and LF so a value cannot inject additional SMTP
+// headers or terminate the header block early (header injection).
+func sanitizeHeader(v string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(v)
 }
 
 func (m *Mailer) send(subject, body, to string) error {
@@ -86,8 +93,11 @@ func (m *Mailer) send(subject, body, to string) error {
 	if err != nil {
 		return fmt.Errorf("data: %w", err)
 	}
+	// Strip CR/LF from header values so attacker-influenced data (e.g. a
+	// firewall FQDN embedded in the subject) cannot inject additional SMTP
+	// headers or prematurely terminate the header block.
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
-		c.MailUser, to, subject, body)
+		sanitizeHeader(c.MailUser), sanitizeHeader(to), sanitizeHeader(subject), body)
 	if _, err := w.Write([]byte(msg)); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}

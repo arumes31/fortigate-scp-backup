@@ -92,7 +92,7 @@ func main() {
 	// Core services.
 	mail := mailer.New(cfg, logger)
 	authn := auth.New(cfg, logger)
-	sess := session.New(cfg.SessionKey, cfg.CookieSecure)
+	sess := session.New(cfg.SessionKey, cfg.CookieSecure, cfg.TrustProxyHeaders)
 	sched := scheduler.New(logger, cfg.TZ)
 	backupSvc := backup.New(store, mail, cfg, cipher, logger)
 
@@ -174,6 +174,7 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	srv.Shutdown() // end SSE streams so Shutdown does not block on them
 	_ = httpSrv.Shutdown(shutdownCtx)
 	sched.Stop()
 	logger.Info("shutdown complete")

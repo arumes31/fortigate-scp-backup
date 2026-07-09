@@ -111,7 +111,7 @@ func testServerData(t *testing.T) *Server {
 	cipher, _ := crypto.New(nil)
 	srv, err := New(cfg, fwStore{}, scheduler.New(logger, time.UTC),
 		backup.New(nil, mailer.New(cfg, logger), cfg, cipher, logger),
-		session.New(nil, false), fakeAuth{}, cipher, logger)
+		session.New(nil, false, false), fakeAuth{}, cipher, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
