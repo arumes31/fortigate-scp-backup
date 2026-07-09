@@ -67,7 +67,11 @@ type Server struct {
 	auth    Authenticator
 	cipher  *crypto.Cipher
 	limiter *loginLimiter
-	hub     *sseHub
+	// ipLimiter is a per-source-IP aggregate guard so a password-spray across
+	// many usernames from one host is throttled even though each (IP,username)
+	// bucket in limiter never reaches its own threshold.
+	ipLimiter *loginLimiter
+	hub       *sseHub
 	logger  *slog.Logger
 
 	pages map[string]pageTmpl
@@ -97,8 +101,9 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	s := &Server{
 		cfg: cfg, store: store, sched: sched, backup: backupSvc,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
-		limiter: newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		hub:     newSSEHub(),
+		limiter:   newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		ipLimiter: newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		hub:       newSSEHub(),
 		warmSem: make(chan struct{}, 2),
 	}
 	if err := s.parseTemplates(); err != nil {
@@ -115,6 +120,13 @@ func (s *Server) BroadcastStatus(fwID int, status string) {
 	if status == "Success" {
 		go s.WarmAuditCache(fwID)
 	}
+}
+
+// Shutdown releases resources that would otherwise keep the process alive
+// during a graceful stop. It signals SSE streams to end so http.Server.Shutdown
+// (which does not cancel their request contexts) can complete promptly.
+func (s *Server) Shutdown() {
+	s.hub.shutdown()
 }
 
 var funcMap = template.FuncMap{

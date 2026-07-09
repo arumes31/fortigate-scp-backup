@@ -198,18 +198,31 @@ func (s *Server) backfillExemptionKeys(db *sql.DB) {
 		id  int64
 		key string
 	}
-	var updates []pending
+	// Collect (id, text) first and close the cursor before resolving keys.
+	// legacyExemptionKey may run a nested query (custom-rule lookup), and the
+	// insights handle is limited to a single connection: querying while this
+	// cursor is still open would deadlock waiting for the connection it pins.
+	type raw struct {
+		id   int64
+		text string
+	}
+	var pendingRaw []raw
 	for rows.Next() {
 		var id int64
 		var text string
 		if scanErr := rows.Scan(&id, &text); scanErr != nil {
 			continue
 		}
-		if key := legacyExemptionKey(db, text); key != "" {
-			updates = append(updates, pending{id: id, key: key})
-		}
+		pendingRaw = append(pendingRaw, raw{id: id, text: text})
 	}
 	_ = rows.Close()
+
+	var updates []pending
+	for _, pr := range pendingRaw {
+		if key := legacyExemptionKey(db, pr.text); key != "" {
+			updates = append(updates, pending{id: pr.id, key: key})
+		}
+	}
 	for _, u := range updates {
 		if _, err := db.Exec("UPDATE exemptions SET finding_key = ? WHERE id = ?", u.key, u.id); err != nil {
 			s.logger.Warn("exemption key backfill failed", "id", u.id, "err", err)

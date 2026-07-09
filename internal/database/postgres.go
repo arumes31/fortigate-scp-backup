@@ -185,8 +185,13 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 	}
 
 	if totpEnabled {
+		// Only seed the secret when admin has none yet. Overwriting on every
+		// boot would invalidate an already-enrolled authenticator whenever
+		// TOTP_SECRET is unset (config generates a fresh random one per start),
+		// locking the admin out after every restart.
 		if _, err := s.pool.Exec(ctx,
-			`UPDATE users SET totp_secret = $1 WHERE username = 'admin'`, totpSecret); err != nil {
+			`UPDATE users SET totp_secret = $1
+			 WHERE username = 'admin' AND (totp_secret IS NULL OR totp_secret = '')`, totpSecret); err != nil {
 			return fmt.Errorf("set admin totp: %w", err)
 		}
 	} else {

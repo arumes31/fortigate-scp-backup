@@ -111,6 +111,12 @@ func Load(logger *slog.Logger) *Config {
 	totpSecret := os.Getenv("TOTP_SECRET")
 	if totpSecret == "" {
 		totpSecret = randomBase32(16)
+		// Only used to seed the admin account when it has no secret yet (see
+		// InitSchema). Surface it so the operator can enroll; without setting
+		// TOTP_SECRET a new value would otherwise be unknowable.
+		if boolenv("TOTP_ENABLED", false) {
+			logger.Warn("TOTP_ENABLED but TOTP_SECRET unset; generated a random admin TOTP secret (set TOTP_SECRET to make it stable)", "totp_secret", totpSecret)
+		}
 	}
 
 	c := &Config{
@@ -140,7 +146,7 @@ func Load(logger *slog.Logger) *Config {
 
 		EncryptionKey: decodeKey(os.Getenv("ENCRYPTION_KEY"), logger),
 
-		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "test"),
+		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "admin"),
 		DefaultSCPPassword:   getenv("DEFAULT_SCP_PASSWORD", ""),
 		FortigateConfigPath:  getenv("FORTIGATE_CONFIG_PATH", "sys_config"),
 		SCPTimeout:           intenv("SCP_TIMEOUT", 60),
