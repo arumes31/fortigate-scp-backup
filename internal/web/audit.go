@@ -211,9 +211,13 @@ func (s *Server) backfillExemptionKeys(db *sql.DB) {
 		var id int64
 		var text string
 		if scanErr := rows.Scan(&id, &text); scanErr != nil {
+			s.logger.Warn("exemption key backfill scan failed", "err", scanErr)
 			continue
 		}
 		pendingRaw = append(pendingRaw, raw{id: id, text: text})
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		s.logger.Warn("exemption key backfill iteration failed", "err", rowsErr)
 	}
 	_ = rows.Close()
 

@@ -111,11 +111,11 @@ func Load(logger *slog.Logger) *Config {
 	totpSecret := os.Getenv("TOTP_SECRET")
 	if totpSecret == "" {
 		totpSecret = randomBase32(16)
-		// Only used to seed the admin account when it has no secret yet (see
-		// InitSchema). Surface it so the operator can enroll; without setting
-		// TOTP_SECRET a new value would otherwise be unknowable.
+		// Warn but never log the generated secret: writing it to logs would
+		// leak the credential. Operators should set TOTP_SECRET explicitly so
+		// the value is known (and stable across restarts).
 		if boolenv("TOTP_ENABLED", false) {
-			logger.Warn("TOTP_ENABLED but TOTP_SECRET unset; generated a random admin TOTP secret (set TOTP_SECRET to make it stable)", "totp_secret", totpSecret)
+			logger.Warn("TOTP_ENABLED but TOTP_SECRET is unset; using a random admin TOTP secret. Set TOTP_SECRET explicitly to make it known and stable across restarts.")
 		}
 	}
 
