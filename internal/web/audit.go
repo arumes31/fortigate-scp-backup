@@ -278,6 +278,8 @@ type Interface struct {
 	Members       []string `json:"members,omitempty"`        // aggregate/FortiLink member ports
 	Status        string   `json:"status,omitempty"`         // "down" when administratively disabled
 	SwitchFeature string   `json:"switch_feature,omitempty"` // switch-controller-feature (nac, nac-segment, voice, …)
+	Type          string   `json:"type,omitempty"`           // set type: aggregate | redundant | hard-switch | switch | vlan | tunnel …
+	Fortilink     bool     `json:"fortilink,omitempty"`      // set fortilink enable (FortiLink fabric interface)
 }
 
 type StaticRoute struct {
