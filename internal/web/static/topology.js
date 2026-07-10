@@ -1337,14 +1337,25 @@ function portColor(p) {
 }
 
 // portCellSVG renders one faceplate port cell. idx indexes the panel's port
-// array (click handler lookup); the cyan corner square marks 802.1X ports,
-// down ports render dimmed with the LED off. Ports blocked by STP or a
-// BPDU/loop/root guard blink orange.
+// array (click handler lookup); the cyan corner square marks 802.1X ports.
+// The corner LED reflects link state: green = confirmed up, red = down (admin
+// or live), grey = unknown. Down ports render dimmed; STP/guard blocks blink
+// orange.
 function portCellSVG(p, idx, x, y, cell) {
-    const col = p.stpBlocked ? "#f97316" : portColor(p);
-    const active = !p.isDown && !p.liveDown && (p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink);
-    // Link LED: live link state wins; without live data fall back to config activity.
-    const led = p.stpBlocked ? "#f97316" : (p.liveDown ? "#4b5563" : (p.liveUp || active ? "#22c55e" : "#4b5563"));
+    // A configured VLAN alone does NOT prove the link is up — an unused access
+    // port has a VLAN but no cable. "Up" therefore needs a positive signal: a
+    // live up event, a pinned client (proven traffic), or a structural
+    // inter-switch/uplink port (up whenever the switch is). "Down" is admin
+    // status or a live down event. Everything else is unknown (grey), never a
+    // misleading green.
+    const isDownPort = p.isDown || p.liveDown;
+    const hasClients = !!(p.devices && p.devices.length);
+    const confirmedUp = p.liveUp || hasClients || p.isInterlink || p.isIcl || p.isUplink;
+    const col = p.stpBlocked ? "#f97316" : (isDownPort ? "#4b5563" : portColor(p));
+    const led = p.stpBlocked ? "#f97316"
+        : isDownPort ? "#ef4444"
+            : confirmedUp ? "#22c55e"
+                : "#4b5563";
     const blink = p.stpBlocked
         ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#f97316" stroke-width="2">
              <animate attributeName="opacity" values="1;0.1;1" dur="0.9s" repeatCount="indefinite"/>
