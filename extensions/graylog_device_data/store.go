@@ -223,7 +223,8 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 
 	// STP/guard/link port states ride along on the same refresh; a failure
 	// only costs the STP overlay (stale rows are kept), never the inventory.
-	if stp, events, edges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
+	var edges []SwitchEdge
+	if stp, events, recentEdges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog stp fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else {
 		if serr := e.storeStp(fwID, stp, now); serr != nil {
@@ -232,6 +233,17 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 		if serr := e.storeStpEvents(fwID, events, now); serr != nil {
 			e.logger.Warn("graylog stp event store failed", "fw_id", fwID, "err", serr)
 		}
+		edges = recentEdges
+	}
+	// Interlinks change rarely, so the recent STP window only reveals whichever
+	// switch churned lately. A separate wide-window query keeps every switch's
+	// stable uplinks; storeSwitchEdges upserts, keeping the newest role/ports.
+	if topoEdges, serr := e.fetchSwitchEdges(fqdn); serr != nil {
+		e.logger.Warn("graylog topology-edge fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else {
+		edges = append(edges, topoEdges...)
+	}
+	if len(edges) > 0 {
 		if serr := e.storeSwitchEdges(fwID, edges, now); serr != nil {
 			e.logger.Warn("graylog switch-edge store failed", "fw_id", fwID, "err", serr)
 		}
