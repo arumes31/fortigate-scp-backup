@@ -361,43 +361,10 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	seenKind := map[string]bool{} // key: port-key + "|" + kind
 	var order []*StpPort
 	var events []StpEvent
-	edges := map[string]*SwitchEdge{} // key: sn + "|" + trunk
-	var edgeOrder []*SwitchEdge
-	edgeFor := func(sn, name, trunk string) *SwitchEdge {
-		key := sn + "|" + trunk
-		if g := edges[key]; g != nil {
-			return g
-		}
-		g := &SwitchEdge{SwitchSN: sn, SwitchName: name, Trunk: trunk}
-		edges[key] = g
-		edgeOrder = append(edgeOrder, g)
-		return g
-	}
 	for _, m := range msgs {
-		// Switch-edge observations ride along on the same message stream.
-		if sn := field(m, "sn", "name"); sn != "" {
-			name := field(m, "name")
-			text := field(m, "msg", "message")
-			if mm := reTrunkMember.FindStringSubmatch(text); mm != nil {
-				g := edgeFor(sn, name, mm[2])
-				if !slices.Contains(g.Ports, mm[1]) {
-					g.Ports = append(g.Ports, mm[1])
-				}
-			}
-			if port := field(m, "switchphysicalport"); port != "" && !rePhysPort.MatchString(port) {
-				edgeFor(sn, name, port)
-			}
-		}
 		p, ev := stpFromMessage(m)
 		if p == nil {
 			continue
-		}
-		// Newest STP role per trunk orients the edge (root = uplink).
-		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
-			g := edgeFor(p.Serial, p.SwitchName, p.Port)
-			if g.Role == "" {
-				g.Role = ev.value
-			}
 		}
 		to := ev.value
 		if ev.kind == "guard" && to == "" {
@@ -436,11 +403,70 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	for _, p := range order {
 		out = append(out, *p)
 	}
-	edgeOut := make([]SwitchEdge, 0, len(edgeOrder))
-	for _, g := range edgeOrder {
-		edgeOut = append(edgeOut, *g)
+	return out, events, extractSwitchEdges(msgs), nil
+}
+
+// extractSwitchEdges folds a message stream into switch-edge observations used
+// for interlink detection: trunk-membership legs, trunk-named switch ports, and
+// the newest STP role per trunk (root = uplink). Shared by the recent STP query
+// (fetchStpStates) and the wide-window topology query (fetchSwitchEdges).
+func extractSwitchEdges(msgs []map[string]any) []SwitchEdge {
+	edges := map[string]*SwitchEdge{} // key: sn + "|" + trunk
+	var edgeOrder []*SwitchEdge
+	edgeFor := func(sn, name, trunk string) *SwitchEdge {
+		key := sn + "|" + trunk
+		if g := edges[key]; g != nil {
+			return g
+		}
+		g := &SwitchEdge{SwitchSN: sn, SwitchName: name, Trunk: trunk}
+		edges[key] = g
+		edgeOrder = append(edgeOrder, g)
+		return g
 	}
-	return out, events, edgeOut, nil
+	for _, m := range msgs {
+		if sn := field(m, "sn", "name"); sn != "" {
+			name := field(m, "name")
+			text := field(m, "msg", "message")
+			if mm := reTrunkMember.FindStringSubmatch(text); mm != nil {
+				g := edgeFor(sn, name, mm[2])
+				if !slices.Contains(g.Ports, mm[1]) {
+					g.Ports = append(g.Ports, mm[1])
+				}
+			}
+			if port := field(m, "switchphysicalport"); port != "" && !rePhysPort.MatchString(port) {
+				edgeFor(sn, name, port)
+			}
+		}
+		p, ev := stpFromMessage(m)
+		if p == nil {
+			continue
+		}
+		// Newest STP role per trunk orients the edge (root = uplink).
+		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
+			g := edgeFor(p.Serial, p.SwitchName, p.Port)
+			if g.Role == "" {
+				g.Role = ev.value
+			}
+		}
+	}
+	out := make([]SwitchEdge, 0, len(edgeOrder))
+	for _, g := range edgeOrder {
+		out = append(out, *g)
+	}
+	return out
+}
+
+// fetchSwitchEdges runs the focused topology query (trunk-named STP events) over
+// the wider topology window and returns the switch-edge observations. STP
+// topology changes are sparse, so the short device window catches interlinks
+// only for whichever switch churned recently; the wide window captures the
+// stable uplinks for every switch (matching the FortiGate's live FortiLink map).
+func (e *Extension) fetchSwitchEdges(fqdn string) ([]SwitchEdge, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogTopoQuery, "GRAYLOG_TOPO_QUERY", fqdn, e.graylogSources(fqdn), e.cfg.GraylogTopoRange)
+	if err != nil {
+		return nil, err
+	}
+	return extractSwitchEdges(msgs), nil
 }
 
 // fetchMacPorts pulls the FortiSwitch MAC add/move/delete events and returns
