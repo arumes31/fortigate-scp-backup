@@ -104,6 +104,12 @@ func (e *Extension) computeStatus(c *VpnConfig) string {
 	return e.getGraylogStatus(c.Firewallname)
 }
 
+// graylogStatusUnhealthy reports whether a status counts as a logging issue —
+// the same states ListGraylogIssues surfaces on the dashboard.
+func graylogStatusUnhealthy(status string) bool {
+	return status == "offline" || status == "error" || status == "config_missing"
+}
+
 func containsStr(ss []string, v string) bool {
 	for _, s := range ss {
 		if s == v {
@@ -244,7 +250,21 @@ func (e *Extension) graylogSweep() error {
 			}
 		}
 
-		if err := e.updateGraylogStatus(c.ID, now, persistStatus); err != nil {
+		// Track when the current unhealthy streak began so the dashboard can
+		// surface only devices that have been failing longer than the alert
+		// threshold. The streak spans any unhealthy state (offline/error/
+		// config_missing); recovering to online clears it.
+		var unhealthySince *time.Time
+		if graylogStatusUnhealthy(persistStatus) {
+			if c.LastGraylogUnhealthySince != nil {
+				unhealthySince = c.LastGraylogUnhealthySince // streak continues
+			} else {
+				since := now
+				unhealthySince = &since // streak begins now
+			}
+		}
+
+		if err := e.updateGraylogStatus(c.ID, now, persistStatus, unhealthySince); err != nil {
 			return err
 		}
 
