@@ -540,6 +540,16 @@ a.stat-tile:hover .l { color: var(--accent); }
 
 /* ---------- Terminal panel (SYS_STDOUT) ---------- */
 .panel { border: 1px solid var(--border-soft); background: var(--surface); padding: 18px 20px; margin-bottom: 20px; }
+
+/* ---------- Topology embed mode (?embed=1) ----------
+   Strips ALL page chrome so only the topology canvas remains — used when the
+   page (authenticated or shared) is placed in an iframe / wall dashboard.
+   Applied to <body> by topology.js. */
+body.topo-embed header, body.topo-embed nav, body.topo-embed footer,
+body.topo-embed .page-title, body.topo-embed #topoControls,
+body.topo-embed #devPanel, body.topo-embed #topoHint { display: none !important; }
+body.topo-embed .app, body.topo-embed main { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+body.topo-embed .card { margin: 0 !important; border: none !important; }
 .panel-head { color: var(--accent); font-size: 11px; letter-spacing: .12em; border-bottom: 1px solid var(--border-soft); padding-bottom: 10px; margin-bottom: 12px; }
 .stdout { font-size: 12px; max-height: 260px; overflow: auto; }
 .stdout p { margin: 0 0 5px; color: var(--text-muted); text-transform: none; letter-spacing: normal; }

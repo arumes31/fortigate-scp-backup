@@ -120,11 +120,34 @@ function wanSet(interfaces, routes) {
 // switchDisplayName so server-derived interlinks resolve to tree nodes).
 function swName(sw) { return sw.name || sw.switch_id; }
 
+// switchIdMatch reports whether a device/log switch reference identifies this
+// switch. A log source may key a switch by its serial, its config switch-id or
+// its friendly name, and casing can differ between the config backup and the
+// Graylog fields, so the exact comparison is case-insensitive. When no identity
+// matches exactly, a shared serial suffix (≥8 chars) still links a bare serial
+// to a switch the config keyed/named differently — the same tolerance the
+// trunk-peer resolver (switchByRef) uses. Without this a device carrying a
+// serial never attaches to a switch keyed by name (or vice versa).
+function switchIdMatch(sw, ref) {
+    if (!ref || !sw) return false;
+    const r = String(ref).trim().toUpperCase();
+    if (!r) return false;
+    for (const id of [sw.switch_id, sw.name, sw.serial]) {
+        if (id && String(id).trim().toUpperCase() === r) return true;
+    }
+    // Serial-suffix fallback: require BOTH strings to be ≥8 chars so a short
+    // reference (e.g. a bare port or a 3-char tail) cannot false-match a
+    // serial's ending. This mirrors the ≥8-char fragment guard the trunk-peer
+    // resolver uses.
+    const ser = String(sw.serial || sw.switch_id || "").trim().toUpperCase();
+    return ser.length >= 8 && r.length >= 8 && (ser.endsWith(r) || r.endsWith(ser));
+}
+
 // resolveSwitchName maps an inventory switch reference (name, switch-id or
 // serial, depending on the log source) to the tree node name.
 function resolveSwitchName(switches, id) {
     if (!id) return null;
-    const sw = switches.find(s => s.switch_id === id || s.name === id || s.serial === id);
+    const sw = switches.find(s => switchIdMatch(s, id));
     return sw ? swName(sw) : null;
 }
 
@@ -166,6 +189,16 @@ function vlanColor(vlan) {
     let h = 0;
     for (let i = 0; i < vlan.length; i++) h = (h * 31 + vlan.charCodeAt(i)) >>> 0;
     return `hsl(${(h * 137.508) % 360}, 55%, 58%)`;
+}
+
+// groupColor hashes a switch-group name to a stable colour, deeper and more
+// saturated than the VLAN palette so the switch-group overlay reads as a
+// separate dimension from the VLAN link colours.
+function groupColor(name) {
+    if (!name) return null;
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return `hsl(${(h * 47) % 360}, 68%, 47%)`;
 }
 
 // stpLabel renders one port's STP/guard status ("designated · forwarding",
@@ -414,8 +447,14 @@ function buildTree(data) {
     interlinks.filter(l => l.kind === "mclag-icl").forEach(l => { mclagNames.add(l.from); mclagNames.add(l.to); });
 
     // Switch-group membership (config switch-controller switch-group).
+    // Switch-group membership (config switch-controller switch-group). Members
+    // are managed-switch identifiers (serial or config key depending on the
+    // backup), so resolve each to the switch's display name — otherwise a
+    // serial-keyed member never matches the friendly-named tree node.
     const swGroupOf = {};
-    (data.switch_groups || []).forEach(g => (g.members || []).forEach(m => { swGroupOf[m] = g.name; }));
+    (data.switch_groups || []).forEach(g => (g.members || []).forEach(m => {
+        swGroupOf[resolveSwitchName(switches, m) || m] = g.name;
+    }));
 
     // Tier rank from the serial prefix digit (S5xx aggregation → S4/2xx access
     // → S1xx edge) so the stack reads top-down like the physical layout.
@@ -654,45 +693,52 @@ function buildTree(data) {
         const swDevs = devices.filter(dv => {
             if (assigned.has(dv)) return false;
             if (!dv.switch_id) return singleSwitch;
-            return dv.switch_id === sw.switch_id || (sw.name && dv.switch_id === sw.name) ||
-                (sw.serial && dv.switch_id === sw.serial) || singleSwitch;
+            return switchIdMatch(sw, dv.switch_id) || singleSwitch;
         });
 
-        const byVlan = {};
-        ports.forEach(p => (byVlan[p.vlan || "—"] = byVlan[p.vlan || "—"] || []).push(p));
-        const children = Object.entries(byVlan).map(([vlan, ps]) => {
-            const portNames = new Set(ps.map(p => p.name));
-            const groupDevs = swDevs.filter(dv => !assigned.has(dv) && (
-                (dv.port && portNames.has(dv.port)) ||
-                (dv.vlan && (String(dv.vlan) === vlan || vlan === "vlan" + dv.vlan || vlan.endsWith("." + dv.vlan) || vlan.endsWith("_" + dv.vlan)))
-            ));
-            groupDevs.forEach(dv => assigned.add(dv));
-            // Trunk-ish ports also carry tagged VLANs: list them per port.
-            const taggedLines = ps.filter(taggedVlans)
-                .map(p => `${p.name}: +${taggedVlans(p)}`);
-            // Ports hiding several MACs (mini-switch / AP suspected).
-            const multiLines = ps
-                .filter(p => topoMultiMacIdx[swName(sw) + "|" + p.name])
-                .map(p => `${p.name}: ${topoMultiMacIdx[swName(sw) + "|" + p.name]} MACs`);
-            return {
-                name: vlan === "—" ? tt("topo.no_vlan") : "VLAN " + vlan,
-                kind: "port", data: { vlan, ports: ps },
-                info: `${ps.length} ${tt("topo.ports")}\n${ps.map(p => p.name).join(", ")}` +
-                    (taggedLines.length ? `\n${tt("topo.tagged")}:\n${taggedLines.join("\n")}` : "") +
-                    (multiLines.length ? `\n⚠ ${tt("topo.multi_mac")}:\n${multiLines.join("\n")}` : "") +
-                    (groupDevs.length ? `\n${groupDevs.length} ${tt("topo.devices")}` : ""),
-                badge: ps.length + " " + tt("topo.ports") + (groupDevs.length ? " · " + groupDevs.length + " " + tt("topo.devices") : ""),
-                strokeColor: vlan === "—" ? null : vlanColor(vlan),
-                children: groupDevs.map(deviceNode)
-            };
+        // Group this switch's devices by the physical port they were seen on:
+        // switch → portN → device(s). The port's assigned (native) VLAN colors
+        // the port node's border and the tree links to/under it (see linkColor
+        // honoured in the link renderer). Devices seen without a port fall back
+        // to a direct child so they are never dropped.
+        const portCfg = {};
+        ports.forEach(p => { portCfg[p.name] = p; });
+        const byPort = {};
+        const rest = [];
+        swDevs.forEach(dv => {
+            if (assigned.has(dv)) return;
+            assigned.add(dv);
+            if (dv.port) (byPort[dv.port] = byPort[dv.port] || []).push(dv);
+            else rest.push(dv);
         });
-        // Devices that matched the switch but no VLAN/port group.
-        const rest = swDevs.filter(dv => !assigned.has(dv));
-        rest.forEach(dv => assigned.add(dv));
+        const portNum = name => { const m = /(\d+)/.exec(name || ""); return m ? Number(m[1]) : 1e9; };
+        const children = Object.entries(byPort)
+            .sort((a, b) => portNum(a[0]) - portNum(b[0]) || (a[0] < b[0] ? -1 : 1))
+            .map(([port, devs]) => {
+                const p = portCfg[port];
+                const vlan = (p && p.vlan) || (devs[0] && devs[0].vlan ? String(devs[0].vlan) : "");
+                const col = vlan ? vlanColor(vlan) : null;
+                const mm = topoMultiMacIdx[swName(sw) + "|" + port];
+                const st = topoStpIdx[swName(sw) + "|" + port];
+                return {
+                    name: port, kind: "port", data: { port, vlan, ports: p ? [p] : [] },
+                    info: `Port ${port}` +
+                        (vlan ? `\nVLAN: ${vlan}` : "") +
+                        (p && taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
+                        (mm ? `\n⚠ ${mm} MACs — ${tt("topo.multi_mac")}` : "") +
+                        (st && st.blocked ? `\n⃠ ${tt("topo.stp_blocked")}` : "") +
+                        `\n${devs.length} ${tt("topo.devices")}`,
+                    badge: (vlan ? "VLAN " + vlan + " · " : "") + devs.length + " " + tt("topo.devices"),
+                    strokeColor: col,
+                    linkColor: col,
+                    children: devs.map(dv => { const n = deviceNode(dv); n.linkColor = col; return n; })
+                };
+            });
+        // Devices matched to the switch but with no port association.
         children.push(...rest.map(deviceNode));
 
         const devCount = swDevs.length;
-        const group = swGroupOf[swName(sw)] || swGroupOf[sw.switch_id] || "";
+        const group = swGroupOf[swName(sw)] || "";
         const blockedPorts = ports
             .filter(p => (topoStpIdx[swName(sw) + "|" + p.name] || {}).blocked)
             .map(p => {
@@ -710,6 +756,8 @@ function buildTree(data) {
                 (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
             badge: [sw.model, group].filter(Boolean).join(" · ") || null,
             hasBlocked: blockedPorts.length > 0,
+            group: group,
+            groupColor: groupColor(group),
             children: [...nested.map(switchNode), ...children]
         };
     }
@@ -817,10 +865,11 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        // Collapse port/route/VLAN/VPN groups and the general (unattributed)
-        // device list by default to keep the initial view tidy (their
-        // devices/details expand on click).
-        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" || d.data.kind === "lan") d.children = null;
+        // Collapse route/VLAN/VPN groups and the general (unattributed) device
+        // list by default to keep the initial view tidy. Per-switch port nodes
+        // stay expanded so each switch shows its clients as switch → port →
+        // device with VLAN-coloured links.
+        if (d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" || d.data.kind === "lan") d.children = null;
     });
 
     gRoot = svg.append("g");
@@ -888,6 +937,16 @@ function renderTree(data) {
                 .attr("stroke-width", d.data.highlight ? 2.4 : (isMajor ? 2.4 : 1.4));
             if (d.data.highlight) rect.attr("stroke-dasharray", "5,3");
 
+            // Switch-group overlay: a colour stripe on the switch node's left
+            // edge marks its config switch-controller switch-group membership
+            // (colour matches the group legend). Uplink hierarchy is unchanged.
+            if (d.data.kind === "switch" && d.data.groupColor) {
+                g.append("rect")
+                    .attr("x", -w / 2).attr("y", -h / 2).attr("width", 5).attr("height", h)
+                    .attr("rx", 2)
+                    .attr("fill", d.data.groupColor);
+            }
+
             g.append("text")
                 .attr("x", -w / 2 + 10).attr("y", 4)
                 .attr("fill", st.stroke).attr("font-size", isMajor ? "15px" : "12px")
@@ -939,8 +998,8 @@ function renderTree(data) {
         link.enter().append("path")
             .attr("class", "link")
             .attr("fill", "none")
-            .attr("stroke", d => (NODE_STYLE[d.target.data.kind] || NODE_STYLE.lan).stroke)
-            .attr("stroke-opacity", 0.35)
+            .attr("stroke", d => d.target.data.linkColor || (NODE_STYLE[d.target.data.kind] || NODE_STYLE.lan).stroke)
+            .attr("stroke-opacity", d => d.target.data.linkColor ? 0.7 : 0.35)
             .attr("stroke-width", d => d.target.data.kind === "firewall" ? 2.2 : 1.3)
             .attr("d", diagonal)
           .merge(link)
@@ -1082,6 +1141,27 @@ function renderTree(data) {
     const svgEl0 = svg.node();
     const originX = Math.round((svgEl0 && svgEl0.clientWidth ? svgEl0.clientWidth : 1000) * 0.42);
     svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(originX, height / 2));
+
+    // Switch-group legend: a fixed overlay (outside the zoom group) keying the
+    // colour stripe drawn on each switch node to its switch-group.
+    const groupNames = (data.switch_groups || []).map(g => g.name).filter(Boolean);
+    if (groupNames.length) {
+        const lg = svg.append("g").attr("class", "group-legend").attr("transform", "translate(14,14)");
+        lg.append("rect")
+            .attr("x", -8).attr("y", -8).attr("width", 176).attr("height", 20 + groupNames.length * 16)
+            .attr("rx", 6).attr("fill", "rgba(12,15,20,0.82)").attr("stroke", "rgba(255,255,255,0.08)");
+        lg.append("text").attr("x", 0).attr("y", 5)
+            .attr("fill", "rgba(255,255,255,0.6)").attr("font-size", "10px")
+            .text(tt("topo.switch_groups"));
+        groupNames.forEach((name, idx) => {
+            const row = lg.append("g").attr("transform", `translate(0,${20 + idx * 16})`);
+            row.append("rect").attr("x", 0).attr("y", -8).attr("width", 10).attr("height", 10)
+                .attr("rx", 2).attr("fill", groupColor(name));
+            row.append("text").attr("x", 16).attr("y", 1)
+                .attr("fill", "#d1d5db").attr("font-size", "10px")
+                .text(name.length > 23 ? name.slice(0, 22) + "…" : name);
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1864,7 +1944,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const params = new URLSearchParams(location.search);
     const sel = document.getElementById("topoSelect");
     if (sel && params.get("fw")) sel.value = params.get("fw");
-    if (params.get("embed") === "1") document.body.classList.add("topo-embed");
+    if (params.get("embed") === "1") {
+        document.body.classList.add("topo-embed");
+        // With the chrome gone, grow the canvas to fill the iframe/viewport.
+        const el = document.getElementById("topoSvg");
+        const fit = () => el && el.setAttribute("height", Math.max(300, window.innerHeight));
+        fit();
+        // Debounce: a resize drag fires continuously, but re-fit + reset only
+        // needs to run once the size settles.
+        let resizeT;
+        window.addEventListener("resize", () => {
+            clearTimeout(resizeT);
+            resizeT = setTimeout(() => { fit(); resetZoom(); }, 150);
+        });
+    }
     const refresh = Number(params.get("refresh") || 0);
     if (refresh >= 5) setInterval(loadTopology, refresh * 1000);
     loadTopology();
