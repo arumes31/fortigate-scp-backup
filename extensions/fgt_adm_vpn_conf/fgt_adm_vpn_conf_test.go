@@ -2,10 +2,12 @@ package fgtadmvpnconf
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestIndexTemplateRenders parses the embedded templates and renders the index
@@ -141,6 +143,68 @@ func TestBuildRemovalCommands(t *testing.T) {
 	}
 }
 
+// TestListGraylogIssuesFiltersByAge verifies the dashboard card only lists
+// devices that have been unhealthy for at least graylogIssueMinAge (24h),
+// matching the alert threshold, and excludes recent/healthy/streak-unknown rows.
+func TestListGraylogIssuesFiltersByAge(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := openDB(filepath.Join(dataDir, "fgt-adm-vpn-conf-db.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	old := formatDBTime(now.Add(-25 * time.Hour))
+	recent := formatDBTime(now.Add(-1 * time.Hour))
+
+	cases := []struct {
+		fw, status, since string
+		enabled           int
+		wantListed        bool
+	}{
+		{"old-offline", "offline", old, 1, true},           // unhealthy > 24h
+		{"old-error", "error", old, 1, true},               // any unhealthy state counts
+		{"recent-offline", "offline", recent, 1, false},    // unhealthy < 24h
+		{"online", "online", "", 1, false},                 // healthy
+		{"unhealthy-no-streak", "offline", "", 1, false},   // streak start unknown
+		{"disabled-old-offline", "offline", old, 0, false}, // graylog disabled
+	}
+	for i, c := range cases {
+		var since any
+		if c.since != "" {
+			since = c.since
+		}
+		if _, err := db.Exec(
+			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+			 graylog_enabled, last_graylog_status, graylog_unhealthy_since)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			"cust", "site", fmt.Sprintf("10.105.1.%d", i+1), c.fw, "123",
+			c.enabled, c.status, since); err != nil {
+			t.Fatalf("insert %s: %v", c.fw, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	issues, err := ListGraylogIssues(dataDir)
+	if err != nil {
+		t.Fatalf("ListGraylogIssues: %v", err)
+	}
+	got := map[string]bool{}
+	for _, is := range issues {
+		got[is.Firewall] = true
+	}
+	for _, c := range cases {
+		if got[c.fw] != c.wantListed {
+			t.Errorf("device %q listed=%v, want %v", c.fw, got[c.fw], c.wantListed)
+		}
+	}
+}
+
 // TestMigrations verifies a legacy database (missing the newer columns) is
 // migrated in place and the cid backfill runs (#91).
 func TestMigrations(t *testing.T) {
@@ -171,7 +235,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Newer columns must now be selectable.
-	for _, col := range []string{"cid", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check"} {
+	for _, col := range []string{"cid", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since"} {
 		if !columnExists(db, col) {
 			t.Errorf("column %q missing after migration", col)
 		}
