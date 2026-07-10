@@ -135,8 +135,12 @@ function switchIdMatch(sw, ref) {
     for (const id of [sw.switch_id, sw.name, sw.serial]) {
         if (id && String(id).trim().toUpperCase() === r) return true;
     }
+    // Serial-suffix fallback: require BOTH strings to be ≥8 chars so a short
+    // reference (e.g. a bare port or a 3-char tail) cannot false-match a
+    // serial's ending. This mirrors the ≥8-char fragment guard the trunk-peer
+    // resolver uses.
     const ser = String(sw.serial || sw.switch_id || "").trim().toUpperCase();
-    return ser.length >= 8 && (ser.endsWith(r) || r.endsWith(ser));
+    return ser.length >= 8 && r.length >= 8 && (ser.endsWith(r) || r.endsWith(ser));
 }
 
 // resolveSwitchName maps an inventory switch reference (name, switch-id or
@@ -1946,7 +1950,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const el = document.getElementById("topoSvg");
         const fit = () => el && el.setAttribute("height", Math.max(300, window.innerHeight));
         fit();
-        window.addEventListener("resize", () => { fit(); resetZoom(); });
+        // Debounce: a resize drag fires continuously, but re-fit + reset only
+        // needs to run once the size settles.
+        let resizeT;
+        window.addEventListener("resize", () => {
+            clearTimeout(resizeT);
+            resizeT = setTimeout(() => { fit(); resetZoom(); }, 150);
+        });
     }
     const refresh = Number(params.get("refresh") || 0);
     if (refresh >= 5) setInterval(loadTopology, refresh * 1000);
