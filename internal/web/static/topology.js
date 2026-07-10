@@ -716,14 +716,21 @@ function buildTree(data) {
             .sort((a, b) => portNum(a[0]) - portNum(b[0]) || (a[0] < b[0] ? -1 : 1))
             .map(([port, devs]) => {
                 const p = portCfg[port];
-                const vlan = (p && p.vlan) || (devs[0] && devs[0].vlan ? String(devs[0].vlan) : "");
+                const nativeVlan = p && p.vlan ? String(p.vlan) : "";
+                // An 802.1x port holds clients on its native (onboarding) VLAN
+                // until they authenticate, then dynamically moves them to their
+                // assigned VLAN. Label/colour the port by the client's effective
+                // VLAN (from the device record), falling back to the native VLAN.
+                const devVlan = devs.map(d => (d.vlan == null ? "" : String(d.vlan))).find(v => v !== "") || "";
+                const vlan = devVlan || nativeVlan;
                 const col = vlan ? vlanColor(vlan) : null;
                 const mm = topoMultiMacIdx[swName(sw) + "|" + port];
                 const st = topoStpIdx[swName(sw) + "|" + port];
                 return {
-                    name: port, kind: "port", data: { port, vlan, ports: p ? [p] : [] },
+                    name: port, kind: "port", data: { port, vlan, nativeVlan, ports: p ? [p] : [] },
                     info: `Port ${port}` +
                         (vlan ? `\nVLAN: ${vlan}` : "") +
+                        (nativeVlan && nativeVlan !== vlan ? `\nNative VLAN: ${nativeVlan}` : "") +
                         (p && taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
                         (mm ? `\n⚠ ${mm} MACs — ${tt("topo.multi_mac")}` : "") +
                         (st && st.blocked ? `\n⃠ ${tt("topo.stp_blocked")}` : "") +
@@ -1006,9 +1013,11 @@ function renderTree(data) {
             .transition().duration(220).attr("d", diagonal);
         link.exit().remove();
 
-        // Switch interlinks: orthogonal edges anchored at per-port stubs on
-        // the switch nodes' right edges (like the FortiGate GUI). Each link
-        // gets its own vertical lane so parallel links do not overlap.
+        // Switch interlinks: orthogonal edges anchored at per-port stubs on the
+        // switch nodes' LEFT edges (the uplink-facing side) so they route
+        // through the parent column instead of overlapping the port → device
+        // subtree that now grows to the right. Each link gets its own vertical
+        // lane so parallel links do not overlap.
         const swPos = {};
         nodes.forEach(d => { if (d.data.kind === "switch") swPos[d.data.name] = d; });
         // Skip pairs already connected by a tree edge (uplink-nested switches).
@@ -1034,7 +1043,7 @@ function renderTree(data) {
                 const step = Math.min(12, 30 / Math.max(1, ports.length - 1) || 12);
                 ports.forEach((p, i) => {
                     const y = d.x - ((ports.length - 1) * step) / 2 + i * step;
-                    const s = { sw, port: p, x: d.y + 75, y };
+                    const s = { sw, port: p, x: d.y - 75, y };
                     stubList.push(s);
                     stubPos[sw + "|" + p] = s;
                 });
@@ -1045,16 +1054,16 @@ function renderTree(data) {
         const anchor = (sw, ports) => {
             const d = swPos[sw];
             const pts = (ports || []).map(p => stubPos[sw + "|" + p]).filter(Boolean);
-            if (!pts.length) return { x: d.y + 75, y: d.x };
+            if (!pts.length) return { x: d.y - 75, y: d.x };
             return { x: pts[0].x, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
         };
-        // Orthogonal route: out of A, right to the link's lane, vertical,
-        // left/right into B. Lanes sit right of the deeper node, one per link.
+        // Orthogonal route: out of A's left edge to the link's lane, vertical,
+        // then into B. Lanes sit left of the shallower node, one per link.
         const laneOf = {};
         activeLinks.forEach((l, i) => { laneOf[linkKey(l)] = i; });
         const laneX = l => {
             const a = swPos[l.from], b = swPos[l.to];
-            return Math.max(a.y, b.y) + 75 + 26 + laneOf[linkKey(l)] * 12;
+            return Math.min(a.y, b.y) - 75 - 26 - laneOf[linkKey(l)] * 12;
         };
         const interPath = l => {
             const p1 = anchor(l.from, l.from_ports), p2 = anchor(l.to, l.to_ports);
@@ -1074,12 +1083,12 @@ function renderTree(data) {
             .style("pointer-events", "none")
             .attr("transform", s => `translate(${s.x},${s.y})`);
         stubEnter.append("rect")
-            .attr("x", 0).attr("y", -5).attr("width", 22).attr("height", 10)
+            .attr("x", -22).attr("y", -5).attr("width", 22).attr("height", 10)
             .attr("rx", 3)
             .attr("fill", "#1c1917").attr("stroke", "#f59e0b").attr("stroke-width", 1)
             .attr("stroke-opacity", 0.7);
         stubEnter.append("text")
-            .attr("x", 11).attr("y", 3)
+            .attr("x", -11).attr("y", 3)
             .attr("text-anchor", "middle")
             .attr("fill", "#fde68a").attr("font-size", "7.5px").attr("font-family", "monospace")
             .text(s => String((/\d+/.exec(s.port) || [s.port])[0]));
