@@ -44,6 +44,10 @@ type VpnConfig struct {
 	ClusterHostnames  string
 	LastGraylogStatus string
 	LastGraylogCheck  *time.Time
+	// LastGraylogUnhealthySince marks when the current unhealthy streak began
+	// (nil while healthy). Used to surface only devices failing long enough to
+	// match the alert threshold. See graylogStatusUnhealthy.
+	LastGraylogUnhealthySince *time.Time
 }
 
 // NextGraylogCheck is the approximate UTC time of this device's next Graylog
@@ -78,7 +82,8 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS vpn_config (
 	graylog_enabled BOOLEAN DEFAULT 1,
 	cluster_hostnames VARCHAR(255),
 	last_graylog_status VARCHAR(20) DEFAULT 'unknown',
-	last_graylog_check DATETIME
+	last_graylog_check DATETIME,
+	graylog_unhealthy_since DATETIME
 )`
 
 // migrations is the same idempotent list the Python run_migrations() applied, in
@@ -92,6 +97,7 @@ var migrations = []struct {
 	{"last_graylog_status", "ALTER TABLE vpn_config ADD COLUMN last_graylog_status VARCHAR(20) DEFAULT 'unknown'"},
 	{"cid", "ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"},
 	{"last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"},
+	{"graylog_unhealthy_since", "ALTER TABLE vpn_config ADD COLUMN graylog_unhealthy_since DATETIME"},
 }
 
 // openDB opens the private SQLite database. A single connection serialises
@@ -172,7 +178,7 @@ const selectCols = `id,
 	COALESCE(cid,''), COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,''),
 	COALESCE(radiusmgt,''), COALESCE(dns_name_full,''), COALESCE(graylog_enabled,1),
 	COALESCE(cluster_hostnames,''), COALESCE(last_graylog_status,'unknown'),
-	last_graylog_check`
+	last_graylog_check, graylog_unhealthy_since`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -182,12 +188,12 @@ type rowScanner interface {
 func scanConfig(s rowScanner) (*VpnConfig, error) {
 	var c VpnConfig
 	var glEnabled int64
-	var lastCheck any
+	var lastCheck, unhealthySince any
 	err := s.Scan(
 		&c.ID, &c.Kundenname, &c.Standort, &c.RemoteipFull, &c.RemoteipFull1st,
 		&c.Ike2Username, &c.WanInterface, &c.LanInterface, &c.DnsName, &c.Firewallname,
 		&c.Cid, &c.IpsecPskRo, &c.IpsecPskHci, &c.Radiusmgt, &c.DnsNameFull,
-		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck,
+		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck, &unhealthySince,
 	)
 	if err != nil {
 		return nil, err
@@ -195,6 +201,9 @@ func scanConfig(s rowScanner) (*VpnConfig, error) {
 	c.GraylogEnabled = glEnabled != 0
 	if t, ok := parseDBTime(lastCheck); ok {
 		c.LastGraylogCheck = &t
+	}
+	if t, ok := parseDBTime(unhealthySince); ok {
+		c.LastGraylogUnhealthySince = &t
 	}
 	return &c, nil
 }
@@ -430,11 +439,17 @@ func (e *Extension) findIDByRemoteip(ip string) (int64, bool, error) {
 	return id, true, nil
 }
 
-// updateGraylogStatus persists a worker check result.
-func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string) error {
+// updateGraylogStatus persists a worker check result. unhealthySince is the
+// start of the current unhealthy streak (nil while healthy), stored as NULL so
+// the dashboard can filter on how long a device has been failing.
+func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string, unhealthySince *time.Time) error {
+	var since any
+	if unhealthySince != nil {
+		since = formatDBTime(*unhealthySince)
+	}
 	_, err := e.db.Exec(
-		"UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ? WHERE id = ?",
-		formatDBTime(checkedAt), status, id)
+		"UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ?, graylog_unhealthy_since = ? WHERE id = ?",
+		formatDBTime(checkedAt), status, since, id)
 	return err
 }
 

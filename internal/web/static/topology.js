@@ -362,10 +362,25 @@ function buildTree(data) {
     });
     topoInterlinks = interlinks;
 
+    // Ports that carry a switch↔switch link (interlink endpoints + trunk-type
+    // ports). Any other port is an edge/access port facing hosts, where a
+    // transient STP discarding/blocking state is normal port-transition noise
+    // rather than a loop being broken (see blocked below).
+    const interSwitchPorts = new Set();
+    (interlinks || []).forEach(l => {
+        (l.from_ports || []).forEach(p => interSwitchPorts.add(l.from + "|" + p));
+        (l.to_ports || []).forEach(p => interSwitchPorts.add(l.to + "|" + p));
+    });
+    switches.forEach(sw => (sw.ports || []).forEach(p => {
+        if (p.type === "trunk") interSwitchPorts.add(swName(sw) + "|" + p.name);
+    }));
+
     // STP/guard/link overlay: latest status per port, keyed by the switch's
-    // tree node name. A port counts as blocked when STP put it out of
-    // forwarding (discarding/blocking state, alternate/backup/disabled role)
-    // or a BPDU/loop/root guard triggered.
+    // tree node name. A port counts as blocked when a BPDU/loop/root guard
+    // triggered, or STP put an inter-switch link out of forwarding
+    // (alternate/backup/disabled role, or discarding/blocking state). The
+    // discarding/blocking STATE is ignored on edge (access) ports, where it is
+    // not a loop event worth flagging.
     const dispName = ref => resolveSwitchName(switches, ref) || ref;
     topoStpIdx = {};
     (topoStp || []).forEach(s => {
@@ -373,10 +388,11 @@ function buildTree(data) {
             resolveSwitchName(switches, s.serial) || s.switch_name;
         const state = (s.state || "").toLowerCase();
         const role = (s.role || "").toLowerCase();
+        const isEdge = !interSwitchPorts.has(disp + "|" + s.port);
         topoStpIdx[disp + "|" + s.port] = {
             role: s.role, state: s.state, guard: s.guard, link: s.link, last: s.last_change,
-            blocked: !!s.guard || state === "discarding" || state === "blocking" ||
-                role === "alternate" || role === "backup" || role === "disabled"
+            blocked: !!s.guard || role === "alternate" || role === "backup" || role === "disabled" ||
+                (!isEdge && (state === "discarding" || state === "blocking"))
         };
     });
     // Port event history (48h), newest first per port.
@@ -801,9 +817,10 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        // Collapse port/route/VLAN/VPN groups by default to keep the initial
-        // view tidy (their devices/details expand on click).
-        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup") d.children = null;
+        // Collapse port/route/VLAN/VPN groups and the general (unattributed)
+        // device list by default to keep the initial view tidy (their
+        // devices/details expand on click).
+        if (d.data.kind === "port" || d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" || d.data.kind === "lan") d.children = null;
     });
 
     gRoot = svg.append("g");
