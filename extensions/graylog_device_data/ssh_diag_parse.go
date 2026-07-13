@@ -884,3 +884,63 @@ func buildDiagPorts(sw diagSwitch, portStatsOut, stpOut, portPropsOut, poeOut, m
 	}
 	return out, edges
 }
+
+// parseWtpStatus parses `get wireless-controller wtp-status` into per-AP location
+// records. Each managed FortiAP block ("WTP: <name> …") carries its serial
+// (wtp-id), name, board MAC and CAPWAP IP; the AP's embedded LLDP report names
+// the FortiSwitch it is wired to (sys name) and the switch port (port id) — the
+// AP↔port pin nothing else exposes, since an AP has no wired device row. LLDP is
+// on by default in FortiAP profiles, so this is populated on a standard fabric.
+// The first "sys name"/"port id" per block is the wired uplink neighbor.
+func parseWtpStatus(out string) []ApLocation {
+	var res []ApLocation
+	var cur *ApLocation
+	flush := func() {
+		if cur != nil && cur.Serial != "" {
+			res = append(res, *cur)
+		}
+		cur = nil
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "WTP:") {
+			flush()
+			cur = &ApLocation{}
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		k, v, ok := strings.Cut(t, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(strings.ToLower(k))
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		switch k {
+		case "wtp-id":
+			cur.Serial = v
+		case "name":
+			if cur.Name == "" {
+				cur.Name = v
+			}
+		case "board-mac":
+			cur.BoardMac = strings.ToLower(v)
+		case "local-ip-addr":
+			cur.IP = v
+		case "sys name": // LLDP neighbor: the wired upstream FortiSwitch
+			if cur.Switch == "" {
+				cur.Switch = v
+			}
+		case "port id": // LLDP neighbor: the switch port the AP is wired to
+			if cur.Port == "" {
+				cur.Port = strings.Fields(v)[0] // first token strips any "(ifname)" suffix
+			}
+		}
+	}
+	flush()
+	return res
+}

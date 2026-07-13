@@ -29,6 +29,8 @@ let topoSwitchHealth = []; // per-switch fan/congestion/tcn/poe health (SSH)
 let topoLiveRoutes = [];   // live routing egress summary: device → {routes, default} (SSH)
 let topoSdwan = [];        // per-member SD-WAN SLA: {member, state, loss, latency, jitter} (SSH)
 let topoThroughput = [];   // per-interface live throughput {iface, rx_mbps, tx_mbps} (SSH)
+let topoApLocations = [];  // FortiAP → wired switch/port pin {serial, name, switch, port} (SSH wtp-status)
+let topoDualHomed = [];    // devices on 2+ switches at once {mac, attachments:[{switch, port}]}
 let topoDiagStatus = null; // last SSH collection status {last_run, switches, duration_ms, static}
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
@@ -37,7 +39,7 @@ let topoUpdate = null;  // update(source) closure of the current render
 let svg, gRoot, zoomBehavior;
 
 // View filters (toolbar checkboxes); toggling re-renders the tree.
-let topoFilters = { devices: true, routes: true, vlans: true, edge: true };
+let topoFilters = { devices: true, routes: true, vlans: true, edge: true, hideStale: false };
 function setTopoFilter(key, val) {
     topoFilters[key] = val;
     if (topo && topo.has_config) renderTree(topo);
@@ -324,7 +326,11 @@ function buildTree(data) {
     let switchesHosted = false; // set when an interface node adopts the stack
 
     // Graylog device inventory: assign each device to its switch / VLAN group.
-    const devices = topoFilters.devices ? (topoDevices || []) : [];
+    // "Hide stale" drops devices unseen >24h from the tree entirely (they are
+    // faded, not hidden, when the toggle is off).
+    const devices = topoFilters.devices
+        ? (topoDevices || []).filter(d => !(topoFilters.hideStale && isStaleDevice(d)))
+        : [];
     const singleSwitch = switches.length === 1;
     const assigned = new Set();
 
@@ -398,6 +404,24 @@ function buildTree(data) {
         const tp = sw && (sw.ports || []).find(p => p.name === trunkName && (p.members || []).length);
         return tp ? tp.members : [];
     };
+    // LLDP neighbor → managed switch. FortiLink inter-switch trunks are named
+    // _FlInK…, hiding the peer in the trunk name, but LLDP neighbor detail reports
+    // the peer's chassis per physical port. Resolve that chassis (a name or, on
+    // FortiSwitch, its base MAC) to a managed switch — by name/serial first, then
+    // via the port-MAC ownership range (the base/chassis MAC sits in that range).
+    const lldpSwitch = ref => {
+        if (!ref) return null;
+        const byName = resolveSwitchName(switches, ref);
+        if (byName) return byName;
+        const own = macOwner(String(ref).toLowerCase());
+        return own ? own.sw : null;
+    };
+    const lldpByPort = {}; // "switchDisp|port" → neighbor chassis ref
+    (topoStp || []).forEach(s => {
+        if (!s.neighbor || !s.port) return;
+        const disp = resolveSwitchName(switches, s.switch_name) || resolveSwitchName(switches, s.serial) || s.switch_name;
+        lldpByPort[disp + "|" + s.port] = s.neighbor;
+    });
     const iclOwners = {}; // ICL trunk name → owners; exactly two = MC-LAG peer pair
     (topoEdges || []).forEach(g => {
         const from = resolveSwitchName(switches, g.switch_sn) || resolveSwitchName(switches, g.switch_name);
@@ -407,9 +431,12 @@ function buildTree(data) {
             (iclOwners[g.trunk] = iclOwners[g.trunk] || []).push({ from: from, ports: iclPorts, note: g.note || "" });
             return;
         }
-        const to = trunkPeer(g.trunk);
-        if (!to || to === from) return;
         const members = (g.ports && g.ports.length) ? g.ports : trunkMembers(from, g.trunk);
+        // _FlInK… trunks hide the peer in the trunk name; resolve it from the LLDP
+        // neighbor seen on the member ports (STP role still gives the direction).
+        let to = trunkPeer(g.trunk);
+        if (!to) to = members.map(p => lldpSwitch(lldpByPort[from + "|" + p])).find(Boolean) || null;
+        if (!to || to === from) return;
         addInterlink(interlinks, {
             from: from, from_ports: members.length ? members : [g.trunk],
             to: to, to_ports: [],
@@ -431,6 +458,19 @@ function buildTree(data) {
             blocked: /split-brain/i.test(iclNote) // split-brain = degraded MC-LAG, flag red
         });
     });
+    // Pure LLDP inter-switch edges: any physical port whose LLDP neighbor is a
+    // managed switch is an interlink. On FortiLink fabrics this is often the only
+    // signal that survives the _FlInK… trunk names — it draws the link, nests the
+    // tree (by tier) and marks the interlink ports even where the STP-trunk pass
+    // could not resolve a peer. Runs last so a richer STP/ICL kind + parent wins
+    // on merge; direction is contributed by the STP-root pass above.
+    (topoStp || []).forEach(s => {
+        if (!s.neighbor || !/^port\d+$/i.test(s.port || "")) return;
+        const from = resolveSwitchName(switches, s.switch_name) || resolveSwitchName(switches, s.serial) || s.switch_name;
+        const to = lldpSwitch(s.neighbor);
+        if (!from || !to || to === from) return;
+        addInterlink(interlinks, { from: from, from_ports: [s.port], to: to, to_ports: [], kind: "lldp" });
+    });
     topoInterlinks = interlinks;
 
     // Ports that carry a switch↔switch link (interlink endpoints + trunk-type
@@ -448,10 +488,13 @@ function buildTree(data) {
 
     // STP/guard/link overlay: latest status per port, keyed by the switch's
     // tree node name. A port counts as blocked when a BPDU/loop/root guard
-    // triggered, or STP put an inter-switch link out of forwarding
-    // (alternate/backup/disabled role, or discarding/blocking state). The
-    // discarding/blocking STATE is ignored on edge (access) ports, where it is
-    // not a loop event worth flagging.
+    // fired (real even on an access port), or STP put an INTER-SWITCH link out of
+    // forwarding (alternate/backup/disabled role, or discarding/blocking state).
+    // All STP role/state blocks are gated to inter-switch ports: on an edge
+    // (access) port these are normal client churn — a laptop undocking or sleeping
+    // drops the link, so STP shows role "disabled"/state "discarding". Flagging
+    // that as a blocked loop made every access port blink orange when its client
+    // went away; only a fired guard blocks an edge port now.
     const dispName = ref => resolveSwitchName(switches, ref) || ref;
     topoStpIdx = {};
     (topoStp || []).forEach(s => {
@@ -465,8 +508,9 @@ function buildTree(data) {
             // Live SSH-diagnostics enrichment (empty when only Graylog is the source).
             dot1x: s.dot1x, media: s.media, speed: s.speed, admin: s.admin,
             poe: s.poe, optic: s.optic, health: s.health, neighbor: s.neighbor,
-            blocked: !!s.guard || role === "alternate" || role === "backup" || role === "disabled" ||
-                (!isEdge && (state === "discarding" || state === "blocking"))
+            isEdge: isEdge,
+            blocked: !!s.guard || (!isEdge && (role === "alternate" || role === "backup" ||
+                role === "disabled" || state === "discarding" || state === "blocking"))
         };
     });
     // Port event history (48h), newest first per port.
@@ -569,20 +613,25 @@ function buildTree(data) {
     }
     const nacFeature = f => f === "nac" || f === "nac-segment";
 
-    // apGroupNode renders the managed FortiAPs with their SSIDs.
+    // apGroupNode renders the managed FortiAPs with their SSIDs and the wireless
+    // clients currently associated to each AP. Clients are matched on the AP
+    // identifier the wireless logs carry (device.ap): the AP's configured name
+    // when one is set, otherwise its serial — the wtp entry key. Both forms are
+    // accepted because an unnamed AP logs its serial where a named one logs its
+    // name. APs do not appear in the wired device inventory under their own name,
+    // so this association (not a switch-port pin) is what surfaces their clients.
     function apGroupNode() {
         const aps = data.aps || [];
         if (!aps.length) return null;
+        const clientsOfAp = ap => devices.filter(dv =>
+            dv.ap && (dv.ap === ap.name || dv.ap === ap.wtp_id));
         return {
             name: tt("topo.aps"), kind: "apgroup",
             info: `${aps.length} FortiAP`,
             badge: String(aps.length),
-            children: aps.map(ap => ({
-                name: ap.name || ap.wtp_id, kind: "ap", data: ap,
-                info: `FortiAP${ap.platform ? " " + ap.platform : ""}\n${tt("topo.serial")}: ${ap.wtp_id}` +
-                    (ap.profile ? `\n${tt("topo.profile")}: ${ap.profile}` : ""),
-                badge: ap.platform ? "FAP-" + ap.platform : null,
-                children: (ap.ssids || []).map(name => {
+            children: aps.map(ap => {
+                const clients = clientsOfAp(ap);
+                const ssidKids = (ap.ssids || []).map(name => {
                     const s = ssidByName[name] || { name: name, ssid: name };
                     return {
                         name: s.ssid || s.name, kind: "ssid", data: s,
@@ -591,8 +640,17 @@ function buildTree(data) {
                             (s.security ? `\n${tt("topo.security")}: ${s.security}` : ""),
                         badge: s.vlan_id ? "VLAN " + s.vlan_id : null
                     };
-                })
-            }))
+                });
+                return {
+                    name: ap.name || ap.wtp_id, kind: "ap", data: ap,
+                    info: `FortiAP${ap.platform ? " " + ap.platform : ""}\n${tt("topo.serial")}: ${ap.wtp_id}` +
+                        (ap.profile ? `\n${tt("topo.profile")}: ${ap.profile}` : "") +
+                        (clients.length ? `\n📶 ${clients.length} ${tt("topo.wifi_clients")}` : ""),
+                    badge: [ap.platform ? "FAP-" + ap.platform : null,
+                        clients.length ? "📶 " + clients.length : null].filter(Boolean).join(" · ") || null,
+                    children: [...ssidKids, ...clients.map(deviceNode)]
+                };
+            })
         };
     }
 
@@ -932,11 +990,12 @@ function renderTree(data) {
     const root = d3.hierarchy(buildTree(data));
     root.descendants().forEach(d => {
         d._children = d.children;
-        // Collapse route/VLAN/VPN groups and the general (unattributed) device
-        // list by default to keep the initial view tidy. Per-switch port nodes
-        // stay expanded so each switch shows its clients as switch → port →
-        // device with VLAN-coloured links.
-        if (d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" || d.data.kind === "lan") d.children = null;
+        // Collapse the busy leaf groups by default so the initial view is a tidy
+        // topology map: route/VLAN/VPN groups, the unattributed device list, and —
+        // the bulk of the clutter — each switch port's pinned devices and each
+        // access point's SSIDs. Click a port or AP to drill into it.
+        if (d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" ||
+            d.data.kind === "lan" || d.data.kind === "port" || d.data.kind === "ap") d.children = null;
     });
 
     gRoot = svg.append("g");
@@ -1348,6 +1407,7 @@ function renderDevicePanel() {
             <span style="color: #a5f3fc; min-width: 130px; font-family: monospace;">${esc(d.mac)}</span>
             <span style="min-width: 110px;">${esc(d.ip || "—")}</span>
             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${esc(d.hostname || "—")}</span>
+            ${sourceBadges(d.sources)}
             <span class="muted">VLAN ${esc(String(d.vlan || "—"))}</span>
             <span class="muted">${esc(d.switch_id || "")}${d.port ? " · " + esc(d.port) : ""}</span>
             ${stale ? `<span style="color: #f59e0b;">⏱ ${tt("topo.stale")}</span>` : ""}
@@ -1444,9 +1504,16 @@ function portCellSVG(p, idx, x, y, cell) {
     // Guard glyph (BPDU / loop / root); AP ports show the WiFi client bubble.
     const guardGlyph = p.guardKind
         ? `<text x="${x + cell / 2}" y="${y + 13}" text-anchor="middle" font-size="9">${p.guardKind === "bpdu-guard" ? "⛔" : (p.guardKind === "loop-guard" ? "↻" : "🛡")}</text>`
-        : (p.wifiCount ? `<text x="${x + cell / 2}" y="${y + 12}" text-anchor="middle" fill="#7dd3fc" font-size="8" font-family="monospace">📶${p.wifiCount > 9 ? "9+" : p.wifiCount}</text>` : "");
-    // 802.1X: configured = cyan; live authorized = green; unauthorized = red.
+        : ((p.wifiCount || p.isAp) ? `<text x="${x + cell / 2}" y="${y + 12}" text-anchor="middle" fill="#7dd3fc" font-size="8" font-family="monospace">📶${p.wifiCount ? (p.wifiCount > 9 ? "9+" : p.wifiCount) : ""}</text>` : "");
+    // 802.1X: a live authorized session shows a closed lock 🔒, an unauthorized/
+    // failed one an open lock 🔓 (matching the legend); a port that merely has an
+    // 802.1X policy configured (no live session state) keeps the small cyan square.
     const dot1xCol = p.dot1xState === "authorized" ? "#22c55e" : (p.dot1xState === "unauthorized" ? "#ef4444" : "#38bdf8");
+    const dot1xGlyph = p.dot1xState === "authorized"
+        ? `<text x="${x + cell - 7}" y="${y + 11}" text-anchor="middle" font-size="8.5">🔒</text>`
+        : p.dot1xState === "unauthorized"
+            ? `<text x="${x + cell - 7}" y="${y + 11}" text-anchor="middle" font-size="8.5">🔓</text>`
+            : (p.dot1x ? `<rect x="${x + cell - 11}" y="${y + 4}" width="7" height="7" rx="1.5" fill="${dot1xCol}"/>` : "");
     // allowed-vlans-all: tri-color micro stripe above the native VLAN stripe.
     const seg = (cell - 16) / 3;
     const rainbow = p.allowedAll
@@ -1457,6 +1524,8 @@ function portCellSVG(p, idx, x, y, cell) {
     const uplink = p.isUplink ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">▲</text>` : "";
     const icl = p.isIcl ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">⫘</text>` : "";
     const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
+    // Dual-homed device (server LAG'd across two switches): a cyan ⇈ over the port.
+    const dualHomed = p.isDualHomed ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="#22d3ee" font-size="9" font-family="monospace">⇈</text>` : "";
     // HA heartbeat interface (firewall faceplate): a rose heart over the cell.
     const haHb = p.haHeartbeat ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#fb7185" font-size="9">♥</text>` : "";
     // Live SSH health: a static red ring marks a port with nonzero error/collision
@@ -1474,12 +1543,12 @@ function portCellSVG(p, idx, x, y, cell) {
         <rect x="${x + 8}" y="${y + cell - 11}" width="${cell - 16}" height="6" rx="1.5" fill="${col}" opacity="0.85"/>
         ${rainbow}
         <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${led}">${p.stpBlocked ? `<animate attributeName="opacity" values="1;0.15;1" dur="0.9s" repeatCount="indefinite"/>` : ""}</circle>
-        ${p.dot1x || p.dot1xState ? `<rect x="${x + cell - 11}" y="${y + 4}" width="7" height="7" rx="1.5" fill="${dot1xCol}"/>` : ""}
+        ${dot1xGlyph}
         ${p.nac ? `<rect x="${x + cell - 21}" y="${y + 4}" width="7" height="7" rx="1.5" fill="#34d399"/><text x="${x + cell - 17.5}" y="${y + 10}" text-anchor="middle" fill="#022c22" font-size="6" font-weight="bold" font-family="monospace">N</text>` : ""}
         ${guardGlyph}
         ${multiMac}
         ${devBadge}
-        ${uplink}${icl}${quarantine}${haHb}${poeGlyph}
+        ${uplink}${icl}${quarantine}${dualHomed}${haHb}${poeGlyph}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -1541,7 +1610,7 @@ function faceplateLegend(kind) {
         ? [["#f97316", tt("topo.stp_blocked")], ["#f59e0b", tt("topo.interlink")], ["#8b5cf6", tt("topo.legend_vlan")], ["#38bdf8", "802.1X"], ["#4b5563", tt("topo.status_down")], ["#374151", tt("topo.legend_none")]]
         : [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
     const glyphs = kind === "switch"
-        ? `<div class="muted" style="margin-top: 6px; font-size: 0.78em;">▲ ${tt("topo.uplink")} · ⫘ ${tt("topo.icl")} · N ${tt("topo.nac")} · ☣ ${tt("topo.quarantine")} · 🔒/🔓 802.1X · ⛔↻🛡 Guard</div>`
+        ? `<div class="muted" style="margin-top: 6px; font-size: 0.78em;">▲ ${tt("topo.uplink")} · ⫘ ${tt("topo.icl")} · ⇈ ${tt("topo.dual_homed")} · N ${tt("topo.nac")} · ☣ ${tt("topo.quarantine")} · 🔒/🔓 802.1X · ⛔↻🛡 Guard</div>`
         : `<div class="muted" style="margin-top: 6px; font-size: 0.78em;"><span style="color:#22c55e;">●</span>/<span style="color:#ef4444;">●</span> ${tt("topo.led_admin")} · ♥ ${tt("topo.ha_heartbeat")}</div>`;
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 0.78em;">
         ${items.map(([c, t]) => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${c}; margin-right: 5px; vertical-align: -1px;"></span>${t}</span>`).join("")}
@@ -1596,6 +1665,33 @@ function buildSwitchFacePorts(sw) {
     const apOf = dv => ((topo && topo.aps) || []).find(a =>
         (a.name && dv.hostname && a.name.toLowerCase() === dv.hostname.toLowerCase()) ||
         (a.wtp_id && dv.hostname === a.wtp_id));
+    // FortiAP → switch-port pin from SSH wtp-status: each AP reports (via its own
+    // LLDP) the switch + port it is wired to, so an AP surfaces on its port even
+    // though it has no wired device row of its own — the only reliable AP↔port
+    // signal. wifi client count is matched on the AP name/serial the logs carry.
+    const apByPort = {};
+    (topoApLocations || []).forEach(a => {
+        if (a.port && (resolveSwitchName(allSw, a.switch) || a.switch) === swTitle) apByPort[a.port] = a;
+    });
+    const apClientCount = a => (topoDevices || []).filter(d2 =>
+        d2.ap && (d2.ap === a.name || d2.ap === a.serial)).length;
+    // Dual-homed devices (MAC on 2+ switches, e.g. a server LAG'd across the
+    // MC-LAG core pair): index this switch's attachment ports to the device and
+    // its peer attachment(s), so both switches mark the same server.
+    const dualByPort = {};
+    (topoDualHomed || []).forEach(dh => {
+        (dh.attachments || []).forEach(a => {
+            if ((resolveSwitchName(allSw, a.switch) || a.switch) !== swTitle) return;
+            dualByPort[a.port] = {
+                mac: dh.mac,
+                peers: (dh.attachments || []).filter(x => x !== a),
+            };
+        });
+    });
+    const hostOfMac = mac => {
+        const d = (topoDevices || []).find(x => x.mac === mac);
+        return d ? (d.hostname || d.ip || mac) : mac;
+    };
 
     return (sw.ports || []).map(p => {
         const st = topoStpIdx[swTitle + "|" + p.name];
@@ -1611,6 +1707,17 @@ function buildSwitchFacePorts(sw) {
                 wifiCount = (topoDevices || []).filter(d2 => d2.ap && (d2.ap === ap.name || d2.ap === ap.wtp_id)).length;
             }
         });
+        // Authoritative AP pin from wtp-status (LLDP) wins over the hostname guess.
+        const apHere = apByPort[p.name];
+        if (apHere) {
+            apName = apHere.name || apHere.serial;
+            wifiCount = apClientCount(apHere);
+        }
+        const dualHere = dualByPort[p.name];
+        const dualDetail = dualHere
+            ? `\n⇈ ${tt("topo.dual_homed")}: ${hostOfMac(dualHere.mac)} · ${tt("topo.also_on")} ` +
+              dualHere.peers.map(x => `${resolveSwitchName(allSw, x.switch) || x.switch} ${x.port}`).join(", ")
+            : "";
         const quarantine = /quarantine/i.test(p.vlan || "") || vlanIdOf(p.vlan) === 4093;
         const nac = p.access_mode === "nac" || p.access_mode === "dynamic";
         return {
@@ -1619,6 +1726,8 @@ function buildSwitchFacePorts(sw) {
             hasIP: false, isWan: false, isFortilink: false,
             isInterlink: !!inter[p.name],
             isIcl: !!interIcl[p.name],
+            isAp: !!apHere,
+            isDualHomed: !!dualHere,
             isUplink: uplinkPorts.has(p.name) || !!(st && st.role === "root"),
             isDown: p.status === "down" || (st && st.admin === "down"),
             adminShut: (st && st.admin === "down") || p.status === "down",
@@ -1661,6 +1770,7 @@ function buildSwitchFacePorts(sw) {
                 (multiMac ? `\n⚠ ${multiMac} MACs — ${tt("topo.multi_mac")}` : "") +
                 (devices.length ? `\n${tt("topo.port_devices")}: ${devices.length}` : "") +
                 (apName ? `\n📶 ${apName}${wifiCount ? " · " + wifiCount + " " + tt("topo.wifi_clients") : ""}` : "") +
+                dualDetail +
                 (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
                 (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
                 (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
@@ -1743,7 +1853,7 @@ function showFpPopover(anchor, p) {
         // 802.1X identity (RADIUS user + group) from the live SSH mac_enrich join.
         const dot1x = dv.dot1x_user ? `<br><span style="color:#7dd3fc;">🔒 ${esc(dv.dot1x_user)}${dv.dot1x_group ? " · " + esc(dv.dot1x_group) : ""}</span>` : "";
         return `<div class="fp-devrow" data-mac="${esc(dv.mac)}" style="cursor:pointer;padding:4px 6px;border-radius:5px;${stale ? "opacity:.5;" : ""}" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background=''">
-            <span style="color:#fff;">${esc(dv.hostname || dv.ip || dv.mac)}</span>${stale ? ` <span style="color:#9ca3af;">· ${tt("topo.stale")}</span>` : ""}
+            <span style="color:#fff;">${esc(dv.hostname || dv.ip || dv.mac)}</span> ${sourceBadges(dv.sources)}${stale ? ` <span style="color:#9ca3af;">· ${tt("topo.stale")}</span>` : ""}
             <div style="color:#9ca3af;font-family:monospace;font-size:11px;">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}${dot1x}</div>
         </div>`;
     }).join("");
@@ -1757,11 +1867,80 @@ function showFpPopover(anchor, p) {
     el.style.top = (rect.bottom + 8) + "px";
 }
 
+// sourceBadges renders tiny origin chips for a device: which data layer(s) it
+// came from — G = Graylog client logs, S = SSH (FortiSwitch MAC table + ARP/
+// 802.1X), C = config. Both G and S present = discovered in multiple sources.
+function sourceBadges(sources) {
+    const map = {
+        graylog: { l: "G", c: "#f59e0b", t: tt("topo.src_graylog") },
+        ssh:     { l: "S", c: "#22d3ee", t: tt("topo.src_ssh") },
+        config:  { l: "C", c: "#34d399", t: tt("topo.src_config") },
+    };
+    const chips = (sources || []).map(s => map[s]).filter(Boolean);
+    if (!chips.length) return "";
+    return `<span style="display:inline-flex; gap:2px; vertical-align:middle;">` + chips.map(m =>
+        `<span title="${m.t}" style="min-width:11px; text-align:center; font-size:0.64em; font-weight:bold; line-height:1.5; padding:0 2px; border-radius:2px; background:${m.c}22; color:${m.c}; border:1px solid ${m.c}66; font-family:monospace;">${m.l}</span>`
+    ).join("") + `</span>`;
+}
+
 function portDetailHTML(p) {
+    const cfg = window.TOPO_CONFIG || {};
+    // Live per-port diagnostics: only for a switch port in the authenticated view
+    // (the endpoint requires login; the public shared view has no devicesBase).
+    // Both names are validated to the safe alphabet before being inlined, which
+    // also mirrors the server-side ValidDiagName guard.
+    const nameOk = s => /^[A-Za-z0-9._-]+$/.test(s || "");
+    const canDiag = p._sw && cfg.devicesBase && !cfg.sharedDevicesUrl && nameOk(p._sw) && nameOk(p.label);
+    const diagBtn = canDiag
+        ? `<button onclick="runPortDiag(this, '${p._sw}', '${p.label}')" style="margin-top: 10px; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); border-radius: 4px; cursor: pointer; padding: 4px 10px; font-size: 0.85em;">⚡ ${tt("topo.run_diag")}</button>
+           <div class="port-diag-out"></div>`
+        : "";
     return `<div style="margin-top: 14px; padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.85em;">
         <strong style="color: #fff;">${esc(p.label)}</strong>
         <pre class="muted" style="margin: 6px 0 0; white-space: pre-wrap; font-size: 0.95em;">${esc(p.detail)}</pre>
+        ${diagBtn}
     </div>`;
+}
+
+// runPortDiag calls the live per-port diagnostics endpoint and renders the fresh
+// CLI output beneath the button. A 429 means the firewall's single SSH slot is
+// busy (a sweep or another query) — surfaced as a "try again" hint.
+async function runPortDiag(btn, sw, port) {
+    const cfg = window.TOPO_CONFIG || {};
+    const fwid = selectedFwID();
+    if (!cfg.devicesBase || !fwid) return;
+    const out = btn.parentElement.querySelector(".port-diag-out");
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = "⏳ " + tt("topo.diag_running");
+    if (out) out.innerHTML = "";
+    try {
+        const url = `${cfg.devicesBase}/port-diag/${fwid}?switch=${encodeURIComponent(sw)}&port=${encodeURIComponent(port)}`;
+        const resp = await fetch(url, { method: "POST" });
+        if (resp.status === 429) {
+            if (out) out.innerHTML = `<div style="color:#f59e0b; margin-top:8px; font-size:0.82em;">${tt("topo.diag_busy")}</div>`;
+            return;
+        }
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const pd = await resp.json();
+        if (out) out.innerHTML = renderPortDiag(pd);
+    } catch (e) {
+        if (out) out.innerHTML = `<div style="color:#ef4444; margin-top:8px; font-size:0.82em;">${tt("topo.diag_error")}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
+
+// renderPortDiag lays out the per-command sections of an on-demand port query.
+function renderPortDiag(pd) {
+    if (!pd || !pd.sections || !pd.sections.length) return `<div class="muted" style="margin-top:8px; font-size:0.82em;">${tt("topo.diag_none")}</div>`;
+    return `<div class="muted" style="font-size:0.78em; margin:8px 0 2px;">${tt("topo.diag_ran")}: ${esc(pd.ran || "")}</div>` +
+        pd.sections.map(s => `
+            <div style="margin-top:6px;">
+                <div style="color:${s.ok ? "#7dd3fc" : "#f59e0b"}; font-size:0.8em; font-weight:bold;">${esc(s.title)}</div>
+                <pre style="margin:2px 0 0; white-space:pre-wrap; font-size:0.76em; background:rgba(0,0,0,0.35); padding:6px 8px; border-radius:4px; overflow-x:auto;">${esc(s.output || "—")}</pre>
+            </div>`).join("");
 }
 
 // buildFirewallVpnPorts assembles the firewall's IPsec tunnels for the VPN
@@ -2064,9 +2243,28 @@ function showFaceplate(nodeData) {
     });
 
     topoFaceData = nodeData;
+    panel.style.width = topoFaceWide ? topoFaceWideWidth : "460px";
     panel.style.right = "0";
 }
-function closeFaceplate() { document.getElementById("facePanel").style.right = "-480px"; }
+// topoFaceWide widens the slide-in panel; the faceplate SVG is width:100%, so a
+// wider panel renders a larger front panel. max-width:90% (inline) keeps it on
+// screen, so a fixed wide width is safe on small viewports too.
+let topoFaceWide = false;
+const topoFaceWideWidth = "920px";
+function toggleFacePanelWidth() {
+    topoFaceWide = !topoFaceWide;
+    const panel = document.getElementById("facePanel");
+    panel.style.width = topoFaceWide ? topoFaceWideWidth : "460px";
+    panel.style.right = "0"; // keep it open while resizing
+    const btn = document.getElementById("faceWidthBtn");
+    if (btn) btn.textContent = topoFaceWide ? "⤡" : "⤢";
+}
+// Hide fully regardless of the current (possibly widened) width — offsetWidth
+// already reflects the max-width:90% clamp.
+function closeFaceplate() {
+    const panel = document.getElementById("facePanel");
+    panel.style.right = "-" + (panel.offsetWidth + 40) + "px";
+}
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -2089,10 +2287,16 @@ function selectedFwID() {
 // topology renders fine without it.
 async function loadDeviceData() {
     const cfg = window.TOPO_CONFIG || {};
-    const fwid = selectedFwID();
-    if (!cfg.devicesBase || !fwid) return null;
+    // Shared (public) view: a fixed per-token devices URL, no firewall selector.
+    // Authenticated view: the extension endpoint keyed by the selected firewall.
+    let url = cfg.sharedDevicesUrl;
+    if (!url) {
+        const fwid = selectedFwID();
+        if (!cfg.devicesBase || !fwid) return null;
+        url = cfg.devicesBase + "/data/" + fwid;
+    }
     try {
-        const resp = await fetch(cfg.devicesBase + "/data/" + fwid, { headers: { "Accept": "application/json" } });
+        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
         if (!resp.ok) return null;
         const data = await resp.json();
         const btn = document.getElementById("fetchDevBtn");
@@ -2110,6 +2314,8 @@ async function loadDeviceData() {
         topoLiveRoutes = data.live_routes || [];
         topoSdwan = data.sdwan_health || [];
         topoThroughput = data.throughput || [];
+        topoApLocations = data.ap_locations || [];
+        topoDualHomed = data.dual_homed || [];
         topoDiagStatus = data.diag_status || null;
         return data.devices || [];
     } catch (e) {
@@ -2146,6 +2352,8 @@ async function fetchDevicesNow(rangeSec) {
         topoLiveRoutes = data.live_routes || [];
         topoSdwan = data.sdwan_health || [];
         topoThroughput = data.throughput || [];
+        topoApLocations = data.ap_locations || [];
+        topoDualHomed = data.dual_homed || [];
         topoDiagStatus = data.diag_status || null;
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();

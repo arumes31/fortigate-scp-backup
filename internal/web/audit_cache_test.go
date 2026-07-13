@@ -425,6 +425,66 @@ func TestTopologyShareLifecycle(t *testing.T) {
 	}
 }
 
+// TestTopologyShareDeviceInclusion verifies the per-share device toggle: a share
+// created without it exposes no devices on the public devices endpoint, one
+// created with it is flagged include_devices and serves a device payload (empty
+// here, since the extension DB is absent — the point is the gating, not content).
+func TestTopologyShareDeviceInclusion(t *testing.T) {
+	srv := testServerData(t)
+	mk := func(withDevices string) topologyShare {
+		form := url.Values{"fw_id": {"1"}, "expiry_hours": {"24"}, "include_devices": {withDevices}}
+		req := httptest.NewRequest(http.MethodPost, "/topology/share", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.handleTopologyShareCreate(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("create(%s): want 200, got %d", withDevices, rr.Code)
+		}
+		var sh topologyShare
+		if err := json.Unmarshal(rr.Body.Bytes(), &sh); err != nil {
+			t.Fatalf("create(%s): %v", withDevices, err)
+		}
+		return sh
+	}
+	devicesResp := func(token string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		srv.handleTopologySharedDevices(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x/devices", nil), "token", token))
+		return rr
+	}
+
+	// Off: flag false, endpoint returns an empty device set.
+	off := mk("0")
+	if off.IncludeDevices {
+		t.Error("share created with include_devices=0 must not be flagged")
+	}
+	rr := devicesResp(off.Token)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"devices":[]`) {
+		t.Fatalf("off devices: code=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// On: flag true, endpoint serves a payload (200, valid JSON with a devices key).
+	on := mk("1")
+	if !on.IncludeDevices {
+		t.Error("share created with include_devices=1 must be flagged")
+	}
+	rr = devicesResp(on.Token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("on devices: want 200, got %d", rr.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("on devices: invalid JSON: %v", err)
+	}
+	if _, hasDevices := payload["devices"]; !hasDevices {
+		t.Errorf("on devices: payload missing 'devices' key: %v", payload)
+	}
+
+	// Bad token still 404s on the devices endpoint.
+	if rr := devicesResp("deadbeef"); rr.Code != http.StatusNotFound {
+		t.Fatalf("bad token devices: want 404, got %d", rr.Code)
+	}
+}
+
 func TestExpiredShareRejected(t *testing.T) {
 	srv := testServerData(t)
 	db, _ := srv.insightsDB()
@@ -434,7 +494,7 @@ func TestExpiredShareRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := resolveShare(db, "expiredtoken"); ok {
+	if _, _, ok := resolveShare(db, "expiredtoken"); ok {
 		t.Fatal("expired token must not resolve")
 	}
 	// Expired token is cleaned up lazily.
