@@ -187,6 +187,13 @@ type PortAttachment struct {
 type DualHomed struct {
 	Mac         string           `json:"mac"`
 	Attachments []PortAttachment `json:"attachments"`
+	// Suspected marks a heuristically-inferred team rather than a confirmed
+	// shared-MAC dual-home: a switch-independent-teamed virtualization host,
+	// whose two uplinks share no MAC (so listDualHomed cannot see it) but each
+	// carry the same hypervisor OUI in the same VLAN. Vlan/Note describe it.
+	Suspected bool   `json:"suspected,omitempty"`
+	Vlan      string `json:"vlan,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 // CollectionStatus is the outcome of the last SSH diagnostics sweep for a

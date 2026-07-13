@@ -148,6 +148,14 @@ func (e *Extension) buildDataResponse(fwID int) (dataResponse, error) {
 	if err != nil {
 		e.logger.Warn("graylog devices: dual-homed list failed", "fw_id", fwID, "err", err)
 	}
+	// Suspected switch-independent-teamed hosts (shared no MAC, so invisible to
+	// listDualHomed). Appended AFTER the confirmed ones so a real dual-home wins
+	// on any port both would claim (the frontend keeps the first per port).
+	if teams, terr := e.listSuspectedTeams(fwID); terr != nil {
+		e.logger.Warn("graylog devices: suspected-team list failed", "fw_id", fwID, "err", terr)
+	} else {
+		dualHomed = append(dualHomed, teams...)
+	}
 	violations, err := e.listMacViolations(fwID)
 	if err != nil {
 		e.logger.Warn("graylog devices: mac-violations list failed", "fw_id", fwID, "err", err)

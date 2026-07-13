@@ -257,6 +257,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.icl":            {"en": "MC-LAG ICL", "de": "MC-LAG ICL"},
 	"topo.mclag_peer":     {"en": "MC-LAG peer", "de": "MC-LAG-Partner"},
 	"topo.dual_homed":     {"en": "Dual-homed", "de": "Dual-homed"},
+	"topo.suspected_team": {"en": "Suspected teamed server", "de": "Vermuteter Team-Server"},
 	"topo.also_on":        {"en": "also on", "de": "auch an"},
 	"topo.src_graylog":    {"en": "Data source: Graylog client logs", "de": "Datenquelle: Graylog-Client-Logs"},
 	"topo.src_ssh":        {"en": "Data source: SSH (FortiSwitch MAC table + ARP/802.1X)", "de": "Datenquelle: SSH (FortiSwitch-MAC-Tabelle + ARP/802.1X)"},

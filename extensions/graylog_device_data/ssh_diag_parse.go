@@ -505,12 +505,20 @@ func parseArp(out string) []arpEntry {
 }
 
 var (
-	reLldpNeighbor = regexp.MustCompile(`(?m)^Neighbor learned on port (port\d+)`)
+	reLldpNeighbor = regexp.MustCompile(`(?m)^\s*Neighbor learned on port (port\d+)`)
 	reLldpChassis  = regexp.MustCompile(`Chassis ID:\s*(\S+)`)
+	reLldpSysName  = regexp.MustCompile(`System Name:\s*(\S+)`)
+	reLldpSerial   = regexp.MustCompile(`System Serial-num:\s*(\S+)`)
 )
 
-// parseLldp maps each port to its LLDP neighbor's system/chassis name (e.g. the
-// connected host or downstream switch), from `switch-info lldp neighbors-detail`.
+// parseLldp maps each port to its LLDP neighbor identity, from `switch-info lldp
+// neighbors-detail`. It prefers the neighbor's System Name (a managed switch's
+// hostname) then its Serial-num, because those resolve straight to a managed
+// switch by name/serial — the piece that draws switch↔switch interlinks, marks
+// uplink ports and nests the tree. The Chassis ID is only a base MAC and almost
+// never falls inside the switch's port-MAC range, so it fails to resolve and the
+// link is missed; it is kept solely as the fallback for non-FortiSwitch
+// neighbors (bare hosts) that advertise no name.
 func parseLldp(out string) map[string]string {
 	res := map[string]string{}
 	locs := reLldpNeighbor.FindAllStringSubmatchIndex(out, -1)
@@ -520,8 +528,16 @@ func parseLldp(out string) map[string]string {
 			end = locs[i+1][0]
 		}
 		block := out[loc[0]:end]
-		if m := reLldpChassis.FindStringSubmatch(block); m != nil {
-			res[out[loc[2]:loc[3]]] = m[1]
+		nbr := ""
+		if m := reLldpSysName.FindStringSubmatch(block); m != nil {
+			nbr = m[1]
+		} else if m := reLldpSerial.FindStringSubmatch(block); m != nil {
+			nbr = m[1]
+		} else if m := reLldpChassis.FindStringSubmatch(block); m != nil {
+			nbr = m[1]
+		}
+		if nbr != "" {
+			res[out[loc[2]:loc[3]]] = nbr
 		}
 	}
 	return res

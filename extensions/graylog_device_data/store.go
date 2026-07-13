@@ -875,6 +875,169 @@ func (e *Extension) listDualHomed(fwID int) ([]DualHomed, error) {
 	return out, nil
 }
 
+// virtOUIs maps known hypervisor NIC OUIs (lowercase, 6 hex, no separators) to a
+// vendor label. A physical switch port dominated by MACs from one of these is a
+// virtualization host uplink, not a client access port.
+var virtOUIs = map[string]string{
+	"00155d": "Hyper-V",
+	"005056": "VMware", "000c29": "VMware", "000569": "VMware", "001c14": "VMware",
+	"525400": "KVM/QEMU",
+	"080027": "VirtualBox",
+	"00163e": "Xen",
+}
+
+const (
+	teamMinCluster   = 3    // min same-OUI MACs on a port to treat it as a vhost uplink
+	teamMinDominance = 0.50 // that OUI must be a majority of the port's MACs
+)
+
+// macOUI returns the 6-hex OUI of a MAC (lowercase, no separators), "" if short.
+func macOUI(mac string) string {
+	h := strings.NewReplacer(":", "", "-", "").Replace(strings.ToLower(mac))
+	if len(h) < 6 {
+		return ""
+	}
+	return h[:6]
+}
+
+// listSuspectedTeams heuristically pairs the uplinks of a switch-independent
+// teamed virtualization host across switches — the case listDualHomed cannot see
+// because that teaming pins each VM MAC to exactly one uplink, so the two ports
+// share no MAC. Signature: a physical port (mac_sightings holds only physical
+// ports; trunks are skipped upstream) that is NOT a switch interlink, dominated
+// by one hypervisor OUI in one VLAN. Two such ports of the same port-name + VLAN
+// + OUI on different switches are reported as one Suspected team, so the UI marks
+// both without ever asserting the pairing.
+func (e *Extension) listSuspectedTeams(fwID int) ([]DualHomed, error) {
+	// Managed-switch identities (name + serial), to recognize interlink ports.
+	swIdent := map[string]bool{}
+	if rows, err := e.db.Query("SELECT DISTINCT switch_name, serial FROM stp_ports WHERE fw_id = ?", fwID); err == nil {
+		for rows.Next() {
+			var n, s string
+			if rows.Scan(&n, &s) == nil {
+				if n != "" {
+					swIdent[strings.ToUpper(n)] = true
+				}
+				if s != "" {
+					swIdent[strings.ToUpper(s)] = true
+				}
+			}
+		}
+		_ = rows.Close()
+	}
+	// A port whose LLDP neighbor is a managed switch is a switch↔switch link, not a
+	// host uplink — exclude it (a single-link downlink to a small edge switch with
+	// one host behind it would otherwise look host-like).
+	interlink := map[string]bool{}
+	if rows, err := e.db.Query("SELECT switch_name, port, neighbor FROM stp_ports WHERE fw_id = ? AND neighbor != ''", fwID); err == nil {
+		for rows.Next() {
+			var sw, port, nbr string
+			if rows.Scan(&sw, &port, &nbr) == nil && swIdent[strings.ToUpper(nbr)] {
+				interlink[sw+"|"+port] = true
+			}
+		}
+		_ = rows.Close()
+	}
+
+	rows, err := e.db.Query(`SELECT mac, switch_name, port, vlan, updated_at FROM mac_sightings
+		WHERE fw_id = ? AND port != '' AND switch_name != ''`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type portAgg struct {
+		total int
+		oui   map[string]int
+		vlan  map[string]int
+	}
+	type sighting struct{ mac, sw, port, vlan, ts string }
+	var all []sighting
+	newest := ""
+	for rows.Next() {
+		var s sighting
+		if scanErr := rows.Scan(&s.mac, &s.sw, &s.port, &s.vlan, &s.ts); scanErr != nil {
+			return nil, scanErr
+		}
+		all = append(all, s)
+		if s.ts > newest {
+			newest = s.ts
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	agg := map[string]*portAgg{} // "switch|port" → aggregate
+	for _, s := range all {
+		if !dualHomeFresh(s.ts, newest) {
+			continue // stale: a removed VM must not keep a port looking populated
+		}
+		key := s.sw + "|" + s.port
+		if interlink[key] {
+			continue
+		}
+		a := agg[key]
+		if a == nil {
+			a = &portAgg{oui: map[string]int{}, vlan: map[string]int{}}
+			agg[key] = a
+		}
+		a.total++
+		if o := macOUI(s.mac); o != "" {
+			a.oui[o]++
+		}
+		if s.vlan != "" {
+			a.vlan[s.vlan]++
+		}
+	}
+
+	// Classify vhost ports, then group across switches by port-name + VLAN + OUI
+	// (the port name in the key means a switch contributes at most one port per
+	// group — matching-port-number cabling is the norm for a teamed host).
+	type vhost struct{ sw, port, vlan, oui string }
+	groups := map[string][]vhost{}
+	for key, a := range agg {
+		bestOUI, bestN := "", 0
+		for o, n := range a.oui {
+			if _, ok := virtOUIs[o]; ok && n > bestN {
+				bestOUI, bestN = o, n
+			}
+		}
+		if bestOUI == "" || bestN < teamMinCluster || float64(bestN)/float64(a.total) < teamMinDominance {
+			continue
+		}
+		bestVlan, bv := "", 0
+		for v, n := range a.vlan {
+			if n > bv {
+				bestVlan, bv = v, n
+			}
+		}
+		sw, port, _ := strings.Cut(key, "|")
+		gkey := port + "|" + bestVlan + "|" + bestOUI
+		groups[gkey] = append(groups[gkey], vhost{sw: sw, port: port, vlan: bestVlan, oui: bestOUI})
+	}
+
+	var out []DualHomed
+	for _, g := range groups {
+		sws := map[string]bool{}
+		for _, h := range g {
+			sws[h.sw] = true
+		}
+		if len(sws) < 2 {
+			continue // a team must span ≥2 switches
+		}
+		sort.Slice(g, func(i, j int) bool { return g[i].sw < g[j].sw })
+		dh := DualHomed{Suspected: true, Vlan: g[0].vlan, Note: virtOUIs[g[0].oui]}
+		for _, h := range g {
+			dh.Attachments = append(dh.Attachments, PortAttachment{Switch: h.sw, Port: h.port})
+		}
+		out = append(out, dh)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Attachments[0].Switch+out[i].Attachments[0].Port <
+			out[j].Attachments[0].Switch+out[j].Attachments[0].Port
+	})
+	return out, nil
+}
+
 // storeSwitchEdges upserts the observed switch-side trunks (role updates only
 // when the newer fetch carries one; member ports merge) and prunes stale rows.
 func (e *Extension) storeSwitchEdges(fwID int, edges []SwitchEdge, now string) error {

@@ -6,7 +6,7 @@ import "testing"
 // command, so anything with whitespace, newlines or shell/CLI metacharacters
 // must be rejected before interpolation (no command injection).
 func TestValidDiagName(t *testing.T) {
-	valid := []string{"port1", "port48", "SW-CORE01", "EX_ACCESS.03", "S424EP0000000002"}
+	valid := []string{"port1", "port48", "SW-CORE01", "SW_ACCESS.03", "S424EP0000000001"}
 	for _, s := range valid {
 		if !ValidDiagName(s) {
 			t.Errorf("expected %q to be valid", s)
@@ -31,7 +31,7 @@ func TestCleanDiagOutput(t *testing.T) {
 		"Port(port1) is HW Admin up, SW Admin up, line protocol is up\n" +
 		"full-duplex, 1000 Mb/s\n" +
 		"\n" +
-		"FGT90G-CUST4-N2(Primary) $ "
+		"FGT-N2(Primary) $ "
 	got := cleanDiagOutput(raw)
 	if want := "Vdom: root\nPort(port1) is HW Admin up, SW Admin up, line protocol is up\nfull-duplex, 1000 Mb/s"; got != want {
 		t.Errorf("cleanDiagOutput mismatch:\n got: %q\nwant: %q", got, want)

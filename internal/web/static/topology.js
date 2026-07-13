@@ -41,9 +41,16 @@ let svg, gRoot, zoomBehavior;
 
 // View filters (toolbar checkboxes); toggling re-renders the tree.
 let topoFilters = { devices: true, routes: true, vlans: true, edge: true, hideStale: false };
+let topoFaceNode = null; // node whose faceplate is currently open (for live re-render)
 function setTopoFilter(key, val) {
     topoFilters[key] = val;
     if (topo && topo.has_config) renderTree(topo);
+    // "hide stale" also governs the device panel and the faceplate port lists, so
+    // refresh those too (the other filters only affect the tree).
+    if (key === "hideStale") {
+        renderDevicePanel();
+        if (topoFaceNode) showFaceplate(topoFaceNode); // re-render an open faceplate
+    }
 }
 
 // esc() and tt() come from ui.js, which every topology page loads first.
@@ -75,6 +82,15 @@ function isStaleDevice(d) {
     if (!d.last_seen) return false;
     const t = Date.parse(String(d.last_seen).replace(" ", "T"));
     return !isNaN(t) && (Date.now() - t) > 24 * 3600 * 1000;
+}
+
+// deviceHidden reports whether the "hide stale" toggle should drop a device
+// from a rendered list entirely (vs. merely fading it). Centralizes the rule so
+// the tree, the faceplate port lists/counts and the device panel all agree —
+// otherwise stale clients (wired or WLAN) survive on the faceplate/panel even
+// with the toggle on.
+function deviceHidden(d) {
+    return topoFilters.hideStale && isStaleDevice(d);
 }
 
 // deviceNode maps one Graylog inventory entry to a tree node. Devices whose
@@ -330,7 +346,7 @@ function buildTree(data) {
     // "Hide stale" drops devices unseen >24h from the tree entirely (they are
     // faded, not hidden, when the toggle is off).
     const devices = topoFilters.devices
-        ? (topoDevices || []).filter(d => !(topoFilters.hideStale && isStaleDevice(d)))
+        ? (topoDevices || []).filter(d => !deviceHidden(d))
         : [];
     const singleSwitch = switches.length === 1;
     const assigned = new Set();
@@ -1391,7 +1407,7 @@ function renderDevicePanel() {
     const panel = document.getElementById("devPanel");
     const body = document.getElementById("devPanelBody");
     if (!panel || !body) return;
-    const devices = topoDevices || [];
+    const devices = (topoDevices || []).filter(d => !deviceHidden(d));
     if (!devices.length) { panel.style.display = "none"; return; }
     panel.style.display = "";
     const q = (document.getElementById("devFilter")?.value || "").trim().toLowerCase();
@@ -1525,8 +1541,9 @@ function portCellSVG(p, idx, x, y, cell) {
     const uplink = p.isUplink ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">▲</text>` : "";
     const icl = p.isIcl ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">⫘</text>` : "";
     const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
-    // Dual-homed device (server LAG'd across two switches): a cyan ⇈ over the port.
-    const dualHomed = p.isDualHomed ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="#22d3ee" font-size="9" font-family="monospace">⇈</text>` : "";
+    // Dual-homed device: a cyan ⇈ over the port; amber when only *suspected*
+    // (a switch-independent-teamed host inferred by OUI, not a shared MAC).
+    const dualHomed = p.isDualHomed ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="${p.dualSuspected ? "#f59e0b" : "#22d3ee"}" font-size="9" font-family="monospace">⇈</text>` : "";
     // Port-security (MAC-limit) violation: a red ⚠ over the port.
     const violGlyph = p.isViolation ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="#ef4444" font-size="10" font-weight="bold">⚠</text>` : "";
     // HA heartbeat interface (firewall faceplate): a rose heart over the cell.
@@ -1672,7 +1689,7 @@ function buildSwitchFacePorts(sw) {
     // Pinned devices per port (server-side best-pin already applied).
     const devsByPort = {};
     (topoDevices || []).forEach(dv => {
-        if (!dv.port) return;
+        if (!dv.port || deviceHidden(dv)) return; // honor "hide stale" here too
         if (resolveSwitchName(allSw, dv.switch_id) === swTitle) {
             (devsByPort[dv.port] = devsByPort[dv.port] || []).push(dv);
         }
@@ -1689,7 +1706,7 @@ function buildSwitchFacePorts(sw) {
         if (a.port && (resolveSwitchName(allSw, a.switch) || a.switch) === swTitle) apByPort[a.port] = a;
     });
     const apClientCount = a => (topoDevices || []).filter(d2 =>
-        d2.ap && (d2.ap === a.name || d2.ap === a.serial)).length;
+        !deviceHidden(d2) && d2.ap && (d2.ap === a.name || d2.ap === a.serial)).length;
     // Dual-homed devices (MAC on 2+ switches, e.g. a server LAG'd across the
     // MC-LAG core pair): index this switch's attachment ports to the device and
     // its peer attachment(s), so both switches mark the same server.
@@ -1697,8 +1714,11 @@ function buildSwitchFacePorts(sw) {
     (topoDualHomed || []).forEach(dh => {
         (dh.attachments || []).forEach(a => {
             if ((resolveSwitchName(allSw, a.switch) || a.switch) !== swTitle) return;
+            if (dualByPort[a.port]) return; // confirmed dual-home (listed first) wins over suspected
             dualByPort[a.port] = {
                 mac: dh.mac,
+                suspected: !!dh.suspected,
+                vlan: dh.vlan || "",
                 peers: (dh.attachments || []).filter(x => x !== a),
             };
         });
@@ -1727,7 +1747,7 @@ function buildSwitchFacePorts(sw) {
             const ap = apOf(dv);
             if (ap) {
                 apName = ap.name || ap.wtp_id;
-                wifiCount = (topoDevices || []).filter(d2 => d2.ap && (d2.ap === ap.name || d2.ap === ap.wtp_id)).length;
+                wifiCount = (topoDevices || []).filter(d2 => !deviceHidden(d2) && d2.ap && (d2.ap === ap.name || d2.ap === ap.wtp_id)).length;
             }
         });
         // Authoritative AP pin from wtp-status (LLDP) wins over the hostname guess.
@@ -1737,10 +1757,13 @@ function buildSwitchFacePorts(sw) {
             wifiCount = apClientCount(apHere);
         }
         const dualHere = dualByPort[p.name];
-        const dualDetail = dualHere
-            ? `\n⇈ ${tt("topo.dual_homed")}: ${hostOfMac(dualHere.mac)} · ${tt("topo.also_on")} ` +
-              dualHere.peers.map(x => `${resolveSwitchName(allSw, x.switch) || x.switch} ${x.port}`).join(", ")
+        const dualPeers = dualHere
+            ? dualHere.peers.map(x => `${resolveSwitchName(allSw, x.switch) || x.switch} ${x.port}`).join(", ")
             : "";
+        const dualDetail = !dualHere ? ""
+            : dualHere.suspected
+                ? `\n⇈ ${tt("topo.suspected_team")}${dualHere.vlan ? " · VLAN " + dualHere.vlan : ""} · ${tt("topo.also_on")} ${dualPeers}`
+                : `\n⇈ ${tt("topo.dual_homed")}: ${hostOfMac(dualHere.mac)} · ${tt("topo.also_on")} ${dualPeers}`;
         const viol = violByPort[p.name] || [];
         const violDetail = viol.length
             ? `\n⛔ ${tt("topo.port_security")}: ${viol.length} ${tt("topo.violations")}` +
@@ -1762,6 +1785,7 @@ function buildSwitchFacePorts(sw) {
             isIcl: !!interIcl[p.name],
             isAp: !!apHere,
             isDualHomed: !!dualHere,
+            dualSuspected: !!(dualHere && dualHere.suspected),
             isViolation: viol.length > 0,
             isFlapping: flaps >= 6,
             isUplink: uplinkPorts.has(p.name) || !!(st && st.role === "root"),
@@ -2150,6 +2174,7 @@ function bundlePanelHTML(bundles) {
 }
 
 function showFaceplate(nodeData) {
+    topoFaceNode = nodeData; // remember it so a filter toggle can re-render live
     const panel = document.getElementById("facePanel");
     const body = document.getElementById("faceBody");
     let ports = [], title = "", sub = "";
@@ -2298,6 +2323,7 @@ function toggleFacePanelWidth() {
 // Hide fully regardless of the current (possibly widened) width — offsetWidth
 // already reflects the max-width:90% clamp.
 function closeFaceplate() {
+    topoFaceNode = null; // stop tracking so a filter toggle won't re-open it
     const panel = document.getElementById("facePanel");
     panel.style.right = "-" + (panel.offsetWidth + 40) + "px";
 }

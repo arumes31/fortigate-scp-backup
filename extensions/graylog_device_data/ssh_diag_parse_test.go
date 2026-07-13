@@ -49,7 +49,7 @@ const stpSample = `SW-CORE01:
   port2              1G      20000      128        DESIGNATED   FORWARDING   2          EN ED BG
   port4              -       200000000  128        DISABLED     DISCARDING   2          ED
   port25             10G     2000       128        ROOT         FORWARDING   2          EN ED
-  8ENTF20001491-0    10G     1          128        ROOT         FORWARDING   2          EN
+  444455556666-0    10G     1          128        ROOT         FORWARDING   2          EN
   _FlInK1_ICL0_      80G     1          128        DESIGNATED   FORWARDING   2          EN ED
   111122223333-0     20G     1          128        ALTERNATIVE  DISCARDING   2          EN
   internal           1G      20000      128        DESIGNATED   FORWARDING   2          ED
@@ -127,7 +127,7 @@ const macTableSample = `Vdom: root
 Managed Switch : SW-CORE01 0
 MAC: 00:11:22:33:44:55	VLAN: 100 Port: port1(port-id 1)
   Flags: 0x00010441 [ hit dynamic src-hit native ]
-MAC: 66:77:88:99:AA:BB	VLAN: 101 Trunk: 8ENTF20001491-0(trunk-id 1)
+MAC: 66:77:88:99:AA:BB	VLAN: 101 Trunk: 444455556666-0(trunk-id 1)
   Flags: 0x000104c1 [ hit trunk dynamic ]
 MAC: cc:dd:ee:ff:00:11	VLAN: 4092 Port: internal(port-id 53)
   Flags: 0x00000020 [ static ]
@@ -168,7 +168,7 @@ func TestParseStp(t *testing.T) {
 	for _, e := range edges {
 		got[e.Trunk] = e
 	}
-	if e := got["8ENTF20001491-0"]; e.Role != "root" || e.State != "forwarding" {
+	if e := got["444455556666-0"]; e.Role != "root" || e.State != "forwarding" {
 		t.Errorf("uplink edge = %+v", e)
 	}
 	if e := got["111122223333-0"]; e.Role != "alternate" || e.State != "discarding" {
@@ -241,6 +241,44 @@ func TestParseLldp(t *testing.T) {
 	l := parseLldp(lldpSample)
 	if l["port1"] != "PC-01" || l["port25"] != "SW-CORE01" {
 		t.Errorf("lldp = %+v", l)
+	}
+}
+
+// Real FortiSwitch LLDP detail reports the neighbor's Chassis ID as a base MAC
+// while also giving its System Name / Serial-num. The MAC does not resolve to a
+// managed switch (it is outside the port-MAC range), so the parser must prefer
+// the name/serial; only a bare host with no name falls back to the MAC.
+const lldpDetailSample = `Managed Switch : SW-ACCESS04	0
+_______________________________________________________________
+Neighbor learned on port port12 by LLDP protocol
+Last change 100 seconds ago
+Chassis ID: aa:bb:cc:00:00:12 (mac)
+System Name: SW-EDGE01
+System Description:
+FortiSwitch-108E v7.6.6
+System Serial-num: S108EN0000000001
+Port ID: port8 (ifname)
+_______________________________________________________________
+Neighbor learned on port port2 by LLDP protocol
+Chassis ID: aa:bb:cc:00:00:02 (mac)
+System Name: FortiAP-231F
+Port ID: 00:11:22:33:44:55 (mac)
+_______________________________________________________________
+Neighbor learned on port port25 by LLDP protocol
+Chassis ID: aa:bb:cc:00:00:25 (mac)
+Port ID: aa:bb:cc:00:00:25 (mac)
+`
+
+func TestParseLldpPrefersName(t *testing.T) {
+	l := parseLldp(lldpDetailSample)
+	if l["port12"] != "SW-EDGE01" { // System Name wins over the chassis MAC
+		t.Errorf("port12 = %q, want SW-EDGE01 (name, not chassis MAC)", l["port12"])
+	}
+	if l["port2"] != "FortiAP-231F" {
+		t.Errorf("port2 = %q, want FortiAP-231F", l["port2"])
+	}
+	if l["port25"] != "aa:bb:cc:00:00:25" { // no name → fall back to chassis MAC
+		t.Errorf("port25 = %q, want chassis MAC fallback", l["port25"])
 	}
 }
 
