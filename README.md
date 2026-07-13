@@ -391,6 +391,11 @@ Powers the live device & state overlay on the [topology page](#-network-topology
 | `GRAYLOG_VPN_QUERY` | `source:"%s" AND subtype:"vpn" AND tunnelid:*` | IPsec / SSL-VPN tunnel up/down status. |
 | `GRAYLOG_HA_QUERY` | `source:"%s" AND subtype:"ha"` | HA member / role events. |
 
+### Extension: FortiGate Policy Generator (ConfGen)
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_FGT_CONF_GEN` | `false` | Enable the FortiGate Policy Generator extension. |
+
 ---
 
 ## 🔌 Modules & Extensions
@@ -405,6 +410,15 @@ An optional module (`EXT_ADM_VPN_CONF=true`) for managing customer-specific VPN 
 * **Public status DSV endpoint** — `/fgt-adm-vpn-conf/graylog_dsv` serves raw, unauthenticated status data (`Firewallname;Remote_IP;Status`) for external metrics collectors.
 * **Graylog integration** — checks the Graylog API to assert status. A firewall is `online` when logs are found within `GRAYLOG_SEARCH_TIMEFRAME` (default 24 h).
 * **HookWise alerting** — sends HTTP webhooks on transition states (`online` ↔ `offline`).
+
+### FortiGate Policy Generator (ConfGen)
+
+An optional module (`EXT_FGT_CONF_GEN=true`) for managing templates and generating firewall policies.
+
+* **Database Configuration Integration** — allows selecting any firewall to load and parse its latest successful backup automatically (decrypting it on-the-fly).
+* **Multi-User Isolation** — saves templates per-user by default, with an optional checkbox to save/edit globally.
+* **Link Shortener** — generates unique shortened URLs (`/fgt-confgen/s/<shortCode>`) to share templates.
+
 
 ---
 

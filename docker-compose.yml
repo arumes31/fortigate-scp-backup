@@ -39,7 +39,7 @@ services:
 
       # --- Encryption at Rest ---
       # Optional: Provide a 32-byte hex or base64 key to enable AES-256-GCM encryption for backups and SSH passwords
-      - "ENCRYPTION_KEY="
+      # - "ENCRYPTION_KEY="
 
       # --- SCP & Backup Engine Defaults ---
       - "DEFAULT_SCP_USER=fortisafe"
@@ -58,6 +58,7 @@ services:
 
       # --- Extension: FGT ADM VPN Config (Optional) ---
       - "EXT_ADM_VPN_CONF=true"
+      - "EXT_FGT_CONF_GEN=true"
       - "GRAYLOG_URL=https://graylog.example.com"
       - "GRAYLOG_TOKEN=XXXXXX"
       - "GRAYLOG_SEARCH_TIMEFRAME=86400"
@@ -111,14 +112,14 @@ services:
 
   fortisafe-db:
     container_name: "fortisafe-db"
-    image: postgres:latest
+    image: postgres:16-alpine
     environment:
       - "POSTGRES_USER=postgre"
       - "POSTGRES_PASSWORD=XXXXXXTDB"
       - "POSTGRES_DB=firewall_backups"
     restart: unless-stopped
     volumes:
-      - "./pgdata:/var/lib/postgresql/data"
+      - "fortisafe-db-data:/var/lib/postgresql/data"
       # Or specify host absolute path:
       # - "/mnt/postgres-data:/var/lib/postgresql/data"
     healthcheck:
@@ -126,3 +127,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+volumes:
+  fortisafe-db-data:
+

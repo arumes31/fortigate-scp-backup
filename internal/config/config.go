@@ -70,6 +70,7 @@ type Config struct {
 
 	// Extension: fgt_adm_vpn_conf
 	ExtAdmVpnConf          bool
+	ExtFgtConfGen             bool
 	GraylogURL             string
 	GraylogToken           string
 	GraylogSearchTimeframe string
@@ -173,6 +174,7 @@ func Load(logger *slog.Logger) *Config {
 		MailRecipient: getenv("MAIL_RECIPIENT", getenv("MAIL_USER", "user@example.com")),
 
 		ExtAdmVpnConf:          boolenv("EXT_ADM_VPN_CONF", false),
+		ExtFgtConfGen:             boolenv("EXT_FGT_CONF_GEN", false),
 		GraylogURL:             os.Getenv("GRAYLOG_URL"),
 		GraylogToken:           os.Getenv("GRAYLOG_TOKEN"),
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),

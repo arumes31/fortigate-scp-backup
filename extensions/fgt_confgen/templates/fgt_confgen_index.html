@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Policy Generator · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/fgt-confgen/static/styles.css">
+    <script src="/fgt-confgen/static/searchable.js"></script>
+    <script src="/fgt-confgen/static/scripts.js"></script>
+    <script>
+        window.preselectedTemplate = "{{.PreselectedTemplate}}";
+    </script>
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/search">Search</a>
+            <a href="/audit">Audit</a>
+            <a href="/topology">Topology</a>
+            <a href="/activity_log">Act_Log</a>
+            {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
+            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/" class="active">Policy_Gen</a>{{end}}
+        </nav>
+        <div class="sysinfo">
+            <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+            <form method="post" action="/logout" class="logout-form" style="display:inline; margin:0;">
+                <button type="submit" class="logout-btn">[EXIT]</button>
+            </form>
+        </div>
+    </header>
+
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Generator</h1>
+
+        <div class="container">
+            <!-- Sidebar for templates and policy list -->
+            <div class="sidebar">
+                <div class="card">
+                    <h2 class="collapsible-header mb-0">Templates</h2>
+                    <div class="template-section" style="margin-top: 15px;">
+                        <label for="template-select">Load Template</label>
+                        <select id="template-select" class="form-control">
+                            <option value="">Select Template</option>
+                            {{range .Templates}}
+                                <option value="{{.}}">{{.}}</option>
+                            {{end}}
+                        </select>
+                        <div class="btn-group" style="margin-top: 8px;">
+                            <button onclick="loadTemplate()" class="btn btn-sm">Load</button>
+                            <button onclick="cloneTemplate()" class="btn btn-sm">Clone</button>
+                            <button onclick="copyUrl()" class="btn btn-sm">Copy URL</button>
+                        </div>
+
+                        <label for="template-name" style="margin-top: 15px; display: block;">Edit Template</label>
+                        <input type="text" id="template-name" class="form-control" placeholder="Template Name">
+                        
+                        <div class="checkbox-row" style="margin-top: 8px; margin-bottom: 8px;">
+                            <input type="checkbox" id="template-global" name="template-global">
+                            <label for="template-global" class="no-caps">Save as Global Template</label>
+                        </div>
+
+                        <div class="btn-group">
+                            <button onclick="saveTemplate()" class="btn btn-sm btn-primary">Save</button>
+                            <button onclick="deleteTemplate()" class="btn btn-sm">Delete</button>
+                            <button onclick="renameTemplate()" class="btn btn-sm">Rename</button>
+                            <button onclick="exportTemplate()" class="btn btn-sm">Export</button>
+                        </div>
+                        
+                        <div style="margin-top: 8px;">
+                            <input type="file" id="import-template" accept=".json" onchange="importTemplate(event)" style="display: none;">
+                            <button onclick="document.getElementById('import-template').click()" class="btn btn-sm w-100">Import Template</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Policies</h2>
+                    <div id="policy-list"></div>
+                    <button onclick="addPolicy()" class="btn w-100" style="margin-top: 10px;">+ Add Policy</button>
+                </div>
+            </div>
+
+            <!-- Main configuration panel -->
+            <div class="main-content">
+                <!-- Select Firewall Backup -->
+                <div class="card">
+                    <h2>Load Config from Firewall</h2>
+                    <div class="form-grid" style="grid-template-columns: 1fr auto; gap: 12px; align-items: end;">
+                        <div class="field">
+                            <label for="firewall-select">Select Firewall</label>
+                            <select id="firewall-select" class="form-control">
+                                <option value="">Select Firewall</option>
+                                {{range .Firewalls}}
+                                    <option value="{{.ID}}">{{.FQDN}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                        <button onclick="loadFirewallConfig()" class="btn btn-primary">Load Config</button>
+                    </div>
+                </div>
+
+                <!-- Policy configuration form -->
+                <div class="card policy-form" id="policy-form" style="display: none;">
+                    <h2>Policy Configuration</h2>
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="policy-name">Policy Name</label>
+                            <input type="text" class="policy-name" id="policy-name">
+                        </div>
+                        <div class="field">
+                            <label for="policy-comment">Policy Comment</label>
+                            <input type="text" class="policy-comment" id="policy-comment">
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="grid-template-columns: 1fr 1fr; margin-top: 15px;">
+                        <div class="src-section">
+                            <div class="src-interfaces">
+                                <label>Source Interfaces</label>
+                                <div class="interface-items"></div>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="addSrcInterface(this)">+ Add Source Interface</button>
+                            </div>
+                            <div class="src-addresses" style="margin-top: 15px;">
+                                <label>Source Addresses/ISDB</label>
+                                <div class="address-items"></div>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="addSrcAddress(this)">+ Add Source Address/ISDB</button>
+                            </div>
+                            <div class="src-users-groups" style="margin-top: 15px;">
+                                <label>Users/Groups</label>
+                                <div class="user-group-items"></div>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="addSrcUserOrGroup(this)">+ Add User/Group</button>
+                            </div>
+                        </div>
+
+                        <div class="dst-section">
+                            <div class="dst-interfaces">
+                                <label>Destination Interfaces</label>
+                                <div class="interface-items"></div>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="addDstInterface(this)">+ Add Destination Interface</button>
+                            </div>
+                            <div class="dst-addresses" style="margin-top: 15px;">
+                                <label>Destination Addresses/ISDB</label>
+                                <div class="address-items"></div>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="addDstAddress(this)">+ Add Destination Address/ISDB</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="services" style="margin-top: 15px;">
+                        <label>Services</label>
+                        <div class="service-items"></div>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="addService(this)">+ Add Service/Group</button>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <label for="action">Action</label>
+                            <select class="action" id="action" onchange="toggleProfileFields(this)">
+                                <option value="accept">Accept</option>
+                                <option value="deny">Deny</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="inspection-mode">Inspection Mode</label>
+                            <select class="inspection-mode" id="inspection-mode">
+                                <option value="flow">Flow-based</option>
+                                <option value="proxy">Proxy-based</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <label for="ssl-ssh-profile">SSL/SSH Profile</label>
+                            <select class="ssl-ssh-profile" id="ssl-ssh-profile">
+                                <option value="">None</option>
+                                {{range .SSLSSHProfiles}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                        
+                        <div class="field">
+                            <div class="field-toggle">
+                                <input type="checkbox" class="toggle-field" data-field="webfilter-profile" id="webfilter-enabled" checked>
+                                <label for="webfilter-enabled">Webfilter Profile</label>
+                            </div>
+                            <select class="webfilter-profile" id="webfilter-profile">
+                                <option value="">None</option>
+                                {{range .WebfilterProfiles}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <div class="field-toggle">
+                                <input type="checkbox" class="toggle-field" data-field="application-list" id="application-list-enabled" checked>
+                                <label for="application-list-enabled">Application List</label>
+                            </div>
+                            <select class="application-list" id="application-list">
+                                <option value="">None</option>
+                                {{range .ApplicationLists}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                        
+                        <div class="field">
+                            <div class="field-toggle">
+                                <input type="checkbox" class="toggle-field" data-field="av-profile" id="av-enabled">
+                                <label for="av-enabled">Antivirus</label>
+                            </div>
+                            <select class="av-profile" id="av-profile" disabled>
+                                <option value="">None</option>
+                                {{range .AVProfiles}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <div class="field-toggle">
+                                <input type="checkbox" class="toggle-field" data-field="ips-sensor" id="ips-sensor-enabled" checked>
+                                <label for="ips-sensor-enabled">IPS Sensor</label>
+                            </div>
+                            <select class="ips-sensor" id="ips-sensor">
+                                <option value="">None</option>
+                                {{range .IPSSensors}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                        
+                        <div class="field">
+                            <label for="logtraffic">Log Traffic</label>
+                            <select class="logtraffic" id="logtraffic">
+                                <option value="all">All</option>
+                                <option value="utm">UTM</option>
+                                <option value="disable">Disable</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <label for="logtraffic-start">Log Traffic Start</label>
+                            <select class="logtraffic-start" id="logtraffic-start">
+                                <option value="enable">Enable</option>
+                                <option value="disable">Disable</option>
+                            </select>
+                        </div>
+                        
+                        <div class="field">
+                            <label for="auto-asic-offload">Auto ASIC Offload</label>
+                            <select class="auto-asic-offload" id="auto-asic-offload">
+                                <option value="enable">Enable</option>
+                                <option value="disable">Disable</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div class="field">
+                            <label for="nat">NAT</label>
+                            <select class="nat" id="nat" onchange="toggleIpPoolField(this)">
+                                <option value="disable">Disable</option>
+                                <option value="enable">Enable</option>
+                            </select>
+                        </div>
+                        
+                        <div class="field ip-pool-section" style="display: none;">
+                            <label for="ip-pool">IP Pool</label>
+                            <select class="ip-pool" id="ip-pool">
+                                <option value="">None</option>
+                                {{range .IPPools}}
+                                    <option value="{{.}}">{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="btn-group" style="margin-top: 20px;">
+                        <button onclick="savePolicy(this)" class="btn btn-primary">Save Policy</button>
+                        <button onclick="clearForm(this)" class="btn">Clear Form</button>
+                        <button onclick="clonePolicy(this)" class="btn">Clone Policy</button>
+                    </div>
+                </div>
+
+                <div class="card text-center" id="policy-form-placeholder" style="padding: 40px;">
+                    <div class="muted">Select a policy on the left or add a new one to configure rules.</div>
+                </div>
+
+                <button class="btn btn-primary btn-lg generate-policies-btn w-100" onclick="generatePolicies()" style="margin-top: 20px; display: none;">Generate All Policies</button>
+
+                <!-- Output section -->
+                <div class="output-section" style="margin-top: 25px; display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="mb-0">Output 1: All-in-One Policies</h3>
+                            <button onclick="copyOutput('output1')" class="btn btn-sm">Copy</button>
+                        </div>
+                        <pre id="output1" class="code-block"></pre>
+                    </div>
+                    <div class="card" style="margin-top: 15px;">
+                        <div class="card-header">
+                            <h3 class="mb-0">Output 2: One Policy Per Service</h3>
+                            <button onclick="copyOutput('output2')" class="btn btn-sm">Copy</button>
+                        </div>
+                        <pre id="output2" class="code-block"></pre>
+                    </div>
+                    <div class="card" style="margin-top: 15px;">
+                        <div class="card-header">
+                            <h3 class="mb-0">Output 3: Per Src/Dst Interface and Service</h3>
+                            <button onclick="copyOutput('output3')" class="btn btn-sm">Copy</button>
+                        </div>
+                        <pre id="output3" class="code-block"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="sysfooter">
+        <div>EOF // (C) FORTISAFE_SEC</div>
+        <div class="sysfooter-links">
+            <span>SESSION: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+            <span>SEC_PROTO: AES-256-GCM</span>
+        </div>
+    </footer>
+</div>
+<div id="notification-container"></div>
+</body>
+</html>

@@ -31,6 +31,7 @@ import (
 
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
+	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
 )
 
 func main() {
@@ -139,6 +140,7 @@ func main() {
 	registry := extension.NewRegistry()
 	registry.Register(fgtadmvpnconf.New(cfg, logger))
 	registry.Register(graylogdevicedata.New(cfg, logger))
+	registry.Register(fgt_confgen.New(cfg, logger))
 	if err := registry.MountEnabled(router, extension.Deps{
 		DB:            store.Pool(),
 		LogActivity:   store.LogActivity,
