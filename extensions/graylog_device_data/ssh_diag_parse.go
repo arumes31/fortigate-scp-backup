@@ -915,24 +915,16 @@ func buildDiagPorts(sw diagSwitch, portStatsOut, stpOut, portPropsOut, poeOut, m
 		if v, ok := lldp[port]; ok {
 			sp.Neighbor = v
 		}
-		// Physical-layer faults derived from the negotiated link vs the port's
-		// capability: half-duplex (a modern link should be full) and a speed
-		// downshift (1G-capable port stuck at 100M ⇒ a bad cable pair). Folded
-		// into Health so the faceplate's fault ring + detail surface them.
-		if hasPS && up {
-			var extra []string
-			if ps.Half {
-				extra = append(extra, "half-duplex")
+		// Physical-layer fault: half-duplex on a modern link (a duplex mismatch or
+		// a failing autoneg). Folded into Health so the faceplate's fault ring +
+		// detail surface it. A negotiated speed below the port's own capability is
+		// deliberately NOT flagged — a 1G-capable port legitimately negotiates
+		// 100M with a 100M peer, so local capability alone cannot prove a fault.
+		if hasPS && up && ps.Half {
+			if sp.Health != "" {
+				sp.Health += " "
 			}
-			if pp, ok := props[port]; ok && pp.MaxSpeedM > 0 && ps.SpeedM > 0 && ps.SpeedM < pp.MaxSpeedM {
-				extra = append(extra, "downshift:"+fmtSpeed(strconv.Itoa(ps.SpeedM))+"<"+fmtSpeed(strconv.Itoa(pp.MaxSpeedM)))
-			}
-			if len(extra) > 0 {
-				if sp.Health != "" {
-					sp.Health += " "
-				}
-				sp.Health += strings.Join(extra, " ")
-			}
+			sp.Health += "half-duplex"
 		}
 		out = append(out, sp)
 	}

@@ -54,11 +54,12 @@ type Extension struct {
 // requested interval), the last run's start time (for the cadence gate) and the
 // last full-static-refresh time (for the static/live cadence split).
 type diagRunState struct {
-	busy       bool
-	pending    bool
-	pendMin    time.Duration
-	last       time.Time
-	lastStatic time.Time
+	busy         bool
+	pending      bool
+	pendMin      time.Duration
+	last         time.Time // last background-sweep start (drives the sweep rate floor)
+	lastStatic   time.Time
+	lastPortDiag time.Time // last on-demand port query start (its own cooldown clock)
 }
 
 // New constructs the extension (not yet enabled/mounted).

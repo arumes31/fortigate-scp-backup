@@ -510,12 +510,17 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 }
 
 // SharedData opens the extension's private database read-only and returns the
-// full topology device payload (inventory + every live overlay) for one
-// firewall, marshaled as the same JSON the authenticated /data endpoint serves.
-// It is the exported bridge the core's public share-link endpoint uses to
-// include device data in a shared topology view (gated by the share's
-// include_devices flag). A missing database (extension disabled or never
-// fetched) yields (nil, nil) so the caller serves the map without devices.
+// device inventory for one firewall, projected down to exactly the fields the
+// public share consent promises: client MAC, IP, hostname and 802.1X identity
+// (see the topo.share_devices_hint copy). It is the exported bridge the core's
+// public share-link endpoint uses, gated by the share's include_devices flag.
+//
+// The full authenticated payload (STP/faceplate state, firewall/switch health,
+// HA, SD-WAN, dual-homed servers, port-security violations, AP locations, live
+// routes, throughput, plus each device's fingerprint/port/switch placement) is
+// deliberately NOT exposed on a public link — none of it is covered by the
+// consent. A missing database (extension disabled or never fetched) yields
+// (nil, nil) so the caller serves the map without devices.
 func SharedData(dataDir string, fwID int) ([]byte, error) {
 	dbFile := filepath.Join(dataDir, "graylog-device-data.db")
 	if _, err := os.Stat(dbFile); err != nil {
@@ -530,14 +535,31 @@ func SharedData(dataDir string, fwID int) ([]byte, error) {
 	}
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
-	// A minimal read-only Extension: only db + a discard logger are needed by the
-	// list methods buildDataResponse calls.
+	// A minimal read-only Extension: only db + a discard logger are needed.
 	e := &Extension{db: db, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	resp, err := e.buildDataResponse(fwID)
+	devices, _, err := e.listDevices(fwID)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(resp)
+	// Project each device to the consented subset via a dedicated struct, so a
+	// future field added to Device cannot silently leak onto a public link.
+	type sharedDevice struct {
+		Mac        string `json:"mac"`
+		IP         string `json:"ip,omitempty"`
+		Hostname   string `json:"hostname,omitempty"`
+		Dot1xUser  string `json:"dot1x_user,omitempty"`
+		Dot1xGroup string `json:"dot1x_group,omitempty"`
+	}
+	out := struct {
+		Devices []sharedDevice `json:"devices"`
+	}{Devices: make([]sharedDevice, 0, len(devices))}
+	for _, d := range devices {
+		out.Devices = append(out.Devices, sharedDevice{
+			Mac: d.Mac, IP: d.IP, Hostname: d.Hostname,
+			Dot1xUser: d.Dot1xUser, Dot1xGroup: d.Dot1xGroup,
+		})
+	}
+	return json.Marshal(out)
 }
 
 // listStp returns the stored STP port states of a firewall.
@@ -753,21 +775,47 @@ func (e *Extension) bestMacPins(fwID int) (map[string]MacPort, error) {
 // on such ports of two different switches is truly dual-homed (not just transit).
 const dualHomeAccessMax = 4
 
+// dualHomeFreshWindow bounds how far behind a MAC's newest sighting an
+// attachment may lag and still count toward dual-homing. A genuine MC-LAG host
+// refreshes on both cores every sweep (gap ~0); a device that has left a switch
+// leaves a row that ages past this window within a couple of sweeps, so it no
+// longer fakes a dual-home.
+const dualHomeFreshWindow = 3 * time.Hour
+
+// dualHomeFresh reports whether sighting ts is recent enough, relative to the
+// MAC's newest sighting, to count as a live attachment. Timestamps use the fixed
+// "2006-01-02 15:04:05" layout; an unparseable one is treated as fresh (fail
+// open — never hide a real attachment on a parse glitch).
+func dualHomeFresh(ts, newest string) bool {
+	if ts == "" || ts == newest {
+		return true
+	}
+	const layout = "2006-01-02 15:04:05"
+	t, e1 := time.ParseInLocation(layout, ts, time.Local)
+	n, e2 := time.ParseInLocation(layout, newest, time.Local)
+	if e1 != nil || e2 != nil {
+		return true
+	}
+	return n.Sub(t) <= dualHomeFreshWindow
+}
+
 // listDualHomed returns devices whose MAC appears on the access ports of two or
 // more switches at once — the MC-LAG-attached servers the single-port pin hides.
 func (e *Extension) listDualHomed(fwID int) ([]DualHomed, error) {
-	rows, err := e.db.Query(`SELECT mac, switch_name, port FROM mac_sightings
+	rows, err := e.db.Query(`SELECT mac, switch_name, port, updated_at FROM mac_sightings
 		WHERE fw_id = ? AND port != '' AND switch_name != ''`, fwID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	type sighting struct{ mac, sw, port string }
+	type sighting struct{ mac, sw, port, updatedAt string }
 	var all []sighting
 	portMacs := map[string]map[string]bool{} // "sw|port" → distinct MACs on that port
+	// newest holds each MAC's freshest sighting timestamp.
+	newest := map[string]string{}
 	for rows.Next() {
 		var s sighting
-		if scanErr := rows.Scan(&s.mac, &s.sw, &s.port); scanErr != nil {
+		if scanErr := rows.Scan(&s.mac, &s.sw, &s.port, &s.updatedAt); scanErr != nil {
 			return nil, scanErr
 		}
 		all = append(all, s)
@@ -776,6 +824,9 @@ func (e *Extension) listDualHomed(fwID int) ([]DualHomed, error) {
 			portMacs[pk] = map[string]bool{}
 		}
 		portMacs[pk][s.mac] = true
+		if s.updatedAt > newest[s.mac] { // lexicographic max == chronological max
+			newest[s.mac] = s.updatedAt
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -788,6 +839,11 @@ func (e *Extension) listDualHomed(fwID int) ([]DualHomed, error) {
 	}
 	perMac := map[string]map[string]att{} // mac → switch → best access attachment
 	for _, s := range all {
+		// Only a sighting as recent as this MAC's newest counts: a stale row on a
+		// switch the device has left must not fake a dual-home.
+		if !dualHomeFresh(s.updatedAt, newest[s.mac]) {
+			continue
+		}
 		c := len(portMacs[s.sw+"|"+s.port])
 		if c > dualHomeAccessMax {
 			continue // uplink / transit trunk, not an attachment
@@ -1231,7 +1287,7 @@ func (e *Extension) storeMacViolations(fwID int, vs []MacViolation, now string) 
 		if _, err := tx.Exec(`INSERT OR REPLACE INTO mac_violations
 			(fw_id, switch_name, port, vlan, mac, action, seen_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			fwID, v.Switch, v.Port, v.Vlan, v.Mac, v.Action, v.Action, now); err != nil {
+			fwID, v.Switch, v.Port, v.Vlan, v.Mac, v.Action, now, now); err != nil {
 			return err
 		}
 	}
@@ -1335,9 +1391,8 @@ func (e *Extension) listLiveRoutes(fwID int) ([]LiveRoute, error) {
 // port so a momentary LLDP blip on one poll keeps the last-known location; a
 // genuine move overwrites it with the new (non-empty) switch/port.
 func (e *Extension) storeApLocation(fwID int, aps []ApLocation, now string) error {
-	if len(aps) == 0 {
-		return nil
-	}
+	// No early return on an empty slice: the retention prune below must still run
+	// so the last AP's row is cleaned up when every AP has been removed.
 	tx, err := e.db.Begin()
 	if err != nil {
 		return err
@@ -1489,7 +1544,12 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 	// no client-traffic logs. Without this they are invisible, because the Graylog
 	// inventory alone drives device nodes and SSH only re-pins existing ones. They
 	// carry no fingerprint (Source="ssh"); the ARP IP + 802.1X identity enrich them.
-	if len(pins) > len(devices) {
+	//
+	// Guard on pins alone (never len(pins) > len(devices)): the devices slice can
+	// hold several rows per MAC — one MAC with multiple IPs — so a row count can
+	// exceed the distinct-MAC pin count while genuine SSH-only MACs still go
+	// undiscovered. The seen set below dedups by MAC, so iterating every pin is safe.
+	if len(pins) > 0 {
 		seen := make(map[string]bool, len(devices))
 		for _, d := range devices {
 			seen[d.Mac] = true

@@ -1747,8 +1747,10 @@ function buildSwitchFacePorts(sw) {
               (viol[0].mac ? ` (${viol[0].mac}${viol[0].action ? " · " + viol[0].action : ""})` : "")
             : "";
         // Link-flap count from the stored port event history (a chronically
-        // flapping port = a bad cable/SFP or a loose fiber).
-        const flaps = (topoStpEventsIdx[swTitle + "|" + p.name] || []).length;
+        // flapping port = a bad cable/SFP or a loose fiber). Only link up/down
+        // transitions count — STP role/state/guard churn is not a physical flap.
+        const flaps = (topoStpEventsIdx[swTitle + "|" + p.name] || [])
+            .filter(ev => ev.kind === "link").length;
         const flapDetail = flaps >= 6 ? `\n⚠ ${flaps} ${tt("topo.flaps")}` : "";
         const quarantine = /quarantine/i.test(p.vlan || "") || vlanIdOf(p.vlan) === 4093;
         const nac = p.access_mode === "nac" || p.access_mode === "dynamic";
@@ -2324,6 +2326,7 @@ async function loadDeviceData() {
     // Shared (public) view: a fixed per-token devices URL, no firewall selector.
     // Authenticated view: the extension endpoint keyed by the selected firewall.
     let url = cfg.sharedDevicesUrl;
+    const shared = !!url;
     if (!url) {
         const fwid = selectedFwID();
         if (!cfg.devicesBase || !fwid) return null;
@@ -2333,10 +2336,14 @@ async function loadDeviceData() {
         const resp = await fetch(url, { headers: { "Accept": "application/json" } });
         if (!resp.ok) return null;
         const data = await resp.json();
-        const btn = document.getElementById("fetchDevBtn");
-        if (btn) btn.style.display = "";
-        const live = document.getElementById("liveDevBtn");
-        if (live) live.style.display = "";
+        // The refresh/fetch/live controls POST to authenticated endpoints, so they
+        // belong to the logged-in view only — never reveal them on a public share.
+        if (!shared) {
+            const btn = document.getElementById("fetchDevBtn");
+            if (btn) btn.style.display = "";
+            const live = document.getElementById("liveDevBtn");
+            if (live) live.style.display = "";
+        }
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
         topoMultiMac = data.multi_mac_ports || [];

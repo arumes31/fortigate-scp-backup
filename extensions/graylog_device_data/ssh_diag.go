@@ -560,8 +560,16 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 		e.diagMu.Unlock()
 		return nil, errDiagBusy
 	}
+	// Cooldown for repeated on-demand queries, kept on its own clock (lastPortDiag)
+	// rather than st.last: stamping st.last here would push back the next background
+	// sweep. errDiagBusy maps to HTTP 429, the right signal for both "already
+	// running" and "too soon since the last on-demand query".
+	if !st.lastPortDiag.IsZero() && time.Since(st.lastPortDiag) < e.diagFloor() {
+		e.diagMu.Unlock()
+		return nil, errDiagBusy
+	}
 	st.busy = true
-	st.last = time.Now()
+	st.lastPortDiag = time.Now()
 	e.diagMu.Unlock()
 	defer func() {
 		e.diagMu.Lock()
@@ -598,7 +606,10 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 			out := cleanDiagOutput(run(base + c.sub + " " + sw + " " + port))
 			pd.Sections = append(pd.Sections, PortDiagSection{
 				Title: c.title, Command: c.sub + " " + sw + " " + port,
-				Output: out, OK: out != "" && !diagCmdFailed(out),
+				// OK reflects only whether the switch rejected the command; a
+				// legitimately empty response (e.g. no 802.1X session / no
+				// violations on this port) is a successful, healthy result.
+				Output: out, OK: !diagCmdFailed(out),
 			})
 		}
 	})

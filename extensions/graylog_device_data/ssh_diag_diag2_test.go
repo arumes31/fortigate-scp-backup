@@ -59,7 +59,9 @@ func TestMaxSpeedMbps(t *testing.T) {
 	}
 }
 
-// buildDiagPorts folds half-duplex + speed-downshift into the port health.
+// buildDiagPorts folds the half-duplex physical-layer fault into the port
+// health. A speed below the port's local capability is intentionally NOT a
+// fault (a slower peer negotiates legitimately), so it must NOT appear.
 func TestBuildDiagPortsPhysFaults(t *testing.T) {
 	props := "Port: port1\n  Connector\t: RJ45\n  Speed\t\t: 10Mhalf/100Mfull/1Gauto/auto\n"
 	ports, _ := buildDiagPorts(diagSwitch{Name: "SW1", Serial: "S1"}, portStatsFixture, "", props, "", "", "", "")
@@ -75,8 +77,8 @@ func TestBuildDiagPortsPhysFaults(t *testing.T) {
 	if !strings.Contains(p1.Health, "half-duplex") {
 		t.Errorf("expected half-duplex flag in health, got %q", p1.Health)
 	}
-	if !strings.Contains(p1.Health, "downshift:100M<1G") {
-		t.Errorf("expected downshift flag in health, got %q", p1.Health)
+	if strings.Contains(p1.Health, "downshift") {
+		t.Errorf("capability-vs-negotiated downshift must not be flagged, got %q", p1.Health)
 	}
 }
 
