@@ -90,7 +90,7 @@ func (e *Extension) runDiagSerial(fwID int, st *diagRunState) {
 		}
 		e.diagMu.Unlock()
 
-		if err := e.collectDiag(fwID, withStatic); err != nil {
+		if err := e.collectDiagSafe(fwID, withStatic); err != nil {
 			e.logger.Warn("fgt ssh diagnostics failed", "fw_id", fwID, "err", err)
 			e.diagMu.Lock()
 			st.lastStatic = time.Time{} // a failed run must not skip the next static refresh
@@ -156,6 +156,23 @@ func (e *Extension) poeCapableSwitches(fwID int) map[string]bool {
 	return m
 }
 
+// collectDiagSafe runs collectDiag with panic recovery. The collection runs in
+// detached background goroutines (page-view refresh + the hourly worker), so a
+// panic in the SSH runner or any CLI parser would otherwise crash the whole
+// process. It also guarantees the caller's cleanup runs: an unrecovered panic
+// would unwind past runDiagSerial and leave st.busy stuck true, permanently
+// wedging this firewall's collector. A recovered panic is surfaced as an error
+// so the caller resets the static-tier timer and retries next sweep.
+func (e *Extension) collectDiagSafe(fwID int, withStatic bool) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			e.logger.Error("fgt ssh diagnostics panicked", "fw_id", fwID, "panic", rec)
+			err = fmt.Errorf("panic: %v", rec)
+		}
+	}()
+	return e.collectDiag(fwID, withStatic)
+}
+
 // collectDiag opens one SSH session to the firewall, enumerates its managed
 // switches and pulls per-port link state + STP/interlink data for each, storing
 // the result. withStatic includes the slow-changing tier (media/optics/LLDP/
@@ -195,6 +212,11 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 	if !withStatic {
 		poeCap = e.poeCapableSwitches(fwID)
 	}
+	// Persistence failures are logged AND accumulated (not just logged): a
+	// swallowed static-tier store error would let runDiagSerial advance
+	// lastStatic and skip the retry for a full static interval. Returning the
+	// joined error forces the next sweep to re-collect the static tier.
+	var storeErr error
 	runErr := runSSHShell(client, overall, func(run func(string) string) {
 		inv := parseSwitchInventory(run(base + "status"))
 		for _, sw := range inv {
@@ -252,13 +274,16 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 			}
 			if serr := e.storeDiagStp(fwID, ports, now); serr != nil {
 				e.logger.Warn("fgt diag: stp store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
 			}
 			if serr := e.storeSwitchEdges(fwID, edges, now); serr != nil {
 				e.logger.Warn("fgt diag: edge store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
 			}
 			// 802.1X authenticated sessions → per-MAC RADIUS identity + dynamic VLAN.
 			if serr := e.storeMacEnrichDot1x(fwID, parseDot1xSessions(dot1x), now); serr != nil {
 				e.logger.Warn("fgt diag: dot1x identity store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
 			}
 			// Switch health: fan (live) + STP topology-change churn (from the stp
 			// output already pulled) + PoE budget (from poe summary already pulled)
@@ -273,6 +298,7 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 			if sh.Fan != "" || sh.Congestion > 0 || sh.Tcn > 0 || sh.PoeTotal > 0 {
 				if serr := e.storeSwitchHealth(fwID, []SwitchHealth{sh}, now); serr != nil {
 					e.logger.Warn("fgt diag: switch-health store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+					storeErr = errors.Join(storeErr, serr)
 				}
 			}
 			switches++
@@ -282,40 +308,47 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 		if macPorts := parseMacTable(run(base + "mac-table")); len(macPorts) > 0 {
 			if serr := e.storeMacSightings(fwID, macPorts, now); serr != nil {
 				e.logger.Warn("fgt diag: mac-sighting store failed", "fw_id", fwID, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
 			}
 			macs = len(macPorts)
 		}
 		// ARP → MAC↔IP for device IP enrichment (the switch mac-table has no IP).
 		if serr := e.storeMacEnrichArp(fwID, parseArp(run("get system arp")), now); serr != nil {
 			e.logger.Warn("fgt diag: arp store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 		// Firewall node health: live CPU/mem/sessions/uptime + authoritative HA roles.
 		health := parseFwHealth(run("get system performance status"), run("diagnose sys ha status"))
 		if serr := e.storeFwHealth(fwID, health.summary(), now); serr != nil {
 			e.logger.Warn("fgt diag: health store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 		// Live routing egress summary: which interface/tunnel carries how many
 		// installed routes (and the live default) — reality vs the config's routes.
 		if serr := e.storeLiveRoutes(fwID, parseRoutes(run("get router info routing-table all")), now); serr != nil {
 			e.logger.Warn("fgt diag: live-routes store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 		// SD-WAN member SLA: live per-WAN loss/latency/jitter/state.
 		if serr := e.storeSdwanHealth(fwID, parseSdwanHealth(run("diagnose sys sdwan health-check")), now); serr != nil {
 			e.logger.Warn("fgt diag: sdwan store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 		// Interface throughput: byte-counter delta → live Mbps per FGT interface.
 		if serr := e.storeIfaceThroughput(fwID, parseNetlinkIfaces(run("diagnose netlink interface list")), now); serr != nil {
 			e.logger.Warn("fgt diag: iface-throughput store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 	})
 	if serr := e.storeDiagStatus(fwID, CollectionStatus{
 		LastRun: now, Switches: switches, DurationMs: int(time.Since(start).Milliseconds()), Static: withStatic,
 	}, now); serr != nil {
 		e.logger.Warn("fgt diag: status store failed", "fw_id", fwID, "err", serr)
+		storeErr = errors.Join(storeErr, serr)
 	}
 	e.logger.Info("fgt ssh diagnostics collected", "fw_id", fwID, "host", host,
 		"switches", switches, "mac_sightings", macs, "static", withStatic, "ms", time.Since(start).Milliseconds())
-	return runErr
+	return errors.Join(runErr, storeErr)
 }
 
 // dialSSHDiag connects to the FortiGate CLI. FortiOS advertises the password
@@ -386,6 +419,14 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 	}()
 
 	deadline := time.Now().Add(overall)
+	// A hard failure — the session stream closing, a stdin write failing, or the
+	// overall deadline elapsing — makes every subsequent run() return empty
+	// output, which the parsers silently accept as "nothing observed". Latch the
+	// first such failure so the caller treats the whole collection as failed
+	// rather than persisting a half-empty snapshot as success. A per-command
+	// timeout that is NOT the overall deadline stays soft (partial output, no
+	// latch): one slow command must not abort an otherwise-healthy sweep.
+	var shellErr error
 	readUntilPrompt := func() string {
 		var buf bytes.Buffer
 		cmdDeadline := time.Now().Add(20 * time.Second)
@@ -398,6 +439,7 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 			select {
 			case c, ok := <-chunks:
 				if !ok {
+					shellErr = errors.New("ssh session stream closed mid-command")
 					return buf.String()
 				}
 				buf.Write(c)
@@ -405,15 +447,23 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 					return buf.String()
 				}
 			case <-timer.C:
+				if !time.Now().Before(deadline) {
+					shellErr = errors.New("ssh overall deadline exceeded")
+				}
 				return buf.String()
 			}
 		}
 	}
 	run := func(cmd string) string {
+		if shellErr != nil {
+			return "" // session already broken: stop issuing commands
+		}
 		if time.Now().After(deadline) {
+			shellErr = errors.New("ssh overall deadline exceeded")
 			return ""
 		}
 		if _, werr := io.WriteString(stdin, cmd+"\n"); werr != nil {
+			shellErr = fmt.Errorf("ssh stdin write: %w", werr)
 			return ""
 		}
 		return readUntilPrompt()
@@ -422,7 +472,7 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 	readUntilPrompt() // consume the login banner / first prompt
 	fn(run)
 	_, _ = io.WriteString(stdin, "exit\n")
-	return nil
+	return shellErr
 }
 
 // isFortiPrompt reports whether the buffer currently ends at a FortiOS CLI
