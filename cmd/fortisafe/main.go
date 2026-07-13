@@ -30,8 +30,8 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/web"
 
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
-	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
+	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
 
 func main() {
