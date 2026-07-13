@@ -21,56 +21,93 @@ import (
 // switch_edges) and the topology frontend are shared with the log path, so the
 // faceplate needs no changes; SSH just supplies a fresher, complete overlay.
 
-// diagFloor is the hard lower bound on query spacing per device, regardless of
-// the requested cadence — a safety valve so nothing can hammer a firewall.
+// diagFloor is the hard lower bound on spacing between query starts per device.
+// One query runs at a time per firewall regardless (the serial executor), so in
+// practice consecutive collections are spaced by the collection's own duration;
+// this floor only bounds the gap for very fast commands.
 func (e *Extension) diagFloor() time.Duration {
 	if e.cfg.FgtDiagSSHFloorSec > 0 {
 		return time.Duration(e.cfg.FgtDiagSSHFloorSec) * time.Second
 	}
-	return 10 * time.Second
+	return 2 * time.Second
 }
 
-// diagAllow reserves the per-device slot: it returns true (and marks the device
-// busy + stamps the attempt time) only when no query is in flight AND at least
-// max(minInterval, floor) has elapsed since the last attempt. The caller must
-// pair a true return with diagDone.
-func (e *Extension) diagAllow(fwID int, minInterval time.Duration) bool {
-	if floor := e.diagFloor(); minInterval < floor {
-		minInterval = floor
-	}
-	e.diagMu.Lock()
-	defer e.diagMu.Unlock()
-	if e.diagBusy[fwID] {
-		return false
-	}
-	if t, ok := e.diagLast[fwID]; ok && time.Since(t) < minInterval {
-		return false
-	}
-	e.diagBusy[fwID] = true
-	e.diagLast[fwID] = time.Now() // stamp at start so failures still count against the cadence
-	return true
+// diagStaticInterval is how often the slow-changing data (media/optics/PoE
+// capability/switch structure) is re-collected — much less often than the live
+// data, so a big fabric is not re-walked for static facts every poll.
+func (e *Extension) diagStaticInterval() time.Duration {
+	return 12 * time.Hour
 }
 
-func (e *Extension) diagDone(fwID int) {
-	e.diagMu.Lock()
-	delete(e.diagBusy, fwID)
-	e.diagMu.Unlock()
-}
-
-// runDiagIfAllowed runs one diagnostics pass for a device if the rate gate
-// permits it (minInterval = the caller's cadence, clamped up to the hard floor).
-// It is safe to call concurrently and from a page-view goroutine: a denied slot
-// simply returns.
+// runDiagIfAllowed requests one collection for a firewall. It enforces "at most
+// one query per firewall at a time": if a query is already running, this request
+// is queued (coalesced into a single pending slot that keeps the shortest
+// requested interval) and drained when the running one finishes, so requests are
+// serialized per firewall rather than dropped or run concurrently. The cadence
+// gate (max(minInterval, floor) since the last run) still applies. Safe to call
+// concurrently and from a page-view goroutine.
 func (e *Extension) runDiagIfAllowed(fwID int, minInterval time.Duration) {
 	if !e.cfg.FgtDiagSSHEnabled || e.firewallCreds == nil {
 		return
 	}
-	if !e.diagAllow(fwID, minInterval) {
+	if floor := e.diagFloor(); minInterval < floor {
+		minInterval = floor
+	}
+	e.diagMu.Lock()
+	st := e.diagState[fwID]
+	if st == nil {
+		st = &diagRunState{}
+		e.diagState[fwID] = st
+	}
+	if st.busy {
+		// Serialize: queue behind the in-flight run (single coalesced slot,
+		// keeping the most urgent — shortest — interval).
+		if !st.pending || minInterval < st.pendMin {
+			st.pendMin = minInterval
+		}
+		st.pending = true
+		e.diagMu.Unlock()
 		return
 	}
-	defer e.diagDone(fwID)
-	if err := e.collectDiag(fwID); err != nil {
-		e.logger.Warn("fgt ssh diagnostics failed", "fw_id", fwID, "err", err)
+	if !st.last.IsZero() && time.Since(st.last) < minInterval {
+		e.diagMu.Unlock()
+		return // too soon and nothing running to queue behind
+	}
+	st.busy = true
+	st.last = time.Now() // stamp at start so failures still count against the cadence
+	e.diagMu.Unlock()
+	e.runDiagSerial(fwID, st)
+}
+
+// runDiagSerial runs the collection, then drains a coalesced pending request if
+// the cadence now permits — never concurrent with itself for a given firewall.
+func (e *Extension) runDiagSerial(fwID int, st *diagRunState) {
+	for {
+		e.diagMu.Lock()
+		withStatic := time.Since(st.lastStatic) >= e.diagStaticInterval()
+		if withStatic {
+			st.lastStatic = time.Now()
+		}
+		e.diagMu.Unlock()
+
+		if err := e.collectDiag(fwID, withStatic); err != nil {
+			e.logger.Warn("fgt ssh diagnostics failed", "fw_id", fwID, "err", err)
+			e.diagMu.Lock()
+			st.lastStatic = time.Time{} // a failed run must not skip the next static refresh
+			e.diagMu.Unlock()
+		}
+
+		e.diagMu.Lock()
+		if st.pending && time.Since(st.last) >= st.pendMin {
+			st.pending = false
+			st.last = time.Now()
+			e.diagMu.Unlock()
+			continue // drain the queued request
+		}
+		st.pending = false
+		st.busy = false
+		e.diagMu.Unlock()
+		return
 	}
 }
 
@@ -100,10 +137,32 @@ func (e *Extension) diagWorker() {
 	}
 }
 
+// poeCapableSwitches returns the switch names known to have PoE ports (from the
+// last static sweep's stored media), so live sweeps can gate `poe summary`
+// without re-running the static `port-properties` capability query.
+func (e *Extension) poeCapableSwitches(fwID int) map[string]bool {
+	m := map[string]bool{}
+	rows, err := e.db.Query("SELECT DISTINCT switch_name FROM stp_ports WHERE fw_id = ? AND poe != ''", fwID)
+	if err != nil {
+		return m
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var s string
+		if rows.Scan(&s) == nil {
+			m[s] = true
+		}
+	}
+	return m
+}
+
 // collectDiag opens one SSH session to the firewall, enumerates its managed
 // switches and pulls per-port link state + STP/interlink data for each, storing
-// the result. Credentials come from the host (decrypted) via FirewallCreds.
-func (e *Extension) collectDiag(fwID int) error {
+// the result. withStatic includes the slow-changing tier (media/optics/LLDP/
+// congestion); live-only sweeps skip it and rely on the stored values, so a large
+// fabric is not re-walked for static facts every poll. Credentials come from the
+// host (decrypted) via FirewallCreds.
+func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	host, user, pass, port, err := e.firewallCreds(ctx, fwID)
 	cancel()
@@ -126,24 +185,136 @@ func (e *Extension) collectDiag(fwID int) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	now := time.Now().Format("2006-01-02 15:04:05")
-	switches := 0
+	start := time.Now()
+	now := start.Format("2006-01-02 15:04:05")
+	switches, macs := 0, 0
+	base := "diagnose switch-controller switch-info "
+	// Live sweeps gate `poe summary` on the switches known PoE-capable from the
+	// last static sweep (port-properties, which reveals capability, is static-tier).
+	var poeCap map[string]bool
+	if !withStatic {
+		poeCap = e.poeCapableSwitches(fwID)
+	}
 	runErr := runSSHShell(client, overall, func(run func(string) string) {
-		inv := parseSwitchInventory(run("diagnose switch-controller switch-info status"))
+		inv := parseSwitchInventory(run(base + "status"))
 		for _, sw := range inv {
-			portStats := run("diagnose switch-controller switch-info port-stats " + sw.Name)
-			stp := run("diagnose switch-controller switch-info stp " + sw.Name)
-			ports, edges := buildDiagPorts(sw, portStats, stp)
+			portStats := run(base + "port-stats " + sw.Name)
+			stp := run(base + "stp " + sw.Name)
+			dot1x := run(base + "802.1X " + sw.Name)
+			// Static tier: connector/media, optics and LLDP neighbors change rarely,
+			// so they run only on static sweeps; the non-empty store-merge keeps
+			// their values on live sweeps. Empty strings here → parsers return
+			// nothing → stored values are preserved.
+			portProps, modules, lldp := "", "", ""
+			hasPoe, hasSFP := false, false
+			if withStatic {
+				portProps = run(base + "port-properties " + sw.Name)
+				lldp = run(base + "lldp neighbors-detail " + sw.Name)
+				for _, pp := range parsePortProperties(portProps) {
+					hasPoe = hasPoe || pp.PoeCapable
+					hasSFP = hasSFP || pp.HasSFP
+				}
+				if hasSFP {
+					modules = run(base + "modules summary " + sw.Name)
+				}
+			} else {
+				hasPoe = poeCap[sw.Name]
+			}
+			poe := ""
+			if hasPoe {
+				poe = run(base + "poe summary " + sw.Name)
+			}
+			ports, edges := buildDiagPorts(sw, portStats, stp, portProps, poe, modules, dot1x, lldp)
+			// MC-LAG ICL detail (member ports + peer serial + split-brain/keepalive
+			// health) for the switches that own an ICL trunk — the authoritative
+			// core↔core cabling the STP view alone cannot resolve to ports.
+			ownsICL := false
+			for _, ed := range edges {
+				if strings.Contains(ed.Trunk, "_ICL") {
+					ownsICL = true
+					break
+				}
+			}
+			if ownsICL {
+				if icl := parseMclagIcl(run(base + "mclag icl " + sw.Name)); icl != nil {
+					note := ""
+					if icl.SplitBrain != "" && !strings.EqualFold(icl.SplitBrain, "Disabled") {
+						note = "⚠ split-brain: " + icl.SplitBrain
+					}
+					if icl.KeepaliveDrop > 0 {
+						if note != "" {
+							note += " · "
+						}
+						note += "keepalive drops: " + strconv.Itoa(icl.KeepaliveDrop)
+					}
+					edges = append(edges, SwitchEdge{SwitchSN: sw.Serial, SwitchName: sw.Name, Trunk: icl.Trunk, Ports: icl.Ports, Note: note})
+				}
+			}
 			if serr := e.storeDiagStp(fwID, ports, now); serr != nil {
 				e.logger.Warn("fgt diag: stp store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
 			}
 			if serr := e.storeSwitchEdges(fwID, edges, now); serr != nil {
 				e.logger.Warn("fgt diag: edge store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
 			}
+			// 802.1X authenticated sessions → per-MAC RADIUS identity + dynamic VLAN.
+			if serr := e.storeMacEnrichDot1x(fwID, parseDot1xSessions(dot1x), now); serr != nil {
+				e.logger.Warn("fgt diag: dot1x identity store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+			}
+			// Switch health: fan (live) + STP topology-change churn (from the stp
+			// output already pulled) + PoE budget (from poe summary already pulled)
+			// + QoS congestion (static-tier — cumulative, low-churn).
+			fan := parseFan(run(base + "fan " + sw.Name))
+			cong := 0
+			if withStatic {
+				cong = parseQosCongestion(run(base + "qos-stats " + sw.Name))
+			}
+			poeUsed, poeTotal := parsePoeBudget(poe)
+			sh := SwitchHealth{SwitchName: sw.Name, Fan: fan, Congestion: cong, Tcn: parseStpTcn(stp), PoeUsed: poeUsed, PoeTotal: poeTotal}
+			if sh.Fan != "" || sh.Congestion > 0 || sh.Tcn > 0 || sh.PoeTotal > 0 {
+				if serr := e.storeSwitchHealth(fwID, []SwitchHealth{sh}, now); serr != nil {
+					e.logger.Warn("fgt diag: switch-health store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
+				}
+			}
 			switches++
 		}
+		// One fabric-wide MAC table (no-arg = all switches) → authoritative
+		// device→access-port sightings, keyed the same way the Graylog MAC path is.
+		if macPorts := parseMacTable(run(base + "mac-table")); len(macPorts) > 0 {
+			if serr := e.storeMacSightings(fwID, macPorts, now); serr != nil {
+				e.logger.Warn("fgt diag: mac-sighting store failed", "fw_id", fwID, "err", serr)
+			}
+			macs = len(macPorts)
+		}
+		// ARP → MAC↔IP for device IP enrichment (the switch mac-table has no IP).
+		if serr := e.storeMacEnrichArp(fwID, parseArp(run("get system arp")), now); serr != nil {
+			e.logger.Warn("fgt diag: arp store failed", "fw_id", fwID, "err", serr)
+		}
+		// Firewall node health: live CPU/mem/sessions/uptime + authoritative HA roles.
+		health := parseFwHealth(run("get system performance status"), run("diagnose sys ha status"))
+		if serr := e.storeFwHealth(fwID, health.summary(), now); serr != nil {
+			e.logger.Warn("fgt diag: health store failed", "fw_id", fwID, "err", serr)
+		}
+		// Live routing egress summary: which interface/tunnel carries how many
+		// installed routes (and the live default) — reality vs the config's routes.
+		if serr := e.storeLiveRoutes(fwID, parseRoutes(run("get router info routing-table all")), now); serr != nil {
+			e.logger.Warn("fgt diag: live-routes store failed", "fw_id", fwID, "err", serr)
+		}
+		// SD-WAN member SLA: live per-WAN loss/latency/jitter/state.
+		if serr := e.storeSdwanHealth(fwID, parseSdwanHealth(run("diagnose sys sdwan health-check")), now); serr != nil {
+			e.logger.Warn("fgt diag: sdwan store failed", "fw_id", fwID, "err", serr)
+		}
+		// Interface throughput: byte-counter delta → live Mbps per FGT interface.
+		if serr := e.storeIfaceThroughput(fwID, parseNetlinkIfaces(run("diagnose netlink interface list")), now); serr != nil {
+			e.logger.Warn("fgt diag: iface-throughput store failed", "fw_id", fwID, "err", serr)
+		}
 	})
-	e.logger.Info("fgt ssh diagnostics collected", "fw_id", fwID, "host", host, "switches", switches)
+	if serr := e.storeDiagStatus(fwID, CollectionStatus{
+		LastRun: now, Switches: switches, DurationMs: int(time.Since(start).Milliseconds()), Static: withStatic,
+	}, now); serr != nil {
+		e.logger.Warn("fgt diag: status store failed", "fw_id", fwID, "err", serr)
+	}
+	e.logger.Info("fgt ssh diagnostics collected", "fw_id", fwID, "host", host,
+		"switches", switches, "mac_sightings", macs, "static", withStatic, "ms", time.Since(start).Milliseconds())
 	return runErr
 }
 

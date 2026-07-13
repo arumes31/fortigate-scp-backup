@@ -97,7 +97,7 @@ type Config struct {
 	FgtDiagSSHEnabled       bool // FGT_DIAG_SSH_ENABLED: turn the SSH diagnostics collector on
 	FgtDiagSSHBackgroundSec int  // background sweep cadence per device (seconds)
 	FgtDiagSSHViewSec       int  // min spacing when the topology page triggers a query (seconds)
-	FgtDiagSSHFloorSec      int  // hard rate floor: never query a device faster than this (seconds)
+	FgtDiagSSHFloorSec      int  // hard rate floor between query starts (seconds); one query per device runs at a time regardless
 	FgtDiagSSHTimeoutSec    int  // overall SSH session timeout per device (seconds)
 
 	// Housekeeping
@@ -205,8 +205,8 @@ func Load(logger *slog.Logger) *Config {
 		FgtDiagSSHEnabled:       boolenv("FGT_DIAG_SSH_ENABLED", false),
 		FgtDiagSSHBackgroundSec: intenv("FGT_DIAG_SSH_BACKGROUND_SECONDS", 3600), // hourly background sweep
 		FgtDiagSSHViewSec:       intenv("FGT_DIAG_SSH_VIEW_SECONDS", 1200),       // ≥20 min between page-triggered queries
-		FgtDiagSSHFloorSec:      intenv("FGT_DIAG_SSH_FLOOR_SECONDS", 10),        // never faster than 1 query / 10 s / device
-		FgtDiagSSHTimeoutSec:    intenv("FGT_DIAG_SSH_TIMEOUT_SECONDS", 90),
+		FgtDiagSSHFloorSec:      intenv("FGT_DIAG_SSH_FLOOR_SECONDS", 2),         // min 2 s between query starts (and only one at a time per device)
+		FgtDiagSSHTimeoutSec:    intenv("FGT_DIAG_SSH_TIMEOUT_SECONDS", 180),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
 

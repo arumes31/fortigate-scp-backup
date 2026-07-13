@@ -42,11 +42,23 @@ type Extension struct {
 	currentUser func(r *http.Request) string
 
 	// Live SSH diagnostics (optional): resolve a firewall's decrypted SSH
-	// credentials, and a per-device gate that rate-limits CLI queries.
+	// credentials, and a per-device serial executor that rate-limits CLI queries
+	// (never more than one in flight per firewall; extra requests are queued).
 	firewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
 	diagMu        sync.Mutex
-	diagLast      map[int]time.Time // fw_id → last SSH query start
-	diagBusy      map[int]bool      // fw_id → a query is in flight
+	diagState     map[int]*diagRunState // fw_id → serial-execution state
+}
+
+// diagRunState is one firewall's SSH-collection state: a single-flight guard, a
+// coalesced pending slot (at most one queued request, keeping the shortest
+// requested interval), the last run's start time (for the cadence gate) and the
+// last full-static-refresh time (for the static/live cadence split).
+type diagRunState struct {
+	busy       bool
+	pending    bool
+	pendMin    time.Duration
+	last       time.Time
+	lastStatic time.Time
 }
 
 // New constructs the extension (not yet enabled/mounted).
@@ -71,8 +83,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.pool = d.DB
 	e.dataDir = d.DataDir
 	e.firewallCreds = d.FirewallCreds
-	e.diagLast = map[int]time.Time{}
-	e.diagBusy = map[int]bool{}
+	e.diagState = map[int]*diagRunState{}
 
 	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err
@@ -94,6 +105,12 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		createWifiSQL,
 		createVpnStatusSQL,
 		createHaStatusSQL,
+		createMacEnrichSQL,
+		createSwitchHealthSQL,
+		createLiveRoutesSQL,
+		createSdwanHealthSQL,
+		createIfaceStatsSQL,
+		createDiagStatusSQL,
 		// Legacy single-row-per-MAC binding table, superseded by mac_sightings
 		// (per-switch rows preserve the transit signal). Cache data only —
 		// repopulated by the next refresh.
@@ -112,6 +129,20 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		`ALTER TABLE stp_ports ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE stp_ports ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE stp_ports ADD COLUMN dot1x TEXT NOT NULL DEFAULT ''`,
+		// Live SSH-diagnostics port enrichment.
+		`ALTER TABLE stp_ports ADD COLUMN media TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN speed TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN admin TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN poe TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN optic TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN health TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE stp_ports ADD COLUMN neighbor TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE switch_edges ADD COLUMN state TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE switch_edges ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE ha_status ADD COLUMN health TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE switch_health ADD COLUMN tcn INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE switch_health ADD COLUMN poe_used REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE switch_health ADD COLUMN poe_total REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE devices ADD COLUMN first_seen TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN devtype TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE devices ADD COLUMN osname TEXT NOT NULL DEFAULT ''`,
@@ -182,10 +213,33 @@ const createStpTableSQL = `CREATE TABLE IF NOT EXISTS stp_ports (
 	role        TEXT NOT NULL DEFAULT '',
 	state       TEXT NOT NULL DEFAULT '',
 	guard       TEXT NOT NULL DEFAULT '',
+	link        TEXT NOT NULL DEFAULT '',
 	dot1x       TEXT NOT NULL DEFAULT '',
+	media       TEXT NOT NULL DEFAULT '',
+	speed       TEXT NOT NULL DEFAULT '',
+	admin       TEXT NOT NULL DEFAULT '',
+	poe         TEXT NOT NULL DEFAULT '',
+	optic       TEXT NOT NULL DEFAULT '',
+	health      TEXT NOT NULL DEFAULT '',
+	neighbor    TEXT NOT NULL DEFAULT '',
 	last_change TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, switch_name, port)
+)`
+
+// mac_enrich holds per-MAC enrichment joined into the device inventory: the
+// ARP-resolved IP and the 802.1X RADIUS identity (AD user/machine, group) and
+// dynamic VLAN — all keyed by client MAC, pulled live over SSH.
+const createMacEnrichSQL = `CREATE TABLE IF NOT EXISTS mac_enrich (
+	fw_id       INTEGER NOT NULL,
+	mac         TEXT NOT NULL,
+	ip          TEXT NOT NULL DEFAULT '',
+	iface       TEXT NOT NULL DEFAULT '',
+	dot1x_user  TEXT NOT NULL DEFAULT '',
+	dot1x_group TEXT NOT NULL DEFAULT '',
+	dot1x_vlan  TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, mac)
 )`
 
 // mac_sightings holds the latest port per (client MAC, switch), derived from
@@ -215,9 +269,72 @@ const createSwitchEdgesSQL = `CREATE TABLE IF NOT EXISTS switch_edges (
 	switch_name TEXT NOT NULL DEFAULT '',
 	trunk       TEXT NOT NULL,
 	role        TEXT NOT NULL DEFAULT '',
+	state       TEXT NOT NULL DEFAULT '',
 	ports       TEXT NOT NULL DEFAULT '',
+	note        TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, switch_sn, trunk)
+)`
+
+// switch_health holds one managed switch's live environmental/congestion state
+// (fan status + cumulative QoS drops) for the per-switch health rollup.
+const createSwitchHealthSQL = `CREATE TABLE IF NOT EXISTS switch_health (
+	fw_id       INTEGER NOT NULL,
+	switch_name TEXT NOT NULL,
+	fan         TEXT NOT NULL DEFAULT '',
+	congestion  INTEGER NOT NULL DEFAULT 0,
+	tcn         INTEGER NOT NULL DEFAULT 0,
+	poe_used    REAL NOT NULL DEFAULT 0,
+	poe_total   REAL NOT NULL DEFAULT 0,
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_name)
+)`
+
+// sdwan_health holds the live per-member SD-WAN SLA (loss/latency/jitter/state).
+const createSdwanHealthSQL = `CREATE TABLE IF NOT EXISTS sdwan_health (
+	fw_id      INTEGER NOT NULL,
+	member     TEXT NOT NULL,
+	state      TEXT NOT NULL DEFAULT '',
+	loss       REAL NOT NULL DEFAULT 0,
+	latency    REAL NOT NULL DEFAULT 0,
+	jitter     REAL NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (fw_id, member)
+)`
+
+// iface_stats holds the previous byte counters + derived throughput (Mbps) per
+// FortiGate interface — the two-sample delta that turns counters into a rate.
+const createIfaceStatsSQL = `CREATE TABLE IF NOT EXISTS iface_stats (
+	fw_id      INTEGER NOT NULL,
+	iface      TEXT NOT NULL,
+	rxb        INTEGER NOT NULL DEFAULT 0,
+	txb        INTEGER NOT NULL DEFAULT 0,
+	ts         TEXT NOT NULL DEFAULT '',
+	rx_mbps    REAL NOT NULL DEFAULT 0,
+	tx_mbps    REAL NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (fw_id, iface)
+)`
+
+// diag_status records the last SSH sweep outcome for the collection-status UI.
+const createDiagStatusSQL = `CREATE TABLE IF NOT EXISTS diag_status (
+	fw_id       INTEGER NOT NULL PRIMARY KEY,
+	last_run    TEXT NOT NULL DEFAULT '',
+	switches    INTEGER NOT NULL DEFAULT 0,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	static      INTEGER NOT NULL DEFAULT 0,
+	updated_at  TEXT NOT NULL
+)`
+
+// live_routes holds the firewall's live routing egress summary: per interface/
+// tunnel, the number of installed routes and whether it carries the default.
+const createLiveRoutesSQL = `CREATE TABLE IF NOT EXISTS live_routes (
+	fw_id       INTEGER NOT NULL,
+	device      TEXT NOT NULL,
+	routes      INTEGER NOT NULL DEFAULT 0,
+	is_default  INTEGER NOT NULL DEFAULT 0,
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, device)
 )`
 
 // wifi_clients holds the latest wireless association per client MAC
@@ -250,6 +367,7 @@ const createVpnStatusSQL = `CREATE TABLE IF NOT EXISTS vpn_status (
 const createHaStatusSQL = `CREATE TABLE IF NOT EXISTS ha_status (
 	fw_id      INTEGER NOT NULL PRIMARY KEY,
 	detail     TEXT NOT NULL DEFAULT '',
+	health     TEXT NOT NULL DEFAULT '',
 	updated_at TEXT NOT NULL
 )`
 
