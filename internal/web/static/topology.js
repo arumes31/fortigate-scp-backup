@@ -716,14 +716,21 @@ function buildTree(data) {
             .sort((a, b) => portNum(a[0]) - portNum(b[0]) || (a[0] < b[0] ? -1 : 1))
             .map(([port, devs]) => {
                 const p = portCfg[port];
-                const vlan = (p && p.vlan) || (devs[0] && devs[0].vlan ? String(devs[0].vlan) : "");
+                const nativeVlan = p && p.vlan ? String(p.vlan) : "";
+                // An 802.1x port holds clients on its native (onboarding) VLAN
+                // until they authenticate, then dynamically moves them to their
+                // assigned VLAN. Label/colour the port by the client's effective
+                // VLAN (from the device record), falling back to the native VLAN.
+                const devVlan = devs.map(d => (d.vlan == null ? "" : String(d.vlan))).find(v => v !== "") || "";
+                const vlan = devVlan || nativeVlan;
                 const col = vlan ? vlanColor(vlan) : null;
                 const mm = topoMultiMacIdx[swName(sw) + "|" + port];
                 const st = topoStpIdx[swName(sw) + "|" + port];
                 return {
-                    name: port, kind: "port", data: { port, vlan, ports: p ? [p] : [] },
+                    name: port, kind: "port", data: { port, vlan, nativeVlan, ports: p ? [p] : [] },
                     info: `Port ${port}` +
                         (vlan ? `\nVLAN: ${vlan}` : "") +
+                        (nativeVlan && nativeVlan !== vlan ? `\nNative VLAN: ${nativeVlan}` : "") +
                         (p && taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
                         (mm ? `\n⚠ ${mm} MACs — ${tt("topo.multi_mac")}` : "") +
                         (st && st.blocked ? `\n⃠ ${tt("topo.stp_blocked")}` : "") +
@@ -1006,9 +1013,11 @@ function renderTree(data) {
             .transition().duration(220).attr("d", diagonal);
         link.exit().remove();
 
-        // Switch interlinks: orthogonal edges anchored at per-port stubs on
-        // the switch nodes' right edges (like the FortiGate GUI). Each link
-        // gets its own vertical lane so parallel links do not overlap.
+        // Switch interlinks: orthogonal edges anchored at per-port stubs on the
+        // switch nodes' LEFT edges (the uplink-facing side) so they route
+        // through the parent column instead of overlapping the port → device
+        // subtree that now grows to the right. Each link gets its own vertical
+        // lane so parallel links do not overlap.
         const swPos = {};
         nodes.forEach(d => { if (d.data.kind === "switch") swPos[d.data.name] = d; });
         // Skip pairs already connected by a tree edge (uplink-nested switches).
@@ -1034,7 +1043,7 @@ function renderTree(data) {
                 const step = Math.min(12, 30 / Math.max(1, ports.length - 1) || 12);
                 ports.forEach((p, i) => {
                     const y = d.x - ((ports.length - 1) * step) / 2 + i * step;
-                    const s = { sw, port: p, x: d.y + 75, y };
+                    const s = { sw, port: p, x: d.y - 75, y };
                     stubList.push(s);
                     stubPos[sw + "|" + p] = s;
                 });
@@ -1045,16 +1054,16 @@ function renderTree(data) {
         const anchor = (sw, ports) => {
             const d = swPos[sw];
             const pts = (ports || []).map(p => stubPos[sw + "|" + p]).filter(Boolean);
-            if (!pts.length) return { x: d.y + 75, y: d.x };
+            if (!pts.length) return { x: d.y - 75, y: d.x };
             return { x: pts[0].x, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
         };
-        // Orthogonal route: out of A, right to the link's lane, vertical,
-        // left/right into B. Lanes sit right of the deeper node, one per link.
+        // Orthogonal route: out of A's left edge to the link's lane, vertical,
+        // then into B. Lanes sit left of the shallower node, one per link.
         const laneOf = {};
         activeLinks.forEach((l, i) => { laneOf[linkKey(l)] = i; });
         const laneX = l => {
             const a = swPos[l.from], b = swPos[l.to];
-            return Math.max(a.y, b.y) + 75 + 26 + laneOf[linkKey(l)] * 12;
+            return Math.min(a.y, b.y) - 75 - 26 - laneOf[linkKey(l)] * 12;
         };
         const interPath = l => {
             const p1 = anchor(l.from, l.from_ports), p2 = anchor(l.to, l.to_ports);
@@ -1074,12 +1083,12 @@ function renderTree(data) {
             .style("pointer-events", "none")
             .attr("transform", s => `translate(${s.x},${s.y})`);
         stubEnter.append("rect")
-            .attr("x", 0).attr("y", -5).attr("width", 22).attr("height", 10)
+            .attr("x", -22).attr("y", -5).attr("width", 22).attr("height", 10)
             .attr("rx", 3)
             .attr("fill", "#1c1917").attr("stroke", "#f59e0b").attr("stroke-width", 1)
             .attr("stroke-opacity", 0.7);
         stubEnter.append("text")
-            .attr("x", 11).attr("y", 3)
+            .attr("x", -11).attr("y", 3)
             .attr("text-anchor", "middle")
             .attr("fill", "#fde68a").attr("font-size", "7.5px").attr("font-family", "monospace")
             .text(s => String((/\d+/.exec(s.port) || [s.port])[0]));
@@ -1328,14 +1337,27 @@ function portColor(p) {
 }
 
 // portCellSVG renders one faceplate port cell. idx indexes the panel's port
-// array (click handler lookup); the cyan corner square marks 802.1X ports,
-// down ports render dimmed with the LED off. Ports blocked by STP or a
-// BPDU/loop/root guard blink orange.
+// array (click handler lookup); the cyan corner square marks 802.1X ports.
+// The corner LED reflects link state: green = confirmed up, red = down (admin
+// or live), grey = unknown. Down ports render dimmed; STP/guard blocks blink
+// orange.
 function portCellSVG(p, idx, x, y, cell) {
-    const col = p.stpBlocked ? "#f97316" : portColor(p);
-    const active = !p.isDown && !p.liveDown && (p.hasIP || p.vlans > 0 || p.isWan || p.isFortilink || p.isInterlink);
-    // Link LED: live link state wins; without live data fall back to config activity.
-    const led = p.stpBlocked ? "#f97316" : (p.liveDown ? "#4b5563" : (p.liveUp || active ? "#22c55e" : "#4b5563"));
+    // A configured VLAN alone does NOT prove the link is up — an unused access
+    // port has a VLAN but no cable. "Up" therefore needs a positive signal: a
+    // live up event, a pinned client (proven traffic), or a structural
+    // inter-switch/uplink port (up whenever the switch is). "Down" is admin
+    // status or a live down event. Everything else is unknown (grey), never a
+    // misleading green.
+    const isDownPort = p.isDown || p.liveDown;
+    const hasClients = !!(p.devices && p.devices.length);
+    // confirmedUp is set directly for firewall interfaces (admin-up + in use),
+    // which have no live link signal of their own; switch ports derive it below.
+    const confirmedUp = p.confirmedUp || p.liveUp || hasClients || p.isInterlink || p.isIcl || p.isUplink;
+    const col = p.stpBlocked ? "#f97316" : (isDownPort ? "#4b5563" : portColor(p));
+    const led = p.stpBlocked ? "#f97316"
+        : isDownPort ? "#ef4444"
+            : confirmedUp ? "#22c55e"
+                : "#4b5563";
     const blink = p.stpBlocked
         ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#f97316" stroke-width="2">
              <animate attributeName="opacity" values="1;0.1;1" dur="0.9s" repeatCount="indefinite"/>
@@ -1366,6 +1388,8 @@ function portCellSVG(p, idx, x, y, cell) {
     const uplink = p.isUplink ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">▲</text>` : "";
     const icl = p.isIcl ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#f59e0b" font-size="9" font-family="monospace">⫘</text>` : "";
     const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
+    // HA heartbeat interface (firewall faceplate): a rose heart over the cell.
+    const haHb = p.haHeartbeat ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#fb7185" font-size="9">♥</text>` : "";
     const dim = p.filtered ? " opacity: 0.15;" : ((p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : "");
     return `
     <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${dim}">
@@ -1379,7 +1403,7 @@ function portCellSVG(p, idx, x, y, cell) {
         ${guardGlyph}
         ${multiMac}
         ${devBadge}
-        ${uplink}${icl}${quarantine}
+        ${uplink}${icl}${quarantine}${haHb}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -1442,7 +1466,7 @@ function faceplateLegend(kind) {
         : [["#f59e0b", tt("topo.legend_wan")], ["#10b981", "FortiLink"], ["#8b5cf6", tt("topo.legend_vlan")], ["#3b82f6", tt("topo.legend_ip")], ["#374151", tt("topo.legend_none")]];
     const glyphs = kind === "switch"
         ? `<div class="muted" style="margin-top: 6px; font-size: 0.78em;">▲ ${tt("topo.uplink")} · ⫘ ${tt("topo.icl")} · N ${tt("topo.nac")} · ☣ ${tt("topo.quarantine")} · 🔒/🔓 802.1X · ⛔↻🛡 Guard</div>`
-        : "";
+        : `<div class="muted" style="margin-top: 6px; font-size: 0.78em;"><span style="color:#22c55e;">●</span>/<span style="color:#ef4444;">●</span> ${tt("topo.led_admin")} · ♥ ${tt("topo.ha_heartbeat")}</div>`;
     return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 0.78em;">
         ${items.map(([c, t]) => `<span><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${c}; margin-right: 5px; vertical-align: -1px;"></span>${t}</span>`).join("")}
     </div>` + glyphs;
@@ -1643,6 +1667,176 @@ function portDetailHTML(p) {
     </div>`;
 }
 
+// buildFirewallVpnPorts assembles the firewall's IPsec tunnels for the VPN
+// panel: the config attributes (remote gateway, egress interface, IKE version)
+// plus the live up/down state and remote peer IP from the Graylog VPN logs
+// (topoVpnIdx), matched by tunnel name.
+function buildFirewallVpnPorts(d) {
+    return (d.vpns || []).map(t => {
+        const vs = topoVpnIdx[t.name];
+        const status = vs ? (vs.status || "") : "";
+        return {
+            label: t.name,
+            status: status,
+            remGw: t.remote_gw || (vs && vs.remip) || "",
+            egress: t.interface || "",
+            detail: "IPsec VPN" +
+                `\n${tt("topo.remote_gw")}: ${t.remote_gw || "—"}` +
+                (t.ike_version ? `\nIKE v${t.ike_version}` : "") +
+                `\n${tt("topo.egress")}: ${t.interface || "—"}` +
+                `\nStatus: ${status || tt("topo.vpn_unknown")}${vs && vs.remip ? " · " + vs.remip : ""}`
+        };
+    });
+}
+
+// vpnPanelHTML renders the firewall's IPsec tunnels as their own panel below the
+// interface faceplate — one card per tunnel with an up/down LED, remote gateway
+// and egress interface. Down tunnels fade; unknown (no logged state) stay grey.
+// Cards carry _idx into the vpn port array for the click handler, which shows
+// tunnel detail in the shared detail area.
+function vpnPanelHTML(vpnPorts) {
+    const ledOf = s => s === "up" ? "#22c55e" : (s === "down" ? "#ef4444" : "#4b5563");
+    const up = vpnPorts.filter(p => p.status === "up").length;
+    const down = vpnPorts.filter(p => p.status === "down").length;
+    const header = `<div style="display: flex; align-items: center; gap: 8px; margin: 16px 0 8px;">
+        <span style="color: #fecdd3; font-weight: bold; font-size: 0.9em;">⚿ ${tt("topo.vpn_tunnels")}</span>
+        <span class="muted" style="font-size: 0.78em;">${vpnPorts.length}${up ? " · ▲" + up : ""}${down ? " · ▼" + down : ""}</span>
+    </div>`;
+    if (!vpnPorts.length) {
+        return header + `<p class="muted" style="font-size: 0.82em;">${tt("topo.vpn_none")}</p>`;
+    }
+    const cards = vpnPorts.map((p, i) => {
+        const led = ledOf(p.status);
+        const statusTxt = p.status === "up" ? tt("topo.vpn_up") : (p.status === "down" ? tt("topo.vpn_down") : tt("topo.vpn_unknown"));
+        return `<div class="fp-vpn" data-idx="${i}" style="cursor: pointer; background: linear-gradient(180deg, #2a1215, #160a0c); border: 1px solid rgba(251,113,133,0.25); border-left: 3px solid ${led}; border-radius: 6px; padding: 7px 9px;${p.status === "down" ? " opacity: 0.55;" : ""}">
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${led}; display: inline-block; flex: 0 0 auto;"></span>
+                <span style="color: #fff; font-size: 0.82em; font-family: monospace; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(p.label)}</span>
+            </div>
+            <div class="muted" style="font-size: 0.74em; margin-top: 3px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">→ ${esc(p.remGw || "—")}</div>
+            <div class="muted" style="font-size: 0.74em;">${esc(p.egress || "—")} · ${statusTxt}</div>
+        </div>`;
+    }).join("");
+    return header + `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;">${cards}</div>`;
+}
+
+// fwIntfConfirmedUp decides the green "up" LED for a firewall interface from the
+// config alone — no live link state is collected for firewall interfaces, so the
+// cell LED reflects admin/config state: green when the interface is
+// administratively up AND in use (has an IP, is a WAN uplink, a bundle member,
+// an HA heartbeat, or carries a role), red when `set status down`, grey when
+// defined but idle. This mirrors the switch faceplate's rule of never showing a
+// misleading green.
+function fwIntfConfirmedUp(i, isWan, isMember, isHb) {
+    if ((i.status || "") === "down") return false;
+    return !!(i.ip || isWan || isMember || isHb || i.role || (i.members && i.members.length));
+}
+
+// fwIntfDetail is the port-detail text for one firewall interface cell.
+function fwIntfDetail(i, vlans, isHb, parent) {
+    return `IP: ${i.ip ? i.ip + "/" + i.mask : "—"}` +
+        (i.alias ? `\n${tt("topo.alias")}: ${i.alias}` : "") +
+        `\n${tt("topo.role")}: ${i.role || "—"}` +
+        (i.type ? `\n${tt("topo.iface_type")}: ${i.type}` : "") +
+        `\nVLANs: ${vlans}` +
+        `\n${tt("topo.mgmt_access")}: ${(i.allowaccess || []).join(", ") || "—"}` +
+        (parent ? `\n${tt("topo.bundle_member")}: ${parent}` : "") +
+        (isHb ? `\n♥ ${tt("topo.ha_heartbeat")}` : "") +
+        ((i.status || "") === "down" ? `\n⏻ ${tt("topo.admin_down")}` : "");
+}
+
+// fwIntfPort builds one firewall interface cell object for portCellSVG, carrying
+// the admin up/down LED (011/012) and the HA-heartbeat marker (072).
+function fwIntfPort(i, wan, vlanCount, hbSet, parent) {
+    const isHb = hbSet.has(i.name);
+    const isMember = !!parent;
+    const vlans = vlanCount[i.name] || 0;
+    return {
+        label: i.name,
+        hasIP: !!i.ip,
+        isWan: wan.has(i.name),
+        isFortilink: !!i.fortilink || i.name.toLowerCase().includes("fortilink"),
+        vlans: vlans,
+        isDown: (i.status || "") === "down",
+        confirmedUp: fwIntfConfirmedUp(i, wan.has(i.name), isMember, isHb),
+        haHeartbeat: isHb,
+        detail: fwIntfDetail(i, vlans, isHb, parent)
+    };
+}
+
+// fwBundleKind classifies a member-carrying firewall interface into its bundle
+// type — the FortiLink fabric (008), an LACP aggregate or redundant pair (007),
+// or a hardware switch (006) — with the glyph and accent used in the panel.
+function fwBundleKind(i) {
+    const name = (i.name || "").toLowerCase();
+    if (i.fortilink || name.includes("fortilink")) return { label: "FortiLink", glyph: "⇅", color: "#10b981" };
+    switch (i.type || "") {
+        case "aggregate": return { label: "LACP aggregate", glyph: "⇉", color: "#38bdf8" };
+        case "redundant": return { label: "Redundant", glyph: "⇄", color: "#38bdf8" };
+        case "hard-switch":
+        case "switch": return { label: "Hardware switch", glyph: "▤", color: "#a78bfa" };
+        default: return { label: "Bundle", glyph: "▦", color: "#94a3b8" };
+    }
+}
+
+// buildFirewallBundles collects every member-carrying interface as a bundle with
+// its member ports (each with an admin-down / HA-heartbeat marker).
+function buildFirewallBundles(d, wan, hbSet) {
+    const byName = {};
+    (d.interfaces || []).forEach(i => { byName[i.name] = i; });
+    return (d.interfaces || [])
+        .filter(i => i.members && i.members.length)
+        .map(i => {
+            const kind = fwBundleKind(i);
+            const members = i.members.map(mn => {
+                const mi = byName[mn] || {};
+                return { name: mn, isDown: (mi.status || "") === "down", isHb: hbSet.has(mn) };
+            });
+            return {
+                label: i.name,
+                kind: kind,
+                ip: i.ip || "",
+                isDown: (i.status || "") === "down",
+                members: members,
+                detail: kind.label +
+                    (i.type ? `\n${tt("topo.iface_type")}: ${i.type}` : "") +
+                    (i.ip ? `\nIP: ${i.ip}/${i.mask}` : "") +
+                    `\n${tt("topo.role")}: ${i.role || "—"}` +
+                    `\n${tt("topo.mgmt_access")}: ${(i.allowaccess || []).join(", ") || "—"}` +
+                    `\n${tt("topo.members")} (${members.length}): ${i.members.join(", ")}` +
+                    ((i.status || "") === "down" ? `\n⏻ ${tt("topo.admin_down")}` : "")
+            };
+        });
+}
+
+// bundlePanelHTML renders the aggregate / redundant / hardware-switch / FortiLink
+// bundles as their own panel below the interface faceplate — one card per bundle
+// with an admin LED and a chip per member port (006/007/008). Cards carry _idx
+// for the click handler, which shows the bundle detail in the shared area.
+function bundlePanelHTML(bundles) {
+    if (!bundles.length) return "";
+    const header = `<div style="display: flex; align-items: center; gap: 8px; margin: 16px 0 8px;">
+        <span style="color: #cbd5e1; font-weight: bold; font-size: 0.9em;">▤ ${tt("topo.bundles")}</span>
+        <span class="muted" style="font-size: 0.78em;">${bundles.length}</span>
+    </div>`;
+    const cards = bundles.map((b, i) => {
+        const led = b.isDown ? "#ef4444" : "#22c55e";
+        const chips = b.members.map(m => {
+            const mled = m.isDown ? "#ef4444" : "#22c55e";
+            return `<span style="display: inline-flex; align-items: center; gap: 4px; font-family: monospace; font-size: 0.72em; color: #cbd5e1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-left: 2px solid ${mled}; border-radius: 4px; padding: 2px 6px;${m.isDown ? " opacity: 0.55;" : ""}">${esc(m.name)}${m.isHb ? " ♥" : ""}</span>`;
+        }).join("");
+        return `<div class="fp-bundle" data-idx="${i}" style="cursor: pointer; background: linear-gradient(180deg, #131a24, #0d131b); border: 1px solid rgba(255,255,255,0.1); border-left: 3px solid ${b.kind.color}; border-radius: 6px; padding: 8px 10px;${b.isDown ? " opacity: 0.6;" : ""}">
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${led}; display: inline-block; flex: 0 0 auto;"></span>
+                <span style="color: #fff; font-size: 0.82em; font-family: monospace; font-weight: bold;">${b.kind.glyph} ${esc(b.label)}</span>
+                <span class="muted" style="font-size: 0.72em; margin-left: auto;">${esc(b.kind.label)}${b.ip ? " · " + esc(b.ip) : ""}</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px;">${chips}</div>
+        </div>`;
+    }).join("");
+    return header + `<div style="display: grid; gap: 8px;">${cards}</div>`;
+}
+
 function showFaceplate(nodeData) {
     const panel = document.getElementById("facePanel");
     const body = document.getElementById("faceBody");
@@ -1656,14 +1850,24 @@ function showFaceplate(nodeData) {
         const vlanCount = {};
         (d.interfaces || []).forEach(i => { if (i.vlan_id > 0 && i.interface) vlanCount[i.interface] = (vlanCount[i.interface] || 0) + 1; });
 
-        ports = (d.interfaces || []).filter(i => !(i.vlan_id > 0)).map(i => ({
-            label: i.name,
-            hasIP: !!i.ip,
-            isWan: wan.has(i.name),
-            isFortilink: i.name.toLowerCase().includes("fortilink"),
-            vlans: vlanCount[i.name] || 0,
-            detail: `IP: ${i.ip ? i.ip + "/" + i.mask : "—"}${i.alias ? "\n" + tt("topo.alias") + ": " + i.alias : ""}\n${tt("topo.role")}: ${i.role || "—"}\nVLANs: ${vlanCount[i.name] || 0}\n${tt("topo.mgmt_access")}: ${(i.allowaccess || []).join(", ") || "—"}`
-        }));
+        // Bundle grouping (006/007/008): interfaces that carry member ports are
+        // aggregates, redundant pairs, hardware switches or the FortiLink fabric.
+        // Their members live in the bundle panel below, so keep both the members
+        // and the bundle parent out of the flat interface grid.
+        const memberOf = {}, parentSet = new Set();
+        (d.interfaces || []).forEach(i => {
+            if (i.members && i.members.length) {
+                parentSet.add(i.name);
+                i.members.forEach(m => { memberOf[m] = i.name; });
+            }
+        });
+        // HA heartbeat interfaces (072), marked with a ♥ on their cell.
+        const hbSet = new Set((d.ha && d.ha.hbdev) || []);
+
+        ports = (d.interfaces || [])
+            .filter(i => !(i.vlan_id > 0) && !parentSet.has(i.name) && !memberOf[i.name])
+            .map(i => fwIntfPort(i, wan, vlanCount, hbSet, null));
+        nodeData._fwBundles = buildFirewallBundles(d, wan, hbSet);
     } else if (nodeData.kind === "switch") {
         const sw = nodeData.data;
         title = swName(sw);
@@ -1715,10 +1919,20 @@ function showFaceplate(nodeData) {
     }
     if (!panelHTML && ports.length) panelHTML = faceplateSVG(ports, title);
 
+    // Firewall: aggregate/hardware-switch/FortiLink bundles and IPsec VPN tunnels
+    // each render in their own panel below the interface faceplate (WAN
+    // interfaces face outward; the tunnels ride them separately).
+    let vpnPorts = [], vpnHTML = "", bundleHTML = "";
+    if (nodeData.kind === "firewall") {
+        vpnPorts = buildFirewallVpnPorts(nodeData.data);
+        vpnHTML = vpnPanelHTML(vpnPorts);
+        bundleHTML = bundlePanelHTML(nodeData._fwBundles || []);
+    }
+
     const legend = faceplateLegend(nodeData.kind) +
         (nodeData.kind === "switch" ? vlanColorLegend(ports) : "");
-    body.innerHTML = panelHTML
-        ? panelHTML + legend + '<div id="facePortDetail"></div>'
+    body.innerHTML = (panelHTML || vpnHTML || bundleHTML)
+        ? (panelHTML || "") + legend + bundleHTML + vpnHTML + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
 
     body.querySelectorAll(".fp-port").forEach(el => {
@@ -1728,6 +1942,20 @@ function showFaceplate(nodeData) {
         });
         el.addEventListener("mouseenter", () => { el.style.opacity = "0.75"; showFpPopover(el, p); });
         el.addEventListener("mouseleave", () => { el.style.opacity = "1"; hideFpPopover(); });
+    });
+    // VPN tunnel cards: click shows the tunnel's detail in the shared area.
+    body.querySelectorAll(".fp-vpn").forEach(el => {
+        const p = vpnPorts[Number(el.getAttribute("data-idx"))];
+        el.addEventListener("click", () => {
+            document.getElementById("facePortDetail").innerHTML = portDetailHTML(p);
+        });
+    });
+    // Interface-bundle cards: click shows the bundle detail (type + members).
+    body.querySelectorAll(".fp-bundle").forEach(el => {
+        const b = (nodeData._fwBundles || [])[Number(el.getAttribute("data-idx"))];
+        el.addEventListener("click", () => {
+            document.getElementById("facePortDetail").innerHTML = portDetailHTML({ label: b.label, detail: b.detail });
+        });
     });
     // Legend VLAN chips filter the panel; a second click clears the filter.
     body.querySelectorAll("[data-vlanchip]").forEach(el => {

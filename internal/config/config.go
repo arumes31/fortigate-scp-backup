@@ -80,11 +80,15 @@ type Config struct {
 	ExtGraylogDeviceData  bool
 	GraylogDeviceQuery    string // Graylog query template, %s = source host
 	GraylogStpQuery       string // Graylog query template for FortiSwitch STP/link events, %s = source host
+	GraylogTopoQuery      string // trunk-named FortiSwitch STP events for switch-interlink (topology) detection, %s = source host
+	GraylogLinkQuery      string // FortiSwitch port link up/down events for the latest-per-port aggregation, %s = source host
 	GraylogMacQuery       string // FortiSwitch MAC add/move/delete + NAC device add/delete events (device→switch-port), %s = source host
 	GraylogWifiQuery      string // wireless client↔AP↔SSID association events, %s = source host
 	GraylogVpnQuery       string // IPsec/SSL VPN tunnel up/down events, %s = source host
 	GraylogHaQuery        string // HA member/role events, %s = source host
 	GraylogDeviceRange    string // seconds of log history to scan per fetch
+	GraylogTopoRange      string // seconds of history for the sparse switch-interlink query (wider than the device window)
+	GraylogLinkRange      string // seconds of history for the latest-per-port link-state aggregation (wide, like the topo window)
 	GraylogDeviceInterval int    // background refresh interval in seconds
 
 	// Housekeeping
@@ -166,14 +170,27 @@ func Load(logger *slog.Logger) *Config {
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
 		HookwiseToken:          os.Getenv("HOOKWISE_TOKEN"),
 
-		ExtGraylogDeviceData:  boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
-		GraylogDeviceQuery:    getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
-		GraylogStpQuery:       getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR logdesc:"FortiSwitch switch" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
+		ExtGraylogDeviceData: boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
+		GraylogDeviceQuery:   getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
+		GraylogStpQuery:      getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR logdesc:"FortiSwitch switch" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
+		// Interlinks change rarely, so the short device window catches them only
+		// for whichever switch recently churned. This focused query keeps just the
+		// trunk-named STP events (the ones that resolve a peer) so a much wider
+		// window stays cheap and captures every switch's stable uplinks.
+		GraylogTopoQuery: getenv("GRAYLOG_TOPO_QUERY", `source:"%s" AND subtype:"switch-controller" AND logdesc:"FortiSwitch spanning Tree" AND NOT switchphysicalport:/port[0-9]+/`),
+		// A handful of flapping ports can emit tens of thousands of link events a
+		// day, so a capped message fetch only ever returns those few ports and the
+		// stable up/down state of every other port is crowded out. This query feeds
+		// a server-side aggregation (latest status per switch+port) instead, so one
+		// row per port is returned regardless of event volume.
+		GraylogLinkQuery:      getenv("GRAYLOG_LINK_QUERY", `source:"%s" AND subtype:"switch-controller" AND (status:"up" OR status:"down") AND _exists_:switchphysicalport`),
 		GraylogMacQuery:       getenv("GRAYLOG_MAC_QUERY", `source:"%s" AND (logid:0115032615 OR logid:0115032617 OR logid:0115032616 OR logid:0115022861 OR logid:0115022862)`),
 		GraylogWifiQuery:      getenv("GRAYLOG_WIFI_QUERY", `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)`),
 		GraylogVpnQuery:       getenv("GRAYLOG_VPN_QUERY", `source:"%s" AND subtype:"vpn" AND tunnelid:*`),
 		GraylogHaQuery:        getenv("GRAYLOG_HA_QUERY", `source:"%s" AND subtype:"ha"`),
 		GraylogDeviceRange:    getenv("GRAYLOG_DEVICE_RANGE", "86400"),
+		GraylogTopoRange:      getenv("GRAYLOG_TOPO_RANGE", "2592000"),
+		GraylogLinkRange:      getenv("GRAYLOG_LINK_RANGE", "2592000"),
 		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),

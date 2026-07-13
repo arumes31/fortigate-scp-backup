@@ -223,7 +223,8 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 
 	// STP/guard/link port states ride along on the same refresh; a failure
 	// only costs the STP overlay (stale rows are kept), never the inventory.
-	if stp, events, edges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
+	var edges []SwitchEdge
+	if stp, events, recentEdges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog stp fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else {
 		if serr := e.storeStp(fwID, stp, now); serr != nil {
@@ -232,9 +233,32 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 		if serr := e.storeStpEvents(fwID, events, now); serr != nil {
 			e.logger.Warn("graylog stp event store failed", "fw_id", fwID, "err", serr)
 		}
+		edges = recentEdges
+	}
+	// Interlinks change rarely, so the recent STP window only reveals whichever
+	// switch churned lately. A separate wide-window query keeps every switch's
+	// stable uplinks; storeSwitchEdges upserts, keeping the newest role/ports.
+	if topoEdges, serr := e.fetchSwitchEdges(fqdn); serr != nil {
+		e.logger.Warn("graylog topology-edge fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else {
+		edges = append(edges, topoEdges...)
+	}
+	if len(edges) > 0 {
 		if serr := e.storeSwitchEdges(fwID, edges, now); serr != nil {
 			e.logger.Warn("graylog switch-edge store failed", "fw_id", fwID, "err", serr)
 		}
+	}
+
+	// Latest link up/down per switch port, from a server-side aggregation. The
+	// capped STP message fetch above only returns the few ports that flap
+	// constantly; this returns one authoritative row per port regardless of
+	// event volume, so a long-unplugged (stable-down) port still reads "down" on
+	// the faceplate. It rides the same refresh and only ever costs the link
+	// column on failure (stale link state is kept).
+	if links, serr := e.fetchLinkStates(fqdn); serr != nil {
+		e.logger.Warn("graylog link-state aggregation failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
+	} else if serr := e.storeLinkStates(fwID, links, now); serr != nil {
+		e.logger.Warn("graylog link-state store failed", "fw_id", fwID, "err", serr)
 	}
 
 	// MAC add/move → wired switch-port sightings (the piece traffic logs lack).
@@ -332,6 +356,41 @@ func (e *Extension) storeStp(fwID int, stp []StpPort, now string) error {
 	cutoff := time.Now().Add(-stpRetention).Format("2006-01-02 15:04:05")
 	if _, err := tx.Exec("DELETE FROM stp_ports WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// storeLinkStates writes the aggregation's latest link up/down per port. Unlike
+// storeStp it touches only the link column: the aggregation observes nothing
+// about STP role/state, guard blocks or 802.1X, so those stored fields must be
+// left exactly as fetchStpStates set them (storeStp deliberately overwrites
+// guard with the fetched value, which a blanket upsert here would wrongly clear).
+// Ports first seen by the aggregation are inserted with only link set; existing
+// ports keep their STP fields and just get the fresh link. updated_at is bumped
+// so the port survives storeStp's retention prune.
+func (e *Extension) storeLinkStates(fwID int, links []StpPort, now string) error {
+	if len(links) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, p := range links {
+		if p.SwitchName == "" || p.Port == "" || p.Link == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO stp_ports
+			(fw_id, switch_name, serial, port, role, state, guard, link, dot1x, last_change, updated_at)
+			VALUES (?, ?, ?, ?, '', '', '', ?, '', '', ?)
+			ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
+				serial     = CASE WHEN excluded.serial != '' THEN excluded.serial ELSE serial END,
+				link       = CASE WHEN excluded.link   != '' THEN excluded.link   ELSE link   END,
+				updated_at = excluded.updated_at`,
+			fwID, p.SwitchName, p.Serial, p.Port, p.Link, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

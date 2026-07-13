@@ -138,6 +138,12 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		if v, _, ok := doc.settingDirect(b, "switch-controller-feature"); ok {
 			it.SwitchFeature = strings.ToLower(v)
 		}
+		if v, _, ok := doc.settingDirect(b, "type"); ok {
+			it.Type = strings.ToLower(v)
+		}
+		if v, _, ok := doc.settingDirect(b, "fortilink"); ok {
+			it.Fortilink = strings.EqualFold(v, "enable")
+		}
 		interfaces = append(interfaces, it)
 	}
 

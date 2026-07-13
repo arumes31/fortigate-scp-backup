@@ -1,6 +1,7 @@
 package graylogdevicedata
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -361,43 +363,10 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	seenKind := map[string]bool{} // key: port-key + "|" + kind
 	var order []*StpPort
 	var events []StpEvent
-	edges := map[string]*SwitchEdge{} // key: sn + "|" + trunk
-	var edgeOrder []*SwitchEdge
-	edgeFor := func(sn, name, trunk string) *SwitchEdge {
-		key := sn + "|" + trunk
-		if g := edges[key]; g != nil {
-			return g
-		}
-		g := &SwitchEdge{SwitchSN: sn, SwitchName: name, Trunk: trunk}
-		edges[key] = g
-		edgeOrder = append(edgeOrder, g)
-		return g
-	}
 	for _, m := range msgs {
-		// Switch-edge observations ride along on the same message stream.
-		if sn := field(m, "sn", "name"); sn != "" {
-			name := field(m, "name")
-			text := field(m, "msg", "message")
-			if mm := reTrunkMember.FindStringSubmatch(text); mm != nil {
-				g := edgeFor(sn, name, mm[2])
-				if !slices.Contains(g.Ports, mm[1]) {
-					g.Ports = append(g.Ports, mm[1])
-				}
-			}
-			if port := field(m, "switchphysicalport"); port != "" && !rePhysPort.MatchString(port) {
-				edgeFor(sn, name, port)
-			}
-		}
 		p, ev := stpFromMessage(m)
 		if p == nil {
 			continue
-		}
-		// Newest STP role per trunk orients the edge (root = uplink).
-		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
-			g := edgeFor(p.Serial, p.SwitchName, p.Port)
-			if g.Role == "" {
-				g.Role = ev.value
-			}
 		}
 		to := ev.value
 		if ev.kind == "guard" && to == "" {
@@ -436,11 +405,244 @@ func (e *Extension) fetchStpStates(fqdn, rangeSec string) ([]StpPort, []StpEvent
 	for _, p := range order {
 		out = append(out, *p)
 	}
-	edgeOut := make([]SwitchEdge, 0, len(edgeOrder))
-	for _, g := range edgeOrder {
-		edgeOut = append(edgeOut, *g)
+	return out, events, extractSwitchEdges(msgs), nil
+}
+
+// extractSwitchEdges folds a message stream into switch-edge observations used
+// for interlink detection: trunk-membership legs, trunk-named switch ports, and
+// the newest STP role per trunk (root = uplink). Shared by the recent STP query
+// (fetchStpStates) and the wide-window topology query (fetchSwitchEdges).
+func extractSwitchEdges(msgs []map[string]any) []SwitchEdge {
+	edges := map[string]*SwitchEdge{} // key: sn + "|" + trunk
+	var edgeOrder []*SwitchEdge
+	edgeFor := func(sn, name, trunk string) *SwitchEdge {
+		key := sn + "|" + trunk
+		if g := edges[key]; g != nil {
+			return g
+		}
+		g := &SwitchEdge{SwitchSN: sn, SwitchName: name, Trunk: trunk}
+		edges[key] = g
+		edgeOrder = append(edgeOrder, g)
+		return g
 	}
-	return out, events, edgeOut, nil
+	for _, m := range msgs {
+		if sn := field(m, "sn", "name"); sn != "" {
+			name := field(m, "name")
+			text := field(m, "msg", "message")
+			if mm := reTrunkMember.FindStringSubmatch(text); mm != nil {
+				g := edgeFor(sn, name, mm[2])
+				if !slices.Contains(g.Ports, mm[1]) {
+					g.Ports = append(g.Ports, mm[1])
+				}
+			}
+			if port := field(m, "switchphysicalport"); port != "" && !rePhysPort.MatchString(port) {
+				edgeFor(sn, name, port)
+			}
+		}
+		p, ev := stpFromMessage(m)
+		if p == nil {
+			continue
+		}
+		// Newest STP role per trunk orients the edge (root = uplink). Derive the
+		// identity the same way the member/port paths do — field(m, "sn", "name")
+		// with the message name — so a role event lacking an sn field keys the same
+		// edge instead of splitting it (p.Serial has no name fallback, and an
+		// empty SwitchSN would be dropped by storeSwitchEdges).
+		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
+			g := edgeFor(field(m, "sn", "name"), field(m, "name"), p.Port)
+			if g.Role == "" {
+				g.Role = ev.value
+			}
+		}
+	}
+	out := make([]SwitchEdge, 0, len(edgeOrder))
+	for _, g := range edgeOrder {
+		out = append(out, *g)
+	}
+	return out
+}
+
+// fetchSwitchEdges runs the focused topology query (trunk-named STP events) over
+// the wider topology window and returns the switch-edge observations. STP
+// topology changes are sparse, so the short device window catches interlinks
+// only for whichever switch churned recently; the wide window captures the
+// stable uplinks for every switch (matching the FortiGate's live FortiLink map).
+func (e *Extension) fetchSwitchEdges(fqdn string) ([]SwitchEdge, error) {
+	msgs, err := e.queryGraylog(e.cfg.GraylogTopoQuery, "GRAYLOG_TOPO_QUERY", fqdn, e.graylogSources(fqdn), e.cfg.GraylogTopoRange)
+	if err != nil {
+		return nil, err
+	}
+	return extractSwitchEdges(msgs), nil
+}
+
+// ---------------------------------------------------------------------------
+// Link-state aggregation
+//
+// A capped message fetch (queryGraylog, limit 1000, newest-first) cannot answer
+// "what is the current link state of every switch port": a couple of flapping
+// ports emit tens of thousands of up/down events a day and crowd every stable
+// port out of the window, so only the flappers ever come back. The fix is a
+// server-side aggregation — Graylog's Search Scripting API (/api/search/
+// aggregate) with a latest(status) metric grouped by switch+port returns exactly
+// one authoritative row per port regardless of event volume, so a cable that was
+// unplugged weeks ago (no recent event) still reports "down".
+// ---------------------------------------------------------------------------
+
+// aggregateGroup / aggregateMetric / aggregateTimerange / aggregateRequest model
+// the POST body of Graylog's /api/search/aggregate endpoint. limit caps the
+// number of distinct values kept per grouping — it defaults to 15 server-side,
+// which would silently truncate to the first 15 switches, so we set it high.
+type aggregateGroup struct {
+	Field string `json:"field"`
+	Limit int    `json:"limit,omitempty"`
+}
+type aggregateMetric struct {
+	Function string `json:"function"`
+	Field    string `json:"field,omitempty"`
+}
+type aggregateTimerange struct {
+	Type  string `json:"type"`
+	Range int    `json:"range"` // seconds, for type "relative"
+}
+type aggregateRequest struct {
+	Query     string             `json:"query"`
+	Timerange aggregateTimerange `json:"timerange"`
+	GroupBy   []aggregateGroup   `json:"group_by"`
+	Metrics   []aggregateMetric  `json:"metrics"`
+}
+
+// aggregateColumn is one entry of the response schema: it names each datarow
+// column so the caller reads values by field/function rather than by a fixed
+// position.
+type aggregateColumn struct {
+	ColumnType string `json:"column_type"` // "grouping" | "metric"
+	Field      string `json:"field,omitempty"`
+	Function   string `json:"function,omitempty"`
+}
+
+// queryGraylogAggregate runs one aggregation via the Search Scripting API and
+// returns the response schema and datarows (one row per group combination). The
+// endpoint is a state-changing POST, so it needs the X-Requested-By CSRF header.
+func (e *Extension) queryGraylogAggregate(body aggregateRequest, templateName, fqdn string) ([]aggregateColumn, [][]any, error) {
+	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
+	if graylogURL == "" || e.cfg.GraylogToken == "" {
+		return nil, nil, errors.New("graylog not configured (GRAYLOG_URL/GRAYLOG_TOKEN)")
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	apiURL := graylogURL + "/api/search/aggregate"
+	e.logger.Debug("graylog aggregate: sending query", "template", templateName, "fqdn", fqdn,
+		"query", body.Query, "range", body.Timerange.Range)
+
+	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, nil, err
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte(e.cfg.GraylogToken + ":token"))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "fortisafe") // Graylog rejects POST without a CSRF header
+
+	// Aggregations scan far more than a single page of messages, so give them a
+	// longer ceiling than the message queries.
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("graylog aggregate request failed (%s): %w", templateName, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, nil, fmt.Errorf("graylog %s aggregate returned HTTP %d for source %q: %s",
+			templateName, resp.StatusCode, sourceHost(fqdn), strings.TrimSpace(string(snippet)))
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, nil, err
+	}
+	var data struct {
+		Schema   []aggregateColumn `json:"schema"`
+		Datarows [][]any           `json:"datarows"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, nil, fmt.Errorf("decode graylog aggregate response (%s): %w", templateName, err)
+	}
+	return data.Schema, data.Datarows, nil
+}
+
+// fetchLinkStates returns the latest link up/down of every switch port via a
+// server-side aggregation (latest(status) grouped by serial + name + physical
+// port). Unlike the capped message fetch it is unaffected by a few ports
+// flapping tens of thousands of times, so it reports the stable state of every
+// port — the piece the faceplate needs to mark unplugged/down ports honestly.
+// The result carries only the Link field; storeLinkStates merges it into the
+// STP table without disturbing role/state/guard/dot1x.
+func (e *Extension) fetchLinkStates(fqdn string) ([]StpPort, error) {
+	sources := e.graylogSources(fqdn)
+	query := buildSourceQuery(e.cfg.GraylogLinkQuery, sources)
+	if strings.Contains(query, "%s") || strings.Contains(query, "%!") {
+		return nil, fmt.Errorf(`GRAYLOG_LINK_QUERY template is invalid (needs a source:"%%s" term): %q`, e.cfg.GraylogLinkQuery)
+	}
+	rangeSec, err := strconv.Atoi(strings.TrimSpace(effectiveRange("", e.cfg.GraylogLinkRange)))
+	if err != nil || rangeSec <= 0 {
+		rangeSec = 2592000
+	}
+	body := aggregateRequest{
+		Query:     query,
+		Timerange: aggregateTimerange{Type: "relative", Range: rangeSec},
+		GroupBy: []aggregateGroup{
+			{Field: "sn", Limit: 1000},
+			{Field: "name", Limit: 1000},
+			{Field: "switchphysicalport", Limit: 1000},
+		},
+		Metrics: []aggregateMetric{{Function: "latest", Field: "status"}},
+	}
+	schema, rows, err := e.queryGraylogAggregate(body, "GRAYLOG_LINK_QUERY", fqdn)
+	if err != nil {
+		return nil, err
+	}
+	// Column positions follow the schema (groupings in request order, then the
+	// latest metric); resolve them by name so we never depend on the ordering.
+	snCol, nameCol, portCol, statusCol := -1, -1, -1, -1
+	for i, c := range schema {
+		switch {
+		case c.ColumnType == "grouping" && c.Field == "sn":
+			snCol = i
+		case c.ColumnType == "grouping" && c.Field == "name":
+			nameCol = i
+		case c.ColumnType == "grouping" && c.Field == "switchphysicalport":
+			portCol = i
+		case c.ColumnType == "metric" && c.Function == "latest":
+			statusCol = i
+		}
+	}
+	if portCol < 0 || statusCol < 0 {
+		return nil, fmt.Errorf("graylog link aggregation: unexpected schema %+v", schema)
+	}
+	cell := func(row []any, idx int) string {
+		if idx < 0 || idx >= len(row) || row[idx] == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprintf("%v", row[idx]))
+	}
+	var out []StpPort
+	for _, row := range rows {
+		port := cell(row, portCol)
+		status := strings.ToLower(cell(row, statusCol))
+		if port == "" || (status != "up" && status != "down") {
+			continue
+		}
+		name := firstNonEmpty(cell(row, nameCol), cell(row, snCol))
+		if name == "" {
+			continue // no switch identifier to key on
+		}
+		out = append(out, StpPort{SwitchName: name, Serial: cell(row, snCol), Port: port, Link: status})
+	}
+	e.logger.Debug("graylog link aggregation parsed", "fqdn", fqdn, "rows", len(rows), "ports", len(out))
+	return out, nil
 }
 
 // fetchMacPorts pulls the FortiSwitch MAC add/move/delete events and returns
