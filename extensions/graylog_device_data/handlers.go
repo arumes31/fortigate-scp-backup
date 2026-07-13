@@ -48,6 +48,7 @@ type dataResponse struct {
 	Throughput    []IfaceThroughput `json:"throughput,omitempty"`
 	ApLocations   []ApLocation      `json:"ap_locations,omitempty"` // AP → switch/port pin (SSH wtp-status)
 	DualHomed     []DualHomed       `json:"dual_homed,omitempty"`   // devices attached to 2+ switches
+	Violations    []MacViolation    `json:"violations,omitempty"`   // port-security (MAC-limit) violations
 	DiagStatus    *CollectionStatus `json:"diag_status,omitempty"`
 	UpdatedAt     string            `json:"updated_at,omitempty"`
 }
@@ -147,13 +148,18 @@ func (e *Extension) buildDataResponse(fwID int) (dataResponse, error) {
 	if err != nil {
 		e.logger.Warn("graylog devices: dual-homed list failed", "fw_id", fwID, "err", err)
 	}
+	violations, err := e.listMacViolations(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: mac-violations list failed", "fw_id", fwID, "err", err)
+	}
 	ds := e.diagStatus(fwID)
 	return dataResponse{
 		FwID: fwID, Devices: devices, Stp: stp,
 		StpEvents: events, MultiMacPorts: multiMac, Edges: edges,
 		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID), FwHealth: e.fwHealth(fwID),
 		SwitchHealth: swHealth, LiveRoutes: liveRoutes,
-		SdwanHealth: sdwan, Throughput: throughput, ApLocations: apLoc, DualHomed: dualHomed, DiagStatus: &ds,
+		SdwanHealth: sdwan, Throughput: throughput, ApLocations: apLoc, DualHomed: dualHomed,
+		Violations: violations, DiagStatus: &ds,
 		UpdatedAt: updatedAt,
 	}, nil
 }

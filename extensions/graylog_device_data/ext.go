@@ -112,6 +112,8 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		createIfaceStatsSQL,
 		createDiagStatusSQL,
 		createApLocationSQL,
+		createPortCountersSQL,
+		createMacViolationsSQL,
 		// Legacy single-row-per-MAC binding table, superseded by mac_sightings
 		// (per-switch rows preserve the transit signal). Cache data only —
 		// repopulated by the next refresh.
@@ -354,6 +356,36 @@ const createApLocationSQL = `CREATE TABLE IF NOT EXISTS ap_location (
 	switch_port TEXT NOT NULL DEFAULT '',
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, ap_serial)
+)`
+
+// port_counters holds the previous per-port error/discard counters + sample
+// time, so a two-sample delta turns the cumulative counters into an active
+// error-*rate* (a port gaining CRC errors between polls = a failing cable/SFP,
+// distinct from old damage that is no longer growing).
+const createPortCountersSQL = `CREATE TABLE IF NOT EXISTS port_counters (
+	fw_id       INTEGER NOT NULL,
+	switch_name TEXT NOT NULL,
+	port        TEXT NOT NULL,
+	errors      INTEGER NOT NULL DEFAULT 0,
+	discards    INTEGER NOT NULL DEFAULT 0,
+	ts          TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_name, port)
+)`
+
+// mac_violations holds the current port-security (MAC-limit) violations from
+// `mac-limit-violations all` — a port exceeding its MAC limit means an
+// unauthorized device, rogue mini-switch, or a loop. Snapshot per sweep.
+const createMacViolationsSQL = `CREATE TABLE IF NOT EXISTS mac_violations (
+	fw_id       INTEGER NOT NULL,
+	switch_name TEXT NOT NULL,
+	port        TEXT NOT NULL,
+	vlan        TEXT NOT NULL DEFAULT '',
+	mac         TEXT NOT NULL DEFAULT '',
+	action      TEXT NOT NULL DEFAULT '',
+	seen_at     TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, switch_name, port, mac)
 )`
 
 // wifi_clients holds the latest wireless association per client MAC

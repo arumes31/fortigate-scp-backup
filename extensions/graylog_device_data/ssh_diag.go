@@ -288,6 +288,18 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 					edges = append(edges, SwitchEdge{SwitchSN: sw.Serial, SwitchName: sw.Name, Trunk: icl.Trunk, Ports: icl.Ports, Note: note})
 				}
 			}
+			// Error-rate trending: flag ports actively accumulating errors since the
+			// last poll (a failing cable/SFP), folded into the port health string.
+			if deltas := e.storePortCounters(fwID, sw.Name, portStats, now); len(deltas) > 0 {
+				for i := range ports {
+					if d := deltas[ports[i].Port]; d > 0 {
+						if ports[i].Health != "" {
+							ports[i].Health += " "
+						}
+						ports[i].Health += "err-rate:+" + strconv.Itoa(d)
+					}
+				}
+			}
 			if serr := e.storeDiagStp(fwID, ports, now); serr != nil {
 				e.logger.Warn("fgt diag: stp store failed", "fw_id", fwID, "switch", sw.Name, "err", serr)
 				storeErr = errors.Join(storeErr, serr)
@@ -363,6 +375,11 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 				e.logger.Warn("fgt diag: ap-location store failed", "fw_id", fwID, "err", serr)
 				storeErr = errors.Join(storeErr, serr)
 			}
+		}
+		// Port-security (MAC-limit) violations across the whole fabric — one command.
+		if serr := e.storeMacViolations(fwID, parseMacLimitViolations(run(base+"mac-limit-violations all")), now); serr != nil {
+			e.logger.Warn("fgt diag: mac-violations store failed", "fw_id", fwID, "err", serr)
+			storeErr = errors.Join(storeErr, serr)
 		}
 	})
 	if serr := e.storeDiagStatus(fwID, CollectionStatus{
@@ -514,6 +531,9 @@ var portDiagCommands = []struct{ title, sub string }{
 	{"Port status & counters", "port-stats"},
 	{"Physical properties", "port-properties"},
 	{"802.1X sessions", "802.1X"},
+	{"802.1X dynamic ACL", "802.1X-dacl"},
+	{"ACL counters", "acl-counters"},
+	{"Port-security (MAC-limit) violations", "mac-limit-violations interface"},
 	{"QoS / congestion", "qos-stats"},
 }
 

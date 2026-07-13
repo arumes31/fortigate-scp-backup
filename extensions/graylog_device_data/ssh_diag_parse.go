@@ -93,16 +93,20 @@ func parseSwitchInventory(out string) []diagSwitch {
 
 // diagPortStat is the live per-port state from `switch-info port-stats <sw>`.
 type diagPortStat struct {
-	Up      bool   // line protocol up
-	AdminUp bool   // SW Admin up (false = administratively shut)
-	Speed   string // negotiated "1G/full" on up ports
-	Health  string // nonzero fault counters, e.g. "err:2 col:9"; "" = clean
+	Up       bool   // line protocol up
+	AdminUp  bool   // SW Admin up (false = administratively shut)
+	Speed    string // negotiated "1G/full" on up ports
+	Health   string // nonzero fault counters, e.g. "err:2 col:9"; "" = clean
+	Half     bool   // negotiated half-duplex (a fault on a modern link)
+	SpeedM   int    // negotiated speed in Mbps (0 = unknown/down)
+	Errors   int    // cumulative rx+tx error counter (for the error-rate delta)
+	Discards int    // cumulative rx+tx drop counter
 }
 
 var (
 	rePortLink   = regexp.MustCompile(`Port\((\S+?)\) is HW Admin (?:up|down), SW Admin (up|down), line protocol is (up|down)`)
 	rePortDuplex = regexp.MustCompile(`\b(full|half)-duplex,\s*(\d+)\s*Mb/s`)
-	rePortInOut  = regexp.MustCompile(`(?m)^\s*(?:input|output)\s*:.*?(\d+)\s+errors,\s*\d+\s+drops,\s*(\d+)\s+oversizes`)
+	rePortInOut  = regexp.MustCompile(`(?m)^\s*(?:input|output)\s*:.*?(\d+)\s+errors,\s*(\d+)\s+drops,\s*(\d+)\s+oversizes`)
 	rePortMisc   = regexp.MustCompile(`(\d+)\s+fragments,\s*(\d+)\s+undersizes,\s*(\d+)\s+collisions,\s*(\d+)\s+jabbers`)
 )
 
@@ -130,7 +134,7 @@ func joinHealth(err, ovr, frag, undr, col, jab int) string {
 func parsePortStats(out string) map[string]diagPortStat {
 	type acc struct {
 		diagPortStat
-		err, ovr, frag, undr, col, jab int
+		err, ovr, frag, undr, col, jab, drp int
 	}
 	m := map[string]*acc{}
 	cur := ""
@@ -147,11 +151,14 @@ func parsePortStats(out string) map[string]diagPortStat {
 		if a.Up {
 			if d := rePortDuplex.FindStringSubmatch(ln); d != nil {
 				a.Speed = fmtSpeed(d[2]) + "/" + d[1]
+				a.Half = d[1] == "half"
+				a.SpeedM = atoiSafe(d[2])
 			}
 		}
 		if io := rePortInOut.FindStringSubmatch(ln); io != nil {
 			a.err += atoiSafe(io[1])
-			a.ovr += atoiSafe(io[2])
+			a.drp += atoiSafe(io[2])
+			a.ovr += atoiSafe(io[3])
 		}
 		if mm := rePortMisc.FindStringSubmatch(ln); mm != nil {
 			a.frag += atoiSafe(mm[1])
@@ -163,6 +170,8 @@ func parsePortStats(out string) map[string]diagPortStat {
 	res := make(map[string]diagPortStat, len(m))
 	for port, a := range m {
 		a.Health = joinHealth(a.err, a.ovr, a.frag, a.undr, a.col, a.jab)
+		a.Errors = a.err + a.ovr + a.frag + a.undr + a.col + a.jab
+		a.Discards = a.drp
 		res[port] = a.diagPortStat
 	}
 	return res
@@ -246,15 +255,35 @@ type diagPortProp struct {
 	Media      string // RJ45 / SFP+ / QSFP
 	PoeCapable bool
 	HasSFP     bool
+	MaxSpeedM  int // top negotiable speed in Mbps (from the Speed capability line)
 }
 
 var (
-	rePPPort = regexp.MustCompile(`(?m)^Port:\s*(\S+)`)
-	rePPConn = regexp.MustCompile(`(?m)^\s*Connector\s*:[^\S\n]*(\S+)`)
-	rePPPoe  = regexp.MustCompile(`(?m)^\s*PoE\s*:[^\S\n]*(\S+)`) // matches only when a PoE value is present
+	rePPPort  = regexp.MustCompile(`(?m)^Port:\s*(\S+)`)
+	rePPConn  = regexp.MustCompile(`(?m)^\s*Connector\s*:[^\S\n]*(\S+)`)
+	rePPPoe   = regexp.MustCompile(`(?m)^\s*PoE\s*:[^\S\n]*(\S+)`) // matches only when a PoE value is present
+	rePPSpeed = regexp.MustCompile(`(?m)^\s*Speed\s*:[^\S\n]*(\S+)`)
+	rePPSpTok = regexp.MustCompile(`(\d+)([MG])`) // "1Gauto", "100Mfull" → value+unit
 )
 
-// parsePortProperties maps each port to its connector/media and PoE capability.
+// maxSpeedMbps returns the highest speed (Mbps) in a capability string like
+// "10Mhalf/100Mfull/1Gauto/auto" (→ 1000).
+func maxSpeedMbps(s string) int {
+	max := 0
+	for _, m := range rePPSpTok.FindAllStringSubmatch(s, -1) {
+		v := atoiSafe(m[1])
+		if m[2] == "G" {
+			v *= 1000
+		}
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// parsePortProperties maps each port to its connector/media, PoE capability and
+// top negotiable speed.
 func parsePortProperties(out string) map[string]diagPortProp {
 	res := map[string]diagPortProp{}
 	locs := rePPPort.FindAllStringSubmatchIndex(out, -1)
@@ -270,6 +299,9 @@ func parsePortProperties(out string) map[string]diagPortProp {
 		}
 		if m := rePPPoe.FindStringSubmatch(block); m != nil {
 			pp.PoeCapable = true
+		}
+		if m := rePPSpeed.FindStringSubmatch(block); m != nil {
+			pp.MaxSpeedM = maxSpeedMbps(m[1])
 		}
 		pp.HasSFP = strings.Contains(pp.Media, "SFP") || strings.Contains(pp.Media, "QSFP")
 		res[out[loc[2]:loc[3]]] = pp
@@ -323,6 +355,35 @@ func parseModulesSummary(out string) map[string]string {
 			res[m[1]] = m[3] // transceiver type, e.g. "10G-Base-CR"
 		} else {
 			res[m[1]] = "empty"
+		}
+	}
+	return res
+}
+
+// reMacViolRow matches a `mac-limit-violations all` row within a switch block:
+// "<portN> <vlan> <mac> <timestamp…> <action>". Only port + VLAN + MAC are
+// pinned precisely; the trailing timestamp/action text is captured whole (its
+// exact spacing is device/version specific).
+var reMacViolRow = regexp.MustCompile(`(?m)^\s*(port\d+)\s+(\d+)\s+([0-9a-fA-F:]{17})\s+(.*\S)?\s*$`)
+
+// parseMacLimitViolations parses `switch-info mac-limit-violations all` into the
+// current port-security violations, one block per switch ("Managed Switch :").
+func parseMacLimitViolations(out string) []MacViolation {
+	var res []MacViolation
+	locs := reInvSwitch.FindAllStringSubmatchIndex(out, -1)
+	for i, loc := range locs {
+		end := len(out)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		name := out[loc[2]:loc[3]]
+		block := out[loc[0]:end]
+		for _, m := range reMacViolRow.FindAllStringSubmatch(block, -1) {
+			res = append(res, MacViolation{
+				Switch: name, Port: m[1], Vlan: m[2],
+				Mac:    strings.ToLower(m[3]),
+				Action: strings.TrimSpace(m[4]),
+			})
 		}
 	}
 	return res
@@ -853,6 +914,25 @@ func buildDiagPorts(sw diagSwitch, portStatsOut, stpOut, portPropsOut, poeOut, m
 		}
 		if v, ok := lldp[port]; ok {
 			sp.Neighbor = v
+		}
+		// Physical-layer faults derived from the negotiated link vs the port's
+		// capability: half-duplex (a modern link should be full) and a speed
+		// downshift (1G-capable port stuck at 100M ⇒ a bad cable pair). Folded
+		// into Health so the faceplate's fault ring + detail surface them.
+		if hasPS && up {
+			var extra []string
+			if ps.Half {
+				extra = append(extra, "half-duplex")
+			}
+			if pp, ok := props[port]; ok && pp.MaxSpeedM > 0 && ps.SpeedM > 0 && ps.SpeedM < pp.MaxSpeedM {
+				extra = append(extra, "downshift:"+fmtSpeed(strconv.Itoa(ps.SpeedM))+"<"+fmtSpeed(strconv.Itoa(pp.MaxSpeedM)))
+			}
+			if len(extra) > 0 {
+				if sp.Health != "" {
+					sp.Health += " "
+				}
+				sp.Health += strings.Join(extra, " ")
+			}
 		}
 		out = append(out, sp)
 	}

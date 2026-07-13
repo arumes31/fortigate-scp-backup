@@ -144,6 +144,17 @@ type ApLocation struct {
 	Port     string `json:"port,omitempty"`   // upstream switch port (LLDP port id)
 }
 
+// MacViolation is one current port-security (MAC-limit) violation: a port that
+// exceeded its allowed MAC count — an unauthorized device, rogue mini-switch, or
+// loop. The topology flags the offending switch port.
+type MacViolation struct {
+	Switch string `json:"switch"`
+	Port   string `json:"port"`
+	Vlan   string `json:"vlan,omitempty"`
+	Mac    string `json:"mac,omitempty"`
+	Action string `json:"action,omitempty"`
+}
+
 // PortDiagSection is one command's live output in an on-demand port diagnostic
 // (the faceplate "Run diagnostics" button). OK is false when the switch rejected
 // the command (unsupported on that model) rather than returning data.

@@ -1175,6 +1175,87 @@ func (e *Extension) listIfaceThroughput(fwID int) ([]IfaceThroughput, error) {
 	return out, rows.Err()
 }
 
+// storePortCounters records each port's cumulative error/discard counters and
+// returns, per port, how much the error counter GREW since the previous poll —
+// the active error rate (only when a prior baseline existed; a counter reset on
+// reboot, prev>cur, is not reported). A positive delta means the port is
+// actively accumulating errors: a failing cable/SFP, distinct from old,
+// no-longer-growing damage that the cumulative Health count alone can't tell apart.
+func (e *Extension) storePortCounters(fwID int, sw, portStatsRaw, now string) map[string]int {
+	deltas := map[string]int{}
+	stats := parsePortStats(portStatsRaw)
+	if len(stats) == 0 {
+		return deltas
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return deltas
+	}
+	defer func() { _ = tx.Rollback() }()
+	for port, ps := range stats {
+		var prevErr, prevDisc int
+		had := tx.QueryRow("SELECT errors, discards FROM port_counters WHERE fw_id = ? AND switch_name = ? AND port = ?",
+			fwID, sw, port).Scan(&prevErr, &prevDisc) == nil
+		if had && ps.Errors > prevErr {
+			deltas[port] = ps.Errors - prevErr
+		}
+		if _, err := tx.Exec(`INSERT INTO port_counters (fw_id, switch_name, port, errors, discards, ts, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
+				errors=excluded.errors, discards=excluded.discards, ts=excluded.ts, updated_at=excluded.updated_at`,
+			fwID, sw, port, ps.Errors, ps.Discards, now, now); err != nil {
+			return deltas
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, _ = tx.Exec("DELETE FROM port_counters WHERE fw_id = ? AND updated_at < ?", fwID, cutoff)
+	_ = tx.Commit()
+	return deltas
+}
+
+// storeMacViolations replaces the firewall's current port-security violation
+// snapshot (wipe + insert, so cleared violations disappear).
+func (e *Extension) storeMacViolations(fwID int, vs []MacViolation, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM mac_violations WHERE fw_id = ?", fwID); err != nil {
+		return err
+	}
+	for _, v := range vs {
+		if v.Port == "" || v.Switch == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO mac_violations
+			(fw_id, switch_name, port, vlan, mac, action, seen_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			fwID, v.Switch, v.Port, v.Vlan, v.Mac, v.Action, v.Action, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// listMacViolations returns the firewall's current port-security violations.
+func (e *Extension) listMacViolations(fwID int) ([]MacViolation, error) {
+	rows, err := e.db.Query("SELECT switch_name, port, vlan, mac, action FROM mac_violations WHERE fw_id = ? ORDER BY switch_name, port", fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []MacViolation
+	for rows.Next() {
+		var v MacViolation
+		if scanErr := rows.Scan(&v.Switch, &v.Port, &v.Vlan, &v.Mac, &v.Action); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // storeDiagStatus records the outcome of an SSH collection sweep.
 func (e *Extension) storeDiagStatus(fwID int, s CollectionStatus, now string) error {
 	static := 0
