@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -506,6 +509,37 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	return out, rows.Err()
 }
 
+// SharedData opens the extension's private database read-only and returns the
+// full topology device payload (inventory + every live overlay) for one
+// firewall, marshaled as the same JSON the authenticated /data endpoint serves.
+// It is the exported bridge the core's public share-link endpoint uses to
+// include device data in a shared topology view (gated by the share's
+// include_devices flag). A missing database (extension disabled or never
+// fetched) yields (nil, nil) so the caller serves the map without devices.
+func SharedData(dataDir string, fwID int) ([]byte, error) {
+	dbFile := filepath.Join(dataDir, "graylog-device-data.db")
+	if _, err := os.Stat(dbFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	// A minimal read-only Extension: only db + a discard logger are needed by the
+	// list methods buildDataResponse calls.
+	e := &Extension{db: db, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	resp, err := e.buildDataResponse(fwID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(resp)
+}
+
 // listStp returns the stored STP port states of a firewall.
 func (e *Extension) listStp(fwID int) ([]StpPort, error) {
 	rows, err := e.db.Query(`SELECT switch_name, serial, port, role, state, guard, link, dot1x,
@@ -710,6 +744,79 @@ func (e *Extension) bestMacPins(fwID int) (map[string]MacPort, error) {
 		}
 	}
 	return best, nil
+}
+
+// dualHomeAccessMax bounds how many distinct MACs a port may carry to still
+// count as a device's real attachment point. A server LAG member / access port
+// carries the host (and maybe a few VMs); an uplink or transit trunk carries
+// dozens — excluding those leaves only genuine attachment ports, so a MAC seen
+// on such ports of two different switches is truly dual-homed (not just transit).
+const dualHomeAccessMax = 4
+
+// listDualHomed returns devices whose MAC appears on the access ports of two or
+// more switches at once — the MC-LAG-attached servers the single-port pin hides.
+func (e *Extension) listDualHomed(fwID int) ([]DualHomed, error) {
+	rows, err := e.db.Query(`SELECT mac, switch_name, port FROM mac_sightings
+		WHERE fw_id = ? AND port != '' AND switch_name != ''`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type sighting struct{ mac, sw, port string }
+	var all []sighting
+	portMacs := map[string]map[string]bool{} // "sw|port" → distinct MACs on that port
+	for rows.Next() {
+		var s sighting
+		if scanErr := rows.Scan(&s.mac, &s.sw, &s.port); scanErr != nil {
+			return nil, scanErr
+		}
+		all = append(all, s)
+		pk := s.sw + "|" + s.port
+		if portMacs[pk] == nil {
+			portMacs[pk] = map[string]bool{}
+		}
+		portMacs[pk][s.mac] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Per MAC, keep the lowest-count access port per switch (the most credible
+	// attachment on that switch); drop uplink/transit ports entirely.
+	type att struct {
+		port  string
+		count int
+	}
+	perMac := map[string]map[string]att{} // mac → switch → best access attachment
+	for _, s := range all {
+		c := len(portMacs[s.sw+"|"+s.port])
+		if c > dualHomeAccessMax {
+			continue // uplink / transit trunk, not an attachment
+		}
+		if perMac[s.mac] == nil {
+			perMac[s.mac] = map[string]att{}
+		}
+		if cur, ok := perMac[s.mac][s.sw]; !ok || c < cur.count {
+			perMac[s.mac][s.sw] = att{port: s.port, count: c}
+		}
+	}
+	var out []DualHomed
+	for mac, switches := range perMac {
+		if len(switches) < 2 {
+			continue
+		}
+		names := make([]string, 0, len(switches))
+		for sw := range switches {
+			names = append(names, sw)
+		}
+		sort.Strings(names)
+		dh := DualHomed{Mac: mac}
+		for _, sw := range names {
+			dh.Attachments = append(dh.Attachments, PortAttachment{Switch: sw, Port: switches[sw].port})
+		}
+		out = append(out, dh)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Mac < out[j].Mac })
+	return out, nil
 }
 
 // storeSwitchEdges upserts the observed switch-side trunks (role updates only
@@ -1142,6 +1249,62 @@ func (e *Extension) listLiveRoutes(fwID int) ([]LiveRoute, error) {
 	return out, rows.Err()
 }
 
+// storeApLocation upserts each managed AP's wired switch/port (from wtp-status)
+// and prunes APs unseen past the retention window. Non-empty merge on switch/
+// port so a momentary LLDP blip on one poll keeps the last-known location; a
+// genuine move overwrites it with the new (non-empty) switch/port.
+func (e *Extension) storeApLocation(fwID int, aps []ApLocation, now string) error {
+	if len(aps) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, a := range aps {
+		if a.Serial == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO ap_location (fw_id, ap_serial, ap_name, board_mac, ip, switch_name, switch_port, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, ap_serial) DO UPDATE SET
+				ap_name     = CASE WHEN excluded.ap_name     != '' THEN excluded.ap_name     ELSE ap_name     END,
+				board_mac   = CASE WHEN excluded.board_mac   != '' THEN excluded.board_mac   ELSE board_mac   END,
+				ip          = CASE WHEN excluded.ip          != '' THEN excluded.ip          ELSE ip          END,
+				switch_name = CASE WHEN excluded.switch_name != '' THEN excluded.switch_name ELSE switch_name END,
+				switch_port = CASE WHEN excluded.switch_port != '' THEN excluded.switch_port ELSE switch_port END,
+				updated_at  = excluded.updated_at`,
+			fwID, a.Serial, a.Name, a.BoardMac, a.IP, a.Switch, a.Port, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM ap_location WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// listApLocation returns the AP→switch-port map for a firewall.
+func (e *Extension) listApLocation(fwID int) ([]ApLocation, error) {
+	rows, err := e.db.Query(`SELECT ap_serial, ap_name, board_mac, ip, switch_name, switch_port
+		FROM ap_location WHERE fw_id = ? ORDER BY ap_name, ap_serial`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ApLocation
+	for rows.Next() {
+		var a ApLocation
+		if scanErr := rows.Scan(&a.Serial, &a.Name, &a.BoardMac, &a.IP, &a.Switch, &a.Port); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // listWifi returns the stored wireless associations of a firewall.
 func (e *Extension) listWifi(fwID int) ([]WifiClient, error) {
 	rows, err := e.db.Query(`SELECT mac, ap, ssid, signal, channel, vlan
@@ -1227,10 +1390,52 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 				d.Vlan = mp.Vlan
 			}
 		}
+		// Origin badges: every row here is in the Graylog inventory; SSH also
+		// contributed if it carries SSH-only enrichment (ARP IP or 802.1X identity).
+		d.Sources = []string{"graylog"}
+		if arpIP != "" || d.Dot1xUser != "" || d.Dot1xGroup != "" {
+			d.Sources = append(d.Sources, "ssh")
+		}
 		if d.IP == "" && arpIP != "" { // ARP fills the IP the switch mac-table lacks
 			d.IP = arpIP
 		}
 		devices = append(devices, d)
+	}
+
+	// SSH-discovered devices: MACs the FortiSwitch MAC table learned on an access
+	// port (bestMacPins) that never appeared in the Graylog client-device logs —
+	// most importantly servers wired directly to the core switches, which produce
+	// no client-traffic logs. Without this they are invisible, because the Graylog
+	// inventory alone drives device nodes and SSH only re-pins existing ones. They
+	// carry no fingerprint (Source="ssh"); the ARP IP + 802.1X identity enrich them.
+	if len(pins) > len(devices) {
+		seen := make(map[string]bool, len(devices))
+		for _, d := range devices {
+			seen[d.Mac] = true
+		}
+		enrich := map[string]Device{}
+		if er, eerr := e.db.Query("SELECT mac, ip, dot1x_user, dot1x_group, dot1x_vlan FROM mac_enrich WHERE fw_id = ?", fwID); eerr == nil {
+			for er.Next() {
+				var mac, ip, user, grp, vlan string
+				if er.Scan(&mac, &ip, &user, &grp, &vlan) == nil {
+					enrich[mac] = Device{IP: ip, Dot1xUser: user, Dot1xGroup: grp, Vlan: vlan}
+				}
+			}
+			_ = er.Close()
+		}
+		for mac, mp := range pins {
+			if seen[mac] || mp.Port == "" {
+				continue
+			}
+			d := Device{Mac: mac, Port: mp.Port, SwitchID: mp.SwitchName, Vlan: mp.Vlan, Sources: []string{"ssh"}}
+			en := enrich[mac]
+			d.IP = en.IP
+			d.Dot1xUser, d.Dot1xGroup = en.Dot1xUser, en.Dot1xGroup
+			if d.Vlan == "" {
+				d.Vlan = en.Vlan
+			}
+			devices = append(devices, d)
+		}
 	}
 
 	// MAC/IP sharing: one MAC with several IPs, or one IP behind several MACs.

@@ -111,6 +111,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		createSdwanHealthSQL,
 		createIfaceStatsSQL,
 		createDiagStatusSQL,
+		createApLocationSQL,
 		// Legacy single-row-per-MAC binding table, superseded by mac_sightings
 		// (per-switch rows preserve the transit signal). Cache data only —
 		// repopulated by the next refresh.
@@ -161,6 +162,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Use(d.LoginRequired)
 		pr.Get("/data/{fwID}", e.handleData)
 		pr.Post("/refresh/{fwID}", e.handleRefresh)
+		pr.Post("/port-diag/{fwID}", e.handlePortDiag)
 	})
 
 	go e.worker()
@@ -335,6 +337,23 @@ const createLiveRoutesSQL = `CREATE TABLE IF NOT EXISTS live_routes (
 	is_default  INTEGER NOT NULL DEFAULT 0,
 	updated_at  TEXT NOT NULL,
 	PRIMARY KEY (fw_id, device)
+)`
+
+// ap_location maps each managed FortiAP to the FortiSwitch port it is wired to,
+// from the AP's own LLDP view (get wireless-controller wtp-status): the AP
+// reports its upstream switch (sys name) and port (port id) — the authoritative
+// AP↔port pin the wired MAC/device inventory cannot supply (an AP has no device
+// row of its own). Serves the "📶 <AP> · N clients" line on the switch faceplate.
+const createApLocationSQL = `CREATE TABLE IF NOT EXISTS ap_location (
+	fw_id       INTEGER NOT NULL,
+	ap_serial   TEXT NOT NULL,
+	ap_name     TEXT NOT NULL DEFAULT '',
+	board_mac   TEXT NOT NULL DEFAULT '',
+	ip          TEXT NOT NULL DEFAULT '',
+	switch_name TEXT NOT NULL DEFAULT '',
+	switch_port TEXT NOT NULL DEFAULT '',
+	updated_at  TEXT NOT NULL,
+	PRIMARY KEY (fw_id, ap_serial)
 )`
 
 // wifi_clients holds the latest wireless association per client MAC

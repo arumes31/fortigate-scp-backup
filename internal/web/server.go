@@ -260,6 +260,7 @@ func (s *Server) Routes() chi.Router {
 	// Shared topology views: access is granted by an unguessable token.
 	r.Get("/topology/shared/{token}", s.handleTopologyShared)
 	r.Get("/topology/shared/{token}/data", s.handleTopologySharedData)
+	r.Get("/topology/shared/{token}/devices", s.handleTopologySharedDevices)
 
 	// Authenticated.
 	r.Group(func(pr chi.Router) {

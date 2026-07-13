@@ -96,7 +96,7 @@ func TestLiveDiagStore(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
-	for _, q := range []string{createTableSQL, createStpTableSQL, createSwitchEdgesSQL, createMacSightingsSQL, createMacEnrichSQL, createWifiSQL, createHaStatusSQL, createSwitchHealthSQL, createLiveRoutesSQL, createSdwanHealthSQL, createIfaceStatsSQL, createDiagStatusSQL} {
+	for _, q := range []string{createTableSQL, createStpTableSQL, createSwitchEdgesSQL, createMacSightingsSQL, createMacEnrichSQL, createWifiSQL, createHaStatusSQL, createSwitchHealthSQL, createLiveRoutesSQL, createSdwanHealthSQL, createIfaceStatsSQL, createDiagStatusSQL, createApLocationSQL} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

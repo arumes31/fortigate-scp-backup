@@ -42,6 +42,7 @@
         <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('vlans', this.checked)" style="vertical-align: -2px;"> VLANs</label>
         <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('routes', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.routes"}}</label>
         <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('edge', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.edge_switches"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" onchange="setTopoFilter('hideStale', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.hide_stale"}}</label>
     </div>
 
     <!-- Public share link -->
@@ -54,6 +55,7 @@
             <option value="0">{{T .Base.Lang "topo.share_never"}}</option>
         </select>
         <label style="cursor: pointer; font-size: 0.85em;" class="muted"><input type="checkbox" id="shareEmbed" style="vertical-align: -2px;"> {{T .Base.Lang "topo.share_embed"}}</label>
+        <label style="cursor: pointer; font-size: 0.85em;" class="muted" title="{{T .Base.Lang "topo.share_devices_hint"}}"><input type="checkbox" id="shareDevices" style="vertical-align: -2px;"> {{T .Base.Lang "topo.share_devices"}}</label>
         <button class="btn btn-small" onclick="createShare()" style="background: var(--accent); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
         <div id="shareResult" style="display: none; flex: 1; min-width: 280px; display: none; align-items: center; gap: 6px;">
             <input id="shareUrl" type="text" readonly onclick="this.select()" style="flex: 1; padding: 5px 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); color: #34d399; border-radius: 4px; font-size: 0.82em; font-family: monospace;">
@@ -79,7 +81,10 @@
                 <strong id="faceTitle" style="color: #fff;"></strong>
                 <div id="faceSub" class="muted" style="font-size: 0.82em; margin-top: 2px;"></div>
             </div>
-            <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="faceWidthBtn" onclick="toggleFacePanelWidth()" title="Widen / restore panel" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px; font-family: monospace;">⤢</button>
+                <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
+            </div>
         </div>
         <div id="faceBody" style="padding: 16px; overflow-y: auto; flex: 1;"></div>
     </div>
@@ -112,10 +117,11 @@ async function createShare() {
     const hours = document.getElementById("shareExpiry").value;
     if (!fwID) return;
     try {
+        const withDevices = document.getElementById("shareDevices").checked ? "1" : "0";
         const resp = await fetch("/topology/share", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: `fw_id=${encodeURIComponent(fwID)}&expiry_hours=${encodeURIComponent(hours)}`
+            body: `fw_id=${encodeURIComponent(fwID)}&expiry_hours=${encodeURIComponent(hours)}&include_devices=${withDevices}`
         });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();

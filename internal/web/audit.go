@@ -125,6 +125,14 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Migration: a share link can optionally include the live device inventory
+	// (client MAC/IP/hostname/802.1X identity). Default 0 = structure only, so
+	// existing shares stay device-free until re-created with the toggle on.
+	if _, err := db.Exec(`ALTER TABLE topology_shares ADD COLUMN include_devices INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, err
+	}
 	// Backfill: map pre-i18n exemption rows (German finding texts, empty
 	// finding_key) to stable keys so upgrades keep existing exemptions active.
 	s.backfillExemptionKeys(db)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
@@ -20,6 +21,16 @@ import (
 // keeps time.Duration(hours) * time.Hour well within int64 so a large value
 // cannot overflow into a past instant, and rejects absurd expiries.
 const maxShareExpiryHours = 10 * 365 * 24
+
+// isCheckboxOn reports whether a form checkbox value is truthy (browsers submit
+// "on" for a ticked box; accept the common explicit forms too).
+func isCheckboxOn(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
 
 // topologyData is the topology page shell; the graph itself is fetched from
 // /topology/data/{fwID} and rendered client-side with the vendored D3.
@@ -127,34 +138,36 @@ func (s *Server) handleTopologyData(w http.ResponseWriter, r *http.Request) {
 
 // topologyShare mirrors a row of the `topology_shares` table.
 type topologyShare struct {
-	Token     string `json:"token"`
-	FwID      int    `json:"fw_id"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at,omitempty"` // "" = never
+	Token          string `json:"token"`
+	FwID           int    `json:"fw_id"`
+	CreatedAt      string `json:"created_at"`
+	ExpiresAt      string `json:"expires_at,omitempty"` // "" = never
+	IncludeDevices bool   `json:"include_devices"`      // expose the live device inventory
 }
 
-// resolveShare validates a token and returns the firewall it grants access
-// to. Expired tokens are treated as absent (and cleaned up).
-func resolveShare(db *sql.DB, token string) (int, bool) {
+// resolveShare validates a token and returns the firewall it grants access to
+// and whether the share includes the live device inventory. Expired tokens are
+// treated as absent (and cleaned up).
+func resolveShare(db *sql.DB, token string) (fwID int, includeDevices bool, ok bool) {
 	if db == nil || token == "" || len(token) > 128 {
-		return 0, false
+		return 0, false, false
 	}
-	var fwID int
 	var expiresAt string
-	err := db.QueryRow("SELECT fw_id, COALESCE(expires_at, '') FROM topology_shares WHERE token = ?", token).
-		Scan(&fwID, &expiresAt)
+	var incDev int
+	err := db.QueryRow("SELECT fw_id, COALESCE(expires_at, ''), COALESCE(include_devices, 0) FROM topology_shares WHERE token = ?", token).
+		Scan(&fwID, &expiresAt, &incDev)
 	if err != nil {
-		return 0, false
+		return 0, false, false
 	}
 	if expiresAt != "" {
 		// Timestamps are stored as local wall-clock strings: parse them in the
 		// same location, otherwise the expiry shifts by the UTC offset.
 		if exp, perr := time.ParseInLocation(insightsTimeLayout, expiresAt, time.Local); perr != nil || time.Now().After(exp) {
 			_, _ = db.Exec("DELETE FROM topology_shares WHERE token = ?", token)
-			return 0, false
+			return 0, false, false
 		}
 	}
-	return fwID, true
+	return fwID, incDev == 1, true
 }
 
 // handleTopologyShareCreate creates a share token for a firewall (POST,
@@ -198,18 +211,25 @@ func (s *Server) handleTopologyShareCreate(w http.ResponseWriter, r *http.Reques
 	if hours > 0 {
 		expiresAt = now.Add(time.Duration(hours) * time.Hour).Format(insightsTimeLayout)
 	}
-	if _, err := db.Exec("INSERT INTO topology_shares (token, fw_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-		token, fwID, now.Format(insightsTimeLayout), expiresAt); err != nil {
+	// Opt-in device exposure: only when the creator ticks it does the public link
+	// disclose client MAC/IP/hostname/802.1X identity. Default off.
+	includeDevices := isCheckboxOn(r.FormValue("include_devices"))
+	incDev := 0
+	if includeDevices {
+		incDev = 1
+	}
+	if _, err := db.Exec("INSERT INTO topology_shares (token, fw_id, created_at, expires_at, include_devices) VALUES (?, ?, ?, ?, ?)",
+		token, fwID, now.Format(insightsTimeLayout), expiresAt, incDev); err != nil {
 		http.Error(w, "failed to store share", http.StatusInternalServerError)
 		return
 	}
 	// Log the parsed value, never the raw form input (log injection).
 	s.store.LogActivity(s.sess.User(r).Username, "topology_share_created",
-		"fw_id="+strconv.Itoa(fwID)+" expiry="+strconv.Itoa(hours)+"h")
+		"fw_id="+strconv.Itoa(fwID)+" expiry="+strconv.Itoa(hours)+"h devices="+strconv.FormatBool(includeDevices))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(topologyShare{Token: token, FwID: fwID,
-		CreatedAt: now.Format(insightsTimeLayout), ExpiresAt: expiresAt})
+		CreatedAt: now.Format(insightsTimeLayout), ExpiresAt: expiresAt, IncludeDevices: includeDevices})
 }
 
 // handleTopologyShareList lists active share tokens (authenticated),
@@ -220,7 +240,7 @@ func (s *Server) handleTopologyShareList(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
 		return
 	}
-	query := "SELECT token, fw_id, created_at, COALESCE(expires_at, '') FROM topology_shares"
+	query := "SELECT token, fw_id, created_at, COALESCE(expires_at, ''), COALESCE(include_devices, 0) FROM topology_shares"
 	var args []any
 	if fwStr := r.URL.Query().Get("fw_id"); fwStr != "" {
 		if fwID, err := strconv.Atoi(fwStr); err == nil {
@@ -239,9 +259,11 @@ func (s *Server) handleTopologyShareList(w http.ResponseWriter, r *http.Request)
 	now := time.Now()
 	for rows.Next() {
 		var sh topologyShare
-		if scanErr := rows.Scan(&sh.Token, &sh.FwID, &sh.CreatedAt, &sh.ExpiresAt); scanErr != nil {
+		var incDev int
+		if scanErr := rows.Scan(&sh.Token, &sh.FwID, &sh.CreatedAt, &sh.ExpiresAt, &incDev); scanErr != nil {
 			continue
 		}
+		sh.IncludeDevices = incDev == 1
 		if sh.ExpiresAt != "" {
 			if exp, perr := time.ParseInLocation(insightsTimeLayout, sh.ExpiresAt, time.Local); perr == nil && now.After(exp) {
 				continue // expired: hide (cleaned lazily by resolveShare)
@@ -268,19 +290,53 @@ func (s *Server) handleTopologyShareRevoke(w http.ResponseWriter, r *http.Reques
 
 // topologySharedPage is the template payload of the public shared view.
 type topologySharedPage struct {
-	Token string
-	Lang  string
+	Token          string
+	Lang           string
+	IncludeDevices bool // gates the client-side device fetch + device filter
 }
 
 // handleTopologyShared renders the public read-only topology page.
 func (s *Server) handleTopologyShared(w http.ResponseWriter, r *http.Request) {
 	db, _ := s.insightsDB()
 	token := chi.URLParam(r, "token")
-	if _, ok := resolveShare(db, token); !ok {
+	_, includeDevices, ok := resolveShare(db, token)
+	if !ok {
 		s.handleNotFound(w, r)
 		return
 	}
-	s.render(w, "topology_shared.html", topologySharedPage{Token: token, Lang: langFromRequest(r)})
+	s.render(w, "topology_shared.html", topologySharedPage{Token: token, Lang: langFromRequest(r), IncludeDevices: includeDevices})
+}
+
+// handleTopologySharedDevices serves the live device inventory + overlays for a
+// share token, but only when that share was created with device exposure on.
+// The payload matches the authenticated /graylog-devices/data endpoint, so the
+// shared frontend renders devices identically.
+func (s *Server) handleTopologySharedDevices(w http.ResponseWriter, r *http.Request) {
+	db, _ := s.insightsDB()
+	token := chi.URLParam(r, "token")
+	fwID, includeDevices, ok := resolveShare(db, token)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if !includeDevices {
+		// Share is structure-only: report empty rather than 403 so the frontend
+		// simply renders no devices.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"devices":[]}`))
+		return
+	}
+	payload, err := graylogdevicedata.SharedData(s.cfg.DataDir, fwID)
+	if err != nil {
+		s.logger.Error("shared topology devices failed", "fw_id", fwID, "err", err)
+		http.Error(w, "device data unavailable", http.StatusInternalServerError)
+		return
+	}
+	if payload == nil { // extension disabled / never fetched
+		payload = []byte(`{"devices":[]}`)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload)
 }
 
 // handleTopologySharedData serves the topology JSON for a valid share token
@@ -288,7 +344,7 @@ func (s *Server) handleTopologyShared(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTopologySharedData(w http.ResponseWriter, r *http.Request) {
 	db, _ := s.insightsDB()
 	token := chi.URLParam(r, "token")
-	fwID, ok := resolveShare(db, token)
+	fwID, _, ok := resolveShare(db, token)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return

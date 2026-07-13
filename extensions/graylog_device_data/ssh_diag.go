@@ -7,12 +7,28 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// errDiagBusy is returned when an on-demand port query cannot start because the
+// firewall's single SSH slot is already in use (a background sweep or another
+// on-demand query is running).
+var errDiagBusy = errors.New("a diagnostics query is already running for this firewall")
+
+// reDiagName validates a switch or port name before it is interpolated into an
+// SSH CLI command. Restricting to this alphabet (no whitespace, no shell/CLI
+// metacharacters, no newlines) makes command injection through the switch/port
+// arguments impossible.
+var reDiagName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// ValidDiagName reports whether s is a safe switch/port identifier for the
+// on-demand port diagnostics endpoint.
+func ValidDiagName(s string) bool { return reDiagName.MatchString(s) }
 
 // This file runs the live FortiGate CLI diagnostics collector. It reuses each
 // firewall's stored SSH credentials to pull authoritative per-switch-port link
@@ -339,6 +355,15 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 			e.logger.Warn("fgt diag: iface-throughput store failed", "fw_id", fwID, "err", serr)
 			storeErr = errors.Join(storeErr, serr)
 		}
+		// FortiAP → switch-port pin (static tier): each managed AP's own LLDP report
+		// names the switch + port it is wired to. AP location rarely changes, so it
+		// rides the static sweep; the non-empty merge keeps it across live sweeps.
+		if withStatic {
+			if serr := e.storeApLocation(fwID, parseWtpStatus(run("get wireless-controller wtp-status")), now); serr != nil {
+				e.logger.Warn("fgt diag: ap-location store failed", "fw_id", fwID, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
+			}
+		}
 	})
 	if serr := e.storeDiagStatus(fwID, CollectionStatus{
 		LastRun: now, Switches: switches, DurationMs: int(time.Since(start).Milliseconds()), Static: withStatic,
@@ -480,4 +505,117 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 func isFortiPrompt(s string) bool {
 	s = strings.TrimRight(s, " \r\n")
 	return strings.HasSuffix(s, "$") || strings.HasSuffix(s, "#")
+}
+
+// portDiagCommands are the per-port switch-info subcommands run on demand. All
+// accept an explicit "<switch> <port>" argument (verified live), so each returns
+// small, port-scoped output rather than a whole-switch dump.
+var portDiagCommands = []struct{ title, sub string }{
+	{"Port status & counters", "port-stats"},
+	{"Physical properties", "port-properties"},
+	{"802.1X sessions", "802.1X"},
+	{"QoS / congestion", "qos-stats"},
+}
+
+// collectPortDiag runs the live per-port diagnostics for one switch port on
+// demand (the faceplate "Run diagnostics" button). It reuses the same SSH
+// transport and the per-firewall single-flight guard as the background sweep, so
+// only one SSH session ever runs per device; if one is already in flight it
+// returns errDiagBusy. sw and port MUST already be validated (reDiagName) —
+// they are interpolated straight into the CLI command.
+func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error) {
+	if e.firewallCreds == nil {
+		return nil, errors.New("ssh diagnostics not configured")
+	}
+	// Single-flight per firewall: never run concurrently with a sweep or another
+	// on-demand query. Unlike a sweep this does not queue — the caller surfaces
+	// "busy, try again" to the user.
+	e.diagMu.Lock()
+	st := e.diagState[fwID]
+	if st == nil {
+		st = &diagRunState{}
+		e.diagState[fwID] = st
+	}
+	if st.busy {
+		e.diagMu.Unlock()
+		return nil, errDiagBusy
+	}
+	st.busy = true
+	st.last = time.Now()
+	e.diagMu.Unlock()
+	defer func() {
+		e.diagMu.Lock()
+		st.busy = false
+		e.diagMu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	host, user, pass, prt, err := e.firewallCreds(ctx, fwID)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("resolve credentials: %w", err)
+	}
+	if user == "" || pass == "" {
+		return nil, errors.New("no SSH credentials on file for this firewall")
+	}
+	if prt <= 0 {
+		prt = 22
+	}
+	overall := time.Duration(e.cfg.FgtDiagSSHTimeoutSec) * time.Second
+	if overall <= 0 {
+		overall = 90 * time.Second
+	}
+	client, err := dialSSHDiag(host, user, pass, prt, overall)
+	if err != nil {
+		return nil, fmt.Errorf("ssh dial: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	pd := &PortDiag{Switch: sw, Port: port, Ran: time.Now().Format("2006-01-02 15:04:05")}
+	base := "diagnose switch-controller switch-info "
+	runErr := runSSHShell(client, overall, func(run func(string) string) {
+		for _, c := range portDiagCommands {
+			out := cleanDiagOutput(run(base + c.sub + " " + sw + " " + port))
+			pd.Sections = append(pd.Sections, PortDiagSection{
+				Title: c.title, Command: c.sub + " " + sw + " " + port,
+				Output: out, OK: out != "" && !diagCmdFailed(out),
+			})
+		}
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	return pd, nil
+}
+
+// cleanDiagOutput strips the echoed command line and the trailing CLI prompt
+// from a single command's raw shell output, leaving just the port data.
+func cleanDiagOutput(s string) string {
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		t := strings.TrimRight(ln, " \r")
+		if isFortiPrompt(t) {
+			continue // drop the returned prompt line(s)
+		}
+		out = append(out, t)
+	}
+	// Drop leading blank lines and the echoed command.
+	for len(out) > 0 {
+		f := strings.TrimSpace(out[0])
+		if f == "" || strings.HasPrefix(f, "diagnose ") || strings.HasPrefix(f, "get ") {
+			out = out[1:]
+			continue
+		}
+		break
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// diagCmdFailed reports whether a command's output is a FortiOS CLI rejection
+// (unsupported subcommand / parse error) rather than real data.
+func diagCmdFailed(out string) bool {
+	l := strings.ToLower(out)
+	return strings.Contains(l, "parse error") ||
+		strings.Contains(l, "unknown action") ||
+		strings.Contains(l, "command fail")
 }

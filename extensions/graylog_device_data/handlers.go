@@ -3,6 +3,7 @@ package graylogdevicedata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,6 +46,8 @@ type dataResponse struct {
 	LiveRoutes    []LiveRoute       `json:"live_routes,omitempty"`
 	SdwanHealth   []SdwanHealth     `json:"sdwan_health,omitempty"`
 	Throughput    []IfaceThroughput `json:"throughput,omitempty"`
+	ApLocations   []ApLocation      `json:"ap_locations,omitempty"` // AP → switch/port pin (SSH wtp-status)
+	DualHomed     []DualHomed       `json:"dual_homed,omitempty"`   // devices attached to 2+ switches
 	DiagStatus    *CollectionStatus `json:"diag_status,omitempty"`
 	UpdatedAt     string            `json:"updated_at,omitempty"`
 }
@@ -65,11 +68,25 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if e.cfg.FgtDiagSSHEnabled {
 		go e.runDiagIfAllowed(fwID, time.Duration(e.cfg.FgtDiagSSHViewSec)*time.Second)
 	}
-	devices, updatedAt, err := e.listDevices(fwID)
+	resp, err := e.buildDataResponse(fwID)
 	if err != nil {
 		e.logger.Error("graylog devices: list failed", "fw_id", fwID, "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// buildDataResponse gathers the full stored overlay (inventory + all live
+// diagnostics) into the topology payload. Only a failed device inventory lookup
+// is fatal (returned as an error); every overlay is optional and merely logged
+// on failure, so the map still renders. Shared by the authenticated handler and
+// the public read-only share bridge (SharedData).
+func (e *Extension) buildDataResponse(fwID int) (dataResponse, error) {
+	devices, updatedAt, err := e.listDevices(fwID)
+	if err != nil {
+		return dataResponse{}, err
 	}
 	if devices == nil {
 		devices = []Device{}
@@ -122,16 +139,23 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		e.logger.Warn("graylog devices: throughput list failed", "fw_id", fwID, "err", err)
 	}
+	apLoc, err := e.listApLocation(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: ap-location list failed", "fw_id", fwID, "err", err)
+	}
+	dualHomed, err := e.listDualHomed(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: dual-homed list failed", "fw_id", fwID, "err", err)
+	}
 	ds := e.diagStatus(fwID)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dataResponse{
+	return dataResponse{
 		FwID: fwID, Devices: devices, Stp: stp,
 		StpEvents: events, MultiMacPorts: multiMac, Edges: edges,
 		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID), FwHealth: e.fwHealth(fwID),
 		SwitchHealth: swHealth, LiveRoutes: liveRoutes,
-		SdwanHealth: sdwan, Throughput: throughput, DiagStatus: &ds,
+		SdwanHealth: sdwan, Throughput: throughput, ApLocations: apLoc, DualHomed: dualHomed, DiagStatus: &ds,
 		UpdatedAt: updatedAt,
-	})
+	}, nil
 }
 
 // handleRefresh fetches the device inventory for one firewall from Graylog
@@ -172,6 +196,47 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		e.logActivity(user, "graylog_device_refresh", "fw_id="+strconv.Itoa(fwID))
 	}
 	e.handleData(w, r)
+}
+
+// handlePortDiag runs live per-port diagnostics for one switch port on demand
+// (the faceplate "Run diagnostics" button) and returns the fresh CLI output. The
+// switch/port are strictly validated before reaching the SSH command, and the
+// per-firewall single-flight guard means at most one SSH session runs per device.
+func (e *Extension) handlePortDiag(w http.ResponseWriter, r *http.Request) {
+	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
+	if err != nil {
+		http.Error(w, "invalid firewall id", http.StatusBadRequest)
+		return
+	}
+	if !e.cfg.FgtDiagSSHEnabled || e.firewallCreds == nil {
+		http.Error(w, "ssh diagnostics disabled", http.StatusServiceUnavailable)
+		return
+	}
+	sw := strings.TrimSpace(r.URL.Query().Get("switch"))
+	port := strings.TrimSpace(r.URL.Query().Get("port"))
+	if !ValidDiagName(sw) || !ValidDiagName(port) {
+		http.Error(w, "invalid switch or port", http.StatusBadRequest)
+		return
+	}
+	pd, err := e.collectPortDiag(fwID, sw, port)
+	if err != nil {
+		if errors.Is(err, errDiagBusy) {
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
+		e.logger.Warn("graylog devices: port diag failed", "fw_id", fwID, "switch", sw, "port", port, "err", err)
+		http.Error(w, "diagnostics failed", http.StatusBadGateway)
+		return
+	}
+	if e.logActivity != nil {
+		user := ""
+		if e.currentUser != nil {
+			user = e.currentUser(r)
+		}
+		e.logActivity(user, "graylog_port_diag", "fw_id="+strconv.Itoa(fwID)+" switch="+sw+" port="+port)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(pd)
 }
 
 // firewallFQDN resolves a firewall id to its FQDN via the shared store.

@@ -20,6 +20,14 @@
         <main>
             <h1 class="page-title"><span class="accent-bar"></span>{{T .Lang "topo.title"}} <span id="topoMeta" class="muted" style="font-size: 0.55em; margin-left: 10px;"></span></h1>
 
+            <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; font-size: 0.85em;">
+                {{if .IncludeDevices}}<label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('devices', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.devices"}}</label>{{end}}
+                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('vlans', this.checked)" style="vertical-align: -2px;"> VLANs</label>
+                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('routes', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.routes"}}</label>
+                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('edge', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.edge_switches"}}</label>
+                {{if .IncludeDevices}}<label style="cursor: pointer;"><input type="checkbox" onchange="setTopoFilter('hideStale', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.hide_stale"}}</label>{{end}}
+            </div>
+
             <div class="card pad-0" style="position: relative; overflow: hidden;">
                 <svg id="topoSvg" width="100%" height="640" style="background: radial-gradient(ellipse at 30% 20%, rgba(59,130,246,0.05), transparent 60%), rgba(0,0,0,0.25); display: block; cursor: grab;"></svg>
 
@@ -34,7 +42,10 @@
                             <strong id="faceTitle" style="color: #fff;"></strong>
                             <div id="faceSub" class="muted" style="font-size: 0.82em; margin-top: 2px;"></div>
                         </div>
-                        <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <button id="faceWidthBtn" onclick="toggleFacePanelWidth()" title="Widen / restore panel" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px; font-family: monospace;">⤢</button>
+                            <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
+                        </div>
                     </div>
                     <div id="faceBody" style="padding: 16px; overflow-y: auto; flex: 1;"></div>
                 </div>
@@ -48,7 +59,7 @@
         </footer>
     </div>
 
-    <script>window.TOPO_CONFIG = { staticUrl: "/topology/shared/{{.Token}}/data" }; window.I18N = {{i18nJSON .Lang}};</script>
+    <script>window.TOPO_CONFIG = { staticUrl: "/topology/shared/{{.Token}}/data"{{if .IncludeDevices}}, sharedDevicesUrl: "/topology/shared/{{.Token}}/devices"{{end}} }; window.I18N = {{i18nJSON .Lang}};</script>
     <script src="/static/ui.js"></script>
     <script src="/static/d3.v7.min.js"></script>
     <script src="/static/topology.js"></script>

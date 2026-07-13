@@ -47,6 +47,13 @@ type Device struct {
 	// whose IP appears with multiple MACs (computed at read time).
 	SharedMac bool `json:"shared_mac,omitempty"`
 	SharedIP  bool `json:"shared_ip,omitempty"`
+
+	// Sources lists which data layers contributed this device's data, for the
+	// per-device origin badges: "graylog" (client-traffic inventory + fingerprint)
+	// and/or "ssh" (FortiSwitch MAC table + ARP/802.1X enrichment). A device wired
+	// to a core switch that generates no client logs is ["ssh"] only; one seen in
+	// both is ["graylog","ssh"] ("multiple").
+	Sources []string `json:"sources,omitempty"`
 }
 
 // MacPort is one client MAC's current wired switch + physical port, derived
@@ -121,6 +128,54 @@ type IfaceThroughput struct {
 	Iface  string  `json:"iface"`
 	RxMbps float64 `json:"rx_mbps"`
 	TxMbps float64 `json:"tx_mbps"`
+}
+
+// ApLocation maps a managed FortiAP to the FortiSwitch port it is wired to,
+// resolved from the AP's own LLDP report (get wireless-controller wtp-status).
+// The frontend pins the AP (and its associated client count) onto that switch
+// port on the faceplate — the AP has no device row of its own, so this is the
+// only authoritative AP↔port signal.
+type ApLocation struct {
+	Serial   string `json:"serial"` // wtp-id
+	Name     string `json:"name,omitempty"`
+	BoardMac string `json:"board_mac,omitempty"`
+	IP       string `json:"ip,omitempty"`
+	Switch   string `json:"switch,omitempty"` // upstream switch (LLDP sys name)
+	Port     string `json:"port,omitempty"`   // upstream switch port (LLDP port id)
+}
+
+// PortDiagSection is one command's live output in an on-demand port diagnostic
+// (the faceplate "Run diagnostics" button). OK is false when the switch rejected
+// the command (unsupported on that model) rather than returning data.
+type PortDiagSection struct {
+	Title   string `json:"title"`
+	Command string `json:"command"`
+	Output  string `json:"output"`
+	OK      bool   `json:"ok"`
+}
+
+// PortDiag is the result of an on-demand live diagnostics run for one switch
+// port: the authoritative per-port CLI output pulled fresh over SSH.
+type PortDiag struct {
+	Switch   string            `json:"switch"`
+	Port     string            `json:"port"`
+	Ran      string            `json:"ran"`
+	Sections []PortDiagSection `json:"sections"`
+}
+
+// PortAttachment is one switch-port a device is wired to.
+type PortAttachment struct {
+	Switch string `json:"switch"`
+	Port   string `json:"port"`
+}
+
+// DualHomed is a device (by MAC) seen on the access ports of two or more
+// different switches at once — a server LAG'd across an MC-LAG core pair, or a
+// multi-NIC host. The topology marks each attachment port on its switch faceplate
+// so the dual-homing is visible instead of the device being pinned to one port.
+type DualHomed struct {
+	Mac         string           `json:"mac"`
+	Attachments []PortAttachment `json:"attachments"`
 }
 
 // CollectionStatus is the outcome of the last SSH diagnostics sweep for a
