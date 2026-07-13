@@ -11,12 +11,14 @@
 package graylogdevicedata
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -38,6 +40,13 @@ type Extension struct {
 
 	logActivity func(username, action, details string)
 	currentUser func(r *http.Request) string
+
+	// Live SSH diagnostics (optional): resolve a firewall's decrypted SSH
+	// credentials, and a per-device gate that rate-limits CLI queries.
+	firewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
+	diagMu        sync.Mutex
+	diagLast      map[int]time.Time // fw_id → last SSH query start
+	diagBusy      map[int]bool      // fw_id → a query is in flight
 }
 
 // New constructs the extension (not yet enabled/mounted).
@@ -61,6 +70,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.currentUser = d.CurrentUser
 	e.pool = d.DB
 	e.dataDir = d.DataDir
+	e.firewallCreds = d.FirewallCreds
+	e.diagLast = map[int]time.Time{}
+	e.diagBusy = map[int]bool{}
 
 	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err
@@ -121,6 +133,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	})
 
 	go e.worker()
+	if e.cfg.FgtDiagSSHEnabled && e.firewallCreds != nil {
+		go e.diagWorker()
+	}
 	return nil
 }
 

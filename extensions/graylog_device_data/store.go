@@ -395,6 +395,41 @@ func (e *Extension) storeLinkStates(fwID int, links []StpPort, now string) error
 	return tx.Commit()
 }
 
+// storeDiagStp writes the live SSH-diagnostics port state (authoritative link
+// up/down plus STP role/state for link-up ports). Like storeLinkStates it merges
+// non-empty fields only and never touches guard/dot1x/last_change or prunes, so
+// it augments the Graylog-derived rows without disturbing the block/guard and
+// event-history semantics that path owns. A down port arrives with empty
+// role/state, so it is shown as down, not blocked.
+func (e *Extension) storeDiagStp(fwID int, ports []StpPort, now string) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, p := range ports {
+		if p.SwitchName == "" || p.Port == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO stp_ports
+			(fw_id, switch_name, serial, port, role, state, guard, link, dot1x, last_change, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '', ?)
+			ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
+				serial     = CASE WHEN excluded.serial != '' THEN excluded.serial ELSE serial END,
+				role       = CASE WHEN excluded.role   != '' THEN excluded.role   ELSE role   END,
+				state      = CASE WHEN excluded.state  != '' THEN excluded.state  ELSE state  END,
+				link       = CASE WHEN excluded.link   != '' THEN excluded.link   ELSE link   END,
+				updated_at = excluded.updated_at`,
+			fwID, p.SwitchName, p.Serial, p.Port, p.Role, p.State, p.Link, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // BlockedPort is one switch port currently out of forwarding — blocked by STP
 // or held down by a BPDU/loop/root guard — projected for the core dashboard's
 // cross-firewall issue card. It is the extension's published view of the

@@ -147,6 +147,13 @@ func main() {
 		Logger:        logger,
 		TZ:            cfg.TZ,
 		DataDir:       cfg.DataDir,
+		FirewallCreds: func(ctx context.Context, id int) (string, string, string, int, error) {
+			fw, err := store.GetFirewall(ctx, id)
+			if err != nil {
+				return "", "", "", 0, err
+			}
+			return fw.FQDN, fw.Username, fw.Password, fw.SSHPort, nil
+		},
 	}); err != nil {
 		logger.Error("failed to mount extensions", "err", err)
 		os.Exit(1)
