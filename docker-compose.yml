@@ -85,8 +85,10 @@ services:
       # - "FGT_DIAG_SSH_BACKGROUND_SECONDS=3600"
       # Min spacing when the topology page/live button triggers a query (default: 1200 = 20m).
       # - "FGT_DIAG_SSH_VIEW_SECONDS=1200"
-      # Hard rate floor: never query one device faster than this (default: 10s).
-      # - "FGT_DIAG_SSH_FLOOR_SECONDS=10"
+      # Min spacing between query starts per device (default: 2s); only one query
+      # runs at a time per device regardless, so collections are effectively spaced
+      # by their own duration.
+      # - "FGT_DIAG_SSH_FLOOR_SECONDS=2"
       # Overall SSH session timeout per device (default: 90s).
       # - "FGT_DIAG_SSH_TIMEOUT_SECONDS=90"
 
