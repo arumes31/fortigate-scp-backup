@@ -75,6 +75,21 @@ services:
       # Background refresh interval in seconds (default: 3600 = 1h).
       # - "GRAYLOG_DEVICE_INTERVAL=3600"
 
+      # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
+      # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH
+      # credentials) for authoritative per-switch-port link state, STP role/state
+      # and interlink/uplink trunks — data the logs only reveal partially. Feeds
+      # the same topology faceplate; requires EXT_GRAYLOG_DEVICE_DATA=true.
+      - "FGT_DIAG_SSH_ENABLED=false"
+      # Background sweep cadence per device (default: 3600 = 1h).
+      # - "FGT_DIAG_SSH_BACKGROUND_SECONDS=3600"
+      # Min spacing when the topology page/live button triggers a query (default: 1200 = 20m).
+      # - "FGT_DIAG_SSH_VIEW_SECONDS=1200"
+      # Hard rate floor: never query one device faster than this (default: 10s).
+      # - "FGT_DIAG_SSH_FLOOR_SECONDS=10"
+      # Overall SSH session timeout per device (default: 90s).
+      # - "FGT_DIAG_SSH_TIMEOUT_SECONDS=90"
+
       # --- Housekeeping ---
       - "ACTIVITY_LOG_RETENTION_DAYS=0" # 0 means keep logs indefinitely
     ports:

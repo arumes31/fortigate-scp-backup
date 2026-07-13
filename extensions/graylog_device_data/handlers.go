@@ -50,6 +50,13 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid firewall id", http.StatusBadRequest)
 		return
 	}
+	// Viewing the topology triggers a live SSH diagnostics refresh, rate-limited
+	// to at most one query per FgtDiagSSHViewSec (default 20 min) per device (the
+	// hard 10 s floor still applies). It runs in the background so this response
+	// returns the cached overlay immediately; the fresh state lands on the next poll.
+	if e.cfg.FgtDiagSSHEnabled {
+		go e.runDiagIfAllowed(fwID, time.Duration(e.cfg.FgtDiagSSHViewSec)*time.Second)
+	}
 	devices, updatedAt, err := e.listDevices(fwID)
 	if err != nil {
 		e.logger.Error("graylog devices: list failed", "fw_id", fwID, "err", err)
@@ -123,6 +130,12 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		e.logger.Error("graylog devices: refresh failed", "fw_id", fwID, "err", err)
 		http.Error(w, "graylog fetch failed", http.StatusBadGateway)
 		return
+	}
+	// The live button is an explicit manual refresh, so it also pulls fresh SSH
+	// diagnostics synchronously (subject only to the hard rate floor, not the
+	// 20-min page-view cadence) so the returned overlay reflects the live query.
+	if e.cfg.FgtDiagSSHEnabled {
+		e.runDiagIfAllowed(fwID, e.diagFloor())
 	}
 	if e.logActivity != nil {
 		user := ""
