@@ -91,6 +91,15 @@ type Config struct {
 	GraylogLinkRange      string // seconds of history for the latest-per-port link-state aggregation (wide, like the topo window)
 	GraylogDeviceInterval int    // background refresh interval in seconds
 
+	// Live SSH diagnostics: query the FortiGate CLI directly for authoritative
+	// per-switch-port link state, STP role/state and interlink trunks (data the
+	// logs only reveal partially). Reuses each firewall's stored SSH credentials.
+	FgtDiagSSHEnabled       bool // FGT_DIAG_SSH_ENABLED: turn the SSH diagnostics collector on
+	FgtDiagSSHBackgroundSec int  // background sweep cadence per device (seconds)
+	FgtDiagSSHViewSec       int  // min spacing when the topology page triggers a query (seconds)
+	FgtDiagSSHFloorSec      int  // hard rate floor between query starts (seconds); one query per device runs at a time regardless
+	FgtDiagSSHTimeoutSec    int  // overall SSH session timeout per device (seconds)
+
 	// Housekeeping
 	ActivityLogRetentionDays int
 
@@ -192,6 +201,12 @@ func Load(logger *slog.Logger) *Config {
 		GraylogTopoRange:      getenv("GRAYLOG_TOPO_RANGE", "2592000"),
 		GraylogLinkRange:      getenv("GRAYLOG_LINK_RANGE", "2592000"),
 		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
+
+		FgtDiagSSHEnabled:       boolenv("FGT_DIAG_SSH_ENABLED", false),
+		FgtDiagSSHBackgroundSec: intenv("FGT_DIAG_SSH_BACKGROUND_SECONDS", 3600), // hourly background sweep
+		FgtDiagSSHViewSec:       intenv("FGT_DIAG_SSH_VIEW_SECONDS", 1200),       // ≥20 min between page-triggered queries
+		FgtDiagSSHFloorSec:      intenv("FGT_DIAG_SSH_FLOOR_SECONDS", 2),         // min 2 s between query starts (and only one at a time per device)
+		FgtDiagSSHTimeoutSec:    intenv("FGT_DIAG_SSH_TIMEOUT_SECONDS", 180),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
 

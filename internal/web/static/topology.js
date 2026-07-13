@@ -24,6 +24,12 @@ let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
 let topoVpn = [];       // VPN tunnel up/down states from the extension
 let topoVpnIdx = {};    // tunnel name → { status, remip, type }
 let topoHaDetail = "";  // newest HA event summary from the extension
+let topoFwHealth = "";  // live CPU/mem/sessions/uptime + HA roles (SSH diagnostics)
+let topoSwitchHealth = []; // per-switch fan/congestion/tcn/poe health (SSH)
+let topoLiveRoutes = [];   // live routing egress summary: device → {routes, default} (SSH)
+let topoSdwan = [];        // per-member SD-WAN SLA: {member, state, loss, latency, jitter} (SSH)
+let topoThroughput = [];   // per-interface live throughput {iface, rx_mbps, tx_mbps} (SSH)
+let topoDiagStatus = null; // last SSH collection status {last_run, switches, duration_ms, static}
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
 let topoRootNode = null;// d3 hierarchy root of the current render (search/locate)
@@ -157,6 +163,8 @@ function addInterlink(links, l) {
     const ex = links.find(e => (e.from === l.from && e.to === l.to) || (e.from === l.to && e.to === l.from));
     if (!ex) { links.push(l); return; }
     if (l.parent && !ex.parent) ex.parent = l.parent; // uplink direction survives merging
+    if (l.blocked) ex.blocked = true;                 // a block on either end blocks the redundant link
+    if (l.note && !ex.note) ex.note = l.note;          // ICL split-brain / health note survives merging
     const merge = (arr, add) => { (add || []).forEach(p => { if (!arr.includes(p)) arr.push(p); }); };
     ex.from_ports = ex.from_ports || [];
     ex.to_ports = ex.to_ports || [];
@@ -167,6 +175,18 @@ function addInterlink(links, l) {
         merge(ex.from_ports, l.to_ports);
         merge(ex.to_ports, l.from_ports);
     }
+}
+
+// Live SSH lookups by interface/member/tunnel name.
+function sdwanOf(name) { return name ? topoSdwan.find(s => s.member === name) : null; }
+function throughputOf(name) { return name ? topoThroughput.find(t => t.iface === name) : null; }
+// sdwanLabel renders a member's SLA compactly, flagging loss/dead.
+function sdwanLabel(s) {
+    if (!s) return "";
+    const parts = [s.state === "dead" ? "⚠ dead" : "alive"];
+    if (s.loss) parts.push("loss " + s.loss + "%");
+    if (s.latency) parts.push(Math.round(s.latency) + "ms");
+    return parts.join(" · ");
 }
 
 function interlinkKindLabel(kind) {
@@ -229,6 +249,7 @@ function interlinkTip(l) {
         `${l.to}: ${(l.to_ports || []).join(", ") || "—"}`;
     const blocked = stpBlockedPorts(l);
     if (blocked.length) s += `\n⃠ ${tt("topo.stp_blocked")}: ${blocked.join("; ")}`;
+    if (l.note) s += `\n${l.note}`; // MC-LAG ICL health (split-brain / keepalive drops)
     return s;
 }
 
@@ -368,29 +389,46 @@ function buildTree(data) {
         const sw = switches.find(x => (x.serial || x.switch_id || "").toUpperCase().endsWith(frag));
         return sw ? swName(sw) : null;
     };
+    // Auto-ISL trunk member ports aren't available over SSH (the `trunk` command
+    // is blocked for a read-only admin), but the config backup parses them: the
+    // FortiSwitch persists the auto-ISL/MLAG trunk under the same name shown in
+    // the STP output, so join by trunk name to fill the exact cabled member ports.
+    const trunkMembers = (swDisp, trunkName) => {
+        const sw = switches.find(s => swName(s) === swDisp);
+        const tp = sw && (sw.ports || []).find(p => p.name === trunkName && (p.members || []).length);
+        return tp ? tp.members : [];
+    };
     const iclOwners = {}; // ICL trunk name → owners; exactly two = MC-LAG peer pair
     (topoEdges || []).forEach(g => {
         const from = resolveSwitchName(switches, g.switch_sn) || resolveSwitchName(switches, g.switch_name);
         if (!from) return;
         if (/_ICL\d*_?$/i.test(g.trunk)) {
-            (iclOwners[g.trunk] = iclOwners[g.trunk] || []).push({ from: from, ports: g.ports || [] });
+            const iclPorts = (g.ports && g.ports.length) ? g.ports : trunkMembers(from, g.trunk);
+            (iclOwners[g.trunk] = iclOwners[g.trunk] || []).push({ from: from, ports: iclPorts, note: g.note || "" });
             return;
         }
         const to = trunkPeer(g.trunk);
         if (!to || to === from) return;
+        const members = (g.ports && g.ports.length) ? g.ports : trunkMembers(from, g.trunk);
         addInterlink(interlinks, {
-            from: from, from_ports: (g.ports && g.ports.length) ? g.ports : [g.trunk],
+            from: from, from_ports: members.length ? members : [g.trunk],
             to: to, to_ports: [],
             kind: "stp",
-            parent: g.role === "root" ? to : null // my root port points AT the upstream switch
+            parent: g.role === "root" ? to : null, // my root port points AT the upstream switch
+            // A trunk discarding/alternate on either end is a redundant path STP
+            // blocks — render it as blocked, and never orient the tree from it
+            // (parent stays null since a blocked edge is never the root port).
+            blocked: (g.state || "").toLowerCase() === "discarding" || g.role === "alternate" || g.role === "backup"
         });
     });
     Object.values(iclOwners).forEach(owners => {
         if (owners.length !== 2 || owners[0].from === owners[1].from) return;
+        const iclNote = owners[0].note || owners[1].note || "";
         addInterlink(interlinks, {
             from: owners[0].from, from_ports: owners[0].ports,
             to: owners[1].from, to_ports: owners[1].ports,
-            kind: "mclag-icl"
+            kind: "mclag-icl", note: iclNote,
+            blocked: /split-brain/i.test(iclNote) // split-brain = degraded MC-LAG, flag red
         });
     });
     topoInterlinks = interlinks;
@@ -424,6 +462,9 @@ function buildTree(data) {
         const isEdge = !interSwitchPorts.has(disp + "|" + s.port);
         topoStpIdx[disp + "|" + s.port] = {
             role: s.role, state: s.state, guard: s.guard, link: s.link, last: s.last_change,
+            // Live SSH-diagnostics enrichment (empty when only Graylog is the source).
+            dot1x: s.dot1x, media: s.media, speed: s.speed, admin: s.admin,
+            poe: s.poe, optic: s.optic, health: s.health, neighbor: s.neighbor,
             blocked: !!s.guard || role === "alternate" || role === "backup" || role === "disabled" ||
                 (!isEdge && (state === "discarding" || state === "blocking"))
         };
@@ -622,6 +663,11 @@ function buildTree(data) {
         // tunnel name; falls back to no annotation when nothing was logged.
         const vs = topoVpnIdx[t.name];
         const up = vs && vs.status === "up", down = vs && vs.status === "down";
+        // Live routing (SSH): how many installed routes actually egress this tunnel.
+        const lr = topoLiveRoutes.find(r => r.device === t.name);
+        // Live SD-WAN SLA + throughput (SSH), matched by the tunnel/member name.
+        const sla = sdwanOf(t.name) || sdwanOf(t.interface);
+        const tp = throughputOf(t.name) || throughputOf(t.interface);
         return {
             name: t.name, kind: "vpn", data: i ? { ...t, ...i } : t,
             info: `IPsec VPN\n${tt("topo.remote_gw")}: ${t.remote_gw || "—"}` +
@@ -629,8 +675,11 @@ function buildTree(data) {
                 `\n${tt("topo.egress")}: ${t.interface || "—"}` +
                 (i && i.ip ? `\nIP: ${i.ip}/${i.mask}` : "") +
                 (vs ? `\nStatus: ${vs.status}${vs.remip ? " · " + vs.remip : ""}` : "") +
+                (sla ? `\n${tt("topo.sdwan_sla")}: ${sdwanLabel(sla)}` : "") +
+                (tp ? `\n${tt("topo.throughput")}: ↓${tp.rx_mbps.toFixed(1)} ↑${tp.tx_mbps.toFixed(1)} Mbps` : "") +
+                (lr ? `\n${tt("topo.live_routes")}: ${lr.routes}` : "") +
                 `\nPolicies: ${policyCount[t.name] || 0}`,
-            badge: (up ? "▲ " : down ? "▼ " : "") + (t.remote_gw || (vs && vs.remip) || "VPN"),
+            badge: (up ? "▲ " : down ? "▼ " : "") + ((sla && (sla.state === "dead" || sla.loss >= 5)) ? "⚠ " : "") + (lr ? lr.routes + "R " : "") + (t.remote_gw || (vs && vs.remip) || "VPN"),
             strokeColor: up ? "#10b981" : down ? "#ef4444" : null,
             faded: down,
             children: (ctx && ctx.children) || []
@@ -752,6 +801,10 @@ function buildTree(data) {
                 const st = topoStpIdx[swName(sw) + "|" + p.name];
                 return `${p.name} (${st.guard || st.state || st.role})`;
             });
+        // Live switch health (SSH): fan fault + a count of ports with error counters.
+        const health = topoSwitchHealth.find(h => switchIdMatch(sw, h.switch_name)) || {};
+        const fanFault = /fault/i.test(health.fan || "");
+        const errPorts = ports.filter(p => (topoStpIdx[swName(sw) + "|" + p.name] || {}).health).length;
         return {
             name: swName(sw), kind: "switch", data: sw,
             info: `FortiSwitch${sw.model ? " " + sw.model : ""}\n${tt("topo.serial")}: ${sw.serial || sw.switch_id}` +
@@ -760,9 +813,14 @@ function buildTree(data) {
                 `\n${tt("topo.ports")}: ${ports.length}` +
                 (nested.length ? `\nDownstream: ${nested.map(swName).join(", ")}` : "") +
                 (blockedPorts.length ? `\n⃠ ${tt("topo.stp_blocked")}: ${blockedPorts.join(", ")}` : "") +
+                (health.fan ? `\n${fanFault ? "⚠ " : ""}${tt("topo.fan")}: ${health.fan}` : "") +
+                (health.poe_total ? `\nPoE: ${Math.round(health.poe_used)}/${Math.round(health.poe_total)} W` : "") +
+                (health.tcn ? `\n${tt("topo.tcn")}: ${health.tcn}` : "") +
+                (errPorts ? `\n⚠ ${errPorts} ${tt("topo.err_ports")}` : "") +
                 (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
-            badge: [sw.model, group].filter(Boolean).join(" · ") || null,
+            badge: [(fanFault || errPorts ? "⚠" : ""), sw.model, group].filter(Boolean).join(" · ") || null,
             hasBlocked: blockedPorts.length > 0,
+            hasFault: fanFault || errPorts > 0,
             group: group,
             groupColor: groupColor(group),
             children: [...nested.map(switchNode), ...children]
@@ -830,7 +888,9 @@ function buildTree(data) {
         kind: "firewall", data: data,
         info: `${fwLabel(data)}\nInterfaces: ${interfaces.length}\nSwitches: ${switches.length}\nPolicies: ${policies.length}` +
             (data.ha ? `\nHA: ${data.ha.mode}${data.ha.group_name ? " · " + data.ha.group_name : ""}` : "") +
-            (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : ""),
+            (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : "") +
+            (topoFwHealth ? `\n${topoFwHealth}` : "") +
+            (topoDiagStatus && topoDiagStatus.last_run ? `\n${tt("topo.ssh_collected")}: ${topoDiagStatus.switches} sw · ${(topoDiagStatus.duration_ms / 1000).toFixed(1)}s${topoDiagStatus.static ? " · full" : ""} @ ${(topoDiagStatus.last_run || "").slice(11, 16)}` : ""),
         badge: data.model || null,
         children: fwChildren
     }];
@@ -1101,10 +1161,10 @@ function renderTree(data) {
         ilink.enter().append("path")
             .attr("class", "interlink")
             .attr("fill", "none")
-            .attr("stroke", "#f59e0b")
+            .attr("stroke", l => l.blocked ? "#ef4444" : "#f59e0b") // red = STP-blocked redundant path
             .attr("stroke-width", 1.7)
             .attr("stroke-dasharray", "6,4")
-            .attr("stroke-opacity", 0.65)
+            .attr("stroke-opacity", l => l.blocked ? 0.4 : 0.65)
             .style("cursor", "pointer")
             .on("mousemove", (ev, l) => showTip(ev, `${l.from} ⇄ ${l.to}`, interlinkTip(l)))
             .on("mouseleave", hideTip)
@@ -1336,6 +1396,15 @@ function portColor(p) {
     return "#374151";
 }
 
+// fmtPoe turns the stored PoE code ("deliver:6.4/30.0W:cls4" / "search" / "off"
+// / "fault") into a readable string for the port detail pane.
+function fmtPoe(s) {
+    if (!s) return "";
+    const m = /^deliver:([\d.]+)\/([\d.]+)W:cls(\d+)/.exec(s);
+    if (m) return `${m[1]}/${m[2]} W · class ${m[3]}`;
+    return { search: "searching", off: "off", fault: "⚠ fault" }[s] || s;
+}
+
 // portCellSVG renders one faceplate port cell. idx indexes the panel's port
 // array (click handler lookup); the cyan corner square marks 802.1X ports.
 // The corner LED reflects link state: green = confirmed up, red = down (admin
@@ -1390,11 +1459,18 @@ function portCellSVG(p, idx, x, y, cell) {
     const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
     // HA heartbeat interface (firewall faceplate): a rose heart over the cell.
     const haHb = p.haHeartbeat ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#fb7185" font-size="9">♥</text>` : "";
+    // Live SSH health: a static red ring marks a port with nonzero error/collision
+    // counters (distinct from the blinking orange STP-block ring).
+    const healthRing = (p.health && !p.stpBlocked)
+        ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#ef4444" stroke-width="1.5"/>`
+        : "";
+    // PoE: a green bolt over ports actively delivering power (phones/APs/cameras).
+    const poeGlyph = /^deliver/.test(p.poe || "") ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#22c55e" font-size="9">⚡</text>` : "";
     const dim = p.filtered ? " opacity: 0.15;" : ((p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : "");
     return `
     <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${dim}">
         <rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="4" fill="rgba(0,0,0,0.55)" stroke="${col}" stroke-width="1.6"/>
-        ${blink}
+        ${blink}${healthRing}
         <rect x="${x + 8}" y="${y + cell - 11}" width="${cell - 16}" height="6" rx="1.5" fill="${col}" opacity="0.85"/>
         ${rainbow}
         <circle cx="${x + 7}" cy="${y + 7}" r="2.4" fill="${led}">${p.stpBlocked ? `<animate attributeName="opacity" values="1;0.15;1" dur="0.9s" repeatCount="indefinite"/>` : ""}</circle>
@@ -1403,7 +1479,7 @@ function portCellSVG(p, idx, x, y, cell) {
         ${guardGlyph}
         ${multiMac}
         ${devBadge}
-        ${uplink}${icl}${quarantine}${haHb}
+        ${uplink}${icl}${quarantine}${haHb}${poeGlyph}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -1544,7 +1620,8 @@ function buildSwitchFacePorts(sw) {
             isInterlink: !!inter[p.name],
             isIcl: !!interIcl[p.name],
             isUplink: uplinkPorts.has(p.name) || !!(st && st.role === "root"),
-            isDown: p.status === "down",
+            isDown: p.status === "down" || (st && st.admin === "down"),
+            adminShut: (st && st.admin === "down") || p.status === "down",
             liveDown: !!(st && st.link === "down"),
             liveUp: !!(st && st.link === "up"),
             dot1x: !!p.security_policy,
@@ -1554,6 +1631,11 @@ function buildSwitchFacePorts(sw) {
             guardKind: st && st.blocked ? (st.guard || "") : "",
             isTrunk: p.type === "trunk",
             stpBlocked: !!(st && st.blocked),
+            liveMedia: (st && st.media) || "",
+            liveSpeed: (st && st.speed) || "",
+            poe: (st && st.poe) || "",
+            optic: (st && st.optic) || "",
+            health: (st && st.health) || "",
             multiMac: multiMac,
             devices: devices,
             apName: apName, wifiCount: wifiCount,
@@ -1566,7 +1648,13 @@ function buildSwitchFacePorts(sw) {
                 (quarantine ? `\n☣ ${tt("topo.quarantine")}` : "") +
                 (inter[p.name] ? `\n${interIcl[p.name] ? "⫘ " + tt("topo.icl") : tt("topo.interlink")}: ${inter[p.name]}` : "") +
                 (uplinkPorts.has(p.name) || (st && st.role === "root") ? `\n▲ ${tt("topo.uplink")}` : "") +
-                (st && st.link ? `\nLink: ${st.link}` : "") +
+                (st && st.link ? `\nLink: ${st.link}${st.speed ? " · " + st.speed : ""}` : "") +
+                (st && st.admin === "down" ? `\n⏻ ${tt("topo.admin_down")}` : "") +
+                (st && st.media ? `\n${tt("topo.media")}: ${st.media}${st.optic && st.optic !== "empty" ? " · " + st.optic : ""}` : "") +
+                (st && st.optic === "empty" ? `\n${tt("topo.optic")}: ${tt("topo.optic_empty")}` : "") +
+                (st && st.neighbor ? `\n🔗 ${tt("topo.lldp_neighbor")}: ${st.neighbor}` : "") +
+                (st && st.poe ? `\nPoE: ${fmtPoe(st.poe)}` : "") +
+                (st && st.health ? `\n⚠ ${tt("topo.port_errors")}: ${st.health}` : "") +
                 (st ? `\nSTP: ${stpLabel(st)}${st.last ? " (" + st.last + ")" : ""}` : "") +
                 (st && st.dot1x ? `\n${st.dot1x === "authorized" ? "🔒 " + tt("topo.dot1x_auth") : "🔓 " + tt("topo.dot1x_unauth")}` : "") +
                 (nac ? `\n☑ ${tt("topo.nac")} (${p.access_mode})` : "") +
@@ -1592,14 +1680,21 @@ function buildSwitchPanelHTML(sw, ports) {
     const title = swName(sw);
     const m = /^FS-(\d{3})/.exec(sw.model || "");
     const base = m ? Number(m[1]) % 100 : 0;
+    // Live SSH-diagnostics connector type (RJ45/SFP+/QSFP) is authoritative when
+    // present; it replaces the model%100 heuristic for the copper/SFP partition.
+    const hasMedia = ports.some(p => p.liveMedia);
     const copper = [], sfp = [], lags = [];
     ports.forEach(p => {
         const pm = /^port(\d+)$/i.exec(p.label);
         if (p.isTrunk || !pm) { lags.push(p); return; }
-        if (base && Number(pm[1]) > base) sfp.push(p); else copper.push(p);
+        const media = (p.liveMedia || "").toUpperCase();
+        if (media.includes("SFP") || media.includes("QSFP")) sfp.push(p);
+        else if (media === "RJ45") copper.push(p);
+        else if (base && Number(pm[1]) > base) sfp.push(p);
+        else copper.push(p);
     });
     let html = "";
-    if (base && copper.length) {
+    if ((base || hasMedia) && copper.length) {
         const byNum = (a, b) => Number((/\d+/.exec(a.label) || [0])[0]) - Number((/\d+/.exec(b.label) || [0])[0]);
         copper.sort(byNum);
         sfp.sort(byNum);
@@ -1645,9 +1740,11 @@ function showFpPopover(anchor, p) {
     const rows = p.devices.slice(0, 12).map(dv => {
         const fp = [dv.osname, dv.devtype, dv.vendor].filter(Boolean).join(" · ");
         const stale = deviceIsStale(dv);
+        // 802.1X identity (RADIUS user + group) from the live SSH mac_enrich join.
+        const dot1x = dv.dot1x_user ? `<br><span style="color:#7dd3fc;">🔒 ${esc(dv.dot1x_user)}${dv.dot1x_group ? " · " + esc(dv.dot1x_group) : ""}</span>` : "";
         return `<div class="fp-devrow" data-mac="${esc(dv.mac)}" style="cursor:pointer;padding:4px 6px;border-radius:5px;${stale ? "opacity:.5;" : ""}" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background=''">
             <span style="color:#fff;">${esc(dv.hostname || dv.ip || dv.mac)}</span>${stale ? ` <span style="color:#9ca3af;">· ${tt("topo.stale")}</span>` : ""}
-            <div style="color:#9ca3af;font-family:monospace;font-size:11px;">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}</div>
+            <div style="color:#9ca3af;font-family:monospace;font-size:11px;">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}${dot1x}</div>
         </div>`;
     }).join("");
     el.innerHTML = `<div style="color:#9ca3af;margin:2px 4px 4px;">${tt("topo.port_devices")} — ${esc(p.label)} (${p.devices.length})</div>` + rows;
@@ -2008,6 +2105,12 @@ async function loadDeviceData() {
         topoEdges = data.edges || [];
         topoVpn = data.vpn || [];
         topoHaDetail = data.ha_detail || "";
+        topoFwHealth = data.fw_health || "";
+        topoSwitchHealth = data.switch_health || [];
+        topoLiveRoutes = data.live_routes || [];
+        topoSdwan = data.sdwan_health || [];
+        topoThroughput = data.throughput || [];
+        topoDiagStatus = data.diag_status || null;
         return data.devices || [];
     } catch (e) {
         return null;
@@ -2038,6 +2141,12 @@ async function fetchDevicesNow(rangeSec) {
         topoEdges = data.edges || [];
         topoVpn = data.vpn || [];
         topoHaDetail = data.ha_detail || "";
+        topoFwHealth = data.fw_health || "";
+        topoSwitchHealth = data.switch_health || [];
+        topoLiveRoutes = data.live_routes || [];
+        topoSdwan = data.sdwan_health || [];
+        topoThroughput = data.throughput || [];
+        topoDiagStatus = data.diag_status || null;
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();
         if (meta) meta.textContent = topoDevices.length

@@ -5,6 +5,7 @@
 package extension
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,6 +26,10 @@ type Deps struct {
 	LoginRequired func(http.Handler) http.Handler
 	// CurrentUser returns the logged-in username for a request (empty if none).
 	CurrentUser func(*http.Request) string
+	// FirewallCreds returns a firewall's SSH connection details with the password
+	// decrypted, for extensions that reach the device directly (e.g. live CLI
+	// diagnostics). nil when the host did not wire it.
+	FirewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
 	// Logger is the process logger.
 	Logger *slog.Logger
 	// TZ is the configured timezone.

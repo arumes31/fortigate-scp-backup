@@ -38,6 +38,11 @@ type Device struct {
 	Ssid   string `json:"ssid,omitempty"`
 	Signal string `json:"signal,omitempty"`
 
+	// Live SSH-diagnostics enrichment, joined by MAC (mac_enrich): the RADIUS
+	// 802.1X identity and the ARP-resolved IP.
+	Dot1xUser  string `json:"dot1x_user,omitempty"`
+	Dot1xGroup string `json:"dot1x_group,omitempty"`
+
 	// SharedMac/SharedIP flag devices whose MAC appears with multiple IPs /
 	// whose IP appears with multiple MACs (computed at read time).
 	SharedMac bool `json:"shared_mac,omitempty"`
@@ -86,7 +91,45 @@ type SwitchEdge struct {
 	SwitchName string   `json:"switch_name,omitempty"`
 	Trunk      string   `json:"trunk"`
 	Role       string   `json:"role,omitempty"`
+	State      string   `json:"state,omitempty"` // STP state on the trunk; "discarding" = a blocked redundant link
 	Ports      []string `json:"ports,omitempty"`
+	Note       string   `json:"note,omitempty"` // MC-LAG ICL health (split-brain / keepalive drops)
+}
+
+// LiveRoute is one egress (interface or VPN tunnel name) from the FortiGate's
+// live routing table, with the number of installed routes using it and whether
+// it carries the live default route. Only names+counts (no gateway IPs).
+type LiveRoute struct {
+	Device  string `json:"device"`
+	Routes  int    `json:"routes"`
+	Default bool   `json:"default,omitempty"`
+}
+
+// SwitchHealth is one managed switch's live environmental/congestion health.
+type SwitchHealth struct {
+	SwitchName string  `json:"switch_name"`
+	Fan        string  `json:"fan,omitempty"`        // "OK" / "FAULT: FAN2 …"
+	Congestion int     `json:"congestion,omitempty"` // cumulative QoS drop packets
+	Tcn        int     `json:"tcn,omitempty"`        // STP topology-change count (churn indicator)
+	PoeUsed    float64 `json:"poe_used,omitempty"`   // switch PoE consumption (W)
+	PoeTotal   float64 `json:"poe_total,omitempty"`  // switch PoE budget (W)
+}
+
+// IfaceThroughput is one FortiGate interface's derived live throughput (Mbps),
+// computed from a byte-counter delta between two collections.
+type IfaceThroughput struct {
+	Iface  string  `json:"iface"`
+	RxMbps float64 `json:"rx_mbps"`
+	TxMbps float64 `json:"tx_mbps"`
+}
+
+// CollectionStatus is the outcome of the last SSH diagnostics sweep for a
+// firewall, for a "collection status" indicator in the UI.
+type CollectionStatus struct {
+	LastRun    string `json:"last_run,omitempty"`
+	Switches   int    `json:"switches,omitempty"`
+	DurationMs int    `json:"duration_ms,omitempty"`
+	Static     bool   `json:"static,omitempty"` // whether the last sweep included the slow static tier
 }
 
 // escapeGraylogValue escapes backslashes and double quotes so a value stays
@@ -290,6 +333,15 @@ type StpPort struct {
 	Link       string `json:"link,omitempty"`        // "up" / "down" (live link status)
 	Dot1x      string `json:"dot1x,omitempty"`       // "authorized" / "unauthorized" (802.1X port auth)
 	LastChange string `json:"last_change,omitempty"` // timestamp of the newest event
+
+	// Live SSH-diagnostics enrichment (empty when only Graylog logs are the source).
+	Media    string `json:"media,omitempty"`    // physical connector: RJ45 / SFP+ / QSFP (port-properties)
+	Speed    string `json:"speed,omitempty"`    // negotiated speed/duplex on up ports, e.g. "1G/full" (port-stats)
+	Admin    string `json:"admin,omitempty"`    // "up"/"down" SW admin state ("down" = administratively shut)
+	Poe      string `json:"poe,omitempty"`      // PoE state+draw, e.g. "deliver:6.4/30W:cls4" / "off" (poe summary)
+	Optic    string `json:"optic,omitempty"`    // SFP module: transceiver type when inserted, "empty" for an empty cage
+	Health   string `json:"health,omitempty"`   // nonzero fault counters, e.g. "err:2 col:9"; "" = clean (port-stats)
+	Neighbor string `json:"neighbor,omitempty"` // LLDP neighbor system/chassis name (what is physically wired here)
 }
 
 // StpEvent is one raw port event, kept as history (48h) so port details can

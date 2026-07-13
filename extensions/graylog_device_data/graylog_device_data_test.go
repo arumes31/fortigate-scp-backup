@@ -293,6 +293,8 @@ func testExt(t *testing.T, graylogURL string) *Extension {
 	for _, q := range []string{
 		createTableSQL, createStpTableSQL, createStpEventsSQL,
 		createMacSightingsSQL, createSwitchEdgesSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
+		createMacEnrichSQL, createSwitchHealthSQL, createLiveRoutesSQL,
+		createSdwanHealthSQL, createIfaceStatsSQL, createDiagStatusSQL,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -597,9 +599,6 @@ func TestStoreStpKeepsAgedOutBlock(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(createStpTableSQL); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE stp_ports ADD COLUMN link TEXT NOT NULL DEFAULT ''`); err != nil {
 		t.Fatal(err)
 	}
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}

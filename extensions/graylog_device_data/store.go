@@ -395,6 +395,53 @@ func (e *Extension) storeLinkStates(fwID int, links []StpPort, now string) error
 	return tx.Commit()
 }
 
+// storeDiagStp writes the live SSH-diagnostics port state: authoritative link
+// up/down, STP role/state (for link-up ports), guard, 802.1X, and the physical
+// enrichment (media/speed/admin/poe/optic/health). It merges non-empty fields
+// only and never touches last_change or prunes, so it augments the Graylog-derived
+// rows (which own the event history) without disturbing them. A down port arrives
+// with empty role/state, so it is shown as down, not blocked. Guard self-clearing
+// on recovery is left to the Graylog path (its guard events carry recoveries);
+// the non-empty merge here means an SSH poll adds a guard but does not clear one.
+func (e *Extension) storeDiagStp(fwID int, ports []StpPort, now string) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, p := range ports {
+		if p.SwitchName == "" || p.Port == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO stp_ports
+			(fw_id, switch_name, serial, port, role, state, guard, link, dot1x, media, speed, admin, poe, optic, health, neighbor, last_change, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+			ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
+				serial     = CASE WHEN excluded.serial   != '' THEN excluded.serial   ELSE serial   END,
+				role       = CASE WHEN excluded.role     != '' THEN excluded.role     ELSE role     END,
+				state      = CASE WHEN excluded.state    != '' THEN excluded.state    ELSE state    END,
+				guard      = CASE WHEN excluded.guard    != '' THEN excluded.guard    ELSE guard    END,
+				link       = CASE WHEN excluded.link     != '' THEN excluded.link     ELSE link     END,
+				dot1x      = CASE WHEN excluded.dot1x    != '' THEN excluded.dot1x    ELSE dot1x    END,
+				media      = CASE WHEN excluded.media    != '' THEN excluded.media    ELSE media    END,
+				speed      = CASE WHEN excluded.speed    != '' THEN excluded.speed    ELSE speed    END,
+				admin      = CASE WHEN excluded.admin    != '' THEN excluded.admin    ELSE admin    END,
+				poe        = CASE WHEN excluded.poe      != '' THEN excluded.poe      ELSE poe      END,
+				optic      = CASE WHEN excluded.optic    != '' THEN excluded.optic    ELSE optic    END,
+				health     = CASE WHEN excluded.health   != '' THEN excluded.health   ELSE health   END,
+				neighbor   = CASE WHEN excluded.neighbor != '' THEN excluded.neighbor ELSE neighbor END,
+				updated_at = excluded.updated_at`,
+			fwID, p.SwitchName, p.Serial, p.Port, p.Role, p.State, p.Guard, p.Link, p.Dot1x,
+			p.Media, p.Speed, p.Admin, p.Poe, p.Optic, p.Health, p.Neighbor, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // BlockedPort is one switch port currently out of forwarding — blocked by STP
 // or held down by a BPDU/loop/root guard — projected for the core dashboard's
 // cross-firewall issue card. It is the extension's published view of the
@@ -461,7 +508,8 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 
 // listStp returns the stored STP port states of a firewall.
 func (e *Extension) listStp(fwID int) ([]StpPort, error) {
-	rows, err := e.db.Query(`SELECT switch_name, serial, port, role, state, guard, link, dot1x, last_change
+	rows, err := e.db.Query(`SELECT switch_name, serial, port, role, state, guard, link, dot1x,
+			media, speed, admin, poe, optic, health, neighbor, last_change
 		FROM stp_ports WHERE fw_id = ? ORDER BY switch_name, port`, fwID)
 	if err != nil {
 		return nil, err
@@ -470,7 +518,8 @@ func (e *Extension) listStp(fwID int) ([]StpPort, error) {
 	var out []StpPort
 	for rows.Next() {
 		var p StpPort
-		if scanErr := rows.Scan(&p.SwitchName, &p.Serial, &p.Port, &p.Role, &p.State, &p.Guard, &p.Link, &p.Dot1x, &p.LastChange); scanErr != nil {
+		if scanErr := rows.Scan(&p.SwitchName, &p.Serial, &p.Port, &p.Role, &p.State, &p.Guard, &p.Link, &p.Dot1x,
+			&p.Media, &p.Speed, &p.Admin, &p.Poe, &p.Optic, &p.Health, &p.Neighbor, &p.LastChange); scanErr != nil {
 			return nil, scanErr
 		}
 		out = append(out, p)
@@ -678,14 +727,16 @@ func (e *Extension) storeSwitchEdges(fwID int, edges []SwitchEdge, now string) e
 		if g.SwitchSN == "" || g.Trunk == "" {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO switch_edges (fw_id, switch_sn, switch_name, trunk, role, ports, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO switch_edges (fw_id, switch_sn, switch_name, trunk, role, state, ports, note, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(fw_id, switch_sn, trunk) DO UPDATE SET
 				switch_name = CASE WHEN excluded.switch_name != '' THEN excluded.switch_name ELSE switch_name END,
 				role        = CASE WHEN excluded.role != '' THEN excluded.role ELSE role END,
+				state       = CASE WHEN excluded.state != '' THEN excluded.state ELSE state END,
 				ports       = CASE WHEN excluded.ports != '' THEN excluded.ports ELSE ports END,
+				note        = CASE WHEN excluded.note != '' THEN excluded.note ELSE note END,
 				updated_at  = excluded.updated_at`,
-			fwID, g.SwitchSN, g.SwitchName, g.Trunk, g.Role, strings.Join(g.Ports, ","), now); err != nil {
+			fwID, g.SwitchSN, g.SwitchName, g.Trunk, g.Role, g.State, strings.Join(g.Ports, ","), g.Note, now); err != nil {
 			return err
 		}
 	}
@@ -698,7 +749,7 @@ func (e *Extension) storeSwitchEdges(fwID int, edges []SwitchEdge, now string) e
 
 // listSwitchEdges returns the stored switch-edge observations for a firewall.
 func (e *Extension) listSwitchEdges(fwID int) ([]SwitchEdge, error) {
-	rows, err := e.db.Query(`SELECT switch_sn, switch_name, trunk, role, ports
+	rows, err := e.db.Query(`SELECT switch_sn, switch_name, trunk, role, state, ports, note
 		FROM switch_edges WHERE fw_id = ? ORDER BY switch_name, trunk`, fwID)
 	if err != nil {
 		return nil, err
@@ -708,7 +759,7 @@ func (e *Extension) listSwitchEdges(fwID int) ([]SwitchEdge, error) {
 	for rows.Next() {
 		var g SwitchEdge
 		var ports string
-		if scanErr := rows.Scan(&g.SwitchSN, &g.SwitchName, &g.Trunk, &g.Role, &ports); scanErr != nil {
+		if scanErr := rows.Scan(&g.SwitchSN, &g.SwitchName, &g.Trunk, &g.Role, &g.State, &ports, &g.Note); scanErr != nil {
 			return nil, scanErr
 		}
 		if ports != "" {
@@ -777,6 +828,320 @@ func (e *Extension) storeVpn(fwID int, statuses []VpnStatus, now string) error {
 	return tx.Commit()
 }
 
+// storeMacEnrichArp upserts the ARP-resolved IP per MAC (device IP enrichment)
+// and prunes stale rows. Only touches ip/iface, so it never clobbers the 802.1X
+// identity written by storeMacEnrichDot1x for the same MAC.
+func (e *Extension) storeMacEnrichArp(fwID int, arps []arpEntry, now string) error {
+	if len(arps) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, a := range arps {
+		if a.Mac == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO mac_enrich (fw_id, mac, ip, iface, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, mac) DO UPDATE SET
+				ip=excluded.ip, iface=excluded.iface, updated_at=excluded.updated_at`,
+			fwID, a.Mac, a.IP, a.Iface, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM mac_enrich WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// storeMacEnrichDot1x upserts the 802.1X RADIUS identity (AD user/machine,
+// group) and dynamic VLAN per authenticated MAC. Only touches the dot1x_* fields.
+func (e *Extension) storeMacEnrichDot1x(fwID int, sessions []dot1xSession, now string) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, s := range sessions {
+		if s.Mac == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO mac_enrich (fw_id, mac, dot1x_user, dot1x_group, dot1x_vlan, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, mac) DO UPDATE SET
+				dot1x_user=excluded.dot1x_user, dot1x_group=excluded.dot1x_group,
+				dot1x_vlan=excluded.dot1x_vlan, updated_at=excluded.updated_at`,
+			fwID, s.Mac, s.User, s.Group, s.Vlan, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// storeFwHealth upserts the firewall node's live health summary. It reuses the
+// ha_status row but a distinct `health` column, so it never fights the Graylog
+// HA-event `detail` written by refreshFirewall.
+func (e *Extension) storeFwHealth(fwID int, summary, now string) error {
+	if summary == "" {
+		return nil
+	}
+	_, err := e.db.Exec(`INSERT INTO ha_status (fw_id, health, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(fw_id) DO UPDATE SET health=excluded.health, updated_at=excluded.updated_at`,
+		fwID, summary, now)
+	return err
+}
+
+// fwHealth returns the stored SSH-derived firewall health summary ("" when none).
+func (e *Extension) fwHealth(fwID int) string {
+	var h string
+	if err := e.db.QueryRow("SELECT health FROM ha_status WHERE fw_id = ?", fwID).Scan(&h); err != nil {
+		return ""
+	}
+	return h
+}
+
+// storeSwitchHealth upserts each switch's fan/congestion state and prunes stale
+// rows (decommissioned switches).
+func (e *Extension) storeSwitchHealth(fwID int, hs []SwitchHealth, now string) error {
+	if len(hs) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, h := range hs {
+		if h.SwitchName == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO switch_health (fw_id, switch_name, fan, congestion, tcn, poe_used, poe_total, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, switch_name) DO UPDATE SET
+				fan=CASE WHEN excluded.fan != '' THEN excluded.fan ELSE fan END,
+				congestion=CASE WHEN excluded.congestion > 0 THEN excluded.congestion ELSE congestion END,
+				tcn=CASE WHEN excluded.tcn > 0 THEN excluded.tcn ELSE tcn END,
+				poe_used=CASE WHEN excluded.poe_total > 0 THEN excluded.poe_used ELSE poe_used END,
+				poe_total=CASE WHEN excluded.poe_total > 0 THEN excluded.poe_total ELSE poe_total END,
+				updated_at=excluded.updated_at`,
+			fwID, h.SwitchName, h.Fan, h.Congestion, h.Tcn, h.PoeUsed, h.PoeTotal, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM switch_health WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// listSwitchHealth returns the stored per-switch health of a firewall.
+func (e *Extension) listSwitchHealth(fwID int) ([]SwitchHealth, error) {
+	rows, err := e.db.Query(`SELECT switch_name, fan, congestion, tcn, poe_used, poe_total FROM switch_health WHERE fw_id = ?`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SwitchHealth
+	for rows.Next() {
+		var h SwitchHealth
+		if scanErr := rows.Scan(&h.SwitchName, &h.Fan, &h.Congestion, &h.Tcn, &h.PoeUsed, &h.PoeTotal); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// storeSdwanHealth replaces the firewall's per-member SD-WAN SLA snapshot.
+func (e *Extension) storeSdwanHealth(fwID int, hs []SdwanHealth, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM sdwan_health WHERE fw_id = ?", fwID); err != nil {
+		return err
+	}
+	for _, h := range hs {
+		if h.Member == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO sdwan_health (fw_id, member, state, loss, latency, jitter, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, fwID, h.Member, h.State, h.Loss, h.Latency, h.Jitter, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// listSdwanHealth returns the firewall's per-member SD-WAN SLA.
+func (e *Extension) listSdwanHealth(fwID int) ([]SdwanHealth, error) {
+	rows, err := e.db.Query(`SELECT member, state, loss, latency, jitter FROM sdwan_health WHERE fw_id = ? ORDER BY member`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SdwanHealth
+	for rows.Next() {
+		var h SdwanHealth
+		if scanErr := rows.Scan(&h.Member, &h.State, &h.Loss, &h.Latency, &h.Jitter); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// storeIfaceThroughput computes each interface's throughput (Mbps) from the byte
+// delta against the previous stored counters, then persists the new counters +
+// rate. The first sample yields no rate (no prior baseline).
+func (e *Extension) storeIfaceThroughput(fwID int, counters []ifaceCounter, now string) error {
+	if len(counters) == 0 {
+		return nil
+	}
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// One sample instant for the whole batch: the counters were just read over
+	// SSH, so nowT is when they were sampled. Store nowT (sampleTs) as the delta
+	// baseline — not the collection-start `now`, which on a large fabric can be
+	// minutes stale — and parse the previous baseline in the SAME location. `ts`
+	// is written from local time, so parsing it as UTC (time.Parse) would skew
+	// the delta by the zone offset — negative dt in any non-UTC deployment, which
+	// pins every rate at 0.
+	nowT := time.Now()
+	sampleTs := nowT.Format("2006-01-02 15:04:05")
+	for _, c := range counters {
+		var prevRx, prevTx int64
+		var prevTs string
+		_ = tx.QueryRow("SELECT rxb, txb, ts FROM iface_stats WHERE fw_id = ? AND iface = ?", fwID, c.Iface).Scan(&prevRx, &prevTx, &prevTs)
+		rxMbps, txMbps := 0.0, 0.0
+		if t, perr := time.ParseInLocation("2006-01-02 15:04:05", prevTs, time.Local); perr == nil {
+			if dt := nowT.Sub(t).Seconds(); dt >= 1 && c.RxB >= prevRx && c.TxB >= prevTx {
+				rxMbps = float64(c.RxB-prevRx) * 8 / dt / 1e6
+				txMbps = float64(c.TxB-prevTx) * 8 / dt / 1e6
+			}
+		}
+		if _, err := tx.Exec(`INSERT INTO iface_stats (fw_id, iface, rxb, txb, ts, rx_mbps, tx_mbps, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(fw_id, iface) DO UPDATE SET
+				rxb=excluded.rxb, txb=excluded.txb, ts=excluded.ts,
+				rx_mbps=excluded.rx_mbps, tx_mbps=excluded.tx_mbps, updated_at=excluded.updated_at`,
+			fwID, c.Iface, c.RxB, c.TxB, sampleTs, rxMbps, txMbps, now); err != nil {
+			return err
+		}
+	}
+	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec("DELETE FROM iface_stats WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// listIfaceThroughput returns interfaces with a nonzero derived throughput.
+func (e *Extension) listIfaceThroughput(fwID int) ([]IfaceThroughput, error) {
+	rows, err := e.db.Query(`SELECT iface, rx_mbps, tx_mbps FROM iface_stats
+		WHERE fw_id = ? AND (rx_mbps > 0.1 OR tx_mbps > 0.1) ORDER BY (rx_mbps + tx_mbps) DESC`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []IfaceThroughput
+	for rows.Next() {
+		var t IfaceThroughput
+		if scanErr := rows.Scan(&t.Iface, &t.RxMbps, &t.TxMbps); scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// storeDiagStatus records the outcome of an SSH collection sweep.
+func (e *Extension) storeDiagStatus(fwID int, s CollectionStatus, now string) error {
+	static := 0
+	if s.Static {
+		static = 1
+	}
+	_, err := e.db.Exec(`INSERT INTO diag_status (fw_id, last_run, switches, duration_ms, static, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(fw_id) DO UPDATE SET
+			last_run=excluded.last_run, switches=excluded.switches,
+			duration_ms=excluded.duration_ms, static=excluded.static, updated_at=excluded.updated_at`,
+		fwID, s.LastRun, s.Switches, s.DurationMs, static, now)
+	return err
+}
+
+// diagStatus returns the last SSH collection status for a firewall.
+func (e *Extension) diagStatus(fwID int) CollectionStatus {
+	var s CollectionStatus
+	var static int
+	if err := e.db.QueryRow("SELECT last_run, switches, duration_ms, static FROM diag_status WHERE fw_id = ?", fwID).
+		Scan(&s.LastRun, &s.Switches, &s.DurationMs, &static); err != nil {
+		return CollectionStatus{}
+	}
+	s.Static = static == 1
+	return s
+}
+
+// storeLiveRoutes replaces the firewall's routing-egress summary (a full snapshot
+// each poll, so wipe-and-insert keeps it exact).
+func (e *Extension) storeLiveRoutes(fwID int, routes []LiveRoute, now string) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM live_routes WHERE fw_id = ?", fwID); err != nil {
+		return err
+	}
+	for _, r := range routes {
+		if r.Device == "" {
+			continue
+		}
+		def := 0
+		if r.Default {
+			def = 1
+		}
+		if _, err := tx.Exec(`INSERT INTO live_routes (fw_id, device, routes, is_default, updated_at)
+			VALUES (?, ?, ?, ?, ?)`, fwID, r.Device, r.Routes, def, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// listLiveRoutes returns the firewall's routing-egress summary.
+func (e *Extension) listLiveRoutes(fwID int) ([]LiveRoute, error) {
+	rows, err := e.db.Query(`SELECT device, routes, is_default FROM live_routes WHERE fw_id = ? ORDER BY routes DESC`, fwID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []LiveRoute
+	for rows.Next() {
+		var r LiveRoute
+		var def int
+		if scanErr := rows.Scan(&r.Device, &r.Routes, &def); scanErr != nil {
+			return nil, scanErr
+		}
+		r.Default = def == 1
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // listWifi returns the stored wireless associations of a firewall.
 func (e *Extension) listWifi(fwID int) ([]WifiClient, error) {
 	rows, err := e.db.Query(`SELECT mac, ap, ssid, signal, channel, vlan
@@ -829,9 +1194,11 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 
 	rows, err := e.db.Query(`SELECT d.mac, d.ip, d.vlan, d.port, d.switch_id, d.hostname,
 			d.devtype, d.osname, d.osversion, d.vendor, d.first_seen, d.last_seen, d.updated_at,
-			COALESCE(w.ap, ''), COALESCE(w.ssid, ''), COALESCE(w.signal, '')
+			COALESCE(w.ap, ''), COALESCE(w.ssid, ''), COALESCE(w.signal, ''),
+			COALESCE(m.ip, ''), COALESCE(m.dot1x_user, ''), COALESCE(m.dot1x_group, '')
 		FROM devices d
 		LEFT JOIN wifi_clients w ON w.fw_id = d.fw_id AND w.mac = d.mac
+		LEFT JOIN mac_enrich m ON m.fw_id = d.fw_id AND m.mac = d.mac
 		WHERE d.fw_id = ? ORDER BY d.vlan, d.port, d.mac`, fwID)
 	if err != nil {
 		return nil, "", err
@@ -842,9 +1209,10 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 	updatedAt := ""
 	for rows.Next() {
 		var d Device
+		var arpIP string
 		if scanErr := rows.Scan(&d.Mac, &d.IP, &d.Vlan, &d.Port, &d.SwitchID, &d.Hostname,
 			&d.DevType, &d.OsName, &d.OsVersion, &d.Vendor, &d.FirstSeen, &d.LastSeen, &updatedAt,
-			&d.Ap, &d.Ssid, &d.Signal); scanErr != nil {
+			&d.Ap, &d.Ssid, &d.Signal, &arpIP, &d.Dot1xUser, &d.Dot1xGroup); scanErr != nil {
 			return nil, "", scanErr
 		}
 		// The FortiSwitch MAC-event pin is the authoritative wired location:
@@ -858,6 +1226,9 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 			if mp.Vlan != "" {
 				d.Vlan = mp.Vlan
 			}
+		}
+		if d.IP == "" && arpIP != "" { // ARP fills the IP the switch mac-table lacks
+			d.IP = arpIP
 		}
 		devices = append(devices, d)
 	}

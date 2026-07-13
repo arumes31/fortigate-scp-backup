@@ -31,16 +31,22 @@ func liveRangeParam(s string) string {
 
 // dataResponse is the JSON payload consumed by the topology page.
 type dataResponse struct {
-	FwID          int            `json:"fw_id"`
-	Devices       []Device       `json:"devices"`
-	Stp           []StpPort      `json:"stp"` // [] = no blocked ports; null = STP lookup failed
-	StpEvents     []StpEvent     `json:"stp_events,omitempty"`
-	MultiMacPorts []MultiMacPort `json:"multi_mac_ports,omitempty"`
-	Edges         []SwitchEdge   `json:"edges,omitempty"` // trunk observations from STP/link events
-	Wifi          []WifiClient   `json:"wifi,omitempty"`
-	Vpn           []VpnStatus    `json:"vpn,omitempty"`
-	HaDetail      string         `json:"ha_detail,omitempty"`
-	UpdatedAt     string         `json:"updated_at,omitempty"`
+	FwID          int               `json:"fw_id"`
+	Devices       []Device          `json:"devices"`
+	Stp           []StpPort         `json:"stp"` // [] = no blocked ports; null = STP lookup failed
+	StpEvents     []StpEvent        `json:"stp_events,omitempty"`
+	MultiMacPorts []MultiMacPort    `json:"multi_mac_ports,omitempty"`
+	Edges         []SwitchEdge      `json:"edges,omitempty"` // trunk observations from STP/link events
+	Wifi          []WifiClient      `json:"wifi,omitempty"`
+	Vpn           []VpnStatus       `json:"vpn,omitempty"`
+	HaDetail      string            `json:"ha_detail,omitempty"`
+	FwHealth      string            `json:"fw_health,omitempty"` // live CPU/mem/sessions/uptime + HA roles (SSH)
+	SwitchHealth  []SwitchHealth    `json:"switch_health,omitempty"`
+	LiveRoutes    []LiveRoute       `json:"live_routes,omitempty"`
+	SdwanHealth   []SdwanHealth     `json:"sdwan_health,omitempty"`
+	Throughput    []IfaceThroughput `json:"throughput,omitempty"`
+	DiagStatus    *CollectionStatus `json:"diag_status,omitempty"`
+	UpdatedAt     string            `json:"updated_at,omitempty"`
 }
 
 // handleData serves the stored device inventory of a firewall.
@@ -49,6 +55,15 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "invalid firewall id", http.StatusBadRequest)
 		return
+	}
+	// Viewing the topology triggers a live SSH diagnostics refresh, rate-limited
+	// to at most one query per FgtDiagSSHViewSec (default 20 min) per device (the
+	// hard rate floor still applies). It runs in the background so this response
+	// returns the cached overlay immediately; the fresh state lands on the next
+	// poll. Panics in the collection are recovered inside collectDiagSafe, so this
+	// detached goroutine cannot crash the process.
+	if e.cfg.FgtDiagSSHEnabled {
+		go e.runDiagIfAllowed(fwID, time.Duration(e.cfg.FgtDiagSSHViewSec)*time.Second)
 	}
 	devices, updatedAt, err := e.listDevices(fwID)
 	if err != nil {
@@ -91,11 +106,30 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		e.logger.Warn("graylog devices: vpn list failed", "fw_id", fwID, "err", err)
 	}
+	swHealth, err := e.listSwitchHealth(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: switch-health list failed", "fw_id", fwID, "err", err)
+	}
+	liveRoutes, err := e.listLiveRoutes(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: live-routes list failed", "fw_id", fwID, "err", err)
+	}
+	sdwan, err := e.listSdwanHealth(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: sdwan list failed", "fw_id", fwID, "err", err)
+	}
+	throughput, err := e.listIfaceThroughput(fwID)
+	if err != nil {
+		e.logger.Warn("graylog devices: throughput list failed", "fw_id", fwID, "err", err)
+	}
+	ds := e.diagStatus(fwID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dataResponse{
 		FwID: fwID, Devices: devices, Stp: stp,
 		StpEvents: events, MultiMacPorts: multiMac, Edges: edges,
-		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID),
+		Wifi: wifi, Vpn: vpn, HaDetail: e.haDetail(fwID), FwHealth: e.fwHealth(fwID),
+		SwitchHealth: swHealth, LiveRoutes: liveRoutes,
+		SdwanHealth: sdwan, Throughput: throughput, DiagStatus: &ds,
 		UpdatedAt: updatedAt,
 	})
 }
@@ -123,6 +157,12 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		e.logger.Error("graylog devices: refresh failed", "fw_id", fwID, "err", err)
 		http.Error(w, "graylog fetch failed", http.StatusBadGateway)
 		return
+	}
+	// The live button is an explicit manual refresh, so it also pulls fresh SSH
+	// diagnostics synchronously (subject only to the hard rate floor, not the
+	// 20-min page-view cadence) so the returned overlay reflects the live query.
+	if e.cfg.FgtDiagSSHEnabled {
+		e.runDiagIfAllowed(fwID, e.diagFloor())
 	}
 	if e.logActivity != nil {
 		user := ""
