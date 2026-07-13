@@ -177,7 +177,7 @@ func Load(logger *slog.Logger) *Config {
 		// for whichever switch recently churned. This focused query keeps just the
 		// trunk-named STP events (the ones that resolve a peer) so a much wider
 		// window stays cheap and captures every switch's stable uplinks.
-		GraylogTopoQuery:      getenv("GRAYLOG_TOPO_QUERY", `source:"%s" AND subtype:"switch-controller" AND logdesc:"FortiSwitch spanning Tree" AND NOT switchphysicalport:/port[0-9]+/`),
+		GraylogTopoQuery: getenv("GRAYLOG_TOPO_QUERY", `source:"%s" AND subtype:"switch-controller" AND logdesc:"FortiSwitch spanning Tree" AND NOT switchphysicalport:/port[0-9]+/`),
 		// A handful of flapping ports can emit tens of thousands of link events a
 		// day, so a capped message fetch only ever returns those few ports and the
 		// stable up/down state of every other port is crowded out. This query feeds
