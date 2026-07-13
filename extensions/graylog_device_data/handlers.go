@@ -58,8 +58,10 @@ func (e *Extension) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 	// Viewing the topology triggers a live SSH diagnostics refresh, rate-limited
 	// to at most one query per FgtDiagSSHViewSec (default 20 min) per device (the
-	// hard 10 s floor still applies). It runs in the background so this response
-	// returns the cached overlay immediately; the fresh state lands on the next poll.
+	// hard rate floor still applies). It runs in the background so this response
+	// returns the cached overlay immediately; the fresh state lands on the next
+	// poll. Panics in the collection are recovered inside collectDiagSafe, so this
+	// detached goroutine cannot crash the process.
 	if e.cfg.FgtDiagSSHEnabled {
 		go e.runDiagIfAllowed(fwID, time.Duration(e.cfg.FgtDiagSSHViewSec)*time.Second)
 	}

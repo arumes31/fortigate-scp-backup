@@ -1013,13 +1013,21 @@ func (e *Extension) storeIfaceThroughput(fwID int, counters []ifaceCounter, now 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// One sample instant for the whole batch: the counters were just read over
+	// SSH, so nowT is when they were sampled. Store nowT (sampleTs) as the delta
+	// baseline — not the collection-start `now`, which on a large fabric can be
+	// minutes stale — and parse the previous baseline in the SAME location. `ts`
+	// is written from local time, so parsing it as UTC (time.Parse) would skew
+	// the delta by the zone offset — negative dt in any non-UTC deployment, which
+	// pins every rate at 0.
 	nowT := time.Now()
+	sampleTs := nowT.Format("2006-01-02 15:04:05")
 	for _, c := range counters {
 		var prevRx, prevTx int64
 		var prevTs string
 		_ = tx.QueryRow("SELECT rxb, txb, ts FROM iface_stats WHERE fw_id = ? AND iface = ?", fwID, c.Iface).Scan(&prevRx, &prevTx, &prevTs)
 		rxMbps, txMbps := 0.0, 0.0
-		if t, perr := time.Parse("2006-01-02 15:04:05", prevTs); perr == nil {
+		if t, perr := time.ParseInLocation("2006-01-02 15:04:05", prevTs, time.Local); perr == nil {
 			if dt := nowT.Sub(t).Seconds(); dt >= 1 && c.RxB >= prevRx && c.TxB >= prevTx {
 				rxMbps = float64(c.RxB-prevRx) * 8 / dt / 1e6
 				txMbps = float64(c.TxB-prevTx) * 8 / dt / 1e6
@@ -1030,7 +1038,7 @@ func (e *Extension) storeIfaceThroughput(fwID int, counters []ifaceCounter, now 
 			ON CONFLICT(fw_id, iface) DO UPDATE SET
 				rxb=excluded.rxb, txb=excluded.txb, ts=excluded.ts,
 				rx_mbps=excluded.rx_mbps, tx_mbps=excluded.tx_mbps, updated_at=excluded.updated_at`,
-			fwID, c.Iface, c.RxB, c.TxB, now, rxMbps, txMbps, now); err != nil {
+			fwID, c.Iface, c.RxB, c.TxB, sampleTs, rxMbps, txMbps, now); err != nil {
 			return err
 		}
 	}

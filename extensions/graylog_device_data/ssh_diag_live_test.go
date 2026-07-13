@@ -26,7 +26,10 @@ func TestLiveDiag(t *testing.T) {
 	if len(p) != 4 {
 		t.Fatalf("FGT_DIAG_LIVE must be host|port|user|pass")
 	}
-	port, _ := strconv.Atoi(p[1])
+	port, err := strconv.Atoi(p[1])
+	if err != nil {
+		t.Fatalf("invalid port %q: %v", p[1], err)
+	}
 	client, err := dialSSHDiag(p[0], p[2], p[3], port, 90*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -82,7 +85,10 @@ func TestLiveDiagStore(t *testing.T) {
 	if len(p) != 4 {
 		t.Fatalf("FGT_DIAG_LIVE must be host|port|user|pass")
 	}
-	port, _ := strconv.Atoi(p[1])
+	port, err := strconv.Atoi(p[1])
+	if err != nil {
+		t.Fatalf("invalid port %q: %v", p[1], err)
+	}
 
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "d.db")))
 	if err != nil {
@@ -132,7 +138,10 @@ func TestLiveDiagStore(t *testing.T) {
 			withNbr++
 		}
 	}
-	edges, _ := e.listSwitchEdges(1)
+	edges, err := e.listSwitchEdges(1)
+	if err != nil {
+		t.Fatalf("listSwitchEdges: %v", err)
+	}
 	blocked, iclWithPorts := 0, 0
 	iclNote := ""
 	for _, g := range edges {
@@ -144,14 +153,20 @@ func TestLiveDiagStore(t *testing.T) {
 			iclNote = g.Note
 		}
 	}
-	sh, _ := e.listSwitchHealth(1)
+	sh, err := e.listSwitchHealth(1)
+	if err != nil {
+		t.Fatalf("listSwitchHealth: %v", err)
+	}
 	fans := 0
 	for _, h := range sh {
 		if h.Fan != "" {
 			fans++
 		}
 	}
-	lr, _ := e.listLiveRoutes(1)
+	lr, err := e.listLiveRoutes(1)
+	if err != nil {
+		t.Fatalf("listLiveRoutes: %v", err)
+	}
 	tunRoutes := 0
 	for _, r := range lr {
 		if r.Routes > 0 {
@@ -167,25 +182,42 @@ func TestLiveDiagStore(t *testing.T) {
 			poeBudget++
 		}
 	}
-	sd, _ := e.listSdwanHealth(1)
+	sd, err := e.listSdwanHealth(1)
+	if err != nil {
+		t.Fatalf("listSdwanHealth: %v", err)
+	}
 	worstLoss := 0.0
 	for _, s := range sd {
 		if s.Loss > worstLoss {
 			worstLoss = s.Loss
 		}
 	}
-	tp, _ := e.listIfaceThroughput(1)
+	tp, err := e.listIfaceThroughput(1)
+	if err != nil {
+		t.Fatalf("listIfaceThroughput: %v", err)
+	}
 	ds := e.diagStatus(1)
 	t.Logf("P1 ICL w/ports=%d note=%q | health sw=%d fans=%d tcn=%d poeBudget=%d | routes=%d | sdwan members=%d worstLoss=%.1f%% | throughput ifaces=%d | status: %d sw %dms static=%v",
 		iclWithPorts, iclNote, len(sh), fans, tcn, poeBudget, tunRoutes, len(sd), worstLoss, len(tp), ds.Switches, ds.DurationMs, ds.Static)
 	// mac_enrich holds the ARP IP + 802.1X identity (device rows come from Graylog,
 	// absent here, so query the enrichment table directly).
 	var enrIP, enrUser int
-	_ = e.db.QueryRow("SELECT count(*) FROM mac_enrich WHERE ip != ''").Scan(&enrIP)
-	_ = e.db.QueryRow("SELECT count(*) FROM mac_enrich WHERE dot1x_user != ''").Scan(&enrUser)
+	if err := e.db.QueryRow("SELECT count(*) FROM mac_enrich WHERE ip != ''").Scan(&enrIP); err != nil {
+		t.Fatalf("count mac_enrich ip: %v", err)
+	}
+	if err := e.db.QueryRow("SELECT count(*) FROM mac_enrich WHERE dot1x_user != ''").Scan(&enrUser); err != nil {
+		t.Fatalf("count mac_enrich dot1x_user: %v", err)
+	}
 	t.Logf("ports=%d (%d up) media=%d speed=%d poe=%d health=%d dot1x=%d nbr=%d | edges=%d(%d blk) | mac_enrich: ip=%d user=%d | health=%q",
 		len(stp), up, withMedia, withSpeed, withPoe, withHealth, withDot1x, withNbr, len(edges), blocked, enrIP, enrUser, e.fwHealth(1))
+	// Not every fabric runs 802.1X or exposes LLDP neighbors, so zero is only a
+	// hard failure when the operator asserts this device should have both (a
+	// regression guard for the dot1x/LLDP parsers). Otherwise report and continue.
 	if withDot1x == 0 || withNbr == 0 {
-		t.Errorf("expected 802.1X state (%d) and LLDP neighbors (%d) to persist", withDot1x, withNbr)
+		if os.Getenv("FGT_DIAG_EXPECT_IDENTITY") != "" {
+			t.Errorf("expected 802.1X state (%d) and LLDP neighbors (%d) to persist", withDot1x, withNbr)
+		} else {
+			t.Logf("no 802.1X sessions (%d) or LLDP neighbors (%d) persisted; set FGT_DIAG_EXPECT_IDENTITY=1 to require them", withDot1x, withNbr)
+		}
 	}
 }
