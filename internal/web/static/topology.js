@@ -31,6 +31,7 @@ let topoSdwan = [];        // per-member SD-WAN SLA: {member, state, loss, laten
 let topoThroughput = [];   // per-interface live throughput {iface, rx_mbps, tx_mbps} (SSH)
 let topoApLocations = [];  // FortiAP → wired switch/port pin {serial, name, switch, port} (SSH wtp-status)
 let topoDualHomed = [];    // devices on 2+ switches at once {mac, attachments:[{switch, port}]}
+let topoViolations = [];   // port-security (MAC-limit) violations {switch, port, vlan, mac, action}
 let topoDiagStatus = null; // last SSH collection status {last_run, switches, duration_ms, static}
 let topoLoadSeq = 0;    // increases per loadTopology() call; stale responses are discarded
 let topoInterlinks = [];// switch interlinks of the current tree (config-derived + MAC-detected)
@@ -1457,12 +1458,12 @@ function portColor(p) {
 }
 
 // fmtPoe turns the stored PoE code ("deliver:6.4/30.0W:cls4" / "search" / "off"
-// / "fault") into a readable string for the port detail pane.
+// / "fault") into a readable power-draw string for the port detail pane.
 function fmtPoe(s) {
     if (!s) return "";
     const m = /^deliver:([\d.]+)\/([\d.]+)W:cls(\d+)/.exec(s);
-    if (m) return `${m[1]}/${m[2]} W · class ${m[3]}`;
-    return { search: "searching", off: "off", fault: "⚠ fault" }[s] || s;
+    if (m) return `⚡ ${tt("topo.poe_delivering")} · ${m[1]} W ${tt("topo.poe_of")} ${m[2]} W · ${tt("topo.poe_class")} ${m[3]}`;
+    return { search: tt("topo.poe_searching"), off: tt("topo.poe_off"), fault: "⚠ " + tt("topo.poe_fault") }[s] || s;
 }
 
 // portCellSVG renders one faceplate port cell. idx indexes the panel's port
@@ -1526,6 +1527,8 @@ function portCellSVG(p, idx, x, y, cell) {
     const quarantine = p.quarantine ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" font-size="8">☣</text>` : "";
     // Dual-homed device (server LAG'd across two switches): a cyan ⇈ over the port.
     const dualHomed = p.isDualHomed ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="#22d3ee" font-size="9" font-family="monospace">⇈</text>` : "";
+    // Port-security (MAC-limit) violation: a red ⚠ over the port.
+    const violGlyph = p.isViolation ? `<text x="${x + 6}" y="${y - 3}" text-anchor="middle" fill="#ef4444" font-size="10" font-weight="bold">⚠</text>` : "";
     // HA heartbeat interface (firewall faceplate): a rose heart over the cell.
     const haHb = p.haHeartbeat ? `<text x="${x + cell / 2}" y="${y - 3}" text-anchor="middle" fill="#fb7185" font-size="9">♥</text>` : "";
     // Live SSH health: a static red ring marks a port with nonzero error/collision
@@ -1533,8 +1536,15 @@ function portCellSVG(p, idx, x, y, cell) {
     const healthRing = (p.health && !p.stpBlocked)
         ? `<rect x="${x - 1.5}" y="${y - 1.5}" width="${cell + 3}" height="${cell + 3}" rx="5" fill="none" stroke="#ef4444" stroke-width="1.5"/>`
         : "";
-    // PoE: a green bolt over ports actively delivering power (phones/APs/cameras).
-    const poeGlyph = /^deliver/.test(p.poe || "") ? `<text x="${x + cell - 6}" y="${y - 3}" text-anchor="middle" fill="#22c55e" font-size="9">⚡</text>` : "";
+    // PoE: ports actively delivering power (phones/APs/cameras) get an unmissable
+    // green underline stripe on the cell plus a bright bolt above it. PoE-capable
+    // but idle ports get a faint green tick so you can still see which ports do PoE.
+    const poeDeliver = /^deliver/.test(p.poe || "");
+    const poeIdle = !poeDeliver && /^(search|off)/.test(p.poe || "");
+    const poeGlyph = poeDeliver
+        ? `<rect x="${x + 6}" y="${y + cell - 4}" width="${cell - 12}" height="2.6" rx="1.3" fill="#22c55e"/>`
+        + `<text x="${x + cell - 6}" y="${y - 2}" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="bold">⚡</text>`
+        : (poeIdle ? `<rect x="${x + cell / 2 - 4}" y="${y + cell - 4}" width="8" height="2.2" rx="1.1" fill="#22c55e" opacity="0.35"/>` : "");
     const dim = p.filtered ? " opacity: 0.15;" : ((p.isDown || p.liveDown) && !p.stpBlocked ? " opacity: 0.45;" : "");
     return `
     <g class="fp-port" data-idx="${idx}" style="cursor: pointer;${dim}">
@@ -1548,7 +1558,7 @@ function portCellSVG(p, idx, x, y, cell) {
         ${guardGlyph}
         ${multiMac}
         ${devBadge}
-        ${uplink}${icl}${quarantine}${dualHomed}${haHb}${poeGlyph}
+        ${uplink}${icl}${quarantine}${dualHomed}${violGlyph}${haHb}${poeGlyph}
         <text x="${x + cell / 2}" y="${y + cell + 13}" text-anchor="middle" fill="#9ca3af" font-size="8.2" font-family="monospace">${esc(p.label.length > 7 ? p.label.slice(0, 6) + "…" : p.label)}</text>
     </g>`;
 }
@@ -1638,6 +1648,11 @@ function buildSwitchFacePorts(sw) {
     const swTitle = swName(sw);
     const allSw = (topo && topo.switches) || [];
     const vlanIdOf = n => ((topo && topo.interfaces) || []).find(i => i.name === n)?.vlan_id || 0;
+    // Switch-level PoE budget (used/total W), shown alongside a PoE port's draw.
+    const swHealth = (topoSwitchHealth || []).find(h => switchIdMatch(sw, h.switch_name)) || {};
+    const swPoeBudget = swHealth.poe_total > 0
+        ? ` (${tt("topo.poe_budget")} ${Math.round(swHealth.poe_used || 0)}/${Math.round(swHealth.poe_total)} W)`
+        : "";
 
     const inter = {}, interIcl = {};
     (topoInterlinks || []).forEach(l => {
@@ -1692,6 +1707,14 @@ function buildSwitchFacePorts(sw) {
         const d = (topoDevices || []).find(x => x.mac === mac);
         return d ? (d.hostname || d.ip || mac) : mac;
     };
+    // Port-security (MAC-limit) violations on this switch, by port — a MAC beyond
+    // the port's limit (unauthorized device, rogue mini-switch, or loop).
+    const violByPort = {};
+    (topoViolations || []).forEach(v => {
+        if ((resolveSwitchName(allSw, v.switch) || v.switch) === swTitle && v.port) {
+            (violByPort[v.port] = violByPort[v.port] || []).push(v);
+        }
+    });
 
     return (sw.ports || []).map(p => {
         const st = topoStpIdx[swTitle + "|" + p.name];
@@ -1718,6 +1741,15 @@ function buildSwitchFacePorts(sw) {
             ? `\n⇈ ${tt("topo.dual_homed")}: ${hostOfMac(dualHere.mac)} · ${tt("topo.also_on")} ` +
               dualHere.peers.map(x => `${resolveSwitchName(allSw, x.switch) || x.switch} ${x.port}`).join(", ")
             : "";
+        const viol = violByPort[p.name] || [];
+        const violDetail = viol.length
+            ? `\n⛔ ${tt("topo.port_security")}: ${viol.length} ${tt("topo.violations")}` +
+              (viol[0].mac ? ` (${viol[0].mac}${viol[0].action ? " · " + viol[0].action : ""})` : "")
+            : "";
+        // Link-flap count from the stored port event history (a chronically
+        // flapping port = a bad cable/SFP or a loose fiber).
+        const flaps = (topoStpEventsIdx[swTitle + "|" + p.name] || []).length;
+        const flapDetail = flaps >= 6 ? `\n⚠ ${flaps} ${tt("topo.flaps")}` : "";
         const quarantine = /quarantine/i.test(p.vlan || "") || vlanIdOf(p.vlan) === 4093;
         const nac = p.access_mode === "nac" || p.access_mode === "dynamic";
         return {
@@ -1728,6 +1760,8 @@ function buildSwitchFacePorts(sw) {
             isIcl: !!interIcl[p.name],
             isAp: !!apHere,
             isDualHomed: !!dualHere,
+            isViolation: viol.length > 0,
+            isFlapping: flaps >= 6,
             isUplink: uplinkPorts.has(p.name) || !!(st && st.role === "root"),
             isDown: p.status === "down" || (st && st.admin === "down"),
             adminShut: (st && st.admin === "down") || p.status === "down",
@@ -1762,7 +1796,7 @@ function buildSwitchFacePorts(sw) {
                 (st && st.media ? `\n${tt("topo.media")}: ${st.media}${st.optic && st.optic !== "empty" ? " · " + st.optic : ""}` : "") +
                 (st && st.optic === "empty" ? `\n${tt("topo.optic")}: ${tt("topo.optic_empty")}` : "") +
                 (st && st.neighbor ? `\n🔗 ${tt("topo.lldp_neighbor")}: ${st.neighbor}` : "") +
-                (st && st.poe ? `\nPoE: ${fmtPoe(st.poe)}` : "") +
+                (st && st.poe ? `\nPoE: ${fmtPoe(st.poe)}${/^deliver/.test(st.poe) ? swPoeBudget : ""}` : "") +
                 (st && st.health ? `\n⚠ ${tt("topo.port_errors")}: ${st.health}` : "") +
                 (st ? `\nSTP: ${stpLabel(st)}${st.last ? " (" + st.last + ")" : ""}` : "") +
                 (st && st.dot1x ? `\n${st.dot1x === "authorized" ? "🔒 " + tt("topo.dot1x_auth") : "🔓 " + tt("topo.dot1x_unauth")}` : "") +
@@ -1770,7 +1804,7 @@ function buildSwitchFacePorts(sw) {
                 (multiMac ? `\n⚠ ${multiMac} MACs — ${tt("topo.multi_mac")}` : "") +
                 (devices.length ? `\n${tt("topo.port_devices")}: ${devices.length}` : "") +
                 (apName ? `\n📶 ${apName}${wifiCount ? " · " + wifiCount + " " + tt("topo.wifi_clients") : ""}` : "") +
-                dualDetail +
+                dualDetail + violDetail + flapDetail +
                 (p.status === "down" ? `\n⏻ ${tt("topo.status_down")}` : "") +
                 (p.security_policy ? `\n802.1X: ${p.security_policy}` : "") +
                 (p.type === "trunk" ? `\nLAG: ${(p.members || []).join(", ") || "—"}` : "") +
@@ -2316,6 +2350,7 @@ async function loadDeviceData() {
         topoThroughput = data.throughput || [];
         topoApLocations = data.ap_locations || [];
         topoDualHomed = data.dual_homed || [];
+        topoViolations = data.violations || [];
         topoDiagStatus = data.diag_status || null;
         return data.devices || [];
     } catch (e) {
@@ -2354,6 +2389,7 @@ async function fetchDevicesNow(rangeSec) {
         topoThroughput = data.throughput || [];
         topoApLocations = data.ap_locations || [];
         topoDualHomed = data.dual_homed || [];
+        topoViolations = data.violations || [];
         topoDiagStatus = data.diag_status || null;
         if (topo && topo.has_config) renderTree(topo);
         renderDevicePanel();

@@ -431,8 +431,8 @@ func TestBuildDiagPorts(t *testing.T) {
 		p.Speed != "1G/full" || p.Media != "RJ45" || p.Poe != "deliver:6.40/30.0W:cls4" || p.Dot1x != "authorized" {
 		t.Errorf("port1 = %+v", p)
 	}
-	// Guard + health on an up port.
-	if p := by["port2"]; p.Guard != "bpdu-guard" || p.Health != "err:2 col:9" || p.Dot1x != "unauthorized" {
+	// Guard + health on an up port (half-duplex now flagged as a physical fault).
+	if p := by["port2"]; p.Guard != "bpdu-guard" || p.Health != "err:2 col:9 half-duplex" || p.Dot1x != "unauthorized" {
 		t.Errorf("port2 = %+v", p)
 	}
 	// Down + admin-down port: no role/state (not "blocked").
