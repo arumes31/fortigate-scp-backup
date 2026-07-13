@@ -1,0 +1,109 @@
+services:
+  fortisafe-app:
+    container_name: "fortisafe-app"
+    image: "ghcr.io/arumes31/fortigate-scp-backup:latest"
+    environment:
+      # --- General / Timezone Settings ---
+      - "TZ=Europe/Vienna"
+      - "PORT=8521"
+      - "LOG_LEVEL=info"
+      - "BACKUP_DIR=backups"
+      - "DATA_DIR=/app/data"
+
+      # --- PostgreSQL Configuration ---
+      - "PG_HOST=fortisafe-db"
+      - "PG_PORT=5432"
+      - "PG_USER=postgre"
+      - "PG_PASSWORD=XXXXXXTDB"
+      - "PG_DATABASE=firewall_backups"
+      - "PGSSLMODE=prefer"
+      - "PG_MAX_CONNS=50"
+      - "PG_CONNECT_RETRIES=10"
+      - "PG_CONNECT_BACKOFF_SECONDS=3"
+
+      # --- Authentication & Session Security ---
+      - "TOTP_ENABLED=true"
+      - "TOTP_SECRET=XXXXXX"
+      - "RADIUS_ENABLED=true"
+      - "RADIUS_SERVER=192.168.0.100"
+      - "RADIUS_PORT=1812"
+      - "RADIUS_SECRET=fortisafe-XXXXXX"
+      - "LOGIN_MAX_ATTEMPTS=5"
+      - "LOGIN_LOCKOUT_MINUTES=15"
+      - "SESSION_KEY=your-session-key-at-least-32-bytes"
+      - "COOKIE_SECURE=false"
+      - "ENABLE_HSTS=false"
+      - "TRUST_PROXY_HEADERS=false"
+
+      # --- Encryption at Rest ---
+      # Optional: Provide a 32-byte hex or base64 key to enable AES-256-GCM encryption for backups and SSH passwords
+      - "ENCRYPTION_KEY="
+
+      # --- SCP & Backup Engine Defaults ---
+      - "DEFAULT_SCP_USER=fortisafe"
+      - "DEFAULT_SCP_PASSWORD=XXXXXX"
+      - "FORTIGATE_CONFIG_PATH=sys_config"
+      - "SCP_TIMEOUT=60"
+      - "MAX_CONCURRENT_BACKUPS=10"
+      - "CSV_MAX_BYTES=5242880" # Default 5MB upload limit
+
+      # --- SMTP Mail Notifications ---
+      - "MAIL_SERVER=smtp.test.com"
+      - "MAIL_PORT=25"
+      - "MAIL_USER=fortisafe@test.com"
+      - "MAIL_PASSWORD=XXXXXX"
+      - "MAIL_RECIPIENT=user1@test.com"
+
+      # --- Extension: FGT ADM VPN Config (Optional) ---
+      - "EXT_ADM_VPN_CONF=true"
+      - "GRAYLOG_URL=https://graylog.example.com"
+      - "GRAYLOG_TOKEN=XXXXXX"
+      - "GRAYLOG_SEARCH_TIMEFRAME=86400"
+      - "HOOKWISE_URL=https://hookwise.example.com/webhook/xxxxxxxx"
+      - "HOOKWISE_TOKEN=XXXXXX"
+
+      # --- Extension: Graylog Device Data (Optional) ---
+      # Enables the device inventory for the topology page (switch client MAC/IP/VLAN).
+      # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
+      - "EXT_GRAYLOG_DEVICE_DATA=true"
+      # Graylog query template (%s = firewall hostname); must match logs with MAC fields.
+      # - "GRAYLOG_DEVICE_QUERY=source:\"%s\" AND (mac:* OR srcmac:* OR macaddr:*)"
+      # Seconds of log history to scan per fetch (default: 86400 = 24h).
+      # - "GRAYLOG_DEVICE_RANGE=86400"
+      # Background refresh interval in seconds (default: 3600 = 1h).
+      # - "GRAYLOG_DEVICE_INTERVAL=3600"
+
+      # --- Housekeeping ---
+      - "ACTIVITY_LOG_RETENTION_DAYS=0" # 0 means keep logs indefinitely
+    ports:
+      - "8521:8521/tcp"
+    volumes:
+      # Mount host directories to persist backups and configuration/SQLite db files:
+      - "./backups:/app/backups"
+      - "./data:/app/data"
+      # Or specify host absolute paths if required:
+      # - "/mnt/backups:/app/backups"
+      # - "/mnt/data_fgt-adm-vpn-conf:/app/data"
+    restart: unless-stopped
+    depends_on:
+      fortisafe-db:
+        condition: service_healthy
+        restart: true
+
+  fortisafe-db:
+    container_name: "fortisafe-db"
+    image: postgres:latest
+    environment:
+      - "POSTGRES_USER=postgre"
+      - "POSTGRES_PASSWORD=XXXXXXTDB"
+      - "POSTGRES_DB=firewall_backups"
+    restart: unless-stopped
+    volumes:
+      - "./pgdata:/var/lib/postgresql/data"
+      # Or specify host absolute path:
+      # - "/mnt/postgres-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgre -d firewall_backups"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

@@ -1,0 +1,28 @@
+# Go build artifacts
+/fortisafe
+*.exe
+*.test
+*.out
+coverage.out
+
+# Runtime data
+backups/
+data/
+
+# Python bytecode cache (legacy)
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Project-specific / local files
+docs/
+# Local fixtures that contain real customer data — never commit.
+example*.conf
+*.conf.local
+*.csv
+.gemini/settings.json
+graphify-out/
+temp/
+.claudeignore
+.agents/
+

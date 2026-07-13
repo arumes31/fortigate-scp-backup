@@ -1,0 +1,392 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "audit.title"}}</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="stat-grid">
+    <div class="stat-tile fail"><div class="n" id="statCritical">…</div><div class="l">{{T .Base.Lang "audit.critical"}}</div></div>
+    <div class="stat-tile new"><div class="n" id="statWarnings">…</div><div class="l">{{T .Base.Lang "audit.warnings"}}</div></div>
+    <div class="stat-tile"><div class="n">{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.firewalls"}}</div></div>
+    <div class="stat-tile"><div class="n" id="statLoaded">0/{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.audited"}}</div></div>
+</div>
+
+<div class="grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+    <!-- Custom Rule Builder -->
+    <div class="card">
+        <h2 class="mt-0"><span style="color: var(--accent);">[+]</span> {{T .Base.Lang "audit.custom_rules"}}</h2>
+        <form method="post" action="/audit/custom_rule" style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <input type="text" name="name" placeholder="{{T .Base.Lang "audit.rule_name"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <input type="text" name="pattern" placeholder="{{T .Base.Lang "audit.rule_pattern"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
+                <select name="severity" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
+                    <option value="critical">Critical</option>
+                    <option value="warning" selected>Warning</option>
+                    <option value="info">Info</option>
+                </select>
+                <input type="text" name="remediation" placeholder="{{T .Base.Lang "audit.rule_remediation"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+            </div>
+            <button type="submit" class="btn" style="align-self: flex-start; background: var(--accent); color: #000; font-weight: bold; padding: 8px 16px;">{{T .Base.Lang "audit.rule_add"}}</button>
+        </form>
+
+        {{if .CustomRules}}
+        <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
+            <h4 class="mt-0">{{T .Base.Lang "audit.rules_configured"}}</h4>
+            <div style="max-height: 150px; overflow-y: auto;">
+                {{range .CustomRules}}
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; background: rgba(255,255,255,0.02); margin-bottom: 4px; border-radius: 4px; font-size: 0.85em;">
+                    <div>
+                        <strong>{{.Name}}</strong>: <code>{{.Pattern}}</code> ({{.Severity}})
+                    </div>
+                    <form method="post" action="/audit/custom_rule" style="margin: 0;">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 1.1em;" title="{{T $.Base.Lang "audit.rule_delete"}}">&times;</button>
+                    </form>
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Exemptions List -->
+    <div class="card">
+        <h2 class="mt-0"><span style="color: var(--accent);">[#]</span> {{T .Base.Lang "audit.exemptions"}}</h2>
+        {{if .Exemptions}}
+        <div style="max-height: 250px; overflow-y: auto;">
+            {{range .Exemptions}}
+            <div style="padding: 8px; background: rgba(255,255,255,0.02); border-left: 3px solid #f59e0b; margin-bottom: 6px; border-radius: 4px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div><strong>Firewall ID: {{.FwID}}</strong> - <em>{{.FindingText}}</em></div>
+                    <div class="muted" style="font-size: 0.9em; margin-top: 2px;">{{T $.Base.Lang "audit.exemption_reason"}} {{.Reason}}</div>
+                </div>
+                <form method="post" action="/audit/exemption" style="margin: 0;">
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">{{T $.Base.Lang "audit.exemption_revoke"}}</button>
+                </form>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <p class="muted">{{T .Base.Lang "audit.exemption_none"}}</p>
+        {{end}}
+    </div>
+</div>
+
+<div class="card pad-0">
+    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div>
+            <h2 class="mt-0 mb-0">{{T .Base.Lang "audit.per_firewall"}}</h2>
+            <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent);">{{T .Base.Lang "audit.topology_link"}}</a></span>
+        </div>
+        <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
+    </div>
+
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>{{T .Base.Lang "audit.col_firewall"}}</th>
+                    <th>{{T .Base.Lang "audit.col_system"}}</th>
+                    <th>{{T .Base.Lang "audit.col_scores"}}</th>
+                    <th>{{T .Base.Lang "audit.col_ticket"}}</th>
+                    <th>{{T .Base.Lang "audit.col_actions"}}</th>
+                </tr>
+            </thead>
+            <tbody id="auditBody">
+            {{range .Firewalls}}
+                <tr class="audit-row-item" data-fwid="{{.ID}}" data-fqdn="{{.FQDN}}">
+                    <td style="vertical-align: top; padding-top: 15px;">
+                        <strong style="font-size: 1.1em; color: #fff;">{{.FQDN}}</strong>
+                        <div class="muted" style="font-size: 0.85em; margin-top: 4px;">ID: {{.ID}}</div>
+                    </td>
+                    <td class="cell-sys" style="vertical-align: top; padding-top: 15px; font-size: 0.9em;"><span class="spinner"></span></td>
+                    <td class="cell-scores" style="vertical-align: top; padding-top: 15px; width: 220px;"><span class="muted">…</span></td>
+                    <td class="cell-ticket" style="vertical-align: top; padding-top: 15px; font-size: 0.85em;"><span class="muted">…</span></td>
+                    <td class="cell-actions" style="vertical-align: top; padding-top: 15px;"><span class="muted">{{T $.Base.Lang "audit.loading"}}</span></td>
+                </tr>
+                <tr class="detail-row" id="detail-{{.ID}}" style="display: none; background: rgba(0,0,0,0.15);">
+                    <td colspan="5" style="padding: 20px;"></td>
+                </tr>
+            {{else}}
+                <tr><td colspan="5" class="empty">{{T $.Base.Lang "audit.no_firewalls"}}</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script src="/static/ui.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// Async audit loading: the page shell renders instantly; per-firewall results
+// are fetched from /audit/results/{id} with limited concurrency and rendered
+// as they arrive. esc()/tt() come from ui.js.
+// ---------------------------------------------------------------------------
+const auditRows = Array.from(document.querySelectorAll("tr.audit-row-item"));
+const auditState = {};        // fwid -> result JSON
+const searchCache = {};       // fwid -> uppercase searchable text of the result
+const failedRows = new Set(); // fwids whose fetch failed (excluded from totals)
+let totals = { critical: 0, warning: 0, loaded: 0 };
+
+function sevColor(sev) {
+    return sev === "critical" ? "#ef4444" : sev === "warning" ? "#f59e0b" : "#3b82f6";
+}
+
+function scoreBar(label, score) {
+    const color = score < 50 ? "#ef4444" : score < 80 ? "#f59e0b" : "#10b981";
+    return `<div style="margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.8em; margin-bottom: 2px;">
+            <span>${label}</span><strong>${score}%</strong>
+        </div>
+        <div style="height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden;">
+            <div style="height: 100%; width: ${score}%; background: ${color};"></div>
+        </div>
+    </div>`;
+}
+
+// Renders the config context snippet with a line-number gutter and the
+// detected line highlighted.
+function contextView(f) {
+    if (!f.context) return "";
+    const lines = f.context.split("\n");
+    let num = f.context_start || 1;
+    let afterGap = false; // past the "..." the true line numbers are unknown
+    let html = "";
+    for (const line of lines) {
+        const isEllipsis = line.trim() === "...";
+        if (isEllipsis) afterGap = true;
+        const isMatch = !isEllipsis && !afterGap && num === f.line;
+        html += `<div style="display: flex; ${isMatch ? "background: rgba(239, 68, 68, 0.12); border-left: 2px solid " + sevColor(f.severity) + ";" : "border-left: 2px solid transparent;"}">
+            <span style="width: 48px; text-align: right; padding-right: 10px; color: rgba(255,255,255,0.25); user-select: none; flex-shrink: 0;">${isEllipsis || afterGap ? "" : num}</span>
+            <span style="white-space: pre; color: ${isMatch ? "#fecaca" : "#9ca3af"};">${esc(line)}</span>
+        </div>`;
+        if (!isEllipsis) num++;
+    }
+    return `<details style="margin-top: 6px; background: rgba(0,0,0,0.25); border-radius: 4px; border: 1px solid rgba(255,255,255,0.04);">
+        <summary style="font-size: 0.8em; cursor: pointer; color: rgba(255,255,255,0.4); padding: 4px 8px;">${tt("audit.show_context").replace("%d", f.line)}</summary>
+        <div style="padding: 8px 0; font-family: monospace; font-size: 0.82em; overflow-x: auto;">${html}</div>
+    </details>`;
+}
+
+function findingCard(f, fwid) {
+    return `<div class="finding finding-${esc(f.severity)}" style="padding: 10px; margin-bottom: 8px; border-radius: 4px; background: rgba(255,255,255,0.02); border-left: 4px solid ${sevColor(f.severity)};">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+            <strong style="color: #fff;">${esc(f.text)}</strong>
+            <form method="post" action="/audit/exemption" style="margin: 0; display: flex; gap: 4px; flex-shrink: 0;">
+                <input type="hidden" name="fw_id" value="${fwid}">
+                <input type="hidden" name="finding_key" value="${esc(f.key || "")}">
+                <input type="hidden" name="finding_text" value="${esc(f.text)}">
+                <input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <button type="submit" class="btn btn-small" style="font-size: 0.8em; padding: 2px 6px;">${tt("audit.exempt")}</button>
+            </form>
+        </div>
+        ${f.remediation ? `<details style="margin-top: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; border: 1px solid rgba(255,255,255,0.03);">
+            <summary style="font-size: 0.8em; cursor: pointer; color: rgba(255,255,255,0.4); padding: 4px 8px;">${tt("audit.show_cli")}</summary>
+            <pre style="margin: 0; padding: 8px; font-family: monospace; font-size: 0.85em; color: #34d399; white-space: pre-wrap; border-top: 1px solid rgba(255,255,255,0.03);">${esc(f.remediation)}</pre>
+        </details>` : ""}
+        ${contextView(f)}
+    </div>`;
+}
+
+function renderRow(tr, res) {
+    // Coerce the id to a number at the DOM boundary: data-fwid is a
+    // server-rendered integer, and a numeric value can never be reinterpreted
+    // as HTML when later interpolated into innerHTML strings.
+    const fwid = Number(tr.getAttribute("data-fwid"));
+    const sysCell = tr.querySelector(".cell-sys");
+    const scoreCell = tr.querySelector(".cell-scores");
+    const ticketCell = tr.querySelector(".cell-ticket");
+    const actionCell = tr.querySelector(".cell-actions");
+
+    if (!res.has_config) {
+        sysCell.innerHTML = `<span class="muted">${tt("audit.no_backup")}</span>`;
+        scoreCell.innerHTML = '<span class="muted">—</span>';
+        ticketCell.innerHTML = '<span class="muted">—</span>';
+        actionCell.innerHTML = '<span class="muted">—</span>';
+        return;
+    }
+
+    sysCell.innerHTML = `
+        <div>${tt("audit.model")} <strong style="color: #fff;">${res.model ? esc(res.model) : "—"}</strong></div>
+        <div style="margin-top: 3px;">FortiOS: <code>${esc(res.version)}</code></div>
+        <div class="muted" style="margin-top: 3px; font-size: 0.85em;" title="${tt("audit.computed")} ${esc(res.computed_at || "")}">${tt("audit.backup")} ${esc(res.backup_filename || "")}</div>`;
+
+    scoreCell.innerHTML = scoreBar("PCI-DSS", res.pci_score) + scoreBar("CIS Benchmark", res.cis_score) + scoreBar("HIPAA", res.hipaa_score);
+
+    ticketCell.innerHTML = `
+        <form method="post" action="/audit/ticket" style="margin: 0; display: flex; flex-direction: column; gap: 4px;">
+            <input type="hidden" name="backup_filename" value="${esc(res.backup_filename)}">
+            <input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
+            <input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
+            <button type="submit" class="btn btn-small" style="padding: 2px; font-size: 0.8em; width: 60px;">Link</button>
+        </form>`;
+
+    const nCrit = (res.findings || []).filter(f => f.severity === "critical").length;
+    const nWarn = (res.findings || []).filter(f => f.severity === "warning").length;
+    actionCell.innerHTML = `
+        <button class="btn btn-small" onclick="toggleDetails(${fwid})" id="btn-${fwid}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">${tt("audit.details_show")}</button>
+        <div style="margin-top: 6px; font-size: 0.82em;">
+            ${nCrit ? `<span style="color: #ef4444;">● ${nCrit} ${tt("audit.n_critical")}</span> ` : ""}
+            ${nWarn ? `<span style="color: #f59e0b;">● ${nWarn} ${tt("audit.n_warnings")}</span>` : ""}
+            ${!nCrit && !nWarn ? `<span style="color: #10b981;">● ${tt("audit.clean")}</span>` : ""}
+        </div>
+        <button class="btn btn-small" onclick="recompute(${fwid})" title="${tt("audit.recheck_title")}" style="margin-top: 6px; background: none; color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.1); padding: 2px 8px; font-size: 0.78em;">${tt("audit.recheck")}</button>`;
+
+    // The heavy details DOM (finding cards with per-finding exemption forms)
+    // is built lazily on first expand: building it for every firewall up
+    // front made the whole page unresponsive — hundreds of hidden forms and
+    // inputs, re-scanned by password-manager extensions on every row update.
+    const detailRow = document.getElementById("detail-" + fwid);
+    detailRow.firstElementChild.dataset.built = "";
+    if (detailRow.style.display !== "none") {
+        buildDetail(fwid);
+        document.getElementById("btn-" + fwid).textContent = tt("audit.details_hide");
+    }
+}
+
+// buildDetail renders the findings/upgrade panel for one firewall into its
+// detail row (no-op when already built for the current result).
+function buildDetail(fwid) {
+    const detail = document.getElementById("detail-" + fwid).firstElementChild;
+    if (detail.dataset.built === "1") return;
+    const res = auditState[fwid];
+    if (!res) return;
+
+    let findingsHtml;
+    if (res.findings && res.findings.length) {
+        findingsHtml = res.findings.map(f => findingCard(f, fwid)).join("");
+    } else {
+        findingsHtml = `<div class="alert alert-success" style="padding: 10px;">${tt("audit.findings_none")}</div>`;
+    }
+    let exemptedHtml = "";
+    if (res.exempted && res.exempted.length) {
+        exemptedHtml = `<h4 style="margin-top: 15px; margin-bottom: 5px; color: #f59e0b;">${tt("audit.exempted_title")}</h4>` +
+            res.exempted.map(f => `<div style="font-size: 0.85em; padding: 6px; background: rgba(245, 158, 11, 0.05); margin-bottom: 4px; border-radius: 4px; border-left: 3px solid #f59e0b;">${esc(f.text)} <span class="muted">${tt("audit.exempted_note")}</span></div>`).join("");
+    }
+    const upgradeHtml = (res.upgrade_path || []).map((step, i) => `
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em;">
+            <span style="background: rgba(255,255,255,0.1); border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 0.8em; font-weight: bold; color: var(--accent); flex-shrink: 0;">${i + 1}</span>
+            <code>${esc(step)}</code>
+        </div>`).join("");
+
+    detail.innerHTML = `
+        <div class="grid-2" style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+            <div>
+                <h3 class="mt-0">${tt("audit.findings_title")}</h3>
+                ${findingsHtml}
+                ${exemptedHtml}
+            </div>
+            <div style="border-left: 1px solid rgba(255,255,255,0.05); padding-left: 20px;">
+                <h3 class="mt-0">${tt("audit.upgrade_title")}</h3>
+                <p class="muted" style="font-size: 0.85em;">${tt("audit.upgrade_note")}</p>
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">${upgradeHtml}</div>
+            </div>
+        </div>`;
+    detail.dataset.built = "1";
+}
+
+function renderError(tr, fwid) {
+    tr.querySelector(".cell-sys").innerHTML = `<span style="color: #ef4444;">${tt("audit.load_error")}</span>`;
+    tr.querySelector(".cell-actions").innerHTML = `<button class="btn btn-small" onclick="loadRow(${fwid})" style="background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); padding: 4px 10px;">${tt("audit.retry")}</button>`;
+}
+
+function updateTotals() {
+    totals.critical = 0; totals.warning = 0;
+    for (const res of Object.values(auditState)) {
+        for (const f of (res.findings || [])) {
+            if (f.severity === "critical") totals.critical++;
+            else if (f.severity === "warning") totals.warning++;
+        }
+    }
+    // Rows that failed to load are NOT counted: mark the tiles so a partial
+    // failure can never read as a fleet-wide all-clear.
+    const failMark = failedRows.size ? " ⚠" : "";
+    document.getElementById("statCritical").textContent = totals.critical + failMark;
+    document.getElementById("statWarnings").textContent = totals.warning + failMark;
+    document.getElementById("statLoaded").textContent =
+        totals.loaded + "/" + auditRows.length + (failedRows.size ? " ⚠" + failedRows.size : "");
+}
+
+async function loadRow(fwid, recompute) {
+    const tr = document.querySelector(`tr.audit-row-item[data-fwid="${fwid}"]`);
+    if (!tr) return;
+    try {
+        const url = "/audit/results/" + fwid + (recompute ? "?recompute=1" : "");
+        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const res = await resp.json();
+        auditState[fwid] = res;
+        // Search matches result content (findings, model, backup, …) without
+        // requiring the detail DOM to exist.
+        searchCache[fwid] = JSON.stringify(res).toUpperCase();
+        failedRows.delete(String(fwid));
+        renderRow(tr, res);
+    } catch (e) {
+        console.error("audit load failed", fwid, e);
+        failedRows.add(String(fwid));
+        renderError(tr, fwid);
+    } finally {
+        totals.loaded = Object.keys(auditState).length;
+        updateTotals();
+    }
+}
+
+function recompute(fwid) {
+    const tr = document.querySelector(`tr.audit-row-item[data-fwid="${fwid}"]`);
+    if (tr) tr.querySelector(".cell-sys").innerHTML = '<span class="spinner"></span>';
+    loadRow(fwid, true);
+}
+
+// Fetch all rows with limited concurrency (4 at a time).
+async function loadAll() {
+    const ids = auditRows.map(tr => Number(tr.getAttribute("data-fwid")));
+    let idx = 0;
+    async function worker() {
+        while (idx < ids.length) {
+            const id = ids[idx++];
+            await loadRow(id);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+}
+
+function filterAuditTable() {
+    const input = document.getElementById("auditSearch").value.toUpperCase();
+    for (const tr of auditRows) {
+        const fwid = Number(tr.getAttribute("data-fwid"));
+        const detailsRow = document.getElementById("detail-" + fwid);
+        const text = tr.textContent.toUpperCase() + " " + (searchCache[fwid] || "");
+        if (text.indexOf(input) > -1) {
+            tr.style.display = "";
+        } else {
+            tr.style.display = "none";
+            if (detailsRow) {
+                detailsRow.style.display = "none";
+                const btn = document.getElementById("btn-" + fwid);
+                if (btn) btn.textContent = tt("audit.details_show");
+            }
+        }
+    }
+}
+
+function toggleDetails(fwID) {
+    const row = document.getElementById("detail-" + fwID);
+    const btn = document.getElementById("btn-" + fwID);
+    if (row.style.display === "none") {
+        buildDetail(fwID);
+        row.style.display = "table-row";
+        btn.textContent = tt("audit.details_hide");
+    } else {
+        row.style.display = "none";
+        btn.textContent = tt("audit.details_show");
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadAll);
+</script>
+{{end}}

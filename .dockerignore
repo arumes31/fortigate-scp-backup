@@ -1,0 +1,42 @@
+# Keep the build context small. Go source (main.go, internal/, extensions/*.go,
+# internal/web/templates, internal/web/static), go.mod and go.sum are NOT
+# ignored — they are required by the build.
+
+# VCS / CI / meta
+.git
+.gitignore
+.gitattributes
+.gitmodules
+.github
+.gemini
+
+# Docs (not needed inside the image)
+*.md
+
+# Knowledge-graph output and temp dirs
+graphify-out/
+temp/
+tmp/
+
+# Legacy Python sources & caches (the app is Go now)
+**/__pycache__/
+**/*.py
+**/*.pyc
+**/*.pyo
+
+# Runtime data — never bake into the image
+backups/
+data/
+
+# Local build artifacts
+/fortisafe
+*.exe
+dist/
+build/
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

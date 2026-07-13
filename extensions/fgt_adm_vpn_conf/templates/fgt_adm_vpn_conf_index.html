@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FGT ADM VPN Config · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/fgt-adm-vpn-conf/" class="active">VPN_Conf</a>
+        </nav>
+    </header>
+
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>FGT ADM VPN Config</h1>
+
+        <div class="card">
+            <h2 class="collapsible-header mb-0" id="addToggle">
+                Add New Entry
+                <button type="button" class="btn btn-sm" id="addToggleBtn">Show</button>
+            </h2>
+            <div class="collapsible-content" id="addContent" style="display:none; margin-top:18px;">
+                <form action="/fgt-adm-vpn-conf/add" method="post">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label>Firewallname</label>
+                            <input type="text" name="firewallname" required>
+                        </div>
+                        <div class="field">
+                            <label>CID</label>
+                            <input type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+                        </div>
+                        <div class="field">
+                            <label>Kundenname</label>
+                            <input type="text" name="kundenname" required>
+                        </div>
+                        <div class="field">
+                            <label>Standort</label>
+                            <input type="text" name="standort" required>
+                        </div>
+                        <div class="field">
+                            <label>WAN-Interface</label>
+                            <input type="text" name="wan_interface" value="wan1" required>
+                        </div>
+                        <div class="field">
+                            <label>LAN-Interface</label>
+                            <input type="text" name="lan_interface" value="loopback" required>
+                        </div>
+                        <div class="field">
+                            <label>IPSEC-PSK-RO</label>
+                            <input type="text" name="ipsec_psk_ro" value="psauto" required>
+                        </div>
+                        <div class="field">
+                            <label>IPSEC-PSK-HCI</label>
+                            <input type="text" name="ipsec_psk_hci" value="psauto" required>
+                        </div>
+                        <div class="field">
+                            <label>RADIUSMGT (YES/NO)</label>
+                            <input type="text" name="radiusmgt" value="YES" required>
+                        </div>
+                        <div class="field">
+                            <label>Cluster Hostnames (comma separated)</label>
+                            <input type="text" name="cluster_hostnames" placeholder="FW1,FW2">
+                        </div>
+                        <div class="field checkbox-row">
+                            <input type="checkbox" name="graylog_enabled" id="add_graylog_enabled" checked>
+                            <label for="add_graylog_enabled">Graylog Enabled</label>
+                        </div>
+                    </div>
+                    <div style="margin-top:18px;">
+                        <button type="submit" class="btn btn-primary">Add Entry</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Available IPs <span class="muted">(10.105.1.0/24)</span></h2>
+                <div class="stat"><b>{{.AvailableIPsCount}}</b><span class="muted">available ({{.AvailableIPsPercentage}}%)</span></div>
+            </div>
+            <div class="meter"><span style="width:{{.AvailableIPsPercentage}}%"></span></div>
+        </div>
+
+        <div class="card pad-0">
+            <div class="table-wrap">
+                <table class="data sticky-first">
+                    <thead>
+                        <tr>
+                            <th>Firewallname</th>
+                            <th>CID</th>
+                            <th>Kundenname</th>
+                            <th>Standort</th>
+                            <th>REMOTEIP-FULL</th>
+                            <th>REMOTEIP-FULL-1st</th>
+                            <th>ike2-username</th>
+                            <th>WAN-Interface</th>
+                            <th>DNS-Name</th>
+                            <th>RADIUSMGT</th>
+                            <th>Graylog</th>
+                            <th>GL Status</th>
+                            <th>Next Check</th>
+                            <th>Cluster Hostnames</th>
+                            <th>DNS-Name-Full</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Configs}}
+                        <tr>
+                            <td>{{.Firewallname}}</td>
+                            <td>{{.Cid}}</td>
+                            <td>{{.Kundenname}}</td>
+                            <td>{{.Standort}}</td>
+                            <td><code>{{.RemoteipFull}}</code></td>
+                            <td><code>{{.RemoteipFull1st}}</code></td>
+                            <td>{{.Ike2Username}}</td>
+                            <td>{{.WanInterface}}</td>
+                            <td>{{.DnsName}}</td>
+                            <td>{{.Radiusmgt}}</td>
+                            <td>{{if .GraylogEnabled}}YES{{else}}NO{{end}}</td>
+                            <td>
+                                {{if eq .LastGraylogStatus "config_missing"}}
+                                    <span class="pill pill-new" title="Graylog not configured">config</span>
+                                {{else if or (not .GraylogEnabled) (eq .LastGraylogStatus "disabled")}}
+                                    <span class="pill pill-muted" title="Disabled">disabled</span>
+                                {{else if eq .LastGraylogStatus "online"}}
+                                    <span class="pill pill-success" title="Online">online</span>
+                                {{else if eq .LastGraylogStatus "offline"}}
+                                    <span class="pill pill-failed" title="Offline">offline</span>
+                                {{else}}
+                                    <span class="pill pill-muted" title="Unknown">unknown</span>
+                                {{end}}
+                            </td>
+                            <td>
+                                {{if and .GraylogEnabled .NextCheckISO}}
+                                    <span class="next-graylog-check muted" data-next="{{.NextCheckISO}}">&hellip;</span>
+                                {{else}}-{{end}}
+                            </td>
+                            <td>{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}-{{end}}</td>
+                            <td><a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a></td>
+                            <td class="actions">
+                                <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
+                                <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-id="{{.ID}}" data-name="{{.Firewallname}}">Remove</button>
+                                <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
+                            </td>
+                        </tr>
+                        {{else}}
+                        <tr><td colspan="16" class="empty">No entries yet.</td></tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="mt-0">Import / Export</h2>
+            <form action="/fgt-adm-vpn-conf/import" method="post" enctype="multipart/form-data" class="toolbar">
+                <input type="file" name="file" accept=".csv" style="max-width:280px;">
+                <button type="submit" class="btn">Import</button>
+                <a href="/fgt-adm-vpn-conf/export" class="btn">Export All to CSV (Backup)</a>
+                <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">Export to Browser Favorites</a>
+            </form>
+        </div>
+    </main>
+
+    <footer class="sysfooter">
+        <div>EOF // (C) FORTISAFE_SEC</div>
+        <div class="sysfooter-links"><span>MODULE: FGT_ADM_VPN_CONF</span></div>
+    </footer>
+</div>
+
+<div id="editModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="modalClose" type="button">&times;</button>
+        <h2 class="mt-0">Edit Configuration</h2>
+        <div id="modal-body-content"></div>
+    </div>
+</div>
+
+<div id="removeModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="removeModalClose" type="button">&times;</button>
+        <h2 class="mt-0">Remove Configuration</h2>
+        <p class="muted" id="removeIntro">
+            This configuration must be removed from the FortiGate device(s) first.
+            Run the commands below on the matching device, then confirm removal.
+        </p>
+        <pre id="removalCommands" class="code-block">Loading&hellip;</pre>
+        <label class="checkbox-row" style="margin-top:14px; align-items:flex-start;">
+            <input type="checkbox" id="removeConfirmCheck">
+            <span>I have removed this configuration from the FortiGate device(s).</span>
+        </label>
+        <div class="toolbar" style="margin-top:16px;">
+            <button type="button" class="btn btn-sm" id="copyRemovalBtn">Copy commands</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn" id="removeCancelBtn">Cancel</button>
+            <form method="post" id="removeForm" action="" style="display:inline; margin:0;">
+                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" disabled>Remove entry</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var editModal = document.getElementById('editModal');
+    var modalClose = document.getElementById('modalClose');
+    var modalBody = document.getElementById('modal-body-content');
+
+    function closeModal() {
+        editModal.classList.remove('open');
+        modalBody.innerHTML = '';
+    }
+
+    document.querySelectorAll('.open-edit-modal').forEach(function (link) {
+        link.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            var id = this.dataset.id;
+            fetch('/fgt-adm-vpn-conf/edit/' + id)
+                .then(function (resp) {
+                    if (!resp.ok) { throw new Error('Network response was not ok'); }
+                    return resp.text();
+                })
+                .then(function (html) {
+                    modalBody.innerHTML = html;
+                    editModal.classList.add('open');
+                    var form = modalBody.querySelector('form');
+                    if (form) {
+                        form.addEventListener('submit', function (e) {
+                            e.preventDefault();
+                            fetch(form.action, { method: 'POST', body: new FormData(form) })
+                                .then(function (resp) {
+                                    if (!resp.ok) { return resp.text().then(function (t) { throw new Error(t); }); }
+                                    return resp.text();
+                                })
+                                .then(function () {
+                                    alert('Configuration updated successfully!');
+                                    closeModal();
+                                    window.location.reload();
+                                })
+                                .catch(function (err) {
+                                    alert('Error updating configuration: ' + err.message);
+                                });
+                        });
+                    }
+                })
+                .catch(function (err) {
+                    modalBody.innerHTML = '<p class="alert alert-error">Error loading form: ' + err.message + '</p>';
+                    editModal.classList.add('open');
+                });
+        });
+    });
+
+    if (modalClose) { modalClose.addEventListener('click', closeModal); }
+    window.addEventListener('click', function (e) { if (e.target === editModal) { closeModal(); } });
+
+    // ---- Remove confirmation modal ----
+    // Shows the FortiGate teardown commands for the entry and requires the
+    // operator to confirm (checkbox) that the device was cleaned up before the
+    // delete POST is allowed to submit.
+    var removeModal = document.getElementById('removeModal');
+    var removeForm = document.getElementById('removeForm');
+    var removeCheck = document.getElementById('removeConfirmCheck');
+    var removeBtn = document.getElementById('removeConfirmBtn');
+    var removalPre = document.getElementById('removalCommands');
+    var removeIntro = document.getElementById('removeIntro');
+
+    function closeRemoveModal() {
+        if (removeModal) { removeModal.classList.remove('open'); }
+    }
+
+    document.querySelectorAll('.open-remove-modal').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = this.dataset.id;
+            var name = this.dataset.name || ('#' + id);
+            removeForm.action = '/fgt-adm-vpn-conf/delete/' + id;
+            removeCheck.checked = false;
+            removeBtn.disabled = true;
+            removalPre.textContent = 'Loading…';
+            if (removeIntro) {
+                removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
+            }
+            removeModal.classList.add('open');
+            fetch('/fgt-adm-vpn-conf/removal_commands/' + id)
+                .then(function (resp) {
+                    if (!resp.ok) { throw new Error('Network response was not ok'); }
+                    return resp.text();
+                })
+                .then(function (text) { removalPre.textContent = text; })
+                .catch(function (err) { removalPre.textContent = 'Could not load removal commands: ' + err.message; });
+        });
+    });
+
+    if (removeCheck) {
+        removeCheck.addEventListener('change', function () {
+            removeBtn.disabled = !this.checked;
+        });
+    }
+    // Guard: never submit the delete unless the box is ticked.
+    if (removeForm) {
+        removeForm.addEventListener('submit', function (e) {
+            if (!removeCheck.checked) { e.preventDefault(); }
+        });
+    }
+    var copyRemovalBtn = document.getElementById('copyRemovalBtn');
+    if (copyRemovalBtn) {
+        copyRemovalBtn.addEventListener('click', function () {
+            var text = removalPre.textContent || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function () {
+                    copyRemovalBtn.textContent = 'Copied!';
+                    setTimeout(function () { copyRemovalBtn.textContent = 'Copy commands'; }, 1500);
+                });
+            }
+        });
+    }
+    var removeCancelBtn = document.getElementById('removeCancelBtn');
+    var removeModalCloseBtn = document.getElementById('removeModalClose');
+    if (removeCancelBtn) { removeCancelBtn.addEventListener('click', closeRemoveModal); }
+    if (removeModalCloseBtn) { removeModalCloseBtn.addEventListener('click', closeRemoveModal); }
+    window.addEventListener('click', function (e) { if (e.target === removeModal) { closeRemoveModal(); } });
+
+    // Collapsible "Add New Entry" panel.
+    var addHeader = document.getElementById('addToggle');
+    var addBtn = document.getElementById('addToggleBtn');
+    var addContent = document.getElementById('addContent');
+    if (addHeader) {
+        addHeader.addEventListener('click', function () {
+            if (!addContent) { return; }
+            if (addContent.style.display === 'none') {
+                addContent.style.display = 'block';
+                if (addBtn) { addBtn.textContent = 'Hide'; }
+            } else {
+                addContent.style.display = 'none';
+                if (addBtn) { addBtn.textContent = 'Show'; }
+            }
+        });
+    }
+
+    // Live "next check" countdown.
+    function updateGraylogCheckTimers() {
+        var now = Date.now();
+        document.querySelectorAll('.next-graylog-check').forEach(function (el) {
+            var target = new Date(el.dataset.next).getTime();
+            if (isNaN(target)) { el.textContent = '-'; return; }
+            var diff = Math.round((target - now) / 1000);
+            if (diff <= 0) { el.textContent = 'due'; return; }
+            var m = Math.floor(diff / 60);
+            var s = diff % 60;
+            el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
+        });
+    }
+    updateGraylogCheckTimers();
+    setInterval(updateGraylogCheckTimers, 1000);
+});
+</script>
+</body>
+</html>

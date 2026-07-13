@@ -1,0 +1,61 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Activity Log</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Recent Activity</h2>
+        <input type="search" id="logFilter" placeholder="Filter…">
+    </div>
+    {{if .Logs}}
+    <div class="table-wrap">
+        <table class="data" id="logTable">
+            <thead>
+                <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Details</th></tr>
+            </thead>
+            <tbody>
+            {{range .Logs}}
+                <tr>
+                    <td class="muted">{{fmtTime .Timestamp}}</td>
+                    <td>{{.Username}}</td>
+                    <td>
+                        {{if contains .Action "Failed"}}<span class="pill pill-failed">{{.Action}}</span>
+                        {{else if contains .Action "Success"}}<span class="pill pill-success">{{.Action}}</span>
+                        {{else}}<span class="pill pill-muted">{{.Action}}</span>{{end}}
+                    </td>
+                    <td class="muted">{{.Details}}</td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{if gt .TotalPages 1}}
+    <div class="pager">
+        {{if gt .Page 1}}<a class="btn btn-sm" href="/activity_log?page={{sub .Page 1}}">‹ Prev</a>{{end}}
+        <span class="muted">Page {{.Page}} of {{.TotalPages}}</span>
+        {{if lt .Page .TotalPages}}<a class="btn btn-sm" href="/activity_log?page={{add .Page 1}}">Next ›</a>{{end}}
+    </div>
+    {{end}}
+    {{else}}
+    <div class="empty">No activity recorded yet.</div>
+    {{end}}
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+    (function () {
+        var filter = document.getElementById('logFilter');
+        var table = document.getElementById('logTable');
+        if (!filter || !table) { return; }
+        filter.addEventListener('input', function () {
+            var q = filter.value.toLowerCase();
+            var rows = table.tBodies[0].rows;
+            for (var i = 0; i < rows.length; i++) {
+                rows[i].style.display = rows[i].textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+            }
+        });
+    })();
+</script>
+{{end}}

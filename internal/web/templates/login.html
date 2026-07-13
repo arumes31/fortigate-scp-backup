@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>FortiSafe · Login</title>
+    <!-- Share the app's terminal design system (tokens, JetBrains Mono, inputs,
+         buttons, alerts) so the login screen matches every other page. The
+         inline block below only adds the login-specific layout + the radar
+         background animation, coloured from the same CSS variables. -->
+    <link rel="stylesheet" href="/static/app.css">
+    <style>
+        /* Center the login panel over the animated backdrop. Overrides the
+           app.css body (which is a flex column app shell) for this page only. */
+        body {
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background:
+                radial-gradient(circle at 50% 34%, #1c0e0e 0%, var(--bg) 68%);
+        }
+
+        /* WebGL shader backdrop: bottom layer, under the radar animation.
+           When WebGL is unavailable the body's radial gradient shows instead. */
+        .shader-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: -2;
+        }
+        .shader-backdrop canvas { display: block; width: 100%; height: 100%; }
+
+        /* ---------- Animated background ---------- */
+        .background-animation {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        /* Grid overlay with diagonal lines — tinted with the app's red glow. */
+        .grid-overlay {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background:
+                repeating-linear-gradient(45deg,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
+                    transparent 1px, transparent 25px),
+                repeating-linear-gradient(-45deg,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
+                    transparent 1px, transparent 25px);
+            opacity: 0.55;
+            animation: pulse-grid 8s infinite ease-in-out;
+        }
+
+        /* Scan sweep. */
+        .scan-effect {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom,
+                transparent 0%,
+                rgba(255, 43, 43, 0.22) 50%,
+                transparent 100%);
+            animation: scan 5s infinite linear;
+        }
+
+        /* Radar pulse circles — salmon accent to match the primary colour. */
+        .pulse-circle {
+            position: absolute;
+            width: 0; height: 0;
+            border: 2px solid rgba(255, 180, 171, 0.8);
+            border-radius: 50%;
+            box-shadow: 0 0 12px rgba(255, 43, 43, 0.45);
+            animation: pulse-circle 4s infinite ease-out;
+            transform: translate(-50%, -50%);
+        }
+        .pulse-circle:nth-child(3)  { top: 50%; left: 50%; animation-delay: 0s; }
+        .pulse-circle:nth-child(4)  { top: 20%; left: 20%; animation-delay: -0.8s; }
+        .pulse-circle:nth-child(5)  { top: 20%; left: 80%; animation-delay: -1.6s; }
+        .pulse-circle:nth-child(6)  { top: 80%; left: 20%; animation-delay: -2.4s; }
+        .pulse-circle:nth-child(7)  { top: 80%; left: 80%; animation-delay: -3.2s; }
+        .pulse-circle:nth-child(8)  { top: 30%; left: 30%; animation-delay: -0.4s; }
+        .pulse-circle:nth-child(9)  { top: 30%; left: 70%; animation-delay: -1.2s; }
+        .pulse-circle:nth-child(10) { top: 70%; left: 30%; animation-delay: -2.0s; }
+        .pulse-circle:nth-child(11) { top: 70%; left: 70%; animation-delay: -2.8s; }
+        .pulse-circle:nth-child(12) { top: 40%; left: 60%; animation-delay: -3.6s; }
+
+        @keyframes pulse-circle {
+            0%   { transform: translate(-50%, -50%) scale(0);  opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(15); opacity: 0; }
+        }
+        @keyframes pulse-grid {
+            0%   { opacity: 0.45; transform: scale(1); }
+            50%  { opacity: 0.7;  transform: scale(1.02); }
+            100% { opacity: 0.45; transform: scale(1); }
+        }
+        @keyframes scan {
+            0%   { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+
+        /* Matrix animated text logo. */
+        .logo-text {
+            position: absolute;
+            top: 19%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: var(--mono);
+            font-weight: 700;
+            font-size: clamp(2.6em, 8vw, 5.4em);
+            color: var(--accent);
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            text-shadow: var(--glow);
+            z-index: 0;
+            white-space: nowrap;
+        }
+
+        /* ---------- Login panel ---------- */
+        .container {
+            position: relative;
+            z-index: 1;
+            width: min(400px, 92vw);
+            padding: 30px 30px 34px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            box-shadow: 0 0 40px rgba(255, 43, 43, 0.12);
+            text-align: center;
+        }
+
+        .login-title {
+            justify-content: center;
+            border-bottom: none;
+            margin: 0 0 22px;
+            padding-bottom: 0;
+            font-size: 22px;
+        }
+
+        #login-form { display: flex; flex-direction: column; gap: 14px; text-align: left; }
+        #login-form .field label { margin-bottom: 6px; }
+
+        .login-submit { width: 100%; justify-content: center; padding: 11px 12px; font-size: 13px; margin-top: 4px; }
+
+        /* Hidden until the TOTP-enabled account (admin) is entered — matches the
+           v2.1.7 behaviour. Server-side enforcement is unchanged. */
+        #totp-section { display: none; }
+
+        /* Prose blocks reset the global UPPERCASE chrome for readability, the same
+           way toasts / stdout do in app.css. Hidden until a RADIUS user (any
+           non-admin username) is entered — see the input handler below. */
+        .radius-banner {
+            display: none;
+            margin-bottom: 4px;
+            padding: 12px 14px;
+            text-align: left;
+            text-transform: none;
+            letter-spacing: normal;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .radius-banner.show { display: block; }
+        .radius-banner b { color: var(--accent); }
+
+        .login-wait {
+            display: none;
+            margin-top: 16px;
+            color: var(--text-muted);
+            text-transform: none;
+            letter-spacing: normal;
+            font-size: 12px;
+        }
+        .login-wait.show { display: block; }
+    </style>
+</head>
+<body>
+    <div class="shader-backdrop"><canvas id="loginShader"></canvas></div>
+    <div class="background-animation">
+        <div class="grid-overlay"></div>
+        <div class="scan-effect"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+        <div class="pulse-circle"></div>
+    </div>
+    <div class="logo-text" id="logo-text"></div>
+    <div class="container">
+        <h1 class="page-title login-title"><span class="accent-bar"></span>Login</h1>
+        {{if .Error}}
+            <p class="alert alert-error">{{.Error}}</p>
+        {{end}}
+        {{if .RadiusEnabled}}
+        <div class="alert alert-info radius-banner" id="radius-banner">
+            <b>RADIUS / MFA:</b> Sign-in can take up to 60&nbsp;seconds. If your
+            account uses push or one-time-password MFA, <b>approve the prompt on
+            your mobile device</b> after clicking Login.
+        </div>
+        {{end}}
+        <form method="post" action="/login" id="login-form">
+            <div class="field">
+                <label for="username">Username</label>
+                <input type="text" name="username" id="username" autocomplete="username">
+            </div>
+            <div class="field">
+                <label for="password">Password</label>
+                <input type="password" name="password" id="password" autocomplete="current-password">
+            </div>
+            {{if .TOTPEnabled}}
+                <div class="field" id="totp-section">
+                    <label for="totp_code">TOTP Code</label>
+                    <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code">
+                </div>
+            {{end}}
+            <input type="submit" value="Login" id="login-submit" class="btn btn-primary login-submit">
+        </form>
+        <div class="login-wait" id="login-wait">
+            <span class="spinner"></span>Signing in… check your mobile device to confirm the login if prompted.
+        </div>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const logoText = document.getElementById('logo-text');
+            const usernameInput = document.getElementById('username');
+            const totpSection = document.getElementById('totp-section');
+            const radiusBanner = document.getElementById('radius-banner');
+            const originalText = 'FortiSafe';
+            const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$%';
+
+            // Matrix rain animation for logo, starting with "FGT"
+            function matrixRain() {
+                let displayText = 'FGT'; // Start with "FGT"
+                const speed = 100; // ms per character drop
+                let charIndex = 3; // Start after "FGT" (index 0, 1, 2)
+
+                function dropNextChar() {
+                    if (charIndex < originalText.length) {
+                        displayText += characters.charAt(Math.floor(Math.random() * characters.length));
+                        logoText.textContent = displayText;
+                        charIndex++;
+                        setTimeout(dropNextChar, speed);
+                    } else {
+                        // After all characters drop, stabilize to original text
+                        setTimeout(() => {
+                            logoText.textContent = originalText;
+                            setTimeout(matrixRain, 4000); // Restart after 4s
+                        }, 1000); // Hold random chars for 1s before stabilizing
+                    }
+                }
+                dropNextChar();
+            }
+
+            // Start the matrix rain animation
+            matrixRain();
+
+            // Username-driven conditional UI. The local "admin" account uses
+            // TOTP; every other username authenticates via RADIUS. Reveal the
+            // matching hint as the user types (matches v2.1.7). Server-side
+            // enforcement is unchanged regardless of this show/hide.
+            if (usernameInput) {
+                usernameInput.addEventListener('input', function () {
+                    const u = usernameInput.value.trim().toLowerCase();
+                    if (totpSection) {
+                        totpSection.style.display = (u === 'admin') ? 'flex' : 'none';
+                    }
+                    // Show the RADIUS/MFA wait banner only on a RADIUS login
+                    // attempt (a non-empty, non-admin username).
+                    if (radiusBanner) {
+                        radiusBanner.classList.toggle('show', u !== '' && u !== 'admin');
+                    }
+                });
+            }
+
+            // On submit, show a waiting hint and disable the button: a RADIUS/MFA
+            // sign-in can take up to 60s and may need approval on the user's phone.
+            var loginForm = document.getElementById('login-form');
+            var loginSubmit = document.getElementById('login-submit');
+            var loginWait = document.getElementById('login-wait');
+            if (loginForm) {
+                loginForm.addEventListener('submit', function () {
+                    if (loginWait) { loginWait.classList.add('show'); }
+                    if (loginSubmit) {
+                        loginSubmit.disabled = true;
+                        loginSubmit.value = 'Signing in…';
+                    }
+                });
+            }
+        });
+    </script>
+    <script>
+    // WebGL shader backdrop (self-contained, same-origin, CSP-safe). Crimson
+    // matches the app's --danger (#ff2b2b). Falls back silently to the CSS
+    // gradient when WebGL is unavailable; honours prefers-reduced-motion by
+    // rendering a single static frame instead of animating.
+    (function () {
+        const canvas = document.getElementById('loginShader');
+        if (!canvas || !canvas.getContext) return;
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (!gl) return;
+
+        function syncSize() {
+            const w = canvas.clientWidth || 1280;
+            const h = canvas.clientHeight || 720;
+            if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w;
+                canvas.height = h;
+            }
+        }
+        if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncSize).observe(canvas);
+        syncSize();
+
+        const vs = `attribute vec2 a_position;
+varying vec2 v_texCoord;
+void main() {
+  v_texCoord = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}`;
+        // Default: vertical firewall beams with thermal haze + floor reflection.
+        const fsBeams = `precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+varying vec2 v_texCoord;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main() {
+    vec2 uv = (v_texCoord - 0.5) * u_resolution.xy / min(u_resolution.x, u_resolution.y);
+    float t = u_time * 0.5;
+    vec3 crimson = vec3(1.0, 0.168, 0.168);
+    vec3 bg = vec3(0.04, 0.01, 0.01);
+    float beam = 0.0;
+    for (float i = 0.0; i < 10.0; i++) {
+        float x = (hash(vec2(i, 123.0)) - 0.5) * 2.5;
+        float speed = 0.2 + hash(vec2(i, 456.0)) * 0.8;
+        float wave = sin(uv.y * 3.0 + t * speed + i) * 0.1;
+        float d = abs(uv.x - (x + wave));
+        beam += (0.005 / d) * (0.5 + 0.5 * sin(t + i));
+    }
+    float haze = sin(uv.y * 10.0 - t * 2.0) * 0.5 + 0.5;
+    vec3 color = mix(bg, crimson * 0.4, beam);
+    color += crimson * beam * 0.2 * haze;
+    float reflection = smoothstep(-0.5, -1.5, uv.y) * 0.3;
+    color += crimson * reflection * beam;
+    gl_FragColor = vec4(color, 1.0);
+}`;
+        // Rare variant (~10% of loads): flowing interference field.
+        const fsFlow = `precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+varying vec2 v_texCoord;
+void main() {
+    vec2 uv = (v_texCoord - 0.5) * u_resolution.xy / min(u_resolution.x, u_resolution.y);
+    float t = u_time * 0.15;
+    vec3 crimson = vec3(1.0, 0.168, 0.168);
+    float flow = 0.0;
+    vec2 p = uv * 2.0;
+    for (float i = 1.0; i < 6.0; i++) {
+        p += vec2(sin(p.y + t + i), cos(p.x + t - i));
+        flow += abs(sin(length(p) - t)) * (1.0 / i);
+    }
+    vec3 color = mix(vec3(0.04, 0.01, 0.01), crimson * 0.5, pow(flow, 2.0) * 0.3);
+    float grain = fract(sin(dot(v_texCoord, vec2(12.9898, 78.233))) * 43758.5453);
+    color += crimson * grain * 0.03;
+    gl_FragColor = vec4(color, 1.0);
+}`;
+        const fs = Math.random() < 0.1 ? fsFlow : fsBeams;
+
+        function cs(type, src) {
+            const sh = gl.createShader(type);
+            gl.shaderSource(sh, src);
+            gl.compileShader(sh);
+            return sh;
+        }
+        const prog = gl.createProgram();
+        gl.attachShader(prog, cs(gl.VERTEX_SHADER, vs));
+        gl.attachShader(prog, cs(gl.FRAGMENT_SHADER, fs));
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return; // keep the CSS fallback
+        gl.useProgram(prog);
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        const pos = gl.getAttribLocation(prog, 'a_position');
+        gl.enableVertexAttribArray(pos);
+        gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+        const uTime = gl.getUniformLocation(prog, 'u_time');
+        const uRes = gl.getUniformLocation(prog, 'u_resolution');
+
+        function frame(t) {
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            if (uTime) gl.uniform1f(uTime, t * 0.001);
+            if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+        const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (still) { frame(12000); return; } // one static frame, no loop
+        (function loop(t) { frame(t); requestAnimationFrame(loop); })(0);
+    })();
+    </script>
+</body>
+</html>

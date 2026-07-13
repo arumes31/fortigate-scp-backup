@@ -1,0 +1,291 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>Dashboard</h1>
+
+<div class="alert alert-error" id="clusterAlert"{{if not .ClusterAlert}} hidden{{end}}>
+    ⚠ Möglicher flächendeckender Ausfall: <b>{{.Stats.Failed}}</b> von {{.Stats.TotalFirewalls}} Firewalls melden Fehler — Netzwerk-/RADIUS-Problem prüfen.
+</div>
+
+<div class="toolbar dash-actions">
+    <form method="post" action="/backup_now_all_failed" onsubmit="return confirm('Backup für alle fehlgeschlagenen Firewalls starten?');" style="margin:0">
+        <button type="submit" class="btn btn-primary">[!] Retry all failed</button>
+    </form>
+    <a href="/download_bundle" class="btn">⤓ Restore-Bundle (ZIP)</a>
+    <a href="/audit" class="btn">Audit / Compliance</a>
+    <span class="spacer"></span>
+    <label class="refresh-ctl">Auto-Refresh
+        <select id="refreshInterval">
+            <option value="0">off</option>
+            <option value="5">5s</option>
+            <option value="30" selected>30s</option>
+        </select>
+    </label>
+</div>
+
+<div class="stat-grid" id="statGrid">
+    <a class="stat-tile" href="/" title="Alle Firewalls"><div class="n" data-k="total">{{.Stats.TotalFirewalls}}</div><div class="l">Firewalls</div></a>
+    <a class="stat-tile ok" href="/?q=Success" title="Nur erfolgreiche"><div class="n" data-k="healthy">{{.Stats.Healthy}}</div><div class="l">Healthy</div></a>
+    <a class="stat-tile fail" href="/?q=Failed" title="Nur fehlgeschlagene"><div class="n" data-k="failed">{{.Stats.Failed}}</div><div class="l">Failed</div></a>
+    <a class="stat-tile new" href="/?q=New" title="Neu / ausstehend"><div class="n" data-k="new">{{.Stats.New}}</div><div class="l">New / Pending</div></a>
+    <div class="stat-tile"><div class="n" id="nextBackup" data-next="{{.NextBackupISO}}">—</div><div class="l">Next Backup</div></div>
+    <div class="stat-tile"><div class="n" data-k="backups24h">{{.Stats.BackupsLast24h}}</div><div class="l">Backups (24h)</div></div>
+    <div class="stat-tile"><div class="n" data-k="totalBackups">{{.Stats.TotalBackups}}</div><div class="l">Total Backups</div></div>
+    <div class="stat-tile"><div class="n" data-k="storage">{{fmtBytes .StorageBytes}}</div><div class="l">Storage <span data-k="storageWeek">(+{{fmtBytes .StorageWeek}}/7d)</span></div></div>
+    <div class="stat-tile"><div class="n" data-k="avg">{{.AvgDuration}}</div><div class="l">Ø Backup <span data-k="runs">({{.BackupsRun}} runs)</span></div></div>
+    <div class="stat-tile"><div class="n" data-k="largest">{{fmtBytes .LargestBytes}}</div><div class="l">Largest / <span data-k="smallest">{{fmtBytes .SmallestBytes}}</span> config</div></div>
+    <div class="stat-tile"><div class="n" data-k="pruned">{{.PrunedTotal}}</div><div class="l">Pruned (session)</div></div>
+</div>
+
+<div class="card" id="runningCard">
+    <h2 class="mt-0">Läuft gerade</h2>
+    <div id="runningList">
+        <div class="skeleton-row"><span class="skeleton"></span></div>
+        <div class="skeleton-row"><span class="skeleton" style="width:60%"></span></div>
+    </div>
+</div>
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">Failing Firewalls</h2>
+        <a href="/?q=Failed" class="btn btn-sm">All Firewalls</a>
+    </div>
+    {{if .Failures}}
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>ID</th><th>FQDN</th><th>Last Backup</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+            {{range .Failures}}
+                <tr>
+                    <td>{{.ID}}</td>
+                    <td>{{.FQDN}}</td>
+                    <td class="muted">{{fmtTime .LastBackup}}</td>
+                    <td><span class="pill pill-failed" title="{{.Status}}">Failed</span></td>
+                    <td>
+                        <div class="actions">
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">Retry</button></form>
+                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
+                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
+                        </div>
+                    </td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">Keine fehlgeschlagenen Firewalls.</div>
+    {{end}}
+</div>
+
+{{if .BlockedPorts}}
+<div class="card pad-0" style="border: 1px solid rgba(249,115,22,0.45);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #fb923c;">⃠ {{T .Base.Lang "dashboard.blocked_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;">{{len .BlockedPorts}} {{T .Base.Lang "dashboard.blocked_unit"}}</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_switch"}}</th><th>{{T .Base.Lang "dashboard.col_port"}}</th><th>{{T .Base.Lang "dashboard.col_reason"}}</th><th>{{T .Base.Lang "dashboard.col_since"}}</th><th></th></tr></thead>
+            <tbody>
+            {{range .BlockedPorts}}
+                <tr>
+                    <td>{{if .FQDN}}{{.FQDN}}{{else}}#{{.FwID}}{{end}}</td>
+                    <td>{{.Switch}}</td>
+                    <td><code>{{.Port}}</code></td>
+                    <td><span class="pill pill-failed" style="background: rgba(249,115,22,0.15); color: #fb923c; border-color: rgba(249,115,22,0.4);">{{.Reason}}</span></td>
+                    <td class="muted">{{.Since}}</td>
+                    <td><a class="btn btn-sm" href="/topology?fw={{.FwID}}">{{T $.Base.Lang "dashboard.topology"}}</a></td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
+{{if .GraylogIssues}}
+<div class="card pad-0" style="border: 1px solid rgba(239,68,68,0.4);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #f87171;">⚠ {{T .Base.Lang "dashboard.graylog_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;">{{len .GraylogIssues}}</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_site"}}</th><th>{{T .Base.Lang "dashboard.col_status"}}</th><th>{{T .Base.Lang "dashboard.col_checked"}}</th></tr></thead>
+            <tbody>
+            {{range .GraylogIssues}}
+                <tr>
+                    <td>{{.Firewall}}{{if .Cluster}} <span class="muted" style="font-size: 0.85em;">({{.Cluster}})</span>{{end}}</td>
+                    <td class="muted">{{.Site}}</td>
+                    <td>
+                        {{if eq .Status "offline"}}<span class="pill pill-failed" style="background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.4);">{{T $.Base.Lang "dashboard.gl_offline"}}</span>
+                        {{else if eq .Status "config_missing"}}<span class="pill" style="background: rgba(148,163,184,0.15); color: #cbd5e1; border-color: rgba(148,163,184,0.4);">{{T $.Base.Lang "dashboard.gl_config_missing"}}</span>
+                        {{else}}<span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{T $.Base.Lang "dashboard.gl_error"}}</span>{{end}}
+                    </td>
+                    <td class="muted">{{if .LastCheck}}{{.LastCheck}}{{else}}—{{end}}</td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
+<div class="panel">
+    <div class="panel-head">SYS_STDOUT_</div>
+    <div class="stdout" id="stdout">
+        <p class="prompt blink" id="stdoutPrompt">root@fsys:/var/log#&nbsp;</p>
+        <div id="stdoutLog">
+            {{range .Events}}<p><span class="ts">[{{.Timestamp.Format "15:04:05"}}]</span> {{.Action}} — {{.Details}}</p>{{end}}
+        </div>
+    </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+(function () {
+    var sseDot = document.getElementById('sseDot');
+    if (sseDot) { sseDot.hidden = false; sseDot.className = 'sse-dot connecting'; }
+
+    function setText(k, v) {
+        var el = document.querySelector('[data-k="' + k + '"]');
+        if (el && v !== undefined && v !== null) { el.textContent = v; }
+    }
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    function fmtBytes(n) {
+        if (n < 1024) { return n + ' B'; }
+        var u = ['KB', 'MB', 'GB', 'TB', 'PB']; var i = -1;
+        do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+        return n.toFixed(1) + ' ' + u[i];
+    }
+
+    var running = document.getElementById('runningList');
+    var runningCard = document.getElementById('runningCard');
+    function renderRunning(list) {
+        if (!running || !runningCard) { return; }
+        if (!list || !list.length) { runningCard.hidden = true; running.innerHTML = ''; return; }
+        runningCard.hidden = false;
+        running.innerHTML = list.map(function (r) {
+            return '<div class="running-row"><span class="spinner"></span><b>' +
+                esc(r.fqdn || ('fw #' + r.fw_id)) + '</b> <span class="muted">seit ' +
+                new Date(r.since).toLocaleTimeString() + '</span></div>';
+        }).join('');
+    }
+
+    function refreshStats() {
+        fetch('/dashboard/stats', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { if (!r.ok) { throw new Error('bad'); } return r.json(); })
+            .then(function (d) {
+                setText('total', d.total); setText('healthy', d.healthy);
+                setText('failed', d.failed); setText('new', d.new);
+                setText('backups24h', d.backups24h); setText('totalBackups', d.totalBackups);
+                setText('storage', fmtBytes(d.storageBytes));
+                setText('storageWeek', '(+' + fmtBytes(d.storageWeek) + '/7d)');
+                setText('avg', d.avgDuration); setText('runs', '(' + d.backupsRun + ' runs)');
+                setText('largest', fmtBytes(d.largestBytes)); setText('smallest', fmtBytes(d.smallestBytes));
+                setText('pruned', d.prunedTotal);
+                var nb = document.getElementById('nextBackup'); if (nb) { nb.dataset.next = d.nextBackup || ''; }
+                var ca = document.getElementById('clusterAlert'); if (ca) { ca.hidden = !d.clusterAlert; }
+                renderRunning(d.running);
+            })
+            .catch(function () {});
+    }
+
+    // "Next Backup" live countdown.
+    function fmtCountdown(ms) {
+        if (ms <= 0) { return 'due'; }
+        var s = Math.round(ms / 1000);
+        var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+        if (h > 0) { return h + 'h ' + m + 'm'; }
+        if (m > 0) { return m + 'm ' + String(sec).padStart(2, '0') + 's'; }
+        return sec + 's';
+    }
+    function tickCountdown() {
+        var nb = document.getElementById('nextBackup');
+        if (!nb) { return; }
+        var iso = nb.dataset.next;
+        if (!iso) { nb.textContent = '—'; return; }
+        nb.textContent = fmtCountdown(new Date(iso).getTime() - Date.now());
+    }
+    setInterval(tickCountdown, 1000); tickCountdown();
+
+    // Toasts.
+    var toastWrap = document.getElementById('toastWrap');
+    function toast(msg, kind) {
+        if (!toastWrap) { return; }
+        var t = document.createElement('div');
+        t.className = 'toast ' + (kind || '');
+        t.textContent = msg;
+        toastWrap.appendChild(t);
+        setTimeout(function () { t.classList.add('show'); }, 10);
+        setTimeout(function () { t.classList.remove('show'); setTimeout(function () { t.remove(); }, 300); }, 6000);
+    }
+
+    // Live SYS_STDOUT feed.
+    var stdoutLog = document.getElementById('stdoutLog');
+    function logLine(text) {
+        if (!stdoutLog) { return; }
+        var p = document.createElement('p');
+        p.innerHTML = '<span class="ts">[' + new Date().toLocaleTimeString() + ']</span> ' +
+            esc(text);
+        stdoutLog.insertBefore(p, stdoutLog.firstChild);
+        while (stdoutLog.childElementCount > 200) { stdoutLog.removeChild(stdoutLog.lastChild); }
+    }
+
+    // SSE.
+    var debounce = null;
+    function scheduleRefresh() { clearTimeout(debounce); debounce = setTimeout(refreshStats, 400); }
+    if (window.EventSource) {
+        var es = new EventSource('/events');
+        es.onopen = function () { if (sseDot) { sseDot.className = 'sse-dot online'; sseDot.title = 'Live verbunden'; } };
+        es.onerror = function () { if (sseDot) { sseDot.className = 'sse-dot offline'; sseDot.title = 'Verbindung verloren – reconnect…'; } };
+        es.onmessage = function (e) {
+            try {
+                var d = JSON.parse(e.data);
+                logLine('fw #' + d.fw_id + ' &rarr; ' + d.status);
+                if (typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
+                    toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
+                }
+                scheduleRefresh();
+            } catch (err) {}
+        };
+    }
+
+    // Test-connection buttons.
+    document.querySelectorAll('.test-conn').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var id = b.getAttribute('data-fw'), orig = b.textContent;
+            b.textContent = '…'; b.disabled = true;
+            fetch('/test_connection/' + id).then(function (r) { return r.json(); }).then(function (j) {
+                toast(j.message || (j.ok ? 'OK' : 'Failed'), j.ok ? 'ok' : 'error');
+            }).catch(function () { toast('Test fehlgeschlagen', 'error'); }).finally(function () {
+                b.textContent = orig; b.disabled = false;
+            });
+        });
+    });
+
+    // Auto-refresh interval.
+    var sel = document.getElementById('refreshInterval'), timer = null;
+    function applyInterval() {
+        if (timer) { clearInterval(timer); timer = null; }
+        var v = parseInt(sel ? sel.value : '0', 10);
+        if (v > 0) { timer = setInterval(refreshStats, v * 1000); }
+        try { localStorage.setItem('dashRefresh', String(v)); } catch (e) {}
+    }
+    if (sel) {
+        try { var saved = localStorage.getItem('dashRefresh'); if (saved !== null) { sel.value = saved; } } catch (e) {}
+        sel.addEventListener('change', applyInterval);
+        applyInterval();
+    }
+
+    // Initial async load: replaces the running-list skeleton.
+    refreshStats();
+})();
+</script>
+{{end}}

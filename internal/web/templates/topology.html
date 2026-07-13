@@ -1,0 +1,199 @@
+{{define "content"}}
+<style>
+    /* Embed mode (?embed=1) rules live in app.css (shared with the public view). */
+    /* Maximized view: hide all chrome and let the canvas fill the viewport. */
+    body.topo-max .page-title, body.topo-max nav, body.topo-max header,
+    body.topo-max #topoControls, body.topo-max #devPanel, body.topo-max footer { display: none !important; }
+    body.topo-max #topoRestoreBtn { display: inline-flex !important; }
+    body.topo-max main, body.topo-max .content, body.topo-max #content { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+    #topoRestoreBtn { display: none; position: fixed; top: 10px; right: 12px; z-index: 60;
+        align-items: center; gap: 6px; background: rgba(10,12,18,0.9); color: #fff;
+        border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+</style>
+<h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "topo.title"}}</h1>
+<button id="topoRestoreBtn" onclick="toggleMaximize()">⤡ {{T .Base.Lang "topo.exit_max"}}</button>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card" id="topoControls" style="margin-bottom: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <label for="topoSelect" style="font-size: 0.9em;">{{T .Base.Lang "topo.firewall"}}</label>
+            <select id="topoSelect" onchange="loadTopology(); refreshShares();" style="padding: 6px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; min-width: 220px;">
+                {{range .Firewalls}}<option value="{{.ID}}">{{.FQDN}}</option>{{end}}
+            </select>
+            <input id="topoSearch" type="search" placeholder="{{T .Base.Lang "topo.search_ph"}}"
+                onkeydown="if (event.key === 'Enter') searchTopo(this.value)"
+                style="padding: 6px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; min-width: 200px;">
+            <span id="topoMeta" class="muted" style="font-size: 0.85em;"></span>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center; font-size: 0.82em;">
+            <span class="muted">{{T .Base.Lang "topo.hint"}}</span>
+            <button id="fetchDevBtn" class="btn btn-small" onclick="fetchDevicesNow()" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">{{T .Base.Lang "topo.fetch_now"}}</button>
+            <button id="liveDevBtn" class="btn btn-small" onclick="toggleLiveDevices()" title="{{T .Base.Lang "topo.live_hint"}}" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">⟳ {{T .Base.Lang "topo.live"}}</button>
+            <button class="btn btn-small" onclick="resetZoom()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⤢ {{T .Base.Lang "topo.reset"}}</button>
+            <button class="btn btn-small" onclick="toggleMaximize()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⛶ {{T .Base.Lang "topo.maximize"}}</button>
+        </div>
+    </div>
+
+    <!-- View filters -->
+    <div style="margin-top: 10px; display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.82em;" class="muted">
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('devices', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.devices"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('vlans', this.checked)" style="vertical-align: -2px;"> VLANs</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('routes', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.routes"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('edge', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.edge_switches"}}</label>
+        <label style="cursor: pointer;"><input type="checkbox" onchange="setTopoFilter('hideStale', this.checked)" style="vertical-align: -2px;"> {{T .Base.Lang "topo.hide_stale"}}</label>
+    </div>
+
+    <!-- Public share link -->
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span style="font-size: 0.85em; color: var(--accent);">[⚭] {{T .Base.Lang "topo.share"}}</span>
+        <select id="shareExpiry" style="width: auto; padding: 5px 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark; font-size: 0.85em;">
+            <option value="24">{{T .Base.Lang "topo.share_24h"}}</option>
+            <option value="168" selected>{{T .Base.Lang "topo.share_7d"}}</option>
+            <option value="720">{{T .Base.Lang "topo.share_30d"}}</option>
+            <option value="0">{{T .Base.Lang "topo.share_never"}}</option>
+        </select>
+        <label style="cursor: pointer; font-size: 0.85em;" class="muted"><input type="checkbox" id="shareEmbed" style="vertical-align: -2px;"> {{T .Base.Lang "topo.share_embed"}}</label>
+        <label style="cursor: pointer; font-size: 0.85em;" class="muted" title="{{T .Base.Lang "topo.share_devices_hint"}}"><input type="checkbox" id="shareDevices" style="vertical-align: -2px;"> {{T .Base.Lang "topo.share_devices"}}</label>
+        <button class="btn btn-small" onclick="createShare()" style="background: var(--accent); color: #000; font-weight: bold; padding: 5px 12px;">{{T .Base.Lang "topo.share_make"}}</button>
+        <div id="shareResult" style="display: none; flex: 1; min-width: 280px; display: none; align-items: center; gap: 6px;">
+            <input id="shareUrl" type="text" readonly onclick="this.select()" style="flex: 1; padding: 5px 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); color: #34d399; border-radius: 4px; font-size: 0.82em; font-family: monospace;">
+            <button class="btn btn-small" onclick="copyShare()" id="copyBtn" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px;">{{T .Base.Lang "topo.copy"}}</button>
+        </div>
+    </div>
+    <div id="shareList" style="margin-top: 8px;"></div>
+</div>
+
+<div class="card pad-0" style="position: relative; overflow: hidden;">
+    <svg id="topoSvg" width="100%" height="640" style="background: radial-gradient(ellipse at 30% 20%, rgba(59,130,246,0.05), transparent 60%), rgba(0,0,0,0.25); display: block; cursor: grab;"></svg>
+
+    <!-- Hover tooltip -->
+    <div id="topoTip" style="position: absolute; display: none; background: rgba(10,12,18,0.95); border: 1px solid rgba(255,255,255,0.12); padding: 8px 12px; border-radius: 6px; font-size: 0.82em; max-width: 320px; pointer-events: none; z-index: 20; box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+        <strong id="topoTipTitle" style="color: #fff;"></strong>
+        <div id="topoTipBody" class="muted" style="margin-top: 4px; white-space: pre-wrap;"></div>
+    </div>
+
+    <!-- Faceplate slide-in panel -->
+    <div id="facePanel" style="position: absolute; top: 0; right: -480px; width: 460px; max-width: 90%; height: 100%; background: rgba(8,10,15,0.97); border-left: 1px solid rgba(255,255,255,0.1); transition: right 0.25s ease; z-index: 30; display: flex; flex-direction: column;">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);">
+            <div>
+                <strong id="faceTitle" style="color: #fff;"></strong>
+                <div id="faceSub" class="muted" style="font-size: 0.82em; margin-top: 2px;"></div>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="faceWidthBtn" onclick="toggleFacePanelWidth()" title="Widen / restore panel" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px; font-family: monospace;">⤢</button>
+                <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
+            </div>
+        </div>
+        <div id="faceBody" style="padding: 16px; overflow-y: auto; flex: 1;"></div>
+    </div>
+
+    <!-- Right-click context menu -->
+    <div id="topoCtx" style="position: absolute; display: none; background: rgba(10,12,18,0.97); border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; font-size: 0.82em; z-index: 40; box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 4px 0; min-width: 180px;"></div>
+</div>
+
+<!-- Device inventory panel (Graylog extension; hidden when no data) -->
+<div class="card" id="devPanel" style="margin-top: 16px; display: none;">
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+        <strong style="font-size: 0.9em;">◇ {{T .Base.Lang "topo.devices"}}</strong>
+        <span id="devPanelCount" class="muted" style="font-size: 0.8em;"></span>
+        <input id="devFilter" type="search" placeholder="{{T .Base.Lang "topo.dev_filter_ph"}}" oninput="renderDevicePanel()"
+            style="margin-left: auto; padding: 5px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; min-width: 220px; font-size: 0.85em;">
+    </div>
+    <div id="devPanelBody" style="max-height: 300px; overflow-y: auto;"></div>
+</div>
+
+<script>window.TOPO_CONFIG = { dataBase: "/topology/data/", devicesBase: "/graylog-devices" }; window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script src="/static/ui.js"></script>
+<script src="/static/d3.v7.min.js"></script>
+<script src="/static/topology.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// Public share links
+// ---------------------------------------------------------------------------
+async function createShare() {
+    const fwID = document.getElementById("topoSelect").value;
+    const hours = document.getElementById("shareExpiry").value;
+    if (!fwID) return;
+    try {
+        const withDevices = document.getElementById("shareDevices").checked ? "1" : "0";
+        const resp = await fetch("/topology/share", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: `fw_id=${encodeURIComponent(fwID)}&expiry_hours=${encodeURIComponent(hours)}&include_devices=${withDevices}`
+        });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        let url = window.location.origin + "/topology/shared/" + data.token;
+        if (document.getElementById("shareEmbed").checked) url += "?embed=1";
+        const box = document.getElementById("shareResult");
+        box.style.display = "flex";
+        document.getElementById("shareUrl").value = url;
+        refreshShares();
+    } catch (e) {
+        alert(tt("topo.share_fail") + " " + e);
+    }
+}
+
+function copyShare() {
+    const input = document.getElementById("shareUrl");
+    input.select();
+    navigator.clipboard.writeText(input.value).then(() => {
+        const btn = document.getElementById("copyBtn");
+        btn.textContent = tt("topo.copied");
+        setTimeout(() => btn.textContent = tt("topo.copy"), 1500);
+    });
+}
+
+async function refreshShares() {
+    const fwID = document.getElementById("topoSelect").value;
+    const list = document.getElementById("shareList");
+    if (!fwID) { list.innerHTML = ""; return; }
+    try {
+        const resp = await fetch("/topology/shares?fw_id=" + encodeURIComponent(fwID));
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const shares = await resp.json();
+        if (!shares || !shares.length) { list.innerHTML = ""; return; }
+        list.innerHTML = shares.map(s => `
+            <div style="display: flex; align-items: center; gap: 10px; padding: 5px 8px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 4px; font-size: 0.8em;">
+                <code style="color: #34d399; cursor: pointer;" onclick="navigator.clipboard.writeText(window.location.origin + '/topology/shared/${esc(s.token)}')" title="${tt('topo.copy_hint')}">…/topology/shared/${esc(s.token.slice(0, 12))}…</code>
+                <span class="muted">${tt("topo.created")} ${esc(s.created_at)}</span>
+                <span class="muted">${s.expires_at ? tt("topo.expires") + " " + esc(s.expires_at) : tt("topo.no_expiry")}</span>
+                <button onclick="revokeShare('${esc(s.token)}')" style="margin-left: auto; background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); border-radius: 4px; cursor: pointer; padding: 2px 8px; font-size: 0.95em;">${tt("topo.revoke")}</button>
+            </div>`).join("");
+    } catch (e) {
+        console.error("share list failed", e);
+    }
+}
+
+async function revokeShare(token) {
+    try {
+        await fetch("/topology/share/revoke", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: "token=" + encodeURIComponent(token)
+        });
+        document.getElementById("shareResult").style.display = "none";
+        refreshShares();
+    } catch (e) {
+        console.error("revoke failed", e);
+    }
+}
+
+document.addEventListener("DOMContentLoaded", refreshShares);
+
+// toggleMaximize hides all page chrome (menus, controls, device panel) and
+// grows the topology canvas to fill the viewport; a floating button restores it.
+function toggleMaximize() {
+    const on = document.body.classList.toggle("topo-max");
+    const svg = document.getElementById("topoSvg");
+    if (svg) svg.setAttribute("height", on ? Math.max(400, window.innerHeight - 8) : 640);
+    // Re-fit the view to the new canvas size.
+    if (typeof resetZoom === "function") resetZoom();
+}
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && document.body.classList.contains("topo-max")) toggleMaximize();
+});
+</script>
+{{end}}
