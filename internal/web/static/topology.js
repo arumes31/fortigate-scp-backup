@@ -1932,7 +1932,7 @@ function showFaceplate(nodeData) {
     const legend = faceplateLegend(nodeData.kind) +
         (nodeData.kind === "switch" ? vlanColorLegend(ports) : "");
     body.innerHTML = (panelHTML || vpnHTML || bundleHTML)
-        ? (panelHTML ? panelHTML + legend : "") + bundleHTML + vpnHTML + '<div id="facePortDetail"></div>'
+        ? (panelHTML || "") + legend + bundleHTML + vpnHTML + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
 
     body.querySelectorAll(".fp-port").forEach(el => {

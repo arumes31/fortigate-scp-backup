@@ -443,9 +443,13 @@ func extractSwitchEdges(msgs []map[string]any) []SwitchEdge {
 		if p == nil {
 			continue
 		}
-		// Newest STP role per trunk orients the edge (root = uplink).
+		// Newest STP role per trunk orients the edge (root = uplink). Derive the
+		// identity the same way the member/port paths do — field(m, "sn", "name")
+		// with the message name — so a role event lacking an sn field keys the same
+		// edge instead of splitting it (p.Serial has no name fallback, and an
+		// empty SwitchSN would be dropped by storeSwitchEdges).
 		if ev.kind == "role" && !rePhysPort.MatchString(p.Port) {
-			g := edgeFor(p.Serial, p.SwitchName, p.Port)
+			g := edgeFor(field(m, "sn", "name"), field(m, "name"), p.Port)
 			if g.Role == "" {
 				g.Role = ev.value
 			}
