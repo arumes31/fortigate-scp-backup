@@ -242,6 +242,16 @@ function selectPolicy(policyId) {
     }
 }
 
+// escHtml escapes config-derived names (interfaces, addresses, services, …)
+// before they are interpolated into innerHTML/attribute contexts. Object names
+// come from uploaded configs, shared backups and imported templates, so they
+// are attacker-influenceable.
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
 function renderInterfaces(container, items, type) {
     if (!container) {
         console.error('Interface items container not found');
@@ -255,7 +265,7 @@ function renderInterfaces(container, items, type) {
         div.innerHTML = `
             <select onchange="updateInterface('${type}', ${index}, this.value)">
                 <option value="">Select Interface</option>
-                ${interfaces.map(intf => `<option value="${intf}" ${item === intf ? 'selected' : ''}>${intf}</option>`).join('')}
+                ${interfaces.map(intf => `<option value="${escHtml(intf)}" ${item === intf ? 'selected' : ''}>${escHtml(intf)}</option>`).join('')}
             </select>
             <button onclick="deleteInterface('${type}', ${index})">Delete</button>
         `;
@@ -284,16 +294,16 @@ function renderAddresses(container, addrItems, addrGroupItems, isdbItems, vipIte
             <select class="address-select" onchange="updateAddressOrInternetService('${type}', ${index}, this.value)">
                 <option value="">Select Address/ISDB</option>
                 <optgroup label="Addresses">
-                    ${addresses.map(addr => `<option value="address:${addr}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${addr}</option>`).join('')}
+                    ${addresses.map(addr => `<option value="address:${escHtml(addr)}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${escHtml(addr)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Address Groups">
-                    ${addressGroups.map(agrp => `<option value="address_group:${agrp}" ${item.type === 'address_group' && item.value === agrp ? 'selected' : ''}>${agrp}</option>`).join('')}
+                    ${addressGroups.map(agrp => `<option value="address_group:${escHtml(agrp)}" ${item.type === 'address_group' && item.value === agrp ? 'selected' : ''}>${escHtml(agrp)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Internet Services">
-                    ${internetServices.map(isdb => `<option value="isdb:${isdb}" ${item.type === 'isdb' && item.value === isdb ? 'selected' : ''}>${isdb}</option>`).join('')}
+                    ${internetServices.map(isdb => `<option value="isdb:${escHtml(isdb)}" ${item.type === 'isdb' && item.value === isdb ? 'selected' : ''}>${escHtml(isdb)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Virtual IPs">
-                    ${vips.map(vip => `<option value="vip:${vip}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${vip}</option>`).join('')}
+                    ${vips.map(vip => `<option value="vip:${escHtml(vip)}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${escHtml(vip)}</option>`).join('')}
                 </optgroup>
             </select>
             <button onclick="deleteAddressOrInternetService('${type}', ${index})">Delete</button>
@@ -319,23 +329,23 @@ function renderServices(container, items) {
             <select onchange="updateService(${index}, this.value)">
                 <option value="">Select Service/Group</option>
                 <optgroup label="Service Groups">
-                    ${Object.keys(serviceGroups).map(group => `<option value="group:${group}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${group}</option>`).join('')}
+                    ${Object.keys(serviceGroups).map(group => `<option value="group:${escHtml(group)}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Individual Services">
-                    ${services.map(svc => `<option value="template:${svc.name}" ${item.type === 'template' && item.name === svc.name ? 'selected' : ''}>${svc.name}</option>`).join('')}
+                    ${services.map(svc => `<option value="template:${escHtml(svc.name)}" ${item.type === 'template' && item.name === svc.name ? 'selected' : ''}>${escHtml(svc.name)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Custom">
                     <option value="custom" ${item.type === 'custom' ? 'selected' : ''}>Custom</option>
                 </optgroup>
             </select>
             ${item.type === 'custom' ? `
-                <input type="text" value="${item.name}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
+                <input type="text" value="${escHtml(item.name)}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
                 <select onchange="updateCustomService(${index}, 'protocol', this.value)">
                     <option value="TCP" ${item.protocol === 'TCP' ? 'selected' : ''}>TCP</option>
                     <option value="UDP" ${item.protocol === 'UDP' ? 'selected' : ''}>UDP</option>
                     <option value="ICMP" ${item.protocol === 'ICMP' ? 'selected' : ''}>ICMP</option>
                 </select>
-                <input type="text" value="${item.port}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
+                <input type="text" value="${escHtml(item.port)}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
             ` : ''}
             <button onclick="deleteService(${index})">Delete</button>
         `;
@@ -358,10 +368,10 @@ function renderUsersGroups(container, userItems, groupItems) {
             <select class="user-group-select" onchange="updateUserOrGroup(${index}, this.value)">
                 <option value="">Select User/Group</option>
                 <optgroup label="Users">
-                    ${users.map(user => `<option value="user:${user}" ${isUser && item === user ? 'selected' : ''}>${user}</option>`).join('')}
+                    ${users.map(user => `<option value="user:${escHtml(user)}" ${isUser && item === user ? 'selected' : ''}>${escHtml(user)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Groups">
-                    ${groups.map(group => `<option value="group:${group}" ${!isUser && item === group ? 'selected' : ''}>${group}</option>`).join('')}
+                    ${groups.map(group => `<option value="group:${escHtml(group)}" ${!isUser && item === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
             </select>
             <button onclick="deleteUserOrGroup(${index})">Delete</button>
@@ -393,12 +403,13 @@ function updateDropdowns() {
         return;
     }
 
-    sslSshSelect.innerHTML = `<option value="">None</option>${sslSshProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    webfilterSelect.innerHTML = `<option value="">None</option>${webfilterProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    appListSelect.innerHTML = `<option value="">None</option>${applicationLists.map(l => `<option value="${l}">${l}</option>`).join('')}`;
-    avSelect.innerHTML = `<option value="">None</option>${avProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    ipsSensorSelect.innerHTML = `<option value="">None</option>${ipsSensors.map(s => `<option value="${s}">${s}</option>`).join('')}`;
-    ipPoolSelect.innerHTML = `<option value="">None</option>${ipPools.map(p => `<option value="${p}">${p}</option>`).join('')}`;
+    const opts = list => `<option value="">None</option>${list.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('')}`;
+    sslSshSelect.innerHTML = opts(sslSshProfiles);
+    webfilterSelect.innerHTML = opts(webfilterProfiles);
+    appListSelect.innerHTML = opts(applicationLists);
+    avSelect.innerHTML = opts(avProfiles);
+    ipsSensorSelect.innerHTML = opts(ipsSensors);
+    ipPoolSelect.innerHTML = opts(ipPools);
 
     const policyId = form.dataset.policyId;
     if (policyId) {
@@ -1692,7 +1703,15 @@ function generatePolicies() {
         method: 'POST',
         body: formData
     })
-    .then(response => response.json())
+    .then(async response => {
+        if (!response.ok) {
+            // Validation failures come back as plain text — surface the
+            // server's message instead of a JSON parse error.
+            const text = await response.text();
+            throw new Error(text.trim() || `HTTP ${response.status}`);
+        }
+        return response.json();
+    })
     .then(data => {
         document.getElementById('output1').textContent = data.outputs.map(o => o.output1).join('\n\n');
         document.getElementById('output2').textContent = data.outputs.map(o => o.output2).join('\n\n');
@@ -1705,7 +1724,7 @@ function generatePolicies() {
     .catch(error => {
         console.error('Error generating policies:', error);
         logToBackend(`Error generating policies: ${error.message}`);
-        showNotification('Error generating policies', 'error');
+        showNotification(`Error generating policies: ${error.message}`, 'error');
     });
 }
 

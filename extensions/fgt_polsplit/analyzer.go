@@ -36,10 +36,16 @@ type Analysis struct {
 	Warnings    []string
 }
 
-// svcKey returns the canonical service identity of a tuple.
+// svcKey returns the canonical service identity of a tuple. Port-carrying
+// protocols without a usable port (dstport missing or unparseable in the
+// logs) collapse to "<proto>/any" so the generator emits a 1-65535 range
+// instead of an invalid port 0.
 func svcKey(t TrafficTuple) string {
 	switch t.Proto {
 	case "tcp", "udp", "sctp":
+		if t.Port <= 0 || t.Port > 65535 {
+			return t.Proto + "/any"
+		}
 		return fmt.Sprintf("%s/%d", t.Proto, t.Port)
 	default:
 		return t.Proto // icmp, icmp6, ip-<n>
@@ -67,7 +73,11 @@ func Analyze(tuples []TrafficTuple, opts AnalyzeOptions) *Analysis {
 		key := svcKey(t)
 		spec, ok := a.Services[key]
 		if !ok {
-			spec = ServiceSpec{Key: key, Proto: t.Proto, Port: t.Port}
+			port := t.Port
+			if strings.HasSuffix(key, "/any") {
+				port = 0 // unusable port collapsed; the spec must not carry it
+			}
+			spec = ServiceSpec{Key: key, Proto: t.Proto, Port: port}
 		}
 		// Prefer a named service from the logs; first non-generic name wins.
 		if spec.LogName == "" && t.Service != "" && !strings.Contains(t.Service, "/") {

@@ -95,6 +95,11 @@ func TestSvcKeyAndProtoName(t *testing.T) {
 	if k := svcKey(TrafficTuple{Proto: "icmp"}); k != "icmp" {
 		t.Errorf("icmp svcKey = %q", k)
 	}
+	// Port-carrying protocol without a usable port collapses to /any so the
+	// generator never emits `set tcp-portrange 0`.
+	if k := svcKey(tup("a", "b", "tcp", 0, "", 1)); k != "tcp/any" {
+		t.Errorf("portless tcp svcKey = %q, want tcp/any", k)
+	}
 	cases := map[string]string{"6": "tcp", "17": "udp", "1": "icmp", "58": "icmp6", "132": "sctp", "47": "ip-47", "TCP": "tcp"}
 	for in, want := range cases {
 		if got := protoName(in, 0); got != want {

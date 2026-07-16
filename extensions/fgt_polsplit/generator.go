@@ -63,10 +63,19 @@ type GenResult struct {
 	Warnings   []string
 }
 
+// fgtQuote quotes a name for FortiGate CLI, escaping embedded backslashes and
+// double quotes. Generated names are sanitized anyway, but reused names from
+// the parsed backup may contain anything.
+func fgtQuote(name string) string {
+	name = strings.ReplaceAll(name, `\`, `\\`)
+	name = strings.ReplaceAll(name, `"`, `\"`)
+	return `"` + name + `"`
+}
+
 func quoteList(names []string) string {
 	quoted := make([]string, len(names))
 	for i, n := range names {
-		quoted[i] = `"` + n + `"`
+		quoted[i] = fgtQuote(n)
 	}
 	return strings.Join(quoted, " ")
 }
@@ -159,6 +168,14 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 			var def, disp string
 			switch s.Proto {
 			case "tcp", "udp", "sctp":
+				if s.Port <= 0 || s.Port > 65535 {
+					// Logs carried no usable dstport for this protocol;
+					// `set tcp-portrange 0` would be rejected by FortiOS.
+					name = nm.alloc(fmt.Sprintf("%s_%s_any", prefix, s.Proto), 79)
+					def = fmt.Sprintf("        set %s-portrange 1-65535", s.Proto)
+					disp = s.Proto + "/any"
+					break
+				}
 				name = nm.alloc(fmt.Sprintf("%s_%s%d", prefix, s.Proto, s.Port), 79)
 				def = fmt.Sprintf("        set %s-portrange %d", s.Proto, s.Port)
 				disp = s.Key
@@ -210,7 +227,10 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		return []string{g}
 	}
 
-	polNamer := newNamer(map[string]bool{})
+	// Seeded with the backup's existing policy names: FortiGate rejects
+	// duplicate policy names per VDOM, so a re-run of the advisor (or an
+	// existing PS42-HTTPS) must not re-allocate the same name.
+	polNamer := newNamer(parsed.PolicyNames)
 	var polDefs, moves []string
 	for i := range policies {
 		p := &policies[i]
@@ -262,7 +282,13 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 	// Disable (don't delete) the original once the splits are verified.
 	fmt.Fprintf(&out, "config firewall policy\n    edit %d\n        set status disable\n    next\nend\n", orig.ID)
 
-	res.Config = strings.TrimRight(out.String(), "\n") + "\n"
+	cfg := strings.TrimRight(out.String(), "\n") + "\n"
+	if orig.VDOM != "" {
+		// Multi-VDOM unit: the CLI must enter the policy's VDOM first, or the
+		// paste fails at the global context (or lands in the wrong VDOM).
+		cfg = "config vdom\nedit " + orig.VDOM + "\n\n" + cfg + "\nend\n"
+	}
+	res.Config = cfg
 	if orig.Action != "accept" {
 		res.Warnings = append(res.Warnings,
 			fmt.Sprintf("original policy action is %q — split policies clone it; review whether splitting is what you want", displayAction(orig.Action)))

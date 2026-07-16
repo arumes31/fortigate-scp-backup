@@ -120,6 +120,13 @@ services:
 
   fortisafe-db:
     container_name: "fortisafe-db"
+    # NOTE for existing deployments upgrading in place: this file previously
+    # used the pinned image postgres:16-alpine with the named volume
+    # fortisafe-db-data. Your data still lives in that volume — move it into
+    # ./pgdata (pg_dump/pg_restore) or restore the old volume mapping before
+    # starting, or the app will come up against an empty database. An
+    # unpinned :latest also means a future Postgres major bump can refuse to
+    # open an existing ./pgdata; pin a major version if that risk matters.
     image: postgres:latest
     environment:
       - "POSTGRES_USER=postgre"

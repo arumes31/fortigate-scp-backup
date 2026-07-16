@@ -293,7 +293,7 @@ const groupLimit = 1000
 // window's raw match count for diagnostics.
 func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
 	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
-		return nil, 0, []string{"Graylog integration is disabled in fortisafe.conf"}, nil
+		return nil, 0, []string{"Graylog is not configured (set GRAYLOG_URL and GRAYLOG_TOKEN) — no traffic data available"}, nil
 	}
 	if !tr.valid() {
 		return nil, 0, nil, errors.New("invalid time range")
@@ -304,7 +304,9 @@ func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, t
 		return nil, 0, nil, err
 	}
 	if vdom != "" {
-		query = query + ` AND vdom:"` + escapeGraylogValue(vdom) + `"`
+		// FortiGate syslog carries the virtual domain in the `vd` field
+		// (there is no `vdom` field in FortiOS log output).
+		query = query + ` AND vd:"` + escapeGraylogValue(vdom) + `"`
 	}
 
 	totalMessages, err = e.countMessages(query, tr)
@@ -430,6 +432,9 @@ func parseTupleRows(schema []aggregateColumn, rows [][]any) []TrafficTuple {
 		}
 		hits, _ := strconv.ParseInt(cell(row, "_count"), 10, 64)
 		port, _ := strconv.Atoi(cell(row, "dstport"))
+		if port < 0 || port > 65535 {
+			port = 0 // unparseable/out-of-range dstport → treated as portless
+		}
 		t := TrafficTuple{
 			SrcIP:    src,
 			DstIP:    dst,

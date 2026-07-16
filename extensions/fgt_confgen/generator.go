@@ -33,6 +33,25 @@ func isNumericID(s string) bool {
 	return true
 }
 
+// normalizePolicy fills empty enum fields with the same defaults the UI form
+// displays for them (scripts.js selectPolicy), so templates saved by older
+// builds or imported without these fields generate exactly what the form
+// shows instead of failing validation.
+func normalizePolicy(p Policy) Policy {
+	def := func(v *string, d string) {
+		if *v == "" {
+			*v = d
+		}
+	}
+	def(&p.Action, "accept")
+	def(&p.InspectionMode, "flow")
+	def(&p.LogTraffic, "all")
+	def(&p.LogTrafficStart, "enable")
+	def(&p.AutoAsicOffload, "enable")
+	def(&p.Nat, "disable")
+	return p
+}
+
 func validatePolicy(p Policy, services []Service) error {
 	fields := []string{
 		p.PolicyID, p.PolicyName, p.PolicyComment, p.SSLSSHProfile, p.WebfilterProfile,
@@ -92,8 +111,17 @@ func validatePolicy(p Policy, services []Service) error {
 			return fmt.Errorf("invalid characters in service %q", svc.Name)
 		}
 
+		if svc.Name == "" {
+			// Blank row (the UI's untouched "Add Service" default) — the
+			// generators skip these, so validation must too.
+			continue
+		}
+
+		// The frontend sends "template" (predefined service), "group"
+		// (service group) or "custom"; "predefined" is kept for
+		// compatibility with stored templates.
 		svcType := strings.ToLower(svc.Type)
-		if svcType != "custom" && svcType != "predefined" {
+		if svcType != "custom" && svcType != "predefined" && svcType != "template" && svcType != "group" {
 			return fmt.Errorf("invalid service type: %q", svc.Type)
 		}
 
@@ -124,6 +152,7 @@ func validatePolicy(p Policy, services []Service) error {
 
 // GenerateOutput1 generates all-in-one policies.
 func GenerateOutput1(p Policy) (string, error) {
+	p = normalizePolicy(p)
 	if err := validatePolicy(p, p.Services); err != nil {
 		return "", err
 	}
@@ -132,6 +161,7 @@ func GenerateOutput1(p Policy) (string, error) {
 
 // GenerateOutput2 generates one policy per service.
 func GenerateOutput2(p Policy) (string, error) {
+	p = normalizePolicy(p)
 	if err := validatePolicy(p, p.Services); err != nil {
 		return "", err
 	}
@@ -163,6 +193,7 @@ func GenerateOutput2(p Policy) (string, error) {
 
 // GenerateOutput3 generates one policy per source interface, destination interface, and service combination.
 func GenerateOutput3(p Policy) (string, error) {
+	p = normalizePolicy(p)
 	if err := validatePolicy(p, p.Services); err != nil {
 		return "", err
 	}
@@ -365,7 +396,9 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 			}
 		}
 		if len(ids) > 0 {
-			sb.WriteString("set internet-service-id " + strings.Join(ids, " ") + "\n")
+			// Source side uses the -src- keys (internet-service-id is the
+			// destination-side key and would match the wrong traffic).
+			sb.WriteString("set internet-service-src-id " + strings.Join(ids, " ") + "\n")
 		}
 		if len(names) > 0 {
 			sb.WriteString("set internet-service-src-name " + strings.Join(names, " ") + "\n")

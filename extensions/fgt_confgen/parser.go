@@ -49,6 +49,11 @@ func getSupportedSection(sec string) string {
 		"user group", "firewall ssl-ssh-profile", "webfilter profile",
 		"antivirus profile", "application list", "ips sensor":
 		return sec
+	// VIP groups and NAT46/64 VIPs are usable in IPv4 policies like plain
+	// VIPs. (IPv6-only classes — address6, addrgrp6, vip6, ippool6 — are
+	// deliberately not collected: they cannot be referenced here.)
+	case "firewall vipgrp", "firewall vip46", "firewall vip64":
+		return "firewall vip"
 	default:
 		return ""
 	}
@@ -243,9 +248,18 @@ func ParseConfig(content string) ParsedConfig {
 		}
 
 		if strings.HasPrefix(line, "edit ") {
-			match := editRe.FindStringSubmatch(line)
-			if len(match) > 1 {
-				editName := strings.Trim(match[1], `"`)
+			var editName string
+			if match := editRe.FindStringSubmatch(line); len(match) > 1 {
+				editName = strings.Trim(match[1], `"`)
+			} else {
+				// Unquoted edit (numeric sub-table entries like `edit 1` in
+				// secondaryip/vrrp/realservers). It MUST be pushed too: its
+				// `next` pops one edit frame, and an unpushed edit would make
+				// that pop swallow the enclosing edit + config frames, dropping
+				// every later entry of the section.
+				editName = strings.TrimSpace(strings.TrimPrefix(line, "edit "))
+			}
+			{
 				stack = append(stack, stackElem{isConfig: false, name: editName})
 
 				activeSec, outerEdit := getActiveContext(stack)

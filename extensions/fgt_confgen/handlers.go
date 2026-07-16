@@ -24,6 +24,15 @@ var templatesFS embed.FS
 
 const indexTemplate = "fgt_confgen_index.html"
 
+// canManageGlobalTemplates gates writes to __global__ templates. The app has
+// no role system — the seeded "admin" account is currently the only global
+// manager. NOTE: deployments whose administrators authenticate under other
+// usernames (e.g. via RADIUS) lose global-template management entirely; if
+// that bites, this single chokepoint is the place to widen.
+func canManageGlobalTemplates(username string) bool {
+	return username == "admin"
+}
+
 func (e *Extension) parseTemplates() error {
 	t, err := template.New("").ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
@@ -368,7 +377,7 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to save global templates", http.StatusForbidden)
 		return
 	}
@@ -394,7 +403,7 @@ func (e *Extension) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to delete global templates", http.StatusForbidden)
 		return
 	}
@@ -437,7 +446,7 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to rename global templates", http.StatusForbidden)
 		return
 	}
@@ -565,7 +574,7 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate permission check
-	if foundOwner == "__global__" && username != "admin" {
+	if foundOwner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to edit global templates", http.StatusForbidden)
 		return
 	}
@@ -589,7 +598,8 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "Policy not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "new_policy": newPolicy})
 }
 
 func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {

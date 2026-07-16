@@ -149,6 +149,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 	var svc *svcEntry
 	var pol *policyEntry
 	policyIDsByVDOM := map[string][]int{}
+	policyNamesByVDOM := map[string]map[string]bool{}
 	var matched []*policyEntry
 
 	finishAddr := func() {
@@ -179,6 +180,12 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			return
 		}
 		policyIDsByVDOM[pol.vdom] = append(policyIDsByVDOM[pol.vdom], pol.id)
+		if pol.pol.Name != "" {
+			if policyNamesByVDOM[pol.vdom] == nil {
+				policyNamesByVDOM[pol.vdom] = map[string]bool{}
+			}
+			policyNamesByVDOM[pol.vdom][strings.ToLower(pol.pol.Name)] = true
+		}
 		if pol.id == policyID {
 			p := pol.pol
 			p.ID = pol.id
@@ -223,7 +230,13 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				continue
 			}
 			finishSection(f.section)
-			name := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "edit ")), `"`)
+			// Unquote via the escape-aware tokenizer: `edit "A\"B"` must yield
+			// A"B, not a mangled name that later fails collision checks and
+			// CLI emission. Unquoted numeric edits pass through unchanged.
+			name := strings.TrimSpace(strings.TrimPrefix(line, "edit "))
+			if toks := splitConfigValues(name); len(toks) > 0 {
+				name = toks[0]
+			}
 			f.edit = name
 			switch f.section {
 			case "firewall address":
@@ -319,14 +332,16 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 
 	var selected *policyEntry
 	if targetVDOM != "" {
+		// An explicit VDOM request must match exactly — silently falling back
+		// to another VDOM's policy would hand the caller the wrong object
+		// inventory and policy-ID space.
 		for _, m := range matched {
 			if m.vdom == targetVDOM {
 				selected = m
 				break
 			}
 		}
-	}
-	if selected == nil && len(matched) > 0 {
+	} else if len(matched) > 0 {
 		selected = matched[0]
 	}
 
@@ -344,6 +359,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		pb.Policy = &p
 		pb.UsedPolicyIDs = policyIDsByVDOM[selected.vdom]
 		sort.Ints(pb.UsedPolicyIDs)
+		pb.PolicyNames = policyNamesByVDOM[selected.vdom]
 
 		inv := getInv(selected.vdom)
 		pb.AddrByCIDR = inv.addrByCIDR

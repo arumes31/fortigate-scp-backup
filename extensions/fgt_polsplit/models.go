@@ -98,6 +98,10 @@ type ParsedBackup struct {
 	// UsedPolicyIDs are all policy IDs in the matched policy's VDOM, for
 	// allocating free IDs for the split policies.
 	UsedPolicyIDs []int
+	// PolicyNames are the lowercased names of all policies in the matched
+	// policy's VDOM — FortiGate requires unique policy names per VDOM, so
+	// generated split-policy names must not collide with them.
+	PolicyNames map[string]bool
 
 	// AddrByCIDR maps "10.1.2.3/32" / "10.1.2.0/24" to the names of existing
 	// address objects covering exactly that host/subnet (sorted).

@@ -145,16 +145,26 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("policy %d not found in the latest backup of %s (%s)", policyID, fqdn, ts.Format("2006-01-02 15:04")))
 		return
 	}
-	var warnings []string
+	warnings := policyWarnings(parsed.Policy)
 	e.log(r, "PolSplit Info", fmt.Sprintf("Loaded policy %d of firewall %d", policyID, fwID))
 	e.writeJSON(w, map[string]any{
-		"firewall":        FirewallRef{ID: fwID, FQDN: fqdn},
-		"policy":          parsed.Policy,
-		"action_display":  displayAction(parsed.Policy.Action),
-		"backup_time":     ts.In(e.tz).Format("2006-01-02 15:04"),
-		"used_policy_ids": len(parsed.UsedPolicyIDs),
-		"warnings":        warnings,
+		"firewall":             FirewallRef{ID: fwID, FQDN: fqdn},
+		"policy":               parsed.Policy,
+		"action_display":       displayAction(parsed.Policy.Action),
+		"backup_time":          ts.In(e.tz).Format("2006-01-02 15:04"),
+		"used_policy_id_count": len(parsed.UsedPolicyIDs),
+		"warnings":             warnings,
 	})
+}
+
+// policyWarnings flags target-policy states the operator should see before
+// acting on an analysis.
+func policyWarnings(p *OrigPolicy) []string {
+	var w []string
+	if p.Status == "disable" {
+		w = append(w, "this policy is currently DISABLED — it carries no traffic, so the analysis reflects only logs from when it was active")
+	}
+	return w
 }
 
 type analyzeRequest struct {
@@ -232,6 +242,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	warnings = append(warnings, policyWarnings(parsed.Policy)...)
 	if totalMessages > 0 && len(tuples) == 0 {
 		warnings = append(warnings, fmt.Sprintf("%d log messages matched but none carried usable srcip/dstip fields — check the Graylog field extraction or GRAYLOG_POLSPLIT_QUERY", totalMessages))
 	}

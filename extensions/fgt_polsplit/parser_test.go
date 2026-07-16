@@ -267,6 +267,17 @@ end
 	if got := pbDMZ.AddrByCIDR["10.0.0.1/32"]; len(got) != 0 {
 		t.Errorf("root address leaked to dmz: %v", got)
 	}
+
+	// 3. An explicit VDOM that matches nothing must NOT silently fall back to
+	// another VDOM's policy — that would hand the caller the wrong object
+	// inventory and policy-ID space.
+	pbMiss := ParseBackup(cfg, 5, "does-not-exist")
+	if pbMiss.Policy != nil {
+		t.Errorf("expected no policy for unmatched vdom, got vdom %q", pbMiss.Policy.VDOM)
+	}
+	if len(pbMiss.PolicyVDOMs) != 2 {
+		t.Errorf("PolicyVDOMs should still list the matches: %v", pbMiss.PolicyVDOMs)
+	}
 }
 
 func TestSplitConfigValues(t *testing.T) {

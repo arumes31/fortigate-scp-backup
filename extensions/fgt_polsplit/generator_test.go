@@ -173,6 +173,71 @@ func TestGenerateWarnsOnNonAcceptPolicy(t *testing.T) {
 	}
 }
 
+// TestGenerateVDOMWrapper: policies in a named VDOM must emit the
+// config vdom / edit <vdom> entry wrapper or the paste fails on
+// multi-VDOM units.
+func TestGenerateVDOMWrapper(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.VDOM = "dmz"
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	if !strings.HasPrefix(res.Config, "config vdom\nedit dmz\n") {
+		t.Errorf("config must start with the vdom wrapper:\n%s", res.Config)
+	}
+	if !strings.HasSuffix(strings.TrimRight(res.Config, "\n"), "end") {
+		t.Errorf("config must close the vdom wrapper:\n%s", res.Config)
+	}
+	// Single-VDOM policies must stay unwrapped.
+	pb.Policy.VDOM = ""
+	res = Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	if strings.HasPrefix(res.Config, "config vdom") {
+		t.Errorf("single-vdom config must not be wrapped:\n%s", res.Config)
+	}
+}
+
+// TestGeneratePolicyNameCollision: names of policies already on the device
+// (from the backup) must not be re-allocated.
+func TestGeneratePolicyNameCollision(t *testing.T) {
+	pb := testParsedBackup()
+	pb.PolicyNames = map[string]bool{"ps5-ssh": true}
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	if pols[0].Name == "PS5-SSH" {
+		t.Errorf("policy name %q collides with an existing policy", pols[0].Name)
+	}
+	if res.Config == "" {
+		t.Error("empty config")
+	}
+}
+
+// TestGeneratePortlessTCP: a tcp tuple without a usable dstport must emit a
+// 1-65535 range, never `set tcp-portrange 0` (FortiOS rejects it).
+func TestGeneratePortlessTCP(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/any", Proto: "tcp", Port: 0}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	if strings.Contains(res.Config, "portrange 0") {
+		t.Errorf("must not emit port 0:\n%s", res.Config)
+	}
+	if !strings.Contains(res.Config, "set tcp-portrange 1-65535") {
+		t.Errorf("missing 1-65535 range for portless tcp:\n%s", res.Config)
+	}
+}
+
+// TestFgtQuoteEscaping: reused object names with embedded quotes/backslashes
+// must be escaped in emitted CLI.
+func TestFgtQuoteEscaping(t *testing.T) {
+	if got := fgtQuote(`Cust "A" Net`); got != `"Cust \"A\" Net"` {
+		t.Errorf("fgtQuote = %s", got)
+	}
+	if got := fgtQuote(`back\slash`); got != `"back\\slash"` {
+		t.Errorf("fgtQuote = %s", got)
+	}
+}
+
 func TestNamerCollisions(t *testing.T) {
 	nm := newNamer(map[string]bool{"ps5_h_10.0.0.1": true})
 	n1 := nm.alloc("PS5_h_10.0.0.1", 79)

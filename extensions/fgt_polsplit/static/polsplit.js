@@ -178,6 +178,28 @@ function renderResults(data) {
     $('ps-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// copyText copies to the clipboard, falling back to a hidden textarea when the
+// Clipboard API is unavailable (plain-HTTP deployments have no
+// navigator.clipboard). Resolves to true on success.
+async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
+    }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+    } catch {
+        return false;
+    }
+}
+
 function fmtTime(ts) {
     if (!ts) return '—';
     const d = new Date(ts);
@@ -223,9 +245,9 @@ function renderStrategies(strategies) {
     panels.querySelectorAll('.ps-copy').forEach(btn => {
         btn.addEventListener('click', () => {
             const pre = document.getElementById(btn.dataset.target);
-            navigator.clipboard.writeText(pre.textContent).then(() => {
-                btn.textContent = 'Copied!';
-                setTimeout(() => { btn.textContent = 'Copy Config'; }, 1500);
+            copyText(pre.textContent).then(ok => {
+                btn.textContent = ok ? 'Copied!' : 'Copy failed — select & copy manually';
+                setTimeout(() => { btn.textContent = 'Copy Config'; }, 2000);
             });
         });
     });
