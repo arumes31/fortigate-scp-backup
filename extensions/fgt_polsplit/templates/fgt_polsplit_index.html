@@ -118,12 +118,26 @@
                     </select>
                 </div>
                 <div class="field">
+                    <label for="ps-wan-mode">Internet destinations (WAN) as "all"</label>
+                    <select id="ps-wan-mode" class="form-control">
+                        <option value="auto">Auto (when dstintf is WAN)</option>
+                        <option value="on">Force on</option>
+                        <option value="off">Force off</option>
+                    </select>
+                </div>
+                <div class="field">
                     <label for="ps-ticket">Change ticket (optional, added to comments)</label>
                     <input type="text" id="ps-ticket" class="form-control" maxlength="64" placeholder="e.g. CHG-1234">
+                    <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="ps-emit-deny"> Add explicit fallthrough deny+log policy</label>
                 </div>
             </div>
-            <button id="ps-analyze-btn" class="btn btn-primary">Analyze Traffic</button>
-            <span id="ps-spinner" class="ps-muted" hidden>Querying Graylog…</span>
+            <div class="ps-analyze-row">
+                <button id="ps-analyze-btn" class="btn btn-primary">Analyze Traffic</button>
+                <div id="ps-progress" class="ps-progress" hidden>
+                    <div class="ps-progress-track"><div id="ps-progress-bar"></div></div>
+                    <span id="ps-progress-text" class="ps-muted">Starting analysis…</span>
+                </div>
+            </div>
         </div>
 
         <div id="ps-results" hidden>
@@ -165,6 +179,32 @@
                         <table class="ps-table" id="ps-dns-table">
                             <thead>
                             <tr><th>Destination IP</th><th>Resolved name</th><th>Hits</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="ps-isdb-wrap" hidden>
+                    <h3>Internet-Service suggestions <span class="ps-count" id="ps-isdb-count"></span></h3>
+                    <p class="ps-muted">Destinations resolving to known vendors — Internet-Service (ISDB) objects track these providers' IP ranges automatically and beat IP enumeration for internet traffic.</p>
+                    <div class="ps-table-wrap">
+                        <table class="ps-table" id="ps-isdb-table">
+                            <thead>
+                            <tr><th>Vendor</th><th>Destinations</th><th>Hits</th><th>ISDB objects in this config</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="ps-utm-wrap" hidden>
+                    <h3>UTM-blocked destinations <span class="ps-count" id="ps-utm-count"></span></h3>
+                    <p class="ps-muted">Sessions toward these destinations were blocked/dropped by UTM inspection under this policy — review before re-allowing them in a split.</p>
+                    <div class="ps-table-wrap">
+                        <table class="ps-table" id="ps-utm-table">
+                            <thead>
+                            <tr><th>Destination IP</th><th>Blocked sessions</th></tr>
                             </thead>
                             <tbody></tbody>
                         </table>

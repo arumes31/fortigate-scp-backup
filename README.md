@@ -406,6 +406,7 @@ Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server
 | :--- | :--- | :--- |
 | `EXT_FGT_POLSPLIT` | `false` | Enable the Policy Split Advisor extension. |
 | `GRAYLOG_POLSPLIT_QUERY` | `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip` | Traffic-log query template; `source:"%s"` is expanded to the firewall's Graylog source (HA-aware) and `policyid:%s` to the analyzed policy ID. |
+| `POLSPLIT_WAN_INTERFACES` | *(Unset)* | Extra interface names to treat as internet-facing (comma-separated), merged with auto-detection (`set role wan`, SD-WAN members, `virtual-wan-link`). Policies whose destination interfaces are all internet-facing keep `dstaddr "all"` instead of enumerating rotating internet IPs. |
 
 ---
 
@@ -440,8 +441,11 @@ An optional module (`EXT_FGT_POLSPLIT=true`) that helps restrict overly-open fir
 * **Object & group reuse, gap list** — existing address/service objects *and* address/service groups from the latest config backup are referenced on exact match (including exact port-range objects); everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix. Adjacent single ports consolidate into range objects (`8080-8082`).
 * **Subnet rollup** — optionally collapses many observed hosts in the same subnet (threshold and mask configurable) into one subnet object.
 * **Baseline comparison** — optionally compares the analysis window against a preceding baseline window, flagging **new** flows and listing **stale** baseline-only flows that the recommendations would not cover.
+* **Internet-aware destinations** — WAN-bound policies (auto-detected from interface roles/SD-WAN membership, operator-extensible) keep `dstaddr "all"` for public destinations instead of enumerating rotating internet IPs; private destinations stay explicit. Vendor-recognized destinations additionally get Internet-Service (ISDB) object suggestions.
+* **Traffic-pattern intelligence** — port scans are excluded, RPC endpoint-mapper spreads collapse to one dynamic range, passive-FTP data channels fold into FTP, pairs using ≥100 real ports collapse to a range with a review warning; local-in flows (to the firewall's own addresses) are excluded; well-known ports get readable names; DNS-style tcp+udp pairs merge into dual-protocol objects; recognized bundles (Active Directory, infrastructure services) are tagged.
+* **UTM awareness** — destinations whose sessions were blocked by UTM inspection under the analyzed policy are listed for review before being re-allowed.
 * **FQDN suggestions** — optional best-effort PTR resolution of observed destinations, offered as candidate FQDN objects (never applied automatically).
-* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, wraps multi-VDOM output in the correct `config vdom` context, moves the splits above the original and finally disables (not deletes) it. An optional change-ticket ID is embedded in every generated policy's comments.
+* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, wraps multi-VDOM output in the correct `config vdom` context, moves the splits above the original and finally disables (not deletes) it. An optional change-ticket ID is embedded in every generated policy's comments, and an optional explicit **fallthrough deny+log policy** can be placed directly above the disabled original so missed traffic logs loudly instead of dying silently.
 
 
 ---

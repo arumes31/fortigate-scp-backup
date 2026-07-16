@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -292,7 +293,10 @@ const groupLimit = 1000
 // grouped field: one over port-carrying logs (tcp/udp/sctp) grouped by dstport,
 // one over portless logs (icmp/gre/esp/…) without it. totalMessages carries the
 // window's raw match count for diagnostics.
-func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
+func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange, report func(string)) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
+	if report == nil {
+		report = func(string) {}
+	}
 	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
 		return nil, 0, []string{"Graylog is not configured (set GRAYLOG_URL and GRAYLOG_TOKEN) — no traffic data available"}, nil
 	}
@@ -304,19 +308,20 @@ func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyI
 		return nil, 0, nil, err
 	}
 
+	report("Counting matching log messages")
 	totalMessages, err = e.countMessages(ctx, query, tr)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
 	// 1. Authoritative complete result without service grouping (so no messages are omitted)
-	tuples, warnings, err = e.aggregateTuples(ctx, query, tr, false)
+	tuples, warnings, err = e.aggregateTuples(ctx, query, tr, false, report)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
 	// 2. Separate query with service grouping to get service names
-	svcTuples, svcWarnings, err := e.aggregateTuples(ctx, query, tr, true)
+	svcTuples, svcWarnings, err := e.aggregateTuples(ctx, query, tr, true, report)
 	if err != nil {
 		e.logger.Warn("polsplit: service-present aggregation failed, using no-service results only", "err", err)
 	} else {
@@ -372,15 +377,88 @@ func (e *Extension) fetchBaselineTuples(ctx context.Context, fqdn string, policy
 	if err != nil {
 		return nil, err
 	}
-	tuples, _, err := e.aggregateTuples(ctx, query, tr, false)
+	// The whole baseline fetch counts as one progress step in the handler.
+	tuples, _, err := e.aggregateTuples(ctx, query, tr, false, nil)
 	return tuples, err
+}
+
+// utmBlocked is one destination that triggered UTM block verdicts under the
+// analyzed policy — a signal to review before re-allowing it in a split.
+type utmBlocked struct {
+	IP   string `json:"ip"`
+	Hits int64  `json:"hits"`
+}
+
+// fetchUTMBlocked aggregates destinations whose sessions under this policy
+// were blocked/dropped/reset by UTM inspection in the analysis window.
+func (e *Extension) fetchUTMBlocked(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) ([]utmBlocked, error) {
+	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
+		return nil, nil
+	}
+	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
+	if err != nil {
+		return nil, err
+	}
+	query += ` AND type:"utm" AND action:("blocked" OR "dropped" OR "reset")`
+	body := aggregateRequest{
+		Query:     query,
+		Timerange: tr.aggregate(),
+		GroupBy:   []aggregateGroup{{Field: "dstip", Limit: 500}},
+		Metrics:   []aggregateMetric{{Function: "count"}},
+	}
+	schema, rows, err := e.aggregate(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	ipCol, cntCol := -1, -1
+	for i, c := range schema {
+		switch {
+		case c.ColumnType == "grouping" && c.Field == "dstip":
+			ipCol = i
+		case c.ColumnType == "metric" && c.Function == "count":
+			cntCol = i
+		}
+	}
+	if ipCol < 0 || cntCol < 0 {
+		return nil, fmt.Errorf("graylog utm aggregation: unexpected schema %+v", schema)
+	}
+	var out []utmBlocked
+	for _, row := range rows {
+		if ipCol >= len(row) || cntCol >= len(row) || row[ipCol] == nil {
+			continue
+		}
+		ip, _ := row[ipCol].(string)
+		ip = strings.TrimSpace(ip)
+		if ip == "" || strings.EqualFold(ip, "(Empty Value)") {
+			continue
+		}
+		var hits int64
+		if f, ok := row[cntCol].(float64); ok {
+			hits = int64(f)
+		}
+		out = append(out, utmBlocked{IP: ip, Hits: hits})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		return out[i].IP < out[j].IP
+	})
+	return out, nil
 }
 
 // aggregateTuples runs the tuple aggregation pair: one query over
 // port-carrying logs (tcp/udp/sctp) grouped by dstport, one over portless logs
 // (icmp/gre/esp/…) without it — grouping drops documents that miss a grouped
 // field, so a single combined aggregation would silently lose ICMP traffic.
-func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRange, includeService bool) (tuples []TrafficTuple, warnings []string, err error) {
+func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRange, includeService bool, report func(string)) (tuples []TrafficTuple, warnings []string, err error) {
+	if report == nil {
+		report = func(string) {}
+	}
+	stage := "Aggregating traffic tuples"
+	if includeService {
+		stage = "Fetching service names"
+	}
 	base := []aggregateGroup{
 		{Field: "srcip", Limit: groupLimit},
 		{Field: "dstip", Limit: groupLimit},
@@ -394,6 +472,7 @@ func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRa
 		{Function: "latest", Field: "timestamp"},
 	}
 
+	report(stage + " (port traffic)")
 	withPort := aggregateRequest{
 		Query:     query + " AND _exists_:dstport",
 		Timerange: tr.aggregate(),
@@ -406,6 +485,7 @@ func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRa
 	}
 	tuples = append(tuples, parseTupleRows(schema, rows)...)
 
+	report(stage + " (portless protocols)")
 	withoutPort := aggregateRequest{
 		Query:     query + " AND NOT _exists_:dstport",
 		Timerange: tr.aggregate(),

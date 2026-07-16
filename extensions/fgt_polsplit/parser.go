@@ -166,6 +166,21 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		}
 		return ""
 	}
+	stackHas := func(section string) bool {
+		for i := range stack {
+			if stack[i].section == section {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Config-global inventories (interfaces and ISDB names are not per-VDOM
+	// objects): WAN classification, firewall self-IPs, internet-service names.
+	wanIfaces := map[string]bool{"virtual-wan-link": true}
+	firewallIPs := map[string]bool{}
+	isdbSet := map[string]bool{}
+	var isdbNames []string
 
 	var addr *addrEntry
 	var svc *svcEntry
@@ -299,6 +314,11 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				if id, err := strconv.Atoi(name); err == nil {
 					pol = &policyEntry{id: id, vdom: currentVDOM()}
 				}
+			case "firewall internet-service-name":
+				if !isdbSet[name] {
+					isdbSet[name] = true
+					isdbNames = append(isdbNames, name)
+				}
 			}
 		case strings.HasPrefix(line, "set "):
 			f := top()
@@ -312,6 +332,24 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			}
 			key, val := rest[:sp], strings.TrimSpace(rest[sp+1:])
 			switch {
+			case f.section == "system interface" && f.edit != "":
+				switch key {
+				case "role":
+					if strings.EqualFold(val, "wan") {
+						wanIfaces[strings.ToLower(f.edit)] = true
+					}
+				case "ip":
+					if fields := strings.Fields(val); len(fields) >= 1 {
+						if ip := net.ParseIP(fields[0]); ip != nil {
+							firewallIPs[fields[0]] = true
+						}
+					}
+				}
+			case key == "interface" && (stackHas("system sdwan") || stackHas("system virtual-wan-link")):
+				// SD-WAN / virtual-wan-link member interfaces are internet-facing.
+				if toks := splitConfigValues(val); len(toks) > 0 {
+					wanIfaces[strings.ToLower(toks[0])] = true
+				}
 			case addr != nil && f.section == "firewall address":
 				switch key {
 				case "type":
@@ -396,6 +434,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		selected = matched[0]
 	}
 
+	sort.Strings(isdbNames)
 	pb := &ParsedBackup{
 		PolicyVDOMs:   policyVDOMs,
 		AddrByCIDR:    map[string][]string{},
@@ -405,6 +444,9 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		AddrGrpBySig:  map[string]string{},
 		SvcGrpBySig:   map[string]string{},
 		UsedPolicyIDs: []int{},
+		WANInterfaces: wanIfaces,
+		FirewallIPs:   firewallIPs,
+		ISDBNames:     isdbNames,
 	}
 
 	if selected != nil {
@@ -465,10 +507,32 @@ func (a *addrEntry) cidr() string {
 	return ""
 }
 
+// parsePortToken parses one destination-port token ("443" or "8000-8010")
+// into its bounds; ok is false for source-port restrictions or invalid ports.
+func parsePortToken(tok string) (lo, hi int, ok bool) {
+	if strings.IndexByte(tok, ':') >= 0 {
+		return 0, 0, false // source-port restricted
+	}
+	if i := strings.IndexByte(tok, '-'); i >= 0 {
+		l, errLo := strconv.Atoi(tok[:i])
+		h, errHi := strconv.Atoi(tok[i+1:])
+		if errLo != nil || errHi != nil || l <= 0 || h > 65535 || l > h {
+			return 0, 0, false
+		}
+		return l, h, true
+	}
+	p, err := strconv.Atoi(tok)
+	if err != nil || p <= 0 || p > 65535 {
+		return 0, 0, false
+	}
+	return p, p, true
+}
+
 // singleKey returns the canonical service key ("tcp/443", "tcp/8000-8010",
-// "icmp") when the object matches exactly one protocol/port or one contiguous
-// range, so it can substitute for observed traffic without widening scope.
-// Port lists and source-port restrictions return "".
+// "tcpudp/53", "icmp") when the object matches exactly one protocol/port, one
+// contiguous range, or one identical tcp+udp port pair — so it can substitute
+// for observed traffic without widening scope. Port lists and source-port
+// restrictions return "".
 func (s *svcEntry) singleKey() string {
 	switch strings.ToUpper(s.protocol) {
 	case "ICMP":
@@ -487,41 +551,34 @@ func (s *svcEntry) singleKey() string {
 		}
 		return ""
 	}
-	var key string
-	total := 0
+	type bounds struct{ lo, hi int }
+	perProto := map[string]bounds{}
 	for proto, tokens := range s.ranges {
-		for _, tok := range tokens {
-			total++
-			if total > 1 {
-				return ""
+		if len(tokens) != 1 {
+			return ""
+		}
+		lo, hi, ok := parsePortToken(tokens[0])
+		if !ok {
+			return ""
+		}
+		perProto[proto] = bounds{lo, hi}
+	}
+	switch len(perProto) {
+	case 1:
+		for proto, b := range perProto {
+			if b.lo == b.hi {
+				return fmt.Sprintf("%s/%d", proto, b.lo)
 			}
-			dst := tok
-			if i := strings.IndexByte(dst, ':'); i >= 0 {
-				return "" // source-port restricted
-			}
-			if strings.Contains(dst, "-") {
-				lohi := strings.SplitN(dst, "-", 2)
-				if len(lohi) != 2 {
-					return ""
-				}
-				lo, errLo := strconv.Atoi(lohi[0])
-				hi, errHi := strconv.Atoi(lohi[1])
-				if errLo != nil || errHi != nil || lo <= 0 || hi > 65535 || lo > hi {
-					return ""
-				}
-				if lo == hi {
-					key = fmt.Sprintf("%s/%d", proto, lo)
-				} else {
-					// One contiguous range is as exact as a single port: it can
-					// substitute for a consolidated "proto/lo-hi" spec.
-					key = fmt.Sprintf("%s/%d-%d", proto, lo, hi)
-				}
-				continue
-			}
-			if p, err := strconv.Atoi(dst); err == nil && p > 0 {
-				key = fmt.Sprintf("%s/%d", proto, p)
-			}
+			return fmt.Sprintf("%s/%d-%d", proto, b.lo, b.hi)
+		}
+	case 2:
+		// An identical tcp+udp single-port pair (like the builtin DNS object)
+		// substitutes exactly for a merged tcpudp spec.
+		tc, okT := perProto["tcp"]
+		ud, okU := perProto["udp"]
+		if okT && okU && tc == ud && tc.lo == tc.hi {
+			return fmt.Sprintf("tcpudp/%d", tc.lo)
 		}
 	}
-	return key
+	return ""
 }

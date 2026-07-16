@@ -83,6 +83,9 @@ services:
       - "EXT_FGT_POLSPLIT=true"
       # Traffic-log query template (source:"%s" = firewall hostname, policyid:%s = policy ID).
       # - "GRAYLOG_POLSPLIT_QUERY=source:\"%s\" AND policyid:%s AND _exists_:srcip AND _exists_:dstip"
+      # Extra internet-facing interface names (comma-separated), merged with the
+      # auto-detected ones (set role wan, SD-WAN members, virtual-wan-link).
+      # - "POLSPLIT_WAN_INTERFACES=wan1,wan2"
 
       # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
       # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH

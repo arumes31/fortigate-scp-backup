@@ -13,12 +13,14 @@ type FirewallRef struct {
 // TrafficTuple is one aggregated src→dst/service combination observed in the
 // policy's traffic logs.
 type TrafficTuple struct {
-	SrcIP    string `json:"srcip"`
-	DstIP    string `json:"dstip"`
-	Proto    string `json:"proto"` // tcp|udp|sctp|icmp|icmp6|ip-<n>
-	Port     int    `json:"port"`  // 0 for portless protocols
-	Service  string `json:"service"`
-	Hits     int64  `json:"hits"`
+	SrcIP   string `json:"srcip"`
+	DstIP   string `json:"dstip"`
+	Proto   string `json:"proto"`              // tcp|udp|sctp|icmp|icmp6|ip-<n>
+	Port    int    `json:"port"`               // 0 for portless protocols
+	PortEnd int    `json:"port_end,omitempty"` // synthetic range end (pair-pattern collapse)
+	Service string `json:"service"`
+	Hits    int64  `json:"hits"`
+	// LastSeen is an ISO timestamp string (lexicographic order == time order).
 	LastSeen string `json:"last_seen,omitempty"`
 	IPv6     bool   `json:"ipv6"`
 	// Flow marks the tuple relative to the optional baseline window:
@@ -51,6 +53,9 @@ type RecPolicy struct {
 	Dst      []Entity      `json:"dst"`
 	Services []ServiceSpec `json:"services"`
 	Hits     int64         `json:"hits"`
+	// Tags classify recognized traffic patterns ("infrastructure",
+	// "active-directory") for display and naming.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // NewObject is one address/service object that does not exist in the current
@@ -125,4 +130,15 @@ type ParsedBackup struct {
 	// TakenNames is every existing address/addrgrp/service/service-group name
 	// (lowercased), so newly generated object names never collide.
 	TakenNames map[string]bool
+
+	// WANInterfaces are interfaces classified as internet-facing (lowercased):
+	// `set role wan`, SD-WAN/virtual-wan-link members, plus the zone names
+	// themselves. Config-global (interfaces are not per-VDOM objects).
+	WANInterfaces map[string]bool
+	// FirewallIPs are the firewall's own interface addresses; traffic TO these
+	// is local-in traffic and must not be enshrined in forward policies.
+	FirewallIPs map[string]bool
+	// ISDBNames are the FortiGuard internet-service names present in the
+	// backup, for suggesting internet-service based policies.
+	ISDBNames []string
 }

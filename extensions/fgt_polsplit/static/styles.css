@@ -223,9 +223,21 @@ select:focus {
 }
 
 #ps-stale-wrap h3,
-#ps-dns-wrap h3 {
+#ps-dns-wrap h3,
+#ps-isdb-wrap h3,
+#ps-utm-wrap h3 {
     font-size: 13px;
     margin: 16px 0 8px;
+}
+
+.ps-tag {
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 9px;
+    padding: 0 5px;
+    margin-left: 4px;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
 .ps-panel h3 {
@@ -249,4 +261,35 @@ select:focus {
 
 .ps-copy {
     margin-top: 4px;
+}
+
+/* Analyze-button row with live progress */
+.ps-analyze-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.ps-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 260px;
+}
+
+.ps-progress-track {
+    flex: 0 0 180px;
+    height: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    overflow: hidden;
+}
+
+#ps-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.35s ease;
 }

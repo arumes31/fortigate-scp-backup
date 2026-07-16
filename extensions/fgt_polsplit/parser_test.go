@@ -8,6 +8,37 @@ import (
 )
 
 const testConfig = `
+config system interface
+    edit "wan1"
+        set ip 203.0.113.2 255.255.255.248
+        set role wan
+    next
+    edit "lan1"
+        set ip 10.0.0.254 255.255.255.0
+        set role lan
+        config secondaryip
+            edit 1
+                set ip 10.0.1.254 255.255.255.0
+            next
+        end
+    next
+end
+config system sdwan
+    set status enable
+    config members
+        edit 1
+            set interface "wan2"
+        next
+    end
+end
+config firewall internet-service-name
+    edit "Google-Web"
+        set internet-service-id 65537
+    next
+    edit "Microsoft-Office.365"
+        set internet-service-id 327781
+    next
+end
 config firewall address
     edit "H_Server1"
         set uuid aaaa-bbbb
@@ -180,6 +211,27 @@ func TestParseBackupObjects(t *testing.T) {
 	}
 	if got := pb.SvcGrpBySig[groupSig([]string{"HTTPS"})]; got != "Web Access Group" {
 		t.Errorf("svcgrp sig lookup = %q", got)
+	}
+	// WAN classification: role wan + SD-WAN member + the builtin zone name.
+	for _, want := range []string{"wan1", "wan2", "virtual-wan-link"} {
+		if !pb.WANInterfaces[want] {
+			t.Errorf("WANInterfaces missing %q: %v", want, pb.WANInterfaces)
+		}
+	}
+	if pb.WANInterfaces["lan1"] {
+		t.Error("lan1 must not be WAN-classified")
+	}
+	// Firewall self-IPs from interface definitions.
+	if !pb.FirewallIPs["203.0.113.2"] || !pb.FirewallIPs["10.0.0.254"] {
+		t.Errorf("FirewallIPs = %v", pb.FirewallIPs)
+	}
+	// ISDB names collected for internet-service suggestions.
+	if len(pb.ISDBNames) != 2 || pb.ISDBNames[0] != "Google-Web" {
+		t.Errorf("ISDBNames = %v", pb.ISDBNames)
+	}
+	// The DNS object (tcp+udp 53) is an exact dual-protocol match.
+	if got := pb.SvcByKey["tcpudp/53"]; len(got) != 1 || got[0] != "DNS" {
+		t.Errorf("tcpudp/53 = %v", got)
 	}
 	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp"} {
 		if !pb.TakenNames[name] {

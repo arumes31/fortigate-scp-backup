@@ -114,15 +114,36 @@ function selectedRange() {
     };
 }
 
+/* ---------------- progress display ---------------- */
+
+function newProgressId() {
+    return (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function showProgress(message, step, total) {
+    $('ps-progress').hidden = false;
+    $('ps-progress-text').textContent = total > 0 ? `${message}… (${step}/${total})` : message;
+    $('ps-progress-bar').style.width = total > 0 ? Math.round(100 * step / total) + '%' : '0%';
+}
+
+function hideProgress() {
+    $('ps-progress').hidden = true;
+    $('ps-progress-bar').style.width = '0%';
+}
+
 async function analyze() {
     if (!psState.policyLoaded) { alert('Load a policy first'); return; }
     let range;
     try { range = selectedRange(); } catch (err) { alert(err.message); return; }
 
     if (psState.abortCtrl) psState.abortCtrl.abort();
-    psState.abortCtrl = new AbortController();
-    const signal = psState.abortCtrl.signal;
+    const ctrl = new AbortController();
+    psState.abortCtrl = ctrl;
+    const signal = ctrl.signal;
 
+    const progressId = newProgressId();
     const req = Object.assign({
         fw_id: parseInt($('ps-firewall').value, 10),
         policy_id: parseInt($('ps-policy-id').value, 10),
@@ -135,11 +156,30 @@ async function analyze() {
         compare_seconds: parseInt($('ps-compare').value, 10) || 0,
         resolve_dns: $('ps-resolve-dns').checked,
         ticket: $('ps-ticket').value.trim(),
+        wan_mode: $('ps-wan-mode').value,
+        emit_deny: $('ps-emit-deny').checked,
+        progress_id: progressId,
     }, range);
 
     const btn = $('ps-analyze-btn');
     btn.disabled = true;
-    $('ps-spinner').hidden = false;
+    showProgress('Starting analysis', 0, 0);
+    // Poll the server-side stage while the analyze request runs; overlapping
+    // polls are prevented and errors ignored (the bar is best-effort).
+    let polling = false;
+    const poll = setInterval(async () => {
+        if (polling) return;
+        polling = true;
+        try {
+            const resp = await fetch(`/fgt-polsplit/progress?id=${encodeURIComponent(progressId)}`, { signal });
+            if (resp.ok) {
+                const p = await resp.json();
+                if (p.active) showProgress(p.message, p.step, p.total);
+            }
+        } catch { /* best-effort */ } finally {
+            polling = false;
+        }
+    }, 500);
     try {
         const data = await fetchJSON('/fgt-polsplit/analyze', {
             method: 'POST',
@@ -152,8 +192,13 @@ async function analyze() {
         if (err.name === 'AbortError') return;
         alert('Analysis failed: ' + err.message);
     } finally {
-        btn.disabled = false;
-        $('ps-spinner').hidden = true;
+        clearInterval(poll);
+        // A superseding run owns the progress display now — only the run that
+        // is still current may tear it down.
+        if (psState.abortCtrl === ctrl) {
+            hideProgress();
+            btn.disabled = false;
+        }
     }
 }
 
@@ -202,6 +247,21 @@ function renderResults(data) {
     $('ps-dns-count').textContent = dns.length;
     $('ps-dns-table').querySelector('tbody').innerHTML = dns.map(d => `<tr>
         <td>${esc(d.ip)}</td><td>${esc(d.name)}</td><td class="ps-num">${esc(d.hits)}</td></tr>`).join('');
+
+    // Internet-Service (ISDB) suggestions
+    const isdb = data.isdb_suggestions || [];
+    $('ps-isdb-wrap').hidden = isdb.length === 0;
+    $('ps-isdb-count').textContent = isdb.length;
+    $('ps-isdb-table').querySelector('tbody').innerHTML = isdb.map(s => `<tr>
+        <td>${esc(s.vendor)}</td><td class="ps-num">${esc(s.ips)}</td><td class="ps-num">${esc(s.hits)}</td>
+        <td>${(s.names && s.names.length) ? s.names.map(esc).join(', ') : '<span class="ps-muted">none parsed from backup</span>'}</td></tr>`).join('');
+
+    // UTM-blocked destinations
+    const utm = data.utm_blocked || [];
+    $('ps-utm-wrap').hidden = utm.length === 0;
+    $('ps-utm-count').textContent = utm.length;
+    $('ps-utm-table').querySelector('tbody').innerHTML = utm.map(u => `<tr>
+        <td>${esc(u.ip)}</td><td class="ps-num">${esc(u.hits)}</td></tr>`).join('');
 
     renderStrategies(data.strategies || []);
     $('ps-results').hidden = false;
@@ -291,7 +351,7 @@ function strategyPanel(s, i) {
     let html = `<div class="ps-table-wrap"><table class="ps-table">
         <thead><tr><th>ID</th><th>Name</th><th>Sources</th><th>Destinations</th><th>Services</th><th>Hits</th></tr></thead><tbody>`;
     html += pols.map(p => `<tr>
-        <td>${esc(p.id)}</td><td>${esc(p.name)}</td>
+        <td>${esc(p.id)}</td><td>${esc(p.name)}${(p.tags || []).map(t => ` <span class="ps-tag">${esc(t)}</span>`).join('')}</td>
         <td>${entityList(p.src)}</td><td>${entityList(p.dst)}</td>
         <td>${svcList(p.services)}</td><td class="ps-num">${esc(p.hits)}</td></tr>`).join('');
     html += '</tbody></table></div>';

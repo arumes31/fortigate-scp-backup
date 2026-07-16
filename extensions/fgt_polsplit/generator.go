@@ -123,6 +123,16 @@ func svcDisplay(s ServiceSpec) string {
 	return s.Key
 }
 
+// GenOptions bundles the operator-tunable generation settings.
+type GenOptions struct {
+	Prefix string // new-object name prefix (default PS<policyid>)
+	Ticket string // change-ticket ID embedded in comments
+	// EmitDeny appends an explicit deny+log policy covering the original's
+	// scope directly above the (disabled) original, so fallthrough traffic is
+	// loudly visible instead of silently dying with the disabled policy.
+	EmitDeny bool
+}
+
 // Generate turns one strategy's recommended policies into FortiGate CLI. It
 // reuses existing address/service objects and groups on exact match, creates
 // the missing ones under the given prefix, allocates free policy IDs from the
@@ -130,12 +140,13 @@ func svcDisplay(s ServiceSpec) string {
 // `move` statements (new policies must sit above the original) and a block
 // disabling the original policy. A non-empty ticket is embedded in every
 // generated policy's comments.
-func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, prefix, ticket string) GenResult {
+func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts GenOptions) GenResult {
 	res := GenResult{}
 	if len(policies) == 0 {
 		return res
 	}
-	prefix = sanitizeName(prefix)
+	ticket := opts.Ticket
+	prefix := sanitizeName(opts.Prefix)
 	if prefix == "" || prefix == "PS" {
 		prefix = fmt.Sprintf("PS%d", orig.ID)
 	}
@@ -148,6 +159,11 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 	resolveEntity := func(ent Entity) string {
 		if name, ok := addrName[ent.Value]; ok {
 			return name
+		}
+		if ent.Value == "all" {
+			// The built-in "all" object (WAN-as-all collapse) always exists.
+			addrName["all"] = "all"
+			return "all"
 		}
 		var name string
 		if ent.IsNet {
@@ -199,6 +215,11 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		if name == "" {
 			var def, disp string
 			switch s.Proto {
+			case "tcpudp":
+				// Merged tcp+udp same-port pair (e.g. DNS-style services).
+				name = nm.alloc(fmt.Sprintf("%s_tcpudp%d", prefix, s.Port), 79)
+				def = fmt.Sprintf("        set tcp-portrange %d\n        set udp-portrange %d", s.Port, s.Port)
+				disp = s.Key
 			case "tcp", "udp", "sctp":
 				if s.PortEnd > s.Port && s.Port > 0 {
 					// Consolidated adjacent-port range (tcp/8080-8082).
@@ -323,6 +344,46 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		moves = append(moves, fmt.Sprintf("    move %d before %d", p.ID, orig.ID))
 	}
 
+	// --- optional explicit fallthrough deny ---------------------------------
+	// Covers the original's exact scope with action deny + logging; its move
+	// runs LAST, so it lands directly above the disabled original and below
+	// every split — fallthrough traffic logs loudly instead of dying silently.
+	if opts.EmitDeny {
+		denyID := nextID // last allocated ID; nothing follows in this batch
+		denyName := polNamer.allocSanitized(sanitizePolicyName(
+			fmt.Sprintf("%s>%s (DENY-REST)", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf))), 35)
+		orDefault := func(vals []string, def string) []string {
+			if len(vals) == 0 {
+				return []string{def}
+			}
+			return vals
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "    edit %d\n", denyID)
+		fmt.Fprintf(&b, "        set name %q\n", denyName)
+		for _, line := range orig.CloneLines {
+			// Only the scope-defining clone lines: action/NAT/UTM must not be
+			// carried into a deny policy.
+			if strings.HasPrefix(line, "set srcintf ") || strings.HasPrefix(line, "set dstintf ") ||
+				strings.HasPrefix(line, "set schedule ") {
+				b.WriteString("        " + line + "\n")
+			}
+		}
+		fmt.Fprintf(&b, "        set srcaddr %s\n", quoteList(orDefault(orig.SrcAddr, "all")))
+		fmt.Fprintf(&b, "        set dstaddr %s\n", quoteList(orDefault(orig.DstAddr, "all")))
+		fmt.Fprintf(&b, "        set service %s\n", quoteList(orDefault(orig.Services, "ALL")))
+		b.WriteString("        set action deny\n")
+		b.WriteString("        set logtraffic all\n")
+		comment := fmt.Sprintf("Fallthrough deny for policy %d — catches traffic the splits missed (FortiSafe polsplit)", orig.ID)
+		if t := sanitizeTicket(ticket); t != "" {
+			comment += " [" + t + "]"
+		}
+		fmt.Fprintf(&b, "        set comments %q\n", comment)
+		b.WriteString("    next")
+		polDefs = append(polDefs, b.String())
+		moves = append(moves, fmt.Sprintf("    move %d before %d", denyID, orig.ID))
+	}
+
 	// --- assemble sections in dependency order ------------------------------
 	var out strings.Builder
 	section := func(header string, defs []string) {
@@ -369,13 +430,25 @@ func displayAction(a string) string {
 // ("VL1>VLXX (RDP)"); additional services get a +N marker.
 func policyBaseName(orig *OrigPolicy, p RecPolicy) string {
 	label := "ANY"
-	if len(p.Services) > 0 {
+	switch {
+	case hasTag(p, "active-directory"):
+		label = "AD"
+	case len(p.Services) > 0:
 		label = svcDisplay(p.Services[0])
 		if len(p.Services) > 1 {
 			label += fmt.Sprintf("+%d", len(p.Services)-1)
 		}
 	}
 	return fmt.Sprintf("%s>%s (%s)", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf), label)
+}
+
+func hasTag(p RecPolicy, tag string) bool {
+	for _, t := range p.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // ifaceLabel renders one side of the policy path: a single interface keeps

@@ -170,6 +170,7 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 		"action_display":       displayAction(parsed.Policy.Action),
 		"backup_time":          ts.In(e.tz).Format("2006-01-02 15:04"),
 		"used_policy_id_count": len(parsed.UsedPolicyIDs),
+		"wan_bound":            policyWANBound(parsed.Policy, e.wanInterfaceSet(parsed)),
 		"warnings":             warnings,
 	})
 }
@@ -205,6 +206,112 @@ type analyzeRequest struct {
 	ResolveDNS bool `json:"resolve_dns"`
 	// Ticket is an optional change-ticket ID embedded in generated comments.
 	Ticket string `json:"ticket"`
+	// WANMode controls the internet-destination collapse: "auto" (default,
+	// active when every dstintf is WAN-classified), "on", or "off".
+	WANMode string `json:"wan_mode"`
+	// EmitDeny appends an explicit deny+log fallthrough policy above the
+	// disabled original.
+	EmitDeny bool `json:"emit_deny"`
+	// ProgressID is a client-generated token; when set, the analysis reports
+	// its stages under this id for the UI's /progress poller.
+	ProgressID string `json:"progress_id"`
+}
+
+// wanInterfaceSet merges auto-detected WAN interfaces from the backup with
+// the operator-configured POLSPLIT_WAN_INTERFACES list (lowercased).
+func (e *Extension) wanInterfaceSet(parsed *ParsedBackup) map[string]bool {
+	set := map[string]bool{}
+	for k := range parsed.WANInterfaces {
+		set[k] = true
+	}
+	for _, name := range strings.Split(e.cfg.PolsplitWANInterfaces, ",") {
+		if name = strings.TrimSpace(strings.ToLower(name)); name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+// policyWANBound reports whether every destination interface of the policy is
+// internet-facing.
+func policyWANBound(p *OrigPolicy, wan map[string]bool) bool {
+	if len(p.DstIntf) == 0 {
+		return false
+	}
+	for _, i := range p.DstIntf {
+		if !wan[strings.ToLower(i)] {
+			return false
+		}
+	}
+	return true
+}
+
+// isdbSuggestion maps a resolved destination vendor to Internet-Service
+// objects present in the backup, as an alternative to IP-based objects.
+type isdbSuggestion struct {
+	Vendor string   `json:"vendor"`
+	IPs    int      `json:"ips"`
+	Hits   int64    `json:"hits"`
+	Names  []string `json:"names"` // example ISDB names from the backup (≤3)
+}
+
+// isdbVendorDomains maps PTR-name suffixes to ISDB vendor name prefixes.
+var isdbVendorDomains = map[string]string{
+	"amazonaws.com": "Amazon", "cloudfront.net": "Amazon",
+	"google.com": "Google", "1e100.net": "Google", "googleusercontent.com": "Google",
+	"microsoft.com": "Microsoft", "azure.com": "Microsoft", "outlook.com": "Microsoft",
+	"office365.com": "Microsoft", "windows.net": "Microsoft",
+	"akamaitechnologies.com": "Akamai", "akamai.net": "Akamai",
+	"cloudflare.com": "Cloudflare", "apple.com": "Apple",
+	"facebook.com": "Facebook", "fbcdn.net": "Facebook",
+	"zoom.us": "Zoom", "github.com": "GitHub",
+}
+
+// isdbSuggestions correlates PTR results with the backup's Internet-Service
+// name list: destinations resolving to a known vendor get the matching ISDB
+// objects suggested instead of brittle IP enumeration.
+func isdbSuggestions(dns []dnsSuggestion, isdbNames []string) []isdbSuggestion {
+	byVendor := map[string]*isdbSuggestion{}
+	for _, d := range dns {
+		name := strings.ToLower(d.Name)
+		for suffix, vendor := range isdbVendorDomains {
+			if strings.HasSuffix(name, suffix) {
+				s := byVendor[vendor]
+				if s == nil {
+					s = &isdbSuggestion{Vendor: vendor}
+					byVendor[vendor] = s
+				}
+				s.IPs++
+				s.Hits += d.Hits
+				break
+			}
+		}
+	}
+	if len(byVendor) == 0 {
+		return nil
+	}
+	for vendor, s := range byVendor {
+		prefix := strings.ToLower(vendor) + "-"
+		for _, n := range isdbNames {
+			if strings.HasPrefix(strings.ToLower(n), prefix) {
+				s.Names = append(s.Names, n)
+				if len(s.Names) == 3 {
+					break
+				}
+			}
+		}
+	}
+	out := make([]isdbSuggestion, 0, len(byVendor))
+	for _, s := range byVendor {
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		return out[i].Vendor < out[j].Vendor
+	})
+	return out
 }
 
 // graylogTimeLayout is Graylog's absolute-timerange format (UTC, ms).
@@ -345,6 +452,21 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Progress reporting for the UI poller: 8 base stages (backup, message
+	// count, 2×tuple aggregation, 2×service names, UTM check, strategies)
+	// plus the optional baseline and DNS stages.
+	baselineActive := req.CompareSeconds > 0 && req.RangeSeconds > 0 && req.CompareSeconds > req.RangeSeconds
+	totalSteps := 8
+	if baselineActive {
+		totalSteps++
+	}
+	if req.ResolveDNS {
+		totalSteps++
+	}
+	report := e.progressReporter(req.ProgressID, totalSteps)
+	defer e.progressDone(req.ProgressID)
+
+	report("Loading latest config backup")
 	fqdn, content, ts, err := e.loadBackup(r.Context(), req.FwID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -371,7 +493,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
+	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr, report)
 	if err != nil {
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return
@@ -396,6 +518,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 				From: now.Add(-time.Duration(req.CompareSeconds) * time.Second).Format(graylogTimeLayout),
 				To:   now.Add(-time.Duration(req.RangeSeconds) * time.Second).Format(graylogTimeLayout),
 			}
+			report("Comparing against baseline window")
 			baseTuples, baseErr := e.fetchBaselineTuples(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, baseTr)
 			if baseErr != nil {
 				warnings = append(warnings, "baseline comparison failed: "+baseErr.Error())
@@ -426,19 +549,44 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		warnings = append(warnings, "no log messages matched — verify the firewall's Graylog source mapping, the policy ID, and that the policy has logtraffic enabled")
 	}
 
+	// WAN-as-all: "auto" activates when every destination interface of the
+	// original is internet-facing (role wan / SD-WAN member / operator list).
+	wanBound := policyWANBound(parsed.Policy, e.wanInterfaceSet(parsed))
+	wanAsAll := wanBound
+	switch strings.ToLower(req.WANMode) {
+	case "on":
+		wanAsAll = true
+	case "off":
+		wanAsAll = false
+	}
+
 	analysis := Analyze(tuples, AnalyzeOptions{
 		RollupSrc:       req.RollupSrc,
 		RollupDst:       req.RollupDst,
 		RollupThreshold: req.RollupThreshold,
 		RollupMask:      req.RollupMask,
+		WANAsAll:        wanAsAll,
+		FirewallIPs:     parsed.FirewallIPs,
 	})
 	warnings = append(warnings, analysis.Warnings...)
+
+	// Destinations that triggered UTM blocks under this policy: review before
+	// re-allowing them in a split.
+	report("Checking UTM-blocked destinations")
+	utmDsts, utmErr := e.fetchUTMBlocked(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
+	if utmErr != nil {
+		e.logger.Warn("polsplit: UTM block check failed", "err", utmErr)
+		warnings = append(warnings, "UTM block check failed: "+utmErr.Error())
+	} else if len(utmDsts) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d destination(s) triggered UTM block verdicts under this policy — review the 'UTM-blocked destinations' list before re-allowing them", len(utmDsts)))
+	}
 
 	prefix := req.Prefix
 	if prefix == "" {
 		prefix = fmt.Sprintf("PS%d", req.PolicyID)
 	}
 
+	report("Computing strategies and configuration")
 	strategies := []Strategy{
 		{Key: "per_service", Label: "One policy per service"},
 		{Key: "per_destination", Label: "One policy per destination"},
@@ -454,7 +602,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		case "hybrid":
 			pols = BuildHybrid(analysis)
 		}
-		gen := Generate(parsed.Policy, parsed, pols, prefix, req.Ticket)
+		gen := Generate(parsed.Policy, parsed, pols, GenOptions{Prefix: prefix, Ticket: req.Ticket, EmitDeny: req.EmitDeny})
 		strategies[i].Policies = pols
 		strategies[i].Config = gen.Config
 		strategies[i].NewObjects = gen.NewObjects
@@ -471,10 +619,14 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		respTuples = respTuples[:maxTuplesInResponse]
 	}
 
-	// Best-effort PTR suggestions for destination IPs (opt-in).
+	// Best-effort PTR suggestions for destination IPs (opt-in), plus
+	// Internet-Service object hints for recognized vendors.
 	var dnsSuggestions []dnsSuggestion
+	var isdbSugg []isdbSuggestion
 	if req.ResolveDNS {
+		report("Resolving destination DNS names")
 		dnsSuggestions = resolveDstNames(r.Context(), analysis.Tuples)
+		isdbSugg = isdbSuggestions(dnsSuggestions, parsed.ISDBNames)
 	}
 
 	logMsg := fmt.Sprintf("Analyzed policy %d of firewall %d (%d tuples, %d messages)",
@@ -484,17 +636,20 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	}
 	e.log(r, "PolSplit Analyze", logMsg)
 	e.writeJSON(w, map[string]any{
-		"firewall":        FirewallRef{ID: req.FwID, FQDN: fqdn},
-		"policy":          parsed.Policy,
-		"action_display":  displayAction(parsed.Policy.Action),
-		"backup_time":     ts.In(e.tz).Format("2006-01-02 15:04"),
-		"total_messages":  totalMessages,
-		"tuple_count":     len(analysis.Tuples),
-		"tuples":          respTuples,
-		"stale_tuples":    staleTuples,
-		"dns_suggestions": dnsSuggestions,
-		"strategies":      strategies,
-		"warnings":        warnings,
+		"firewall":         FirewallRef{ID: req.FwID, FQDN: fqdn},
+		"policy":           parsed.Policy,
+		"action_display":   displayAction(parsed.Policy.Action),
+		"backup_time":      ts.In(e.tz).Format("2006-01-02 15:04"),
+		"total_messages":   totalMessages,
+		"tuple_count":      len(analysis.Tuples),
+		"tuples":           respTuples,
+		"stale_tuples":     staleTuples,
+		"dns_suggestions":  dnsSuggestions,
+		"isdb_suggestions": isdbSugg,
+		"utm_blocked":      utmDsts,
+		"wan_as_all":       wanAsAll,
+		"strategies":       strategies,
+		"warnings":         warnings,
 	})
 }
 
