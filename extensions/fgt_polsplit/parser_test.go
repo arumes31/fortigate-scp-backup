@@ -100,7 +100,7 @@ end
 `
 
 func TestParseBackupPolicy(t *testing.T) {
-	pb := ParseBackup(testConfig, 5)
+	pb := ParseBackup(testConfig, 5, "")
 	if pb.Policy == nil {
 		t.Fatal("policy 5 not found")
 	}
@@ -135,7 +135,7 @@ func TestParseBackupPolicy(t *testing.T) {
 }
 
 func TestParseBackupObjects(t *testing.T) {
-	pb := ParseBackup(testConfig, 5)
+	pb := ParseBackup(testConfig, 5, "")
 
 	if got := pb.AddrByCIDR["10.0.0.10/32"]; len(got) != 1 || got[0] != "H_Server1" {
 		t.Errorf("host lookup = %v", got)
@@ -181,6 +181,11 @@ func TestParseBackupVDOM(t *testing.T) {
 	cfg := `
 config vdom
 edit root
+config firewall address
+    edit "H_Local"
+        set subnet 10.0.0.1 255.255.255.255
+    next
+end
 config firewall policy
     edit 5
         set srcintf "a"
@@ -194,6 +199,11 @@ config firewall policy
 end
 next
 edit dmz
+config firewall address
+    edit "H_Local"
+        set subnet 192.168.1.1 255.255.255.255
+    next
+end
 config firewall policy
     edit 5
         set srcintf "x"
@@ -217,19 +227,45 @@ end
 next
 end
 `
-	pb := ParseBackup(cfg, 5)
+	// 1. Ambiguity: default to root (first match)
+	pb := ParseBackup(cfg, 5, "")
 	if pb.Policy == nil {
 		t.Fatal("policy 5 not found")
 	}
 	if pb.Policy.VDOM != "root" {
 		t.Errorf("vdom = %q", pb.Policy.VDOM)
 	}
-	if len(pb.PolicyVDOMs) != 2 {
+	if len(pb.PolicyVDOMs) != 2 || pb.PolicyVDOMs[0] != "root" || pb.PolicyVDOMs[1] != "dmz" {
 		t.Errorf("policy vdoms = %v", pb.PolicyVDOMs)
 	}
-	// ID space restricted to the matched VDOM (root has only ID 5).
 	if len(pb.UsedPolicyIDs) != 1 || pb.UsedPolicyIDs[0] != 5 {
 		t.Errorf("used policy IDs = %v", pb.UsedPolicyIDs)
+	}
+	// Assert root-level objects
+	if got := pb.AddrByCIDR["10.0.0.1/32"]; len(got) != 1 || got[0] != "H_Local" {
+		t.Errorf("root H_Local address lookup = %v", got)
+	}
+	if got := pb.AddrByCIDR["192.168.1.1/32"]; len(got) != 0 {
+		t.Errorf("dmz address leaked to root: %v", got)
+	}
+
+	// 2. Select DMZ VDOM explicitly
+	pbDMZ := ParseBackup(cfg, 5, "dmz")
+	if pbDMZ.Policy == nil {
+		t.Fatal("policy 5 not found in dmz")
+	}
+	if pbDMZ.Policy.VDOM != "dmz" {
+		t.Errorf("vdom = %q", pbDMZ.Policy.VDOM)
+	}
+	if len(pbDMZ.UsedPolicyIDs) != 2 || pbDMZ.UsedPolicyIDs[0] != 5 || pbDMZ.UsedPolicyIDs[1] != 9 {
+		t.Errorf("dmz used policy IDs = %v", pbDMZ.UsedPolicyIDs)
+	}
+	// Assert dmz-level objects
+	if got := pbDMZ.AddrByCIDR["192.168.1.1/32"]; len(got) != 1 || got[0] != "H_Local" {
+		t.Errorf("dmz H_Local address lookup = %v", got)
+	}
+	if got := pbDMZ.AddrByCIDR["10.0.0.1/32"]; len(got) != 0 {
+		t.Errorf("root address leaked to dmz: %v", got)
 	}
 }
 
@@ -253,7 +289,7 @@ func TestParseBackupExampleConf(t *testing.T) {
 	if err != nil {
 		t.Skipf("example.conf not available: %v", err)
 	}
-	pb := ParseBackup(string(data), 611)
+	pb := ParseBackup(string(data), 611, "")
 	if pb.Policy == nil {
 		t.Fatal("policy 611 not found in example.conf")
 	}

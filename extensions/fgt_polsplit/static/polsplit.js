@@ -2,7 +2,7 @@
  * backup, run the Graylog traffic analysis, render tuples + strategies. */
 'use strict';
 
-const psState = { rangeSec: 86400, policyLoaded: false };
+const psState = { rangeSec: 86400, policyLoaded: false, vdom: '' };
 
 function $(id) { return document.getElementById(id); }
 
@@ -31,14 +31,38 @@ async function loadPolicy() {
     const btn = $('ps-load-btn');
     btn.disabled = true;
     try {
-        const data = await fetchJSON(`/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`);
-        renderPolicy(data);
+        let url = `/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`;
+        if (psState.vdom) {
+            url += `&vdom=${encodeURIComponent(psState.vdom)}`;
+        }
+        const resp = await fetch(url);
+        let body = null;
+        try { body = await resp.json(); } catch { }
+        if (!resp.ok) {
+            if (body && body.ambiguous && body.vdoms) {
+                const choice = prompt(`Policy ID ${polID} is ambiguous. Please select a VDOM from the following options:\n${body.vdoms.join(', ')}`);
+                if (choice) {
+                    const matchedVdom = body.vdoms.find(v => v.toLowerCase() === choice.trim().toLowerCase());
+                    if (matchedVdom) {
+                        psState.vdom = matchedVdom;
+                        setTimeout(loadPolicy, 0);
+                        return;
+                    } else {
+                        alert('Invalid VDOM selected');
+                    }
+                }
+            }
+            throw new Error((body && body.error) || ('HTTP ' + resp.status));
+        }
+
+        renderPolicy(body);
         psState.policyLoaded = true;
         $('ps-options-card').hidden = false;
         $('ps-prefix').placeholder = 'PS' + polID;
         $('ps-results').hidden = true;
     } catch (err) {
         psState.policyLoaded = false;
+        psState.vdom = '';
         $('ps-policy-card').hidden = true;
         $('ps-options-card').hidden = true;
         alert('Failed to load policy: ' + err.message);
@@ -94,6 +118,7 @@ async function analyze() {
     const req = Object.assign({
         fw_id: parseInt($('ps-firewall').value, 10),
         policy_id: parseInt($('ps-policy-id').value, 10),
+        vdom: psState.vdom || '',
         rollup_src: $('ps-rollup-src').checked,
         rollup_dst: $('ps-rollup-dst').checked,
         rollup_threshold: parseInt($('ps-rollup-threshold').value, 10) || 5,
@@ -243,6 +268,16 @@ document.addEventListener('DOMContentLoaded', () => {
     $('ps-load-btn').addEventListener('click', loadPolicy);
     $('ps-analyze-btn').addEventListener('click', analyze);
     $('ps-policy-id').addEventListener('keydown', e => { if (e.key === 'Enter') loadPolicy(); });
+    const invalidatePolicy = () => {
+        psState.policyLoaded = false;
+        psState.vdom = '';
+        $('ps-policy-card').hidden = true;
+        $('ps-options-card').hidden = true;
+        $('ps-results').hidden = true;
+    };
+    $('ps-firewall').addEventListener('change', invalidatePolicy);
+    $('ps-policy-id').addEventListener('input', invalidatePolicy);
+    $('ps-policy-id').addEventListener('change', invalidatePolicy);
     $('ps-range-row').querySelectorAll('.ps-range').forEach(btn => {
         btn.addEventListener('click', () => {
             $('ps-range-row').querySelectorAll('.ps-range').forEach(b => b.classList.remove('active'));

@@ -152,8 +152,18 @@ func (e *Extension) vpnConfigSources(fqdn string) []string {
 func buildQuery(template string, sources []string, policyID int) (string, error) {
 	q := template
 	id := strconv.Itoa(policyID)
-	q = strings.Replace(q, `policyid:"%s"`, `policyid:"`+id+`"`, 1)
-	q = strings.Replace(q, `policyid:%s`, `policyid:`+id, 1)
+	replaced := false
+	if strings.Contains(q, `policyid:"%s"`) {
+		q = strings.Replace(q, `policyid:"%s"`, `policyid:"`+id+`"`, 1)
+		replaced = true
+	}
+	if strings.Contains(q, `policyid:%s`) {
+		q = strings.Replace(q, `policyid:%s`, `policyid:`+id, 1)
+		replaced = true
+	}
+	if !replaced {
+		return "", fmt.Errorf("query template does not contain policy ID placeholder")
+	}
 
 	parts := make([]string, 0, len(sources))
 	for _, s := range sources {
@@ -281,9 +291,9 @@ const groupLimit = 1000
 // grouped field: one over port-carrying logs (tcp/udp/sctp) grouped by dstport,
 // one over portless logs (icmp/gre/esp/…) without it. totalMessages carries the
 // window's raw match count for diagnostics.
-func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
+func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
 	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
-		return nil, 0, nil, errors.New("graylog not configured (GRAYLOG_URL/GRAYLOG_TOKEN)")
+		return nil, 0, []string{"Graylog integration is disabled in fortisafe.conf"}, nil
 	}
 	if !tr.valid() {
 		return nil, 0, nil, errors.New("invalid time range")
@@ -293,29 +303,39 @@ func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, tr timeRange) 
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	if vdom != "" {
+		query = query + ` AND vdom:"` + escapeGraylogValue(vdom) + `"`
+	}
 
 	totalMessages, err = e.countMessages(query, tr)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
-	tuples, warnings, err = e.aggregateTuples(query, tr, true)
+	// 1. Authoritative complete result without service grouping (so no messages are omitted)
+	tuples, warnings, err = e.aggregateTuples(query, tr, false)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	if len(tuples) == 0 && totalMessages > 0 {
-		// Messages exist but grouping matched nothing — most likely the
-		// `service` field is not extracted in this Graylog setup (grouping drops
-		// documents missing a grouped field). Retry without it; service names
-		// are then derived from proto/port.
-		var fbWarnings []string
-		tuples, fbWarnings, err = e.aggregateTuples(query, tr, false)
-		if err != nil {
-			return nil, 0, nil, err
+
+	// 2. Separate query with service grouping to get service names
+	svcTuples, svcWarnings, err := e.aggregateTuples(query, tr, true)
+	if err != nil {
+		e.logger.Warn("polsplit: service-present aggregation failed, using no-service results only", "err", err)
+	} else {
+		warnings = append(warnings, svcWarnings...)
+		svcMap := make(map[string]string)
+		for _, st := range svcTuples {
+			if st.Service != "" {
+				key := fmt.Sprintf("%s|%s|%s|%d", st.SrcIP, st.DstIP, st.Proto, st.Port)
+				svcMap[key] = st.Service
+			}
 		}
-		warnings = append(warnings, fbWarnings...)
-		if len(tuples) > 0 {
-			warnings = append(warnings, "the `service` log field is not extracted in Graylog — service names were derived from proto/port instead")
+		for i := range tuples {
+			key := fmt.Sprintf("%s|%s|%s|%d", tuples[i].SrcIP, tuples[i].DstIP, tuples[i].Proto, tuples[i].Port)
+			if svc, ok := svcMap[key]; ok {
+				tuples[i].Service = svc
+			}
 		}
 	}
 

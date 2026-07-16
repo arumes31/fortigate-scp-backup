@@ -36,6 +36,50 @@ var KnownServices = map[string]Service{
 	"NTP":       {Name: "NTP", Protocol: "UDP", Port: "123"},
 }
 
+type stackElem struct {
+	isConfig bool
+	name     string
+}
+
+func getSupportedSection(sec string) string {
+	switch sec {
+	case "system interface", "firewall address", "firewall addrgrp",
+		"firewall internet-service-name", "firewall vip", "firewall ippool",
+		"firewall service custom", "firewall service group", "user local",
+		"user group", "firewall ssl-ssh-profile", "webfilter profile",
+		"antivirus profile", "application list", "ips sensor":
+		return sec
+	default:
+		return ""
+	}
+}
+
+func getActiveContext(stack []stackElem) (string, string) {
+	configIdx := -1
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i].isConfig {
+			configIdx = i
+			break
+		}
+	}
+	if configIdx == -1 {
+		return "", ""
+	}
+
+	sec := getSupportedSection(stack[configIdx].name)
+	if sec == "" {
+		return "", ""
+	}
+
+	for i := configIdx + 1; i < len(stack); i++ {
+		if !stack[i].isConfig {
+			return sec, stack[i].name
+		}
+	}
+
+	return sec, ""
+}
+
 // ParseConfig converts a raw FortiGate configuration string into security components.
 func ParseConfig(content string) ParsedConfig {
 	var (
@@ -54,48 +98,27 @@ func ParseConfig(content string) ParsedConfig {
 		ipsSensors        []string
 		users             []string
 		groups            []string
-	)
 
-	// Helper sets to avoid duplicates
-	intfSet := make(map[string]bool)
-	addrSet := make(map[string]bool)
-	addrGrpSet := make(map[string]bool)
-	isdbSet := make(map[string]bool)
-	vipSet := make(map[string]bool)
-	poolSet := make(map[string]bool)
-	svcSet := make(map[string]bool)
-	sslSshSet := make(map[string]bool)
-	wfSet := make(map[string]bool)
-	avSet := make(map[string]bool)
-	appSet := make(map[string]bool)
-	ipsSet := make(map[string]bool)
-	userSet := make(map[string]bool)
-	groupSet := make(map[string]bool)
+		intfSet    = make(map[string]bool)
+		addrSet    = make(map[string]bool)
+		addrGrpSet = make(map[string]bool)
+		isdbSet    = make(map[string]bool)
+		vipSet     = make(map[string]bool)
+		poolSet    = make(map[string]bool)
+		svcSet     = make(map[string]bool)
+		sslSshSet  = make(map[string]bool)
+		wfSet      = make(map[string]bool)
+		avSet      = make(map[string]bool)
+		appSet     = make(map[string]bool)
+		ipsSet     = make(map[string]bool)
+		userSet    = make(map[string]bool)
+		groupSet   = make(map[string]bool)
+	)
 
 	lines := strings.Split(content, "\n")
 
-	var (
-		inInterface       bool
-		inAddress         bool
-		inAddrgrp         bool
-		inInternetService bool
-		inVip             bool
-		inIppool          bool
-		inService         bool
-		inServiceGroup    bool
-		inUser            bool
-		inGroup           bool
-		inSslSsh          bool
-		inWebfilter       bool
-		inAv              bool
-		inApplication     bool
-		inIps             bool
-
-		nestedLevel int
-		currentEdit string
-		svcProtocol string
-		svcPort     string
-	)
+	svcProtocol := "TCP"
+	svcPort := "0"
 
 	addInterface := func(name string) {
 		if name != "" && !intfSet[name] {
@@ -179,6 +202,8 @@ func ParseConfig(content string) ParsedConfig {
 		return out
 	}
 
+	var stack []stackElem
+
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
@@ -186,142 +211,106 @@ func ParseConfig(content string) ParsedConfig {
 		}
 
 		if strings.HasPrefix(line, "config ") {
-			if nestedLevel > 0 || inInterface || inAddress || inAddrgrp || inInternetService || inVip || inIppool || inService || inServiceGroup || inUser || inGroup || inSslSsh || inWebfilter || inAv || inApplication || inIps {
-				nestedLevel++
-				continue
-			}
-
-			switch {
-			case strings.HasPrefix(line, "config system interface"):
-				inInterface = true
-			case strings.HasPrefix(line, "config firewall address"):
-				inAddress = true
-			case strings.HasPrefix(line, "config firewall addrgrp"):
-				inAddrgrp = true
-			case strings.HasPrefix(line, "config firewall internet-service-name"):
-				inInternetService = true
-			case strings.HasPrefix(line, "config firewall vip"):
-				inVip = true
-			case strings.HasPrefix(line, "config firewall ippool"):
-				inIppool = true
-			case strings.HasPrefix(line, "config firewall service custom"):
-				inService = true
-			case strings.HasPrefix(line, "config firewall service group"):
-				inServiceGroup = true
-			case strings.HasPrefix(line, "config user local"):
-				inUser = true
-			case strings.HasPrefix(line, "config user group"):
-				inGroup = true
-			case strings.HasPrefix(line, "config firewall ssl-ssh-profile"):
-				inSslSsh = true
-			case strings.HasPrefix(line, "config webfilter profile"):
-				inWebfilter = true
-			case strings.HasPrefix(line, "config antivirus profile"):
-				inAv = true
-			case strings.HasPrefix(line, "config application list"):
-				inApplication = true
-			case strings.HasPrefix(line, "config ips sensor"):
-				inIps = true
-			default:
-				nestedLevel++
-			}
+			secName := strings.TrimSpace(strings.TrimPrefix(line, "config "))
+			stack = append(stack, stackElem{isConfig: true, name: secName})
 			continue
 		}
 
 		if line == "end" {
-			if nestedLevel > 0 {
-				nestedLevel--
-			} else {
-				inInterface = false
-				inAddress = false
-				inAddrgrp = false
-				inInternetService = false
-				inVip = false
-				inIppool = false
-				inService = false
-				inServiceGroup = false
-				inUser = false
-				inGroup = false
-				inSslSsh = false
-				inWebfilter = false
-				inAv = false
-				inApplication = false
-				inIps = false
-			}
-			continue
-		}
-
-		// Edit matching
-		if strings.HasPrefix(line, "edit ") {
-			match := editRe.FindStringSubmatch(line)
-			if len(match) > 1 {
-				currentEdit = match[1]
-				svcProtocol = "TCP"
-				svcPort = "0"
-
-				switch {
-				case inInterface:
-					addInterface(currentEdit)
-				case inAddress:
-					addAddress(currentEdit)
-				case inAddrgrp:
-					addAddrGrp(currentEdit)
-				case inInternetService:
-					addIsdb(currentEdit)
-				case inVip:
-					addVip(currentEdit)
-				case inIppool:
-					addIpPool(currentEdit)
-				case inUser:
-					if !userSet[currentEdit] {
-						userSet[currentEdit] = true
-						users = append(users, currentEdit)
-					}
-				case inGroup:
-					if !groupSet[currentEdit] {
-						groupSet[currentEdit] = true
-						groups = append(groups, currentEdit)
-					}
-				case inSslSsh:
-					if !sslSshSet[currentEdit] {
-						sslSshSet[currentEdit] = true
-						sslSshProfiles = append(sslSshProfiles, currentEdit)
-					}
-				case inWebfilter:
-					if !wfSet[currentEdit] {
-						wfSet[currentEdit] = true
-						webfilterProfiles = append(webfilterProfiles, currentEdit)
-					}
-				case inAv:
-					if !avSet[currentEdit] {
-						avSet[currentEdit] = true
-						avProfiles = append(avProfiles, currentEdit)
-					}
-				case inApplication:
-					if !appSet[currentEdit] {
-						appSet[currentEdit] = true
-						applicationLists = append(applicationLists, currentEdit)
-					}
-				case inIps:
-					if !ipsSet[currentEdit] {
-						ipsSet[currentEdit] = true
-						ipsSensors = append(ipsSensors, currentEdit)
-					}
+			for len(stack) > 0 {
+				elem := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if elem.isConfig {
+					break
 				}
 			}
 			continue
 		}
 
 		if line == "next" {
-			if inService && currentEdit != "" {
-				addSvc(currentEdit, svcProtocol, svcPort)
+			activeSec, outerEdit := getActiveContext(stack)
+			if activeSec == "firewall service custom" && outerEdit != "" {
+				addSvc(outerEdit, svcProtocol, svcPort)
 			}
-			currentEdit = ""
+			for len(stack) > 0 {
+				elem := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if !elem.isConfig {
+					break
+				}
+			}
 			continue
 		}
 
+		if strings.HasPrefix(line, "edit ") {
+			match := editRe.FindStringSubmatch(line)
+			if len(match) > 1 {
+				editName := strings.Trim(match[1], `"`)
+				stack = append(stack, stackElem{isConfig: false, name: editName})
+
+				activeSec, outerEdit := getActiveContext(stack)
+				if activeSec != "" && outerEdit == editName {
+					svcProtocol = "TCP"
+					svcPort = "0"
+
+					switch activeSec {
+					case "system interface":
+						addInterface(editName)
+					case "firewall address":
+						addAddress(editName)
+					case "firewall addrgrp":
+						addAddrGrp(editName)
+					case "firewall internet-service-name":
+						addIsdb(editName)
+					case "firewall vip":
+						addVip(editName)
+					case "firewall ippool":
+						addIpPool(editName)
+					case "user local":
+						if !userSet[editName] {
+							userSet[editName] = true
+							users = append(users, editName)
+						}
+					case "user group":
+						if !groupSet[editName] {
+							groupSet[editName] = true
+							groups = append(groups, editName)
+						}
+					case "firewall ssl-ssh-profile":
+						if !sslSshSet[editName] {
+							sslSshSet[editName] = true
+							sslSshProfiles = append(sslSshProfiles, editName)
+						}
+					case "webfilter profile":
+						if !wfSet[editName] {
+							wfSet[editName] = true
+							webfilterProfiles = append(webfilterProfiles, editName)
+						}
+					case "antivirus profile":
+						if !avSet[editName] {
+							avSet[editName] = true
+							avProfiles = append(avProfiles, editName)
+						}
+					case "application list":
+						if !appSet[editName] {
+							appSet[editName] = true
+							applicationLists = append(applicationLists, editName)
+						}
+					case "ips sensor":
+						if !ipsSet[editName] {
+							ipsSet[editName] = true
+							ipsSensors = append(ipsSensors, editName)
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		activeSec, outerEdit := getActiveContext(stack)
+
 		// Parse settings inside edits
-		if inService && currentEdit != "" && strings.HasPrefix(line, "set ") {
+		if activeSec == "firewall service custom" && outerEdit != "" && strings.HasPrefix(line, "set ") {
 			if m := setSvcProtoRe.FindStringSubmatch(line); len(m) > 2 {
 				svcProtocol = strings.ToUpper(m[1])
 				svcPort = strings.TrimSpace(m[2])
@@ -335,11 +324,11 @@ func ParseConfig(content string) ParsedConfig {
 			continue
 		}
 
-		if inServiceGroup && currentEdit != "" && strings.HasPrefix(line, "set member ") {
+		if activeSec == "firewall service group" && outerEdit != "" && strings.HasPrefix(line, "set member ") {
 			match := setMemberRe.FindStringSubmatch(line)
 			if len(match) > 1 {
 				members := parseSpaceDelimited(match[1])
-				serviceGroups[currentEdit] = members
+				serviceGroups[outerEdit] = members
 			}
 			continue
 		}

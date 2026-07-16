@@ -61,9 +61,10 @@ func (e *Extension) fetchFirewalls(ctx context.Context) ([]FirewallRef, error) {
 	var list []FirewallRef
 	for rows.Next() {
 		var fw FirewallRef
-		if err := rows.Scan(&fw.ID, &fw.FQDN); err == nil {
-			list = append(list, fw)
+		if err := rows.Scan(&fw.ID, &fw.FQDN); err != nil {
+			return nil, err
 		}
+		list = append(list, fw)
 	}
 	return list, rows.Err()
 }
@@ -122,21 +123,29 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 		e.jsonError(w, http.StatusBadRequest, "invalid fw_id / policy_id")
 		return
 	}
+	vdom := r.URL.Query().Get("vdom")
 	fqdn, content, ts, err := e.loadBackup(r.Context(), fwID)
 	if err != nil {
 		e.jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	parsed := ParseBackup(content, policyID)
+	parsed := ParseBackup(content, policyID, vdom)
+	if len(parsed.PolicyVDOMs) > 1 && vdom == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":     fmt.Sprintf("policy ID %d matches multiple VDOMs: %v", policyID, parsed.PolicyVDOMs),
+			"ambiguous": true,
+			"vdoms":     parsed.PolicyVDOMs,
+		})
+		return
+	}
 	if parsed.Policy == nil {
 		e.jsonError(w, http.StatusNotFound,
 			fmt.Sprintf("policy %d not found in the latest backup of %s (%s)", policyID, fqdn, ts.Format("2006-01-02 15:04")))
 		return
 	}
 	var warnings []string
-	if len(parsed.PolicyVDOMs) > 1 {
-		warnings = append(warnings, fmt.Sprintf("policy ID %d exists in multiple VDOMs (%v) — using the first match", policyID, parsed.PolicyVDOMs))
-	}
 	e.log(r, "PolSplit Info", fmt.Sprintf("Loaded policy %d of firewall %d", policyID, fwID))
 	e.writeJSON(w, map[string]any{
 		"firewall":        FirewallRef{ID: fwID, FQDN: fqdn},
@@ -151,6 +160,7 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 type analyzeRequest struct {
 	FwID            int    `json:"fw_id"`
 	PolicyID        int    `json:"policy_id"`
+	VDOM            string `json:"vdom"`
 	RangeSeconds    int    `json:"range_seconds"` // preset; 0 = custom absolute range
 	From            string `json:"from"`          // ISO-8601 (custom range)
 	To              string `json:"to"`
@@ -205,20 +215,22 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		e.jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	parsed := ParseBackup(content, req.PolicyID)
+	parsed := ParseBackup(content, req.PolicyID, req.VDOM)
+	if len(parsed.PolicyVDOMs) > 1 && req.VDOM == "" {
+		e.jsonError(w, http.StatusBadRequest,
+			fmt.Sprintf("policy ID %d is ambiguous (matches multiple VDOMs: %v); please specify a vdom selection", req.PolicyID, parsed.PolicyVDOMs))
+		return
+	}
 	if parsed.Policy == nil {
 		e.jsonError(w, http.StatusNotFound,
 			fmt.Sprintf("policy %d not found in the latest backup of %s", req.PolicyID, fqdn))
 		return
 	}
 
-	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(fqdn, req.PolicyID, tr)
+	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
 	if err != nil {
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return
-	}
-	if len(parsed.PolicyVDOMs) > 1 {
-		warnings = append(warnings, fmt.Sprintf("policy ID %d exists in multiple VDOMs (%v) — config parsed from the first match; logs may mix VDOMs", req.PolicyID, parsed.PolicyVDOMs))
 	}
 	if totalMessages > 0 && len(tuples) == 0 {
 		warnings = append(warnings, fmt.Sprintf("%d log messages matched but none carried usable srcip/dstip fields — check the Graylog field extraction or GRAYLOG_POLSPLIT_QUERY", totalMessages))
@@ -289,15 +301,21 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 // per-service (the more idiomatic FortiGate layout).
 func markRecommended(strategies []Strategy) {
 	best := -1
-	bestScore := 0
 	for i, s := range strategies {
 		if len(s.Policies) == 0 {
 			continue
 		}
-		score := len(s.Policies)*1000 + len(s.NewObjects)
-		if best == -1 || score < bestScore {
+		if best == -1 {
 			best = i
-			bestScore = score
+			continue
+		}
+		bestStrat := strategies[best]
+		if len(s.Policies) < len(bestStrat.Policies) {
+			best = i
+		} else if len(s.Policies) == len(bestStrat.Policies) {
+			if len(s.NewObjects) < len(bestStrat.NewObjects) {
+				best = i
+			}
 		}
 	}
 	if best >= 0 {

@@ -368,6 +368,11 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
+	if owner == "__global__" && username != "admin" {
+		http.Error(w, "Unauthorized to save global templates", http.StatusForbidden)
+		return
+	}
+
 	if err := e.saveTemplateToDB(owner, templateName, string(dataJSON)); err != nil {
 		http.Error(w, "Failed to save template", http.StatusInternalServerError)
 		return
@@ -389,6 +394,11 @@ func (e *Extension) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
+	if owner == "__global__" && username != "admin" {
+		http.Error(w, "Unauthorized to delete global templates", http.StatusForbidden)
+		return
+	}
+
 	affected, err := e.deleteTemplateFromDB(owner, templateName)
 	if err != nil {
 		http.Error(w, "Failed to delete template", http.StatusInternalServerError)
@@ -401,7 +411,7 @@ func (e *Extension) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete associated short URLs
-	templateURL := fmt.Sprintf("/confgen/get_template/%s", templateName)
+	templateURL := fmt.Sprintf("/fgt-confgen/get_template/%s", templateName)
 	e.deleteShortURLsByTemplate(templateURL)
 
 	e.log(r, "Delete Template", fmt.Sprintf("Deleted template '%s' (global: %v)", templateName, isGlobal))
@@ -425,6 +435,11 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 	owner := username
 	if body.IsGlobal {
 		owner = "__global__"
+	}
+
+	if owner == "__global__" && username != "admin" {
+		http.Error(w, "Unauthorized to rename global templates", http.StatusForbidden)
+		return
 	}
 
 	// Verify new name doesn't exist
@@ -495,13 +510,25 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 
 	username := e.currentUser(r)
 
-	// Search in all templates owned by user (or global)
-	rows, err := e.db.Query("SELECT name, username, data FROM templates WHERE username = ? OR username = '__global__'", username)
+	// Begin a transaction to keep read-and-update atomic
+	tx, err := e.db.Begin()
 	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		http.Error(w, "Database transaction error", http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = tx.Rollback() }()
+
+	// Search in all templates owned by user (or global)
+	rows, err := tx.Query("SELECT name, username, data FROM templates WHERE username = ? OR username = '__global__'", username)
+	if err != nil {
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+
+	var foundName, foundOwner string
+	var foundTemplateData TemplateData
+	var newPolicy Policy
+	found := false
 
 	for rows.Next() {
 		var name, owner, dataJSON string
@@ -510,24 +537,56 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal([]byte(dataJSON), &data)
 			for _, policy := range data.Policies {
 				if policy.PolicyID == body.PolicyID {
-					newPolicy := policy
+					foundName = name
+					foundOwner = owner
+					foundTemplateData = data
+
+					newPolicy = policy
 					newPolicy.PolicyID = uuid.New().String()
 					if len(policy.PolicyName) > 20 {
 						newPolicy.PolicyName = fmt.Sprintf("%s_cl", policy.PolicyName[:20])
 					} else {
 						newPolicy.PolicyName = fmt.Sprintf("%s_cl", policy.PolicyName)
 					}
-
-					data.Policies = append(data.Policies, newPolicy)
-					newDataJSON, _ := json.Marshal(data)
-					_, _ = e.db.Exec("UPDATE templates SET data = ? WHERE username = ? AND name = ?", string(newDataJSON), owner, name)
-
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "new_policy": newPolicy})
-					return
+					found = true
+					break
 				}
 			}
 		}
+		if found {
+			break
+		}
+	}
+	_ = rows.Close()
+
+	if !found {
+		http.Error(w, "Policy not found", http.StatusNotFound)
+		return
+	}
+
+	// Validate permission check
+	if foundOwner == "__global__" && username != "admin" {
+		http.Error(w, "Unauthorized to edit global templates", http.StatusForbidden)
+		return
+	}
+
+	// Update template data
+	foundTemplateData.Policies = append(foundTemplateData.Policies, newPolicy)
+	newDataJSON, err := json.Marshal(foundTemplateData)
+	if err != nil {
+		http.Error(w, "Failed to serialize template data", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("UPDATE templates SET data = ? WHERE username = ? AND name = ?", string(newDataJSON), foundOwner, foundName)
+	if err != nil {
+		http.Error(w, "Failed to update template", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
 	}
 
 	http.Error(w, "Policy not found", http.StatusNotFound)
@@ -664,12 +723,27 @@ func (e *Extension) generatePolicy(w http.ResponseWriter, r *http.Request) {
 
 	var outputs []map[string]any
 	for _, p := range policies {
+		o1, err1 := GenerateOutput1(p)
+		if err1 != nil {
+			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err1), http.StatusBadRequest)
+			return
+		}
+		o2, err2 := GenerateOutput2(p)
+		if err2 != nil {
+			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err2), http.StatusBadRequest)
+			return
+		}
+		o3, err3 := GenerateOutput3(p)
+		if err3 != nil {
+			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err3), http.StatusBadRequest)
+			return
+		}
 		outputs = append(outputs, map[string]any{
 			"policy_id":   p.PolicyID,
 			"policy_name": p.PolicyName,
-			"output1":     GenerateOutput1(p),
-			"output2":     GenerateOutput2(p),
-			"output3":     GenerateOutput3(p),
+			"output1":     o1,
+			"output2":     o2,
+			"output3":     o3,
 		})
 	}
 

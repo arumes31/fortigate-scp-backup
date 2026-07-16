@@ -1,5 +1,8 @@
 // searchable.js (Version 1.3)
 function initSearchableSelect(selectElement, options = {}) {
+    if (selectElement._searchableTeardown) {
+        selectElement._searchableTeardown();
+    }
     const placeholder = options.placeholder || 'Select an option';
 
     // Create wrapper for the combo box
@@ -104,13 +107,18 @@ function initSearchableSelect(selectElement, options = {}) {
     });
 
     // Close dropdown when clicking outside
+    const controller = new AbortController();
     document.addEventListener('click', (e) => {
         if (!wrapper.contains(e.target)) {
             dropdown.style.display = 'none';
             const selected = originalOptions.find(opt => opt.selected);
             comboInput.value = selected ? selected.text : '';
         }
-    });
+    }, { signal: controller.signal });
+
+    selectElement._searchableTeardown = () => {
+        controller.abort();
+    };
 
     // Handle select change from external sources
     selectElement.addEventListener('change', () => {

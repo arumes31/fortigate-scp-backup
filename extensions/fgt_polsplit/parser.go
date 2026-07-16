@@ -95,17 +95,38 @@ type frame struct {
 	edit    string
 }
 
+type vdomInventory struct {
+	addrByCIDR map[string][]string
+	svcByKey   map[string][]string
+	svcNames   map[string]string
+	takenNames map[string]bool
+}
+
+func newVDOMInventory() *vdomInventory {
+	return &vdomInventory{
+		addrByCIDR: make(map[string][]string),
+		svcByKey:   make(map[string][]string),
+		svcNames:   make(map[string]string),
+		takenNames: make(map[string]bool),
+	}
+}
+
 // ParseBackup scans a decrypted FortiGate configuration and extracts the
 // requested policy plus the object inventory needed to build split
 // recommendations. It is VDOM-aware: sections inside `config vdom / edit X`
 // are attributed to VDOM X, and the used-policy-ID list is restricted to the
 // VDOM where the requested policy matched (first match wins on ambiguity).
-func ParseBackup(content string, policyID int) *ParsedBackup {
-	pb := &ParsedBackup{
-		AddrByCIDR: map[string][]string{},
-		SvcByKey:   map[string][]string{},
-		SvcNames:   map[string]string{},
-		TakenNames: map[string]bool{},
+func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup {
+	vdoms := map[string]*vdomInventory{
+		"": newVDOMInventory(),
+	}
+	getInv := func(v string) *vdomInventory {
+		inv, ok := vdoms[v]
+		if !ok {
+			inv = newVDOMInventory()
+			vdoms[v] = inv
+		}
+		return inv
 	}
 
 	var stack []frame
@@ -134,9 +155,10 @@ func ParseBackup(content string, policyID int) *ParsedBackup {
 		if addr == nil {
 			return
 		}
-		pb.TakenNames[strings.ToLower(addr.name)] = true
+		inv := getInv(currentVDOM())
+		inv.takenNames[strings.ToLower(addr.name)] = true
 		if cidr := addr.cidr(); cidr != "" {
-			pb.AddrByCIDR[cidr] = append(pb.AddrByCIDR[cidr], addr.name)
+			inv.addrByCIDR[cidr] = append(inv.addrByCIDR[cidr], addr.name)
 		}
 		addr = nil
 	}
@@ -144,10 +166,11 @@ func ParseBackup(content string, policyID int) *ParsedBackup {
 		if svc == nil {
 			return
 		}
-		pb.TakenNames[strings.ToLower(svc.name)] = true
-		pb.SvcNames[strings.ToLower(svc.name)] = svc.name
+		inv := getInv(currentVDOM())
+		inv.takenNames[strings.ToLower(svc.name)] = true
+		inv.svcNames[strings.ToLower(svc.name)] = svc.name
 		if key := svc.singleKey(); key != "" {
-			pb.SvcByKey[key] = append(pb.SvcByKey[key], svc.name)
+			inv.svcByKey[key] = append(inv.svcByKey[key], svc.name)
 		}
 		svc = nil
 	}
@@ -208,9 +231,10 @@ func ParseBackup(content string, policyID int) *ParsedBackup {
 			case "firewall service custom":
 				svc = &svcEntry{name: name, ranges: map[string][]string{}}
 			case "firewall addrgrp", "firewall service group":
-				pb.TakenNames[strings.ToLower(name)] = true
+				inv := getInv(currentVDOM())
+				inv.takenNames[strings.ToLower(name)] = true
 				if f.section == "firewall service group" {
-					pb.SvcNames[strings.ToLower(name)] = name
+					inv.svcNames[strings.ToLower(name)] = name
 				}
 			case "firewall policy":
 				if id, err := strconv.Atoi(name); err == nil {
@@ -283,20 +307,51 @@ func ParseBackup(content string, policyID int) *ParsedBackup {
 			}
 		}
 	}
-	// Truncated config (no trailing end): finalize whatever is still open.
+	// Finalize whatever is still open.
 	finishAddr()
 	finishSvc()
 	finishPol()
 
+	var policyVDOMs []string
 	for _, m := range matched {
-		pb.PolicyVDOMs = append(pb.PolicyVDOMs, m.vdom)
+		policyVDOMs = append(policyVDOMs, m.vdom)
 	}
-	if len(matched) > 0 {
-		p := matched[0].pol
+
+	var selected *policyEntry
+	if targetVDOM != "" {
+		for _, m := range matched {
+			if m.vdom == targetVDOM {
+				selected = m
+				break
+			}
+		}
+	}
+	if selected == nil && len(matched) > 0 {
+		selected = matched[0]
+	}
+
+	pb := &ParsedBackup{
+		PolicyVDOMs:   policyVDOMs,
+		AddrByCIDR:    map[string][]string{},
+		SvcByKey:      map[string][]string{},
+		SvcNames:      map[string]string{},
+		TakenNames:    map[string]bool{},
+		UsedPolicyIDs: []int{},
+	}
+
+	if selected != nil {
+		p := selected.pol
 		pb.Policy = &p
-		pb.UsedPolicyIDs = policyIDsByVDOM[matched[0].vdom]
+		pb.UsedPolicyIDs = policyIDsByVDOM[selected.vdom]
 		sort.Ints(pb.UsedPolicyIDs)
+
+		inv := getInv(selected.vdom)
+		pb.AddrByCIDR = inv.addrByCIDR
+		pb.SvcByKey = inv.svcByKey
+		pb.SvcNames = inv.svcNames
+		pb.TakenNames = inv.takenNames
 	}
+
 	for k := range pb.AddrByCIDR {
 		sort.Strings(pb.AddrByCIDR[k])
 	}

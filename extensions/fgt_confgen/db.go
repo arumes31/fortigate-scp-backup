@@ -3,6 +3,7 @@ package fgt_confgen
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 )
 
 // InitDB initializes SQLite schema.
@@ -42,9 +43,13 @@ func (e *Extension) getTemplateNames(username string) ([]string, error) {
 	var list []string
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err == nil {
-			list = append(list, name)
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
 		}
+		list = append(list, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return list, nil
 }
@@ -115,5 +120,14 @@ func (e *Extension) getURLFromShortCode(shortCode string) (string, error) {
 }
 
 func (e *Extension) deleteShortURLsByTemplate(templateURL string) {
-	_, _ = e.db.Exec("DELETE FROM short_urls WHERE url LIKE ?", "%"+templateURL)
+	// Escape %, _ and \ for SQLite LIKE pattern, using \ as the escape character.
+	var escaped strings.Builder
+	for i := 0; i < len(templateURL); i++ {
+		c := templateURL[i]
+		if c == '\\' || c == '%' || c == '_' {
+			escaped.WriteByte('\\')
+		}
+		escaped.WriteByte(c)
+	}
+	_, _ = e.db.Exec("DELETE FROM short_urls WHERE url LIKE ? ESCAPE '\\'", "%"+escaped.String())
 }

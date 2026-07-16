@@ -2,86 +2,320 @@ package fgt_confgen
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
+var (
+	safePortRegex = regexp.MustCompile(`^[0-9\-\s,:]+$`)
+	icmpTypeRegex = regexp.MustCompile(`^[0-9]+$`)
+)
+
+func hasControlOrQuote(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' || c == '\'' || c == '`' || c == '\r' || c == '\n' || c < 32 || c == 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func isNumericID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePolicy(p Policy, services []Service) error {
+	fields := []string{
+		p.PolicyID, p.PolicyName, p.PolicyComment, p.SSLSSHProfile, p.WebfilterProfile,
+		p.AVProfile, p.ApplicationList, p.IPSSensor, p.IPPool,
+	}
+	for _, f := range fields {
+		if hasControlOrQuote(f) {
+			return fmt.Errorf("invalid characters in field value")
+		}
+	}
+
+	lists := [][]string{
+		p.SrcInterfaces, p.DstInterfaces, p.SrcAddresses, p.SrcAddressGroups, p.SrcVIPs,
+		p.SrcInternetServices, p.DstAddresses, p.DstAddressGroups, p.DstVIPs, p.DstInternetServices,
+		p.Users, p.Groups,
+	}
+	for _, list := range lists {
+		for _, item := range list {
+			if hasControlOrQuote(item) {
+				return fmt.Errorf("invalid characters in list item: %q", item)
+			}
+		}
+	}
+
+	action := strings.ToLower(p.Action)
+	if action != "accept" && action != "deny" {
+		return fmt.Errorf("invalid action: %q", p.Action)
+	}
+
+	insMode := strings.ToLower(p.InspectionMode)
+	if insMode != "flow" && insMode != "proxy" {
+		return fmt.Errorf("invalid inspection mode: %q", p.InspectionMode)
+	}
+
+	logTraffic := strings.ToLower(p.LogTraffic)
+	if logTraffic != "all" && logTraffic != "utm" && logTraffic != "disable" {
+		return fmt.Errorf("invalid logtraffic: %q", p.LogTraffic)
+	}
+
+	logTrafficStart := strings.ToLower(p.LogTrafficStart)
+	if logTrafficStart != "enable" && logTrafficStart != "disable" {
+		return fmt.Errorf("invalid logtraffic-start: %q", p.LogTrafficStart)
+	}
+
+	autoAsic := strings.ToLower(p.AutoAsicOffload)
+	if autoAsic != "enable" && autoAsic != "disable" {
+		return fmt.Errorf("invalid auto-asic-offload: %q", p.AutoAsicOffload)
+	}
+
+	nat := strings.ToLower(p.Nat)
+	if nat != "enable" && nat != "disable" {
+		return fmt.Errorf("invalid nat: %q", p.Nat)
+	}
+
+	for _, svc := range services {
+		if hasControlOrQuote(svc.Name) || hasControlOrQuote(svc.Type) || hasControlOrQuote(svc.Protocol) || hasControlOrQuote(svc.Port) {
+			return fmt.Errorf("invalid characters in service %q", svc.Name)
+		}
+
+		svcType := strings.ToLower(svc.Type)
+		if svcType != "custom" && svcType != "predefined" {
+			return fmt.Errorf("invalid service type: %q", svc.Type)
+		}
+
+		if svcType == "custom" {
+			protocol := strings.ToUpper(svc.Protocol)
+			if protocol != "TCP" && protocol != "UDP" && protocol != "SCTP" && protocol != "ICMP" {
+				return fmt.Errorf("unsupported protocol: %s", svc.Protocol)
+			}
+
+			if protocol == "ICMP" {
+				if !icmpTypeRegex.MatchString(svc.Port) {
+					return fmt.Errorf("invalid ICMP type: %q", svc.Port)
+				}
+				var val int
+				if _, err := fmt.Sscanf(svc.Port, "%d", &val); err != nil || val < 0 || val > 255 {
+					return fmt.Errorf("ICMP type out of range (0-255): %q", svc.Port)
+				}
+			} else {
+				if !safePortRegex.MatchString(svc.Port) {
+					return fmt.Errorf("invalid port range: %q", svc.Port)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // GenerateOutput1 generates all-in-one policies.
-func GenerateOutput1(p Policy) string {
+func GenerateOutput1(p Policy) (string, error) {
+	if err := validatePolicy(p, p.Services); err != nil {
+		return "", err
+	}
 	return GenerateSinglePolicyCLI(p, p.PolicyName, p.Services)
 }
 
 // GenerateOutput2 generates one policy per service.
-func GenerateOutput2(p Policy) string {
-	if len(p.Services) == 0 {
-		return "No services defined for this policy."
+func GenerateOutput2(p Policy) (string, error) {
+	if err := validatePolicy(p, p.Services); err != nil {
+		return "", err
+	}
+	var filteredServices []Service
+	for _, svc := range p.Services {
+		if svc.Name != "" {
+			filteredServices = append(filteredServices, svc)
+		}
+	}
+	if len(filteredServices) == 0 {
+		return "No services defined for this policy.", nil
 	}
 	var sb strings.Builder
-	for _, svc := range p.Services {
+	for _, svc := range filteredServices {
 		name := svc.Name
 		if svc.Type == "custom" {
 			name = "custom_" + svc.Name
 		}
 		policyName := limitString(fmt.Sprintf("%s-%s", p.PolicyName, name), 32)
-		sb.WriteString(GenerateSinglePolicyCLI(p, policyName, []Service{svc}))
+		cli, err := GenerateSinglePolicyCLI(p, policyName, []Service{svc})
+		if err != nil {
+			return "", err
+		}
+		sb.WriteString(cli)
 		sb.WriteString("\n")
 	}
-	return sb.String()
+	return sb.String(), nil
 }
 
 // GenerateOutput3 generates one policy per source interface, destination interface, and service combination.
-func GenerateOutput3(p Policy) string {
-	if len(p.SrcInterfaces) == 0 || len(p.DstInterfaces) == 0 || len(p.Services) == 0 {
-		return "No valid source interfaces, destination interfaces, or services defined."
+func GenerateOutput3(p Policy) (string, error) {
+	if err := validatePolicy(p, p.Services); err != nil {
+		return "", err
+	}
+	var srcIntfs []string
+	for _, src := range p.SrcInterfaces {
+		if src != "" {
+			srcIntfs = append(srcIntfs, src)
+		}
+	}
+	var dstIntfs []string
+	for _, dst := range p.DstInterfaces {
+		if dst != "" {
+			dstIntfs = append(dstIntfs, dst)
+		}
+	}
+	var filteredServices []Service
+	for _, svc := range p.Services {
+		if svc.Name != "" {
+			filteredServices = append(filteredServices, svc)
+		}
+	}
+
+	if len(srcIntfs) == 0 || len(dstIntfs) == 0 || len(filteredServices) == 0 {
+		return "No valid source interfaces, destination interfaces, or services defined.", nil
 	}
 
 	var sb strings.Builder
-	for _, src := range p.SrcInterfaces {
-		if src == "" {
-			continue
-		}
-		for _, dst := range p.DstInterfaces {
-			if dst == "" {
-				continue
-			}
-			for _, svc := range p.Services {
+	for _, src := range srcIntfs {
+		for _, dst := range dstIntfs {
+			for _, svc := range filteredServices {
 				name := svc.Name
 				if svc.Type == "custom" {
 					name = "custom_" + svc.Name
 				}
 				policyName := limitString(fmt.Sprintf("%s-%s-%s-%s", p.PolicyName, src, dst, name), 32)
-				sb.WriteString(GenerateSinglePolicyCLI(p, policyName, []Service{svc}))
+
+				pCopy := p
+				pCopy.SrcInterfaces = []string{src}
+				pCopy.DstInterfaces = []string{dst}
+
+				cli, err := GenerateSinglePolicyCLI(pCopy, policyName, []Service{svc})
+				if err != nil {
+					return "", err
+				}
+				sb.WriteString(cli)
 				sb.WriteString("\n")
 			}
 		}
 	}
-	return sb.String()
+	return sb.String(), nil
 }
 
 // GenerateSinglePolicyCLI generates the actual FortiGate config CLI commands.
-func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) string {
-	if len(p.SrcInterfaces) == 0 || len(p.DstInterfaces) == 0 {
-		return ""
+func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (string, error) {
+	var srcIntfs []string
+	for _, intf := range p.SrcInterfaces {
+		if intf != "" {
+			srcIntfs = append(srcIntfs, intf)
+		}
 	}
-	hasSrcAddr := len(p.SrcAddresses) > 0 || len(p.SrcAddressGroups) > 0 || len(p.SrcVIPs) > 0
-	hasDstAddr := len(p.DstAddresses) > 0 || len(p.DstAddressGroups) > 0 || len(p.DstVIPs) > 0
-	if !hasSrcAddr && len(p.SrcInternetServices) == 0 {
-		return ""
+	var dstIntfs []string
+	for _, intf := range p.DstInterfaces {
+		if intf != "" {
+			dstIntfs = append(dstIntfs, intf)
+		}
 	}
-	if !hasDstAddr && len(p.DstInternetServices) == 0 {
-		return ""
+
+	var srcAddrs []string
+	for _, a := range p.SrcAddresses {
+		if a != "" {
+			srcAddrs = append(srcAddrs, a)
+		}
 	}
-	if len(services) == 0 {
-		return ""
+	var srcAddrGroups []string
+	for _, a := range p.SrcAddressGroups {
+		if a != "" {
+			srcAddrGroups = append(srcAddrGroups, a)
+		}
+	}
+	var srcVIPs []string
+	for _, a := range p.SrcVIPs {
+		if a != "" {
+			srcVIPs = append(srcVIPs, a)
+		}
+	}
+	var srcISDB []string
+	for _, a := range p.SrcInternetServices {
+		if a != "" {
+			srcISDB = append(srcISDB, a)
+		}
+	}
+
+	var dstAddrs []string
+	for _, a := range p.DstAddresses {
+		if a != "" {
+			dstAddrs = append(dstAddrs, a)
+		}
+	}
+	var dstAddrGroups []string
+	for _, a := range p.DstAddressGroups {
+		if a != "" {
+			dstAddrGroups = append(dstAddrGroups, a)
+		}
+	}
+	var dstVIPs []string
+	for _, a := range p.DstVIPs {
+		if a != "" {
+			dstVIPs = append(dstVIPs, a)
+		}
+	}
+	var dstISDB []string
+	for _, a := range p.DstInternetServices {
+		if a != "" {
+			dstISDB = append(dstISDB, a)
+		}
+	}
+
+	var filteredServices []Service
+	for _, svc := range services {
+		if svc.Name != "" {
+			filteredServices = append(filteredServices, svc)
+		}
+	}
+
+	if len(srcIntfs) == 0 || len(dstIntfs) == 0 {
+		return "", nil
+	}
+	hasSrcAddr := len(srcAddrs) > 0 || len(srcAddrGroups) > 0 || len(srcVIPs) > 0
+	hasDstAddr := len(dstAddrs) > 0 || len(dstAddrGroups) > 0 || len(dstVIPs) > 0
+	if !hasSrcAddr && len(srcISDB) == 0 {
+		return "", nil
+	}
+	if !hasDstAddr && len(dstISDB) == 0 {
+		return "", nil
+	}
+	if len(filteredServices) == 0 {
+		return "", nil
 	}
 
 	var sb strings.Builder
 
-	// Create custom services first if needed
-	for _, svc := range services {
+	for _, svc := range filteredServices {
 		if svc.Type == "custom" {
+			protocol := strings.ToUpper(svc.Protocol)
 			sb.WriteString("config firewall service custom\n")
 			fmt.Fprintf(&sb, "edit \"custom_%s\"\n", svc.Name)
-			fmt.Fprintf(&sb, "set %s %s\n", strings.ToLower(svc.Protocol), svc.Port)
+			if protocol == "ICMP" {
+				sb.WriteString("set protocol ICMP\n")
+				fmt.Fprintf(&sb, "set icmptype %s\n", svc.Port)
+			} else {
+				sb.WriteString("set protocol TCP/UDP/SCTP\n")
+				fmt.Fprintf(&sb, "set %s-portrange %s\n", strings.ToLower(protocol), svc.Port)
+			}
 			sb.WriteString("next\nend\n")
 		}
 	}
@@ -93,88 +327,84 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) st
 		fmt.Fprintf(&sb, "set comments \"%s\"\n", p.PolicyComment)
 	}
 
-	// Interfaces
-	var srcIntfs []string
-	for _, intf := range p.SrcInterfaces {
-		if intf != "" {
-			srcIntfs = append(srcIntfs, fmt.Sprintf("\"%s\"", intf))
-		}
+	var quotedSrcIntfs []string
+	for _, intf := range srcIntfs {
+		quotedSrcIntfs = append(quotedSrcIntfs, fmt.Sprintf("\"%s\"", intf))
 	}
-	sb.WriteString("set srcintf " + strings.Join(srcIntfs, " ") + "\n")
+	sb.WriteString("set srcintf " + strings.Join(quotedSrcIntfs, " ") + "\n")
 
-	var dstIntfs []string
-	for _, intf := range p.DstInterfaces {
-		if intf != "" {
-			dstIntfs = append(dstIntfs, fmt.Sprintf("\"%s\"", intf))
-		}
+	var quotedDstIntfs []string
+	for _, intf := range dstIntfs {
+		quotedDstIntfs = append(quotedDstIntfs, fmt.Sprintf("\"%s\"", intf))
 	}
-	sb.WriteString("set dstintf " + strings.Join(dstIntfs, " ") + "\n")
+	sb.WriteString("set dstintf " + strings.Join(quotedDstIntfs, " ") + "\n")
 
-	// Source addresses / ISDB
-	var srcAddrs []string
-	for _, a := range p.SrcAddresses {
-		if a != "" {
-			srcAddrs = append(srcAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	var quotedSrcAddrs []string
+	for _, a := range srcAddrs {
+		quotedSrcAddrs = append(quotedSrcAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	for _, a := range p.SrcAddressGroups {
-		if a != "" {
-			srcAddrs = append(srcAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	for _, a := range srcAddrGroups {
+		quotedSrcAddrs = append(quotedSrcAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	for _, a := range p.SrcVIPs {
-		if a != "" {
-			srcAddrs = append(srcAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	for _, a := range srcVIPs {
+		quotedSrcAddrs = append(quotedSrcAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	if len(srcAddrs) > 0 {
-		sb.WriteString("set srcaddr " + strings.Join(srcAddrs, " ") + "\n")
+	if len(quotedSrcAddrs) > 0 {
+		sb.WriteString("set srcaddr " + strings.Join(quotedSrcAddrs, " ") + "\n")
 	}
 
-	if len(p.SrcInternetServices) > 0 {
+	if len(srcISDB) > 0 {
 		sb.WriteString("set internet-service-src enable\n")
-		var isdbs []string
-		for _, id := range p.SrcInternetServices {
-			if id != "" {
-				isdbs = append(isdbs, fmt.Sprintf("\"%s\"", id))
+		var ids []string
+		var names []string
+		for _, val := range srcISDB {
+			if isNumericID(val) {
+				ids = append(ids, fmt.Sprintf("\"%s\"", val))
+			} else {
+				names = append(names, fmt.Sprintf("\"%s\"", val))
 			}
 		}
-		sb.WriteString("set internet-service-id " + strings.Join(isdbs, " ") + "\n")
+		if len(ids) > 0 {
+			sb.WriteString("set internet-service-id " + strings.Join(ids, " ") + "\n")
+		}
+		if len(names) > 0 {
+			sb.WriteString("set internet-service-src-name " + strings.Join(names, " ") + "\n")
+		}
 	}
 
-	// Destination addresses / ISDB
-	var dstAddrs []string
-	for _, a := range p.DstAddresses {
-		if a != "" {
-			dstAddrs = append(dstAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	var quotedDstAddrs []string
+	for _, a := range dstAddrs {
+		quotedDstAddrs = append(quotedDstAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	for _, a := range p.DstAddressGroups {
-		if a != "" {
-			dstAddrs = append(dstAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	for _, a := range dstAddrGroups {
+		quotedDstAddrs = append(quotedDstAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	for _, a := range p.DstVIPs {
-		if a != "" {
-			dstAddrs = append(dstAddrs, fmt.Sprintf("\"%s\"", a))
-		}
+	for _, a := range dstVIPs {
+		quotedDstAddrs = append(quotedDstAddrs, fmt.Sprintf("\"%s\"", a))
 	}
-	if len(dstAddrs) > 0 {
-		sb.WriteString("set dstaddr " + strings.Join(dstAddrs, " ") + "\n")
+	if len(quotedDstAddrs) > 0 {
+		sb.WriteString("set dstaddr " + strings.Join(quotedDstAddrs, " ") + "\n")
 	}
 
-	if len(p.DstInternetServices) > 0 {
+	if len(dstISDB) > 0 {
 		sb.WriteString("set internet-service enable\n")
-		var isdbs []string
-		for _, id := range p.DstInternetServices {
-			if id != "" {
-				isdbs = append(isdbs, fmt.Sprintf("\"%s\"", id))
+		var ids []string
+		var names []string
+		for _, val := range dstISDB {
+			if isNumericID(val) {
+				ids = append(ids, fmt.Sprintf("\"%s\"", val))
+			} else {
+				names = append(names, fmt.Sprintf("\"%s\"", val))
 			}
 		}
-		sb.WriteString("set internet-service-id " + strings.Join(isdbs, " ") + "\n")
+		if len(ids) > 0 {
+			sb.WriteString("set internet-service-id " + strings.Join(ids, " ") + "\n")
+		}
+		if len(names) > 0 {
+			sb.WriteString("set internet-service-name " + strings.Join(names, " ") + "\n")
+		}
 	}
 
-	// Users / Groups
 	if len(p.Users) > 0 {
 		var usersList []string
 		for _, u := range p.Users {
@@ -182,7 +412,9 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) st
 				usersList = append(usersList, fmt.Sprintf("\"%s\"", u))
 			}
 		}
-		sb.WriteString("set users " + strings.Join(usersList, " ") + "\n")
+		if len(usersList) > 0 {
+			sb.WriteString("set users " + strings.Join(usersList, " ") + "\n")
+		}
 	}
 	if len(p.Groups) > 0 {
 		var groupsList []string
@@ -191,12 +423,13 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) st
 				groupsList = append(groupsList, fmt.Sprintf("\"%s\"", g))
 			}
 		}
-		sb.WriteString("set groups " + strings.Join(groupsList, " ") + "\n")
+		if len(groupsList) > 0 {
+			sb.WriteString("set groups " + strings.Join(groupsList, " ") + "\n")
+		}
 	}
 
-	// Services
 	var svcsList []string
-	for _, svc := range services {
+	for _, svc := range filteredServices {
 		name := svc.Name
 		if svc.Type == "custom" {
 			name = "custom_" + svc.Name
@@ -248,7 +481,7 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) st
 	}
 
 	sb.WriteString("next\nend\n")
-	return sb.String()
+	return sb.String(), nil
 }
 
 func limitString(s string, limit int) string {

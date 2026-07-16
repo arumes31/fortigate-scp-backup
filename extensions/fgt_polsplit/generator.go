@@ -142,7 +142,12 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		var name string
 		if s.LogName != "" {
 			if existing, ok := parsed.SvcNames[strings.ToLower(s.LogName)]; ok {
-				name = existing
+				for _, nameByKey := range parsed.SvcByKey[s.Key] {
+					if nameByKey == existing {
+						name = existing
+						break
+					}
+				}
 			}
 		}
 		if name == "" {

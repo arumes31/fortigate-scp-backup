@@ -1,6 +1,7 @@
 // scripts.js (Version 1.17)
 let policies = [];
 let interfaces = [];
+let addresses = [];
 let addressGroups = [];
 let internetServices = [];
 let vips = [];
@@ -100,11 +101,29 @@ function renderPolicyList() {
     policies.forEach(policy => {
         const div = document.createElement('div');
         div.className = 'policy-item';
-        div.innerHTML = `
-            <span onclick="selectPolicy('${policy.id}')">${policy.name || 'Unnamed Policy'}</span>
-            <button class="clone-btn" onclick="clonePolicy(this)" data-policy-id="${policy.id}" aria-label="Clone policy">➕</button>
-            <button class="delete-btn" onclick="deletePolicy('${policy.id}')" aria-label="Delete policy">🗑️</button>
-        `;
+
+        const span = document.createElement('span');
+        span.textContent = policy.name || 'Unnamed Policy';
+        span.addEventListener('click', () => selectPolicy(policy.id));
+        div.appendChild(span);
+
+        const cloneBtn = document.createElement('button');
+        cloneBtn.className = 'clone-btn';
+        cloneBtn.textContent = '➕';
+        cloneBtn.dataset.policyId = policy.id;
+        cloneBtn.setAttribute('aria-label', 'Clone policy');
+        cloneBtn.title = 'Clone policy';
+        cloneBtn.addEventListener('click', function() { clonePolicy(this); });
+        div.appendChild(cloneBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.setAttribute('aria-label', 'Delete policy');
+        deleteBtn.title = 'Delete policy';
+        deleteBtn.addEventListener('click', () => deletePolicy(policy.id));
+        div.appendChild(deleteBtn);
+
         policyList.appendChild(div);
     });
     const genBtn = document.querySelector('.generate-policies-btn');
@@ -788,7 +807,7 @@ function savePolicy(button) {
             return;
         }
         console.log('Policy found:', policy);
-        logToBackend(`Policy found: ${JSON.stringify(policy)}`);
+        logToBackend(`Policy found with ID: ${policyId}`);
 
         const form = button.closest('#policy-form');
         if (!form) {
@@ -839,26 +858,6 @@ function savePolicy(button) {
             nat,
             ipPool
         });
-        logToBackend(`Form values: ${JSON.stringify({
-            policyName,
-            policyComment,
-            action,
-            inspectionMode,
-            sslSshProfile,
-            webfilterProfile: webfilterProfile.value,
-            webfilterEnabled,
-            applicationList: applicationList.value,
-            applicationListEnabled,
-            avProfile: avProfile.value,
-            avEnabled,
-            ipsSensor: ipsSensor.value,
-            ipsSensorEnabled,
-            logtraffic,
-            logtrafficStart,
-            autoAsicOffload,
-            nat,
-            ipPool
-        })}`);
 
         policy.name = policyName;
         policy.comment = policyComment;
@@ -880,7 +879,7 @@ function savePolicy(button) {
         policy.ip_pool = ipPool;
 
         console.log('Policy updated:', policy);
-        logToBackend(`Policy updated: ${JSON.stringify(policy)}`);
+        logToBackend(`Policy updated with ID: ${policyId}`);
 
         renderPolicyList();
         selectPolicy(policyId);
@@ -1021,6 +1020,14 @@ function clearForm(button) {
     const policyId = form.dataset.policyId;
     const policy = policies.find(p => p.id === policyId);
     if (policy) {
+        policy.name = '';
+        policy.comment = '';
+        policy.action = 'accept';
+        policy.ssl_ssh_profile = '';
+        policy.logtraffic = 'all';
+        policy.logtraffic_start = 'enable';
+        policy.auto_asic_offload = 'enable';
+        policy.nat = 'disable';
         policy.srcInterfaces = [];
         policy.dstInterfaces = [];
         policy.srcAddresses = [];
@@ -1044,6 +1051,7 @@ function clearForm(button) {
         policy.ips_sensor_enabled = true;
         policy.ips_sensor = '';
         policy.ip_pool = '';
+        renderPolicyList();
     }
 }
 
@@ -1449,7 +1457,7 @@ function copyUrl() {
                 isGlobalCheckbox.checked = data.is_global || false;
             }
             const shortCode = data.short_code;
-            const shortUrl = `${window.location.origin}/s/${shortCode}`;
+            const shortUrl = `${window.location.origin}/fgt-confgen/s/${shortCode}`;
             console.log(`URL generated: ${shortUrl}`);
             logToBackend(`URL generated: ${shortUrl}`);
 
@@ -1748,8 +1756,10 @@ function toggleTheme() {
     localStorage.setItem('theme', newTheme);
     
     const toggleButton = document.getElementById('theme-toggle');
-    toggleButton.textContent = newTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-    toggleButton.setAttribute('aria-label', `Toggle ${newTheme === 'dark' ? 'light' : 'dark'} mode`);
+    if (toggleButton) {
+        toggleButton.textContent = newTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
+        toggleButton.setAttribute('aria-label', `Toggle ${newTheme === 'dark' ? 'light' : 'dark'} mode`);
+    }
     
     // Switch logo based on theme with cache-busting
     if (logo) {
@@ -1777,8 +1787,11 @@ document.addEventListener('DOMContentLoaded', () => {
     html.setAttribute('data-theme', initialTheme);
     
     const toggleButton = document.getElementById('theme-toggle');
-    toggleButton.textContent = initialTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-    toggleButton.setAttribute('aria-label', `Toggle ${initialTheme === 'dark' ? 'light' : 'dark'} mode`);
+    if (toggleButton) {
+        toggleButton.textContent = initialTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
+        toggleButton.setAttribute('aria-label', `Toggle ${initialTheme === 'dark' ? 'light' : 'dark'} mode`);
+        toggleButton.addEventListener('click', toggleTheme);
+    }
     
     // Set initial logo based on theme with cache-busting
     if (logo) {
@@ -1788,8 +1801,6 @@ document.addEventListener('DOMContentLoaded', () => {
         logToBackend(`Setting initial logo to: ${initialSrc}`);
         logo.src = initialSrc;
     }
-    
-    toggleButton.addEventListener('click', toggleTheme);
 
     const form = document.getElementById('policy-form');
     if (form) {
