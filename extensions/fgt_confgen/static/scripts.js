@@ -1746,17 +1746,10 @@ function copyOutput(outputId) {
         });
 }
 
-function sanitizeUrl(url) {
-    if (!url) return '';
-    if (/^(https?:\/\/|\/)/i.test(url) && !/javascript:/i.test(url)) {
-        return url;
-    }
-    return '';
-}
+
 
 function toggleTheme() {
     const html = document.documentElement;
-    const logo = document.querySelector('.sidebar-logo');
     const currentTheme = html.getAttribute('data-theme') || 'light';
     const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
     
@@ -1767,18 +1760,6 @@ function toggleTheme() {
     if (toggleButton) {
         toggleButton.textContent = newTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
         toggleButton.setAttribute('aria-label', `Toggle ${newTheme === 'dark' ? 'light' : 'dark'} mode`);
-    }
-    
-    // Switch logo based on theme with cache-busting
-    if (logo) {
-        const cacheBuster = `?v=${Date.now()}`;
-        const rawSrc = (newTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) || '';
-        const newSrc = sanitizeUrl(rawSrc + cacheBuster);
-        if (newSrc) {
-            console.log(`Switching logo to: ${newSrc}`);
-            logToBackend(`Switching logo to: ${newSrc}`);
-            logo.src = newSrc;
-        }
     }
     
     logToBackend(`Theme toggled to: ${newTheme}`);
@@ -1792,9 +1773,8 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('theme', initialTheme);
     }
     
-    // Apply initial theme and logo
+    // Apply initial theme
     const html = document.documentElement;
-    const logo = document.querySelector('.sidebar-logo');
     html.setAttribute('data-theme', initialTheme);
     
     const toggleButton = document.getElementById('theme-toggle');
@@ -1802,18 +1782,6 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleButton.textContent = initialTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
         toggleButton.setAttribute('aria-label', `Toggle ${initialTheme === 'dark' ? 'light' : 'dark'} mode`);
         toggleButton.addEventListener('click', toggleTheme);
-    }
-    
-    // Set initial logo based on theme with cache-busting
-    if (logo) {
-        const cacheBuster = `?v=${Date.now()}`;
-        const rawSrc = (initialTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) || '';
-        const initialSrc = sanitizeUrl(rawSrc + cacheBuster);
-        if (initialSrc) {
-            console.log(`Setting initial logo to: ${initialSrc}`);
-            logToBackend(`Setting initial logo to: ${initialSrc}`);
-            logo.src = initialSrc;
-        }
     }
 
     const form = document.getElementById('policy-form');
