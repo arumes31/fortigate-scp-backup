@@ -1746,6 +1746,14 @@ function copyOutput(outputId) {
         });
 }
 
+function sanitizeUrl(url) {
+    if (!url) return '';
+    if (/^(https?:\/\/|\/)/i.test(url) && !/javascript:/i.test(url)) {
+        return url;
+    }
+    return '';
+}
+
 function toggleTheme() {
     const html = document.documentElement;
     const logo = document.querySelector('.sidebar-logo');
@@ -1764,10 +1772,13 @@ function toggleTheme() {
     // Switch logo based on theme with cache-busting
     if (logo) {
         const cacheBuster = `?v=${Date.now()}`;
-        const newSrc = (newTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) + cacheBuster;
-        console.log(`Switching logo to: ${newSrc}`);
-        logToBackend(`Switching logo to: ${newSrc}`);
-        logo.src = newSrc;
+        const rawSrc = (newTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) || '';
+        const newSrc = sanitizeUrl(rawSrc + cacheBuster);
+        if (newSrc) {
+            console.log(`Switching logo to: ${newSrc}`);
+            logToBackend(`Switching logo to: ${newSrc}`);
+            logo.src = newSrc;
+        }
     }
     
     logToBackend(`Theme toggled to: ${newTheme}`);
@@ -1796,10 +1807,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set initial logo based on theme with cache-busting
     if (logo) {
         const cacheBuster = `?v=${Date.now()}`;
-        const initialSrc = (initialTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) + cacheBuster;
-        console.log(`Setting initial logo to: ${initialSrc}`);
-        logToBackend(`Setting initial logo to: ${initialSrc}`);
-        logo.src = initialSrc;
+        const rawSrc = (initialTheme === 'dark' ? logo.getAttribute('data-dark-src') : logo.getAttribute('data-light-src')) || '';
+        const initialSrc = sanitizeUrl(rawSrc + cacheBuster);
+        if (initialSrc) {
+            console.log(`Setting initial logo to: ${initialSrc}`);
+            logToBackend(`Setting initial logo to: ${initialSrc}`);
+            logo.src = initialSrc;
+        }
     }
 
     const form = document.getElementById('policy-form');
