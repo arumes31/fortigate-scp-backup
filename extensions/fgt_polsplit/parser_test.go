@@ -170,6 +170,17 @@ func TestParseBackupObjects(t *testing.T) {
 	if pb.SvcNames["https"] != "HTTPS" || pb.SvcNames["web access group"] != "Web Access Group" {
 		t.Errorf("service name map = %v", pb.SvcNames)
 	}
+	// A single contiguous range registers an exact range key.
+	if got := pb.SvcByKey["tcp/8000-8010"]; len(got) != 1 || got[0] != "MYRANGE" {
+		t.Errorf("range key lookup = %v", got)
+	}
+	// Group member sets are indexed by signature for exact-match reuse.
+	if got := pb.AddrGrpBySig[groupSig([]string{"H_Server1"})]; got != "G_Servers" {
+		t.Errorf("addrgrp sig lookup = %q", got)
+	}
+	if got := pb.SvcGrpBySig[groupSig([]string{"HTTPS"})]; got != "Web Access Group" {
+		t.Errorf("svcgrp sig lookup = %q", got)
+	}
 	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp"} {
 		if !pb.TakenNames[name] {
 			t.Errorf("taken names missing %q", name)

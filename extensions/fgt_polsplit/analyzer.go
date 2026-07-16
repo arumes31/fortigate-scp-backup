@@ -253,6 +253,10 @@ func policySortKey(p RecPolicy) string {
 // source-set and destination-set are identical merge into one policy carrying
 // several services.
 func BuildPerService(a *Analysis) []RecPolicy {
+	return finalizePolicies(buildPerServiceRaw(a))
+}
+
+func buildPerServiceRaw(a *Analysis) []RecPolicy {
 	buckets := map[string]*sideGroup{}
 	for _, t := range a.Tuples {
 		k := svcKey(t)
@@ -282,7 +286,142 @@ func BuildPerDestination(a *Analysis) []RecPolicy {
 		}
 		g.add(a, t)
 	}
-	return mergeGroups(buckets, func(g *sideGroup) string {
+	return finalizePolicies(mergeGroups(buckets, func(g *sideGroup) string {
 		return entitySig(g.src) + "|" + specSig(g.svcs)
+	}))
+}
+
+// hybridJaccard is the minimum overlap (on both the source and destination
+// sets) at which the hybrid strategy merges two per-service policies. Below
+// 1.0 the merge widens scope slightly — the union of two nearly-identical
+// sets — in exchange for fewer policies.
+const hybridJaccard = 0.75
+
+// BuildHybrid starts from the per-service grouping and greedily merges
+// policies whose source AND destination entity sets overlap strongly
+// (Jaccard ≥ hybridJaccard), yielding fewer, slightly wider policies than
+// per-service when several services flow between almost the same hosts.
+func BuildHybrid(a *Analysis) []RecPolicy {
+	pols := buildPerServiceRaw(a)
+	for merged := true; merged; {
+		merged = false
+	scan:
+		for i := 0; i < len(pols); i++ {
+			for j := i + 1; j < len(pols); j++ {
+				if jaccardEntities(pols[i].Src, pols[j].Src) >= hybridJaccard &&
+					jaccardEntities(pols[i].Dst, pols[j].Dst) >= hybridJaccard {
+					pols[i] = mergePolicies(pols[i], pols[j])
+					pols = append(pols[:j], pols[j+1:]...)
+					merged = true
+					break scan
+				}
+			}
+		}
+	}
+	sort.SliceStable(pols, func(i, j int) bool {
+		if pols[i].Hits != pols[j].Hits {
+			return pols[i].Hits > pols[j].Hits
+		}
+		return policySortKey(pols[i]) < policySortKey(pols[j])
 	})
+	return finalizePolicies(pols)
+}
+
+// jaccardEntities is |A∩B| / |A∪B| over the entity values of two policy sides.
+func jaccardEntities(a, b []Entity) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1
+	}
+	set := map[string]bool{}
+	for _, e := range a {
+		set[e.Value] = true
+	}
+	inter := 0
+	for _, e := range b {
+		if set[e.Value] {
+			inter++
+		} else {
+			set[e.Value] = true
+		}
+	}
+	return float64(inter) / float64(len(set))
+}
+
+// mergePolicies unions two recommendations (entity sets by value, services by
+// key) and sums their traffic.
+func mergePolicies(a, b RecPolicy) RecPolicy {
+	src := map[string]Entity{}
+	dst := map[string]Entity{}
+	svcs := map[string]ServiceSpec{}
+	for _, e := range a.Src {
+		src[e.Value] = e
+	}
+	for _, e := range b.Src {
+		src[e.Value] = e
+	}
+	for _, e := range a.Dst {
+		dst[e.Value] = e
+	}
+	for _, e := range b.Dst {
+		dst[e.Value] = e
+	}
+	for _, s := range a.Services {
+		svcs[s.Key] = s
+	}
+	for _, s := range b.Services {
+		svcs[s.Key] = s
+	}
+	return RecPolicy{
+		Src:      sortedEntities(src),
+		Dst:      sortedEntities(dst),
+		Services: sortedSpecs(svcs),
+		Hits:     a.Hits + b.Hits,
+	}
+}
+
+// finalizePolicies applies the post-grouping normalizations shared by every
+// strategy — currently the consolidation of adjacent single ports into ranges.
+func finalizePolicies(pols []RecPolicy) []RecPolicy {
+	for i := range pols {
+		pols[i].Services = consolidatePortRanges(pols[i].Services)
+	}
+	return pols
+}
+
+// consolidatePortRanges merges runs of adjacent single ports of the same
+// protocol (tcp/8080 + tcp/8081 + tcp/8082 → tcp/8080-8082) so the generator
+// emits one range object instead of three host objects. Non-adjacent ports,
+// portless protocols and pre-existing ranges pass through unchanged.
+func consolidatePortRanges(specs []ServiceSpec) []ServiceSpec {
+	singles := map[string][]ServiceSpec{}
+	var out []ServiceSpec
+	for _, s := range specs {
+		if (s.Proto == "tcp" || s.Proto == "udp" || s.Proto == "sctp") && s.Port > 0 && s.PortEnd == 0 {
+			singles[s.Proto] = append(singles[s.Proto], s)
+		} else {
+			out = append(out, s)
+		}
+	}
+	for proto, list := range singles {
+		sort.Slice(list, func(i, j int) bool { return list[i].Port < list[j].Port })
+		for i := 0; i < len(list); {
+			j := i
+			for j+1 < len(list) && list[j+1].Port == list[j].Port+1 {
+				j++
+			}
+			if j > i {
+				out = append(out, ServiceSpec{
+					Key:     fmt.Sprintf("%s/%d-%d", proto, list[i].Port, list[j].Port),
+					Proto:   proto,
+					Port:    list[i].Port,
+					PortEnd: list[j].Port,
+				})
+			} else {
+				out = append(out, list[i])
+			}
+			i = j + 1
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }

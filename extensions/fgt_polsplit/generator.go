@@ -23,6 +23,32 @@ func sanitizeName(s string) string {
 	return s
 }
 
+// policyNameSanitizeRe keeps the characters the path-based policy naming
+// convention needs — "VL1>VLXX (RDP+2)" — while still excluding quotes and
+// control characters (FortiGate policy names allow spaces, parens and >).
+var policyNameSanitizeRe = regexp.MustCompile(`[^A-Za-z0-9 ._()>+-]+`)
+
+func sanitizePolicyName(s string) string {
+	s = policyNameSanitizeRe.ReplaceAllString(s, "_")
+	s = strings.Trim(s, "_ ")
+	if s == "" {
+		s = "PS"
+	}
+	return s
+}
+
+// ticketSanitizeRe restricts the free-text change-ticket ID embedded into
+// generated `set comments` lines.
+var ticketSanitizeRe = regexp.MustCompile(`[^A-Za-z0-9 ._#:/-]+`)
+
+func sanitizeTicket(s string) string {
+	s = ticketSanitizeRe.ReplaceAllString(strings.TrimSpace(s), "_")
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return s
+}
+
 // namer allocates FortiGate object names that collide neither with existing
 // config objects nor with each other (FortiGate names are case-insensitive in
 // practice, so the taken-set is lowercased).
@@ -39,7 +65,12 @@ func newNamer(existing map[string]bool) *namer {
 }
 
 func (n *namer) alloc(base string, maxLen int) string {
-	base = sanitizeName(base)
+	return n.allocSanitized(sanitizeName(base), maxLen)
+}
+
+// allocSanitized allocates a collision-free name from an already-sanitized
+// base (policy names use the more permissive sanitizePolicyName).
+func (n *namer) allocSanitized(base string, maxLen int) string {
 	if len(base) > maxLen {
 		base = base[:maxLen]
 	}
@@ -93,12 +124,13 @@ func svcDisplay(s ServiceSpec) string {
 }
 
 // Generate turns one strategy's recommended policies into FortiGate CLI. It
-// reuses existing address/service objects on exact match, creates the missing
-// ones under the given prefix, allocates free policy IDs from the backup's ID
-// space and emits the sections in dependency order, followed by `move`
-// statements (new policies must sit above the original) and a block disabling
-// the original policy.
-func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, prefix, strategyKey string) GenResult {
+// reuses existing address/service objects and groups on exact match, creates
+// the missing ones under the given prefix, allocates free policy IDs from the
+// backup's ID space and emits the sections in dependency order, followed by
+// `move` statements (new policies must sit above the original) and a block
+// disabling the original policy. A non-empty ticket is embedded in every
+// generated policy's comments.
+func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, prefix, ticket string) GenResult {
 	res := GenResult{}
 	if len(policies) == 0 {
 		return res
@@ -168,6 +200,13 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 			var def, disp string
 			switch s.Proto {
 			case "tcp", "udp", "sctp":
+				if s.PortEnd > s.Port && s.Port > 0 {
+					// Consolidated adjacent-port range (tcp/8080-8082).
+					name = nm.alloc(fmt.Sprintf("%s_%s%d_%d", prefix, s.Proto, s.Port, s.PortEnd), 79)
+					def = fmt.Sprintf("        set %s-portrange %d-%d", s.Proto, s.Port, s.PortEnd)
+					disp = s.Key
+					break
+				}
 				if s.Port <= 0 || s.Port > 65535 {
 					// Logs carried no usable dstport for this protocol;
 					// `set tcp-portrange 0` would be rejected by FortiOS.
@@ -212,6 +251,13 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 			names = append(names, resolveEntity(e))
 		}
 		sort.Strings(names)
+		// An existing address group with exactly this member set is the same
+		// scope — reference it instead of inlining or creating a new group.
+		if len(names) > 1 {
+			if g, ok := parsed.AddrGrpBySig[groupSig(names)]; ok {
+				return []string{g}
+			}
+		}
 		if len(names) <= groupInlineMax {
 			return names
 		}
@@ -239,7 +285,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		p := &policies[i]
 		p.ID = nextID
 		nextID++
-		p.Name = polNamer.alloc(policyBaseName(prefix, *p, strategyKey), 35)
+		p.Name = polNamer.allocSanitized(sanitizePolicyName(policyBaseName(orig, *p)), 35)
 
 		src := resolveSide(p.Src, p.Name, "src")
 		dst := resolveSide(p.Dst, p.Name, "dst")
@@ -248,6 +294,13 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 			svcs = append(svcs, resolveService(s))
 		}
 		sort.Strings(svcs)
+		// An existing service group with exactly these members is the same
+		// scope — reference the group instead of the member list.
+		if len(svcs) > 1 {
+			if g, ok := parsed.SvcGrpBySig[groupSig(svcs)]; ok {
+				svcs = []string{g}
+			}
+		}
 
 		var b strings.Builder
 		fmt.Fprintf(&b, "    edit %d\n", p.ID)
@@ -259,7 +312,11 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		fmt.Fprintf(&b, "        set dstaddr %s\n", quoteList(dst))
 		fmt.Fprintf(&b, "        set service %s\n", quoteList(svcs))
 		b.WriteString("        set logtraffic all\n")
-		fmt.Fprintf(&b, "        set comments %q\n", fmt.Sprintf("Split from policy %d (FortiSafe polsplit)", orig.ID))
+		comment := fmt.Sprintf("Split from policy %d (FortiSafe polsplit)", orig.ID)
+		if t := sanitizeTicket(ticket); t != "" {
+			comment += " [" + t + "]"
+		}
+		fmt.Fprintf(&b, "        set comments %q\n", comment)
 		b.WriteString("    next")
 		polDefs = append(polDefs, b.String())
 
@@ -306,23 +363,53 @@ func displayAction(a string) string {
 	return a
 }
 
-// policyBaseName builds a readable policy name: prefix + the strategy's
-// grouping dimension (service or destination), with a +N marker when the
-// policy merged several of them.
-func policyBaseName(prefix string, p RecPolicy, strategyKey string) string {
-	label := ""
-	if strategyKey == "per_destination" && len(p.Dst) > 0 {
-		label = p.Dst[0].Value
-		if len(p.Dst) > 1 {
-			label += fmt.Sprintf("+%d", len(p.Dst)-1)
-		}
-	} else if len(p.Services) > 0 {
+// policyBaseName builds the path-based policy name convention:
+// "SRCINTF>DSTINTF (SERVICE)" — e.g. "VL1>VL51 (RDP)", "PORT1>PORT2 (SSH)".
+// Multiple interfaces sharing a common prefix collapse to prefix+XX
+// ("VL1>VLXX (RDP)"); additional services get a +N marker.
+func policyBaseName(orig *OrigPolicy, p RecPolicy) string {
+	label := "ANY"
+	if len(p.Services) > 0 {
 		label = svcDisplay(p.Services[0])
 		if len(p.Services) > 1 {
 			label += fmt.Sprintf("+%d", len(p.Services)-1)
 		}
 	}
-	return prefix + "-" + label
+	return fmt.Sprintf("%s>%s (%s)", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf), label)
+}
+
+// ifaceLabel renders one side of the policy path: a single interface keeps
+// its (uppercased) name; multiple interfaces sharing the same non-numeric
+// prefix collapse to prefix+"XX" (VL2+VL3 → VLXX); mixed prefixes become
+// "MULTI".
+func ifaceLabel(intfs []string) string {
+	switch len(intfs) {
+	case 0:
+		return "ANY"
+	case 1:
+		return strings.ToUpper(intfs[0])
+	}
+	prefix := nonDigitPrefix(intfs[0])
+	for _, s := range intfs[1:] {
+		if !strings.EqualFold(nonDigitPrefix(s), prefix) {
+			return "MULTI"
+		}
+	}
+	if prefix == "" {
+		return "MULTI"
+	}
+	return strings.ToUpper(prefix) + "XX"
+}
+
+// nonDigitPrefix returns the part of an interface name before its first digit
+// ("VL100" → "VL", "port1" → "port").
+func nonDigitPrefix(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func atoiSafe(s string) int {

@@ -21,6 +21,9 @@ type TrafficTuple struct {
 	Hits     int64  `json:"hits"`
 	LastSeen string `json:"last_seen,omitempty"`
 	IPv6     bool   `json:"ipv6"`
+	// Flow marks the tuple relative to the optional baseline window:
+	// "new" (analysis window only) or "stale" (baseline only).
+	Flow string `json:"flow,omitempty"`
 }
 
 // Entity is one side member of a recommended policy: a single host or a
@@ -33,9 +36,10 @@ type Entity struct {
 
 // ServiceSpec is a normalized service observed in the logs.
 type ServiceSpec struct {
-	Key     string `json:"key"`   // canonical "tcp/443", "icmp", "ip/47"
-	Proto   string `json:"proto"` // tcp|udp|sctp|icmp|icmp6|ip-<n>
-	Port    int    `json:"port"`  // 0 when portless
+	Key     string `json:"key"`                // canonical "tcp/443", "tcp/8080-8082", "icmp", "ip/47"
+	Proto   string `json:"proto"`              // tcp|udp|sctp|icmp|icmp6|ip-<n>
+	Port    int    `json:"port"`               // 0 when portless; range start when PortEnd is set
+	PortEnd int    `json:"port_end,omitempty"` // consolidated range end (0 = single port)
 	LogName string `json:"log_name,omitempty"`
 }
 
@@ -111,6 +115,12 @@ type ParsedBackup struct {
 	SvcByKey map[string][]string
 	// SvcNames maps lowercased service/service-group names to their exact name.
 	SvcNames map[string]string
+	// AddrGrpBySig maps the member-set signature (groupSig) of every existing
+	// address group to its name, so a recommendation whose member set exactly
+	// matches an existing group references it instead of creating a new one.
+	AddrGrpBySig map[string]string
+	// SvcGrpBySig is the same for existing service groups.
+	SvcGrpBySig map[string]string
 
 	// TakenNames is every existing address/addrgrp/service/service-group name
 	// (lowercased), so newly generated object names never collide.

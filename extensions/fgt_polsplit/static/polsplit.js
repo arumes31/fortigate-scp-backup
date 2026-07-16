@@ -132,6 +132,9 @@ async function analyze() {
         rollup_threshold: parseInt($('ps-rollup-threshold').value, 10) || 5,
         rollup_mask: parseInt($('ps-rollup-mask').value, 10) || 24,
         prefix: $('ps-prefix').value.trim(),
+        compare_seconds: parseInt($('ps-compare').value, 10) || 0,
+        resolve_dns: $('ps-resolve-dns').checked,
+        ticket: $('ps-ticket').value.trim(),
     }, range);
 
     const btn = $('ps-analyze-btn');
@@ -179,9 +182,26 @@ function renderResults(data) {
         <td>${esc(t.srcip)}</td><td>${esc(t.dstip)}</td>
         <td>${esc(t.proto)}</td><td>${t.port || '—'}</td>
         <td>${esc(t.service || '—')}</td><td class="ps-num">${esc(t.hits)}</td>
-        <td>${esc(fmtTime(t.last_seen))}</td></tr>`).join('');
+        <td>${esc(fmtTime(t.last_seen))}</td>
+        <td>${t.flow === 'new' ? '<span class="ps-badge-new">NEW</span>' : ''}</td></tr>`).join('');
     $('ps-tuples-note').textContent = data.tuple_count > tuples.length
         ? `Showing top ${tuples.length} of ${data.tuple_count} tuples by hits.` : '';
+
+    // baseline-only (stale) flows
+    const stale = data.stale_tuples || [];
+    $('ps-stale-wrap').hidden = stale.length === 0;
+    $('ps-stale-count').textContent = stale.length;
+    $('ps-stale-table').querySelector('tbody').innerHTML = stale.map(t => `<tr>
+        <td>${esc(t.srcip)}</td><td>${esc(t.dstip)}</td>
+        <td>${esc(t.proto)}</td><td>${t.port || '—'}</td>
+        <td class="ps-num">${esc(t.hits)}</td><td>${esc(fmtTime(t.last_seen))}</td></tr>`).join('');
+
+    // FQDN suggestions
+    const dns = data.dns_suggestions || [];
+    $('ps-dns-wrap').hidden = dns.length === 0;
+    $('ps-dns-count').textContent = dns.length;
+    $('ps-dns-table').querySelector('tbody').innerHTML = dns.map(d => `<tr>
+        <td>${esc(d.ip)}</td><td>${esc(d.name)}</td><td class="ps-num">${esc(d.hits)}</td></tr>`).join('');
 
     renderStrategies(data.strategies || []);
     $('ps-results').hidden = false;

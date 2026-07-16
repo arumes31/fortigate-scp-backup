@@ -435,10 +435,13 @@ An optional module (`EXT_FGT_CONF_GEN=true`) for managing templates and generati
 An optional module (`EXT_FGT_POLSPLIT=true`) that helps restrict overly-open firewall policies by splitting them into smaller, tightly-scoped ones based on the traffic they actually carry.
 
 * **Log-driven analysis** — pick a firewall and a policy ID, choose a window (30 m – 30 d or a custom range), and the module aggregates the policy's Graylog traffic logs server-side into source/destination/service tuples — complete even for month-long windows on busy policies.
-* **Split strategies** — recommendations per service and per destination (identical-signature groups are merged), with the lower-footprint strategy flagged as recommended.
-* **Object reuse & gap list** — existing address/service objects from the latest config backup are referenced when they match exactly; everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix.
+* **Split strategies** — recommendations per service, per destination, and a hybrid strategy that clusters services flowing between strongly overlapping host sets into shared policies; the lowest-footprint strategy is flagged as recommended.
+* **Path-based policy naming** — split policies are named after their interface path plus service, e.g. `VL1>VL51 (RDP)`; multiple interfaces sharing a prefix collapse to `XX` (`VL1>VLXX (RDP)`).
+* **Object & group reuse, gap list** — existing address/service objects *and* address/service groups from the latest config backup are referenced on exact match (including exact port-range objects); everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix. Adjacent single ports consolidate into range objects (`8080-8082`).
 * **Subnet rollup** — optionally collapses many observed hosts in the same subnet (threshold and mask configurable) into one subnet object.
-* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, moves the splits above the original and finally disables (not deletes) it.
+* **Baseline comparison** — optionally compares the analysis window against a preceding baseline window, flagging **new** flows and listing **stale** baseline-only flows that the recommendations would not cover.
+* **FQDN suggestions** — optional best-effort PTR resolution of observed destinations, offered as candidate FQDN objects (never applied automatically).
+* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, wraps multi-VDOM output in the correct `config vdom` context, moves the splits above the original and finally disables (not deletes) it. An optional change-ticket ID is embedded in every generated policy's comments.
 
 
 ---

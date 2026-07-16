@@ -111,6 +111,88 @@ func TestSvcKeyAndProtoName(t *testing.T) {
 	}
 }
 
+// TestConsolidatePortRanges: adjacent single ports merge into one range;
+// gaps, other protocols and portless specs pass through.
+func TestConsolidatePortRanges(t *testing.T) {
+	in := []ServiceSpec{
+		{Key: "tcp/8080", Proto: "tcp", Port: 8080},
+		{Key: "tcp/8082", Proto: "tcp", Port: 8082},
+		{Key: "tcp/8081", Proto: "tcp", Port: 8081},
+		{Key: "tcp/9000", Proto: "tcp", Port: 9000},
+		{Key: "udp/8081", Proto: "udp", Port: 8081},
+		{Key: "icmp", Proto: "icmp"},
+	}
+	out := consolidatePortRanges(in)
+	keys := make([]string, len(out))
+	for i, s := range out {
+		keys[i] = s.Key
+	}
+	want := map[string]bool{"tcp/8080-8082": true, "tcp/9000": true, "udp/8081": true, "icmp": true}
+	if len(out) != len(want) {
+		t.Fatalf("consolidated keys = %v", keys)
+	}
+	for _, k := range keys {
+		if !want[k] {
+			t.Errorf("unexpected key %q in %v", k, keys)
+		}
+	}
+	for _, s := range out {
+		if s.Key == "tcp/8080-8082" && (s.Port != 8080 || s.PortEnd != 8082) {
+			t.Errorf("range spec = %+v", s)
+		}
+	}
+}
+
+// TestBuildHybrid: per-service groups with strongly overlapping (but not
+// identical) src/dst sets merge into one policy.
+func TestBuildHybrid(t *testing.T) {
+	var tuples []TrafficTuple
+	// HTTPS: sources A,B,C,D → dst X
+	for _, s := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"} {
+		tuples = append(tuples, tup(s, "10.9.9.9", "tcp", 443, "HTTPS", 10))
+	}
+	// SSH: sources A,B,C (3/4 overlap = 0.75) → same dst X
+	for _, s := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
+		tuples = append(tuples, tup(s, "10.9.9.9", "tcp", 22, "SSH", 5))
+	}
+	// DNS: disjoint source → different dst (must stay separate)
+	tuples = append(tuples, tup("172.16.0.1", "10.8.8.8", "udp", 53, "DNS", 3))
+
+	a := Analyze(tuples, AnalyzeOptions{})
+	pols := BuildHybrid(a)
+	if len(pols) != 2 {
+		t.Fatalf("expected 2 hybrid policies, got %d: %+v", len(pols), pols)
+	}
+	// Merged policy carries both services and the union of sources.
+	if len(pols[0].Services) != 2 || len(pols[0].Src) != 4 || pols[0].Hits != 55 {
+		t.Errorf("merged policy = %+v", pols[0])
+	}
+	// Per-service on the same input yields 3 policies (no merge).
+	if got := BuildPerService(a); len(got) != 3 {
+		t.Errorf("per-service should keep 3 policies, got %d", len(got))
+	}
+}
+
+// TestFlagFlows: analysis-only tuples are marked new; baseline-only returned
+// as stale.
+func TestFlagFlows(t *testing.T) {
+	current := []TrafficTuple{
+		tup("10.0.0.1", "10.9.9.9", "tcp", 443, "HTTPS", 10), // established
+		tup("10.0.0.2", "10.9.9.9", "tcp", 22, "SSH", 5),     // new
+	}
+	baseline := []TrafficTuple{
+		tup("10.0.0.1", "10.9.9.9", "tcp", 443, "HTTPS", 99),
+		tup("10.0.0.3", "10.7.7.7", "udp", 53, "DNS", 7), // stale
+	}
+	stale := flagFlows(current, baseline)
+	if current[0].Flow != "" || current[1].Flow != "new" {
+		t.Errorf("flow flags = %q / %q", current[0].Flow, current[1].Flow)
+	}
+	if len(stale) != 1 || stale[0].SrcIP != "10.0.0.3" || stale[0].Flow != "stale" {
+		t.Errorf("stale = %+v", stale)
+	}
+}
+
 func TestParseTupleRows(t *testing.T) {
 	schema := []aggregateColumn{
 		{ColumnType: "metric", Function: "count"},

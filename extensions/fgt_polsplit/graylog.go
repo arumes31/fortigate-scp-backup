@@ -299,15 +299,9 @@ func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyI
 	if !tr.valid() {
 		return nil, 0, nil, errors.New("invalid time range")
 	}
-	sources := e.graylogSources(fqdn)
-	query, err := buildQuery(e.cfg.GraylogPolsplitQuery, sources, policyID)
+	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
 	if err != nil {
 		return nil, 0, nil, err
-	}
-	if vdom != "" {
-		// FortiGate syslog carries the virtual domain in the `vd` field
-		// (there is no `vdom` field in FortiOS log output).
-		query = query + ` AND vd:"` + escapeGraylogValue(vdom) + `"`
 	}
 
 	totalMessages, err = e.countMessages(ctx, query, tr)
@@ -344,8 +338,42 @@ func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyI
 
 	warnings = append(warnings, truncationWarnings(tuples)...)
 	e.logger.Info("polsplit: graylog traffic fetch", "fqdn", fqdn, "policyid", policyID,
-		"sources", strings.Join(sources, ","), "messages", totalMessages, "tuples", len(tuples))
+		"sources", strings.Join(e.graylogSources(fqdn), ","), "messages", totalMessages, "tuples", len(tuples))
 	return tuples, totalMessages, warnings, nil
+}
+
+// buildPolicyQuery resolves the firewall's Graylog sources and assembles the
+// full traffic-log query for one policy, including the VDOM filter.
+func (e *Extension) buildPolicyQuery(fqdn string, policyID int, vdom string) (string, error) {
+	sources := e.graylogSources(fqdn)
+	query, err := buildQuery(e.cfg.GraylogPolsplitQuery, sources, policyID)
+	if err != nil {
+		return "", err
+	}
+	if vdom != "" {
+		// FortiGate syslog carries the virtual domain in the `vd` field
+		// (there is no `vdom` field in FortiOS log output).
+		query = query + ` AND vd:"` + escapeGraylogValue(vdom) + `"`
+	}
+	return query, nil
+}
+
+// fetchBaselineTuples runs only the tuple aggregation pair for the baseline
+// comparison window — no message count and no service decoration, since flow
+// flagging needs just the src/dst/proto/port identity sets.
+func (e *Extension) fetchBaselineTuples(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) ([]TrafficTuple, error) {
+	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
+		return nil, errors.New("graylog not configured")
+	}
+	if !tr.valid() {
+		return nil, errors.New("invalid baseline time range")
+	}
+	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
+	if err != nil {
+		return nil, err
+	}
+	tuples, _, err := e.aggregateTuples(ctx, query, tr, false)
+	return tuples, err
 }
 
 // aggregateTuples runs the tuple aggregation pair: one query over

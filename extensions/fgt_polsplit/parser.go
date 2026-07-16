@@ -82,11 +82,29 @@ type svcEntry struct {
 	ranges   map[string][]string // proto → port-range tokens ("443", "80-90", "443:1024-65535")
 }
 
+// grpEntry accumulates one address- or service-group while its section is open.
+type grpEntry struct {
+	name    string
+	section string // "firewall addrgrp" | "firewall service group"
+	members []string
+}
+
 type policyEntry struct {
 	id    int
 	vdom  string
 	pol   OrigPolicy
 	lines []string
+}
+
+// groupSig is the canonical identity of a member set: sorted, lowercased,
+// NUL-joined. Used to match recommendation sides against existing groups.
+func groupSig(names []string) string {
+	lower := make([]string, len(names))
+	for i, n := range names {
+		lower[i] = strings.ToLower(n)
+	}
+	sort.Strings(lower)
+	return strings.Join(lower, "\x00")
 }
 
 // frame is one level of the `config … end` nesting stack.
@@ -96,18 +114,22 @@ type frame struct {
 }
 
 type vdomInventory struct {
-	addrByCIDR map[string][]string
-	svcByKey   map[string][]string
-	svcNames   map[string]string
-	takenNames map[string]bool
+	addrByCIDR   map[string][]string
+	svcByKey     map[string][]string
+	svcNames     map[string]string
+	takenNames   map[string]bool
+	addrGrpBySig map[string]string
+	svcGrpBySig  map[string]string
 }
 
 func newVDOMInventory() *vdomInventory {
 	return &vdomInventory{
-		addrByCIDR: make(map[string][]string),
-		svcByKey:   make(map[string][]string),
-		svcNames:   make(map[string]string),
-		takenNames: make(map[string]bool),
+		addrByCIDR:   make(map[string][]string),
+		svcByKey:     make(map[string][]string),
+		svcNames:     make(map[string]string),
+		takenNames:   make(map[string]bool),
+		addrGrpBySig: make(map[string]string),
+		svcGrpBySig:  make(map[string]string),
 	}
 }
 
@@ -147,6 +169,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 
 	var addr *addrEntry
 	var svc *svcEntry
+	var grp *grpEntry
 	var pol *policyEntry
 	policyIDsByVDOM := map[string][]int{}
 	policyNamesByVDOM := map[string]map[string]bool{}
@@ -174,6 +197,26 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			inv.svcByKey[key] = append(inv.svcByKey[key], svc.name)
 		}
 		svc = nil
+	}
+	finishGrp := func() {
+		if grp == nil {
+			return
+		}
+		if len(grp.members) > 0 {
+			inv := getInv(currentVDOM())
+			sig := groupSig(grp.members)
+			// First definition wins on duplicate member sets.
+			if grp.section == "firewall addrgrp" {
+				if _, ok := inv.addrGrpBySig[sig]; !ok {
+					inv.addrGrpBySig[sig] = grp.name
+				}
+			} else {
+				if _, ok := inv.svcGrpBySig[sig]; !ok {
+					inv.svcGrpBySig[sig] = grp.name
+				}
+			}
+		}
+		grp = nil
 	}
 	finishPol := func() {
 		if pol == nil {
@@ -204,6 +247,8 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			finishAddr()
 		case "firewall service custom":
 			finishSvc()
+		case "firewall addrgrp", "firewall service group":
+			finishGrp()
 		case "firewall policy":
 			finishPol()
 		}
@@ -249,6 +294,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				if f.section == "firewall service group" {
 					inv.svcNames[strings.ToLower(name)] = name
 				}
+				grp = &grpEntry{name: name, section: f.section}
 			case "firewall policy":
 				if id, err := strconv.Atoi(name); err == nil {
 					pol = &policyEntry{id: id, vdom: currentVDOM()}
@@ -276,6 +322,10 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 					addr.startIP = val
 				case "end-ip":
 					addr.endIP = val
+				}
+			case grp != nil && (f.section == "firewall addrgrp" || f.section == "firewall service group"):
+				if key == "member" {
+					grp.members = append(grp.members, splitConfigValues(val)...)
 				}
 			case svc != nil && f.section == "firewall service custom":
 				switch key {
@@ -323,6 +373,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 	// Finalize whatever is still open.
 	finishAddr()
 	finishSvc()
+	finishGrp()
 	finishPol()
 
 	var policyVDOMs []string
@@ -351,6 +402,8 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		SvcByKey:      map[string][]string{},
 		SvcNames:      map[string]string{},
 		TakenNames:    map[string]bool{},
+		AddrGrpBySig:  map[string]string{},
+		SvcGrpBySig:   map[string]string{},
 		UsedPolicyIDs: []int{},
 	}
 
@@ -366,6 +419,8 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		pb.SvcByKey = inv.svcByKey
 		pb.SvcNames = inv.svcNames
 		pb.TakenNames = inv.takenNames
+		pb.AddrGrpBySig = inv.addrGrpBySig
+		pb.SvcGrpBySig = inv.svcGrpBySig
 	}
 
 	for k := range pb.AddrByCIDR {
@@ -410,10 +465,10 @@ func (a *addrEntry) cidr() string {
 	return ""
 }
 
-// singleKey returns the canonical service key ("tcp/443", "icmp") when the
-// object matches exactly one protocol/port, so it can substitute for observed
-// traffic without widening scope. Ranges, port lists and source-port
-// restrictions return "".
+// singleKey returns the canonical service key ("tcp/443", "tcp/8000-8010",
+// "icmp") when the object matches exactly one protocol/port or one contiguous
+// range, so it can substitute for observed traffic without widening scope.
+// Port lists and source-port restrictions return "".
 func (s *svcEntry) singleKey() string {
 	switch strings.ToUpper(s.protocol) {
 	case "ICMP":
@@ -446,10 +501,22 @@ func (s *svcEntry) singleKey() string {
 			}
 			if strings.Contains(dst, "-") {
 				lohi := strings.SplitN(dst, "-", 2)
-				if len(lohi) != 2 || lohi[0] != lohi[1] {
+				if len(lohi) != 2 {
 					return ""
 				}
-				dst = lohi[0]
+				lo, errLo := strconv.Atoi(lohi[0])
+				hi, errHi := strconv.Atoi(lohi[1])
+				if errLo != nil || errHi != nil || lo <= 0 || hi > 65535 || lo > hi {
+					return ""
+				}
+				if lo == hi {
+					key = fmt.Sprintf("%s/%d", proto, lo)
+				} else {
+					// One contiguous range is as exact as a single port: it can
+					// substitute for a consolidated "proto/lo-hi" spec.
+					key = fmt.Sprintf("%s/%d-%d", proto, lo, hi)
+				}
+				continue
 			}
 			if p, err := strconv.Atoi(dst); err == nil && p > 0 {
 				key = fmt.Sprintf("%s/%d", proto, p)

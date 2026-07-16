@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -192,7 +196,19 @@ type analyzeRequest struct {
 	RollupThreshold int    `json:"rollup_threshold"`
 	RollupMask      int    `json:"rollup_mask"`
 	Prefix          string `json:"prefix"`
+	// CompareSeconds enables the baseline comparison: tuples are flagged
+	// "new" when absent from the window [now-CompareSeconds, now-RangeSeconds]
+	// and baseline-only tuples are reported as stale. 0 = off.
+	CompareSeconds int `json:"compare_seconds"`
+	// ResolveDNS enables best-effort PTR lookups for destination IPs,
+	// returned as FQDN-object suggestions.
+	ResolveDNS bool `json:"resolve_dns"`
+	// Ticket is an optional change-ticket ID embedded in generated comments.
+	Ticket string `json:"ticket"`
 }
+
+// graylogTimeLayout is Graylog's absolute-timerange format (UTC, ms).
+const graylogTimeLayout = "2006-01-02T15:04:05.000Z"
 
 // parseTimeRange validates the requested window and converts a custom range to
 // the Graylog absolute format (UTC, millisecond precision).
@@ -217,8 +233,104 @@ func parseTimeRange(req analyzeRequest) (timeRange, error) {
 	if to.Sub(from) > maxRangeSeconds*time.Second {
 		return timeRange{}, fmt.Errorf("custom range too large (max %d days)", maxRangeSeconds/86400)
 	}
-	const layout = "2006-01-02T15:04:05.000Z"
-	return timeRange{From: from.UTC().Format(layout), To: to.UTC().Format(layout)}, nil
+	return timeRange{From: from.UTC().Format(graylogTimeLayout), To: to.UTC().Format(graylogTimeLayout)}, nil
+}
+
+// flagFlows marks analysis-window tuples absent from the baseline as "new"
+// and returns the baseline-only tuples (marked "stale"), sorted by hits.
+func flagFlows(current, baseline []TrafficTuple) []TrafficTuple {
+	type flowKey struct {
+		src, dst, proto string
+		port            int
+	}
+	base := map[flowKey]bool{}
+	for _, t := range baseline {
+		base[flowKey{t.SrcIP, t.DstIP, t.Proto, t.Port}] = true
+	}
+	cur := map[flowKey]bool{}
+	for i := range current {
+		k := flowKey{current[i].SrcIP, current[i].DstIP, current[i].Proto, current[i].Port}
+		cur[k] = true
+		if !base[k] {
+			current[i].Flow = "new"
+		}
+	}
+	var stale []TrafficTuple
+	for _, t := range baseline {
+		if !cur[flowKey{t.SrcIP, t.DstIP, t.Proto, t.Port}] {
+			t.Flow = "stale"
+			stale = append(stale, t)
+		}
+	}
+	sort.SliceStable(stale, func(i, j int) bool { return stale[i].Hits > stale[j].Hits })
+	return stale
+}
+
+// dnsSuggestion is one best-effort PTR result for an observed destination,
+// offered as a candidate FQDN address object (never applied automatically —
+// FQDN objects resolve dynamically and can drift from the observed IP).
+type dnsSuggestion struct {
+	IP   string `json:"ip"`
+	Name string `json:"name"`
+	Hits int64  `json:"hits"`
+}
+
+// resolveDstNames PTR-resolves the top destination IPs by traffic volume,
+// bounded by a short overall deadline so a slow resolver cannot stall the
+// analysis response.
+func resolveDstNames(ctx context.Context, tuples []TrafficTuple) []dnsSuggestion {
+	hits := map[string]int64{}
+	for _, t := range tuples {
+		if !t.IPv6 {
+			hits[t.DstIP] += t.Hits
+		}
+	}
+	ips := make([]string, 0, len(hits))
+	for ip := range hits {
+		ips = append(ips, ip)
+	}
+	sort.Slice(ips, func(i, j int) bool {
+		if hits[ips[i]] != hits[ips[j]] {
+			return hits[ips[i]] > hits[ips[j]]
+		}
+		return ips[i] < ips[j]
+	})
+	if len(ips) > 100 {
+		ips = ips[:100]
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	resolver := &net.Resolver{}
+	var (
+		mu  sync.Mutex
+		out []dnsSuggestion
+		wg  sync.WaitGroup
+	)
+	sem := make(chan struct{}, 10)
+	for _, ip := range ips {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			names, err := resolver.LookupAddr(ctx, ip)
+			if err != nil || len(names) == 0 {
+				return
+			}
+			mu.Lock()
+			out = append(out, dnsSuggestion{IP: ip, Name: strings.TrimSuffix(names[0], "."), Hits: hits[ip]})
+			mu.Unlock()
+		}(ip)
+	}
+	wg.Wait()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		return out[i].IP < out[j].IP
+	})
+	return out
 }
 
 func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +377,48 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	warnings = append(warnings, policyWarnings(parsed.Policy)...)
+
+	// Baseline comparison: flag tuples new since [now-compare, now-range] and
+	// collect baseline-only (stale) flows. Only meaningful for preset windows.
+	var staleTuples []TrafficTuple
+	if req.CompareSeconds > 0 {
+		switch {
+		case req.RangeSeconds <= 0:
+			warnings = append(warnings, "baseline comparison is only available with preset time ranges — skipped")
+		case req.CompareSeconds <= req.RangeSeconds:
+			warnings = append(warnings, "baseline comparison window must be longer than the analysis window — skipped")
+		default:
+			if req.CompareSeconds > maxRangeSeconds {
+				req.CompareSeconds = maxRangeSeconds
+			}
+			now := time.Now().UTC()
+			baseTr := timeRange{
+				From: now.Add(-time.Duration(req.CompareSeconds) * time.Second).Format(graylogTimeLayout),
+				To:   now.Add(-time.Duration(req.RangeSeconds) * time.Second).Format(graylogTimeLayout),
+			}
+			baseTuples, baseErr := e.fetchBaselineTuples(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, baseTr)
+			if baseErr != nil {
+				warnings = append(warnings, "baseline comparison failed: "+baseErr.Error())
+			} else {
+				staleTuples = flagFlows(tuples, baseTuples)
+				newCount := 0
+				for _, t := range tuples {
+					if t.Flow == "new" {
+						newCount++
+					}
+				}
+				if newCount > 0 {
+					warnings = append(warnings, fmt.Sprintf("%d tuple(s) are NEW compared to the baseline window — recent flows may be one-offs", newCount))
+				}
+				if len(staleTuples) > 0 {
+					warnings = append(warnings, fmt.Sprintf("%d baseline tuple(s) did not recur in the analysis window (stale) — they are NOT covered by the recommendations", len(staleTuples)))
+				}
+				if len(staleTuples) > maxTuplesInResponse {
+					staleTuples = staleTuples[:maxTuplesInResponse]
+				}
+			}
+		}
+	}
 	if totalMessages > 0 && len(tuples) == 0 {
 		warnings = append(warnings, fmt.Sprintf("%d log messages matched but none carried usable srcip/dstip fields — check the Graylog field extraction or GRAYLOG_POLSPLIT_QUERY", totalMessages))
 	}
@@ -288,6 +442,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	strategies := []Strategy{
 		{Key: "per_service", Label: "One policy per service"},
 		{Key: "per_destination", Label: "One policy per destination"},
+		{Key: "hybrid", Label: "Hybrid (similarity-clustered)"},
 	}
 	for i := range strategies {
 		var pols []RecPolicy
@@ -296,8 +451,10 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 			pols = BuildPerService(analysis)
 		case "per_destination":
 			pols = BuildPerDestination(analysis)
+		case "hybrid":
+			pols = BuildHybrid(analysis)
 		}
-		gen := Generate(parsed.Policy, parsed, pols, prefix, strategies[i].Key)
+		gen := Generate(parsed.Policy, parsed, pols, prefix, req.Ticket)
 		strategies[i].Policies = pols
 		strategies[i].Config = gen.Config
 		strategies[i].NewObjects = gen.NewObjects
@@ -314,18 +471,30 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		respTuples = respTuples[:maxTuplesInResponse]
 	}
 
-	e.log(r, "PolSplit Analyze", fmt.Sprintf("Analyzed policy %d of firewall %d (%d tuples, %d messages)",
-		req.PolicyID, req.FwID, len(analysis.Tuples), totalMessages))
+	// Best-effort PTR suggestions for destination IPs (opt-in).
+	var dnsSuggestions []dnsSuggestion
+	if req.ResolveDNS {
+		dnsSuggestions = resolveDstNames(r.Context(), analysis.Tuples)
+	}
+
+	logMsg := fmt.Sprintf("Analyzed policy %d of firewall %d (%d tuples, %d messages)",
+		req.PolicyID, req.FwID, len(analysis.Tuples), totalMessages)
+	if t := sanitizeTicket(req.Ticket); t != "" {
+		logMsg += " [ticket " + t + "]"
+	}
+	e.log(r, "PolSplit Analyze", logMsg)
 	e.writeJSON(w, map[string]any{
-		"firewall":       FirewallRef{ID: req.FwID, FQDN: fqdn},
-		"policy":         parsed.Policy,
-		"action_display": displayAction(parsed.Policy.Action),
-		"backup_time":    ts.In(e.tz).Format("2006-01-02 15:04"),
-		"total_messages": totalMessages,
-		"tuple_count":    len(analysis.Tuples),
-		"tuples":         respTuples,
-		"strategies":     strategies,
-		"warnings":       warnings,
+		"firewall":        FirewallRef{ID: req.FwID, FQDN: fqdn},
+		"policy":          parsed.Policy,
+		"action_display":  displayAction(parsed.Policy.Action),
+		"backup_time":     ts.In(e.tz).Format("2006-01-02 15:04"),
+		"total_messages":  totalMessages,
+		"tuple_count":     len(analysis.Tuples),
+		"tuples":          respTuples,
+		"stale_tuples":    staleTuples,
+		"dns_suggestions": dnsSuggestions,
+		"strategies":      strategies,
+		"warnings":        warnings,
 	})
 }
 

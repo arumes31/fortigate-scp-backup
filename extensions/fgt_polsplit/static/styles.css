@@ -214,6 +214,20 @@ select:focus {
     color: var(--text-muted);
 }
 
+.ps-badge-new {
+    background: var(--warn, #e0af68);
+    color: var(--surface, #000);
+    font-size: 9px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+}
+
+#ps-stale-wrap h3,
+#ps-dns-wrap h3 {
+    font-size: 13px;
+    margin: 16px 0 8px;
+}
+
 .ps-panel h3 {
     font-size: 13px;
     margin: 16px 0 8px;
