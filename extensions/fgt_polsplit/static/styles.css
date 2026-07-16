@@ -1,0 +1,238 @@
+/* Policy Split Advisor — adapts to the FortiSafe TTY design system. */
+
+.ps-intro {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 8px 0 16px;
+    max-width: 900px;
+}
+
+main .card {
+    margin-bottom: 20px;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 12px;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.field label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.form-control,
+input[type="text"],
+input[type="number"],
+input[type="datetime-local"],
+select {
+    width: 100%;
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.12s ease;
+}
+
+.form-control:focus,
+input:focus,
+select:focus {
+    border-color: var(--accent);
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.checkbox-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.ps-field-btn {
+    justify-content: flex-end;
+}
+
+/* Time range preset row */
+.ps-range-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.ps-range.active,
+.ps-tab.active {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Original policy box */
+.ps-policy-box {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    padding: 12px;
+}
+
+.ps-policy-box h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+}
+
+.ps-kv-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 10px;
+    padding: 3px 0;
+    font-size: 12px;
+    border-bottom: 1px dotted var(--border);
+}
+
+.ps-kv-key {
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.ps-muted {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Warnings */
+.ps-warnings {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.ps-warnings li {
+    color: var(--warn, #e0af68);
+    font-size: 12px;
+    padding: 2px 0;
+}
+
+/* Stats row */
+.ps-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+.ps-stat {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    padding: 8px 14px;
+    min-width: 120px;
+}
+
+.ps-stat-val {
+    font-size: 18px;
+    color: var(--accent);
+}
+
+.ps-stat-key {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* Tables */
+.ps-table-wrap {
+    max-height: 420px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    margin-bottom: 12px;
+}
+
+.ps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.ps-table th {
+    position: sticky;
+    top: 0;
+    background: var(--surface-2);
+    text-align: left;
+    padding: 6px 10px;
+    text-transform: uppercase;
+    font-size: 10px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+
+.ps-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.ps-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Strategy tabs */
+.ps-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.ps-badge {
+    background: var(--accent);
+    color: var(--surface, #000);
+    font-size: 9px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    text-transform: uppercase;
+}
+
+.ps-count {
+    border: 1px solid var(--border);
+    font-size: 10px;
+    padding: 0 6px;
+    margin-left: 4px;
+    color: var(--text-muted);
+}
+
+.ps-panel h3 {
+    font-size: 13px;
+    margin: 16px 0 8px;
+}
+
+/* Generated config block */
+.ps-config {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-x: auto;
+    white-space: pre;
+    max-height: 480px;
+    margin-top: 8px;
+}
+
+.ps-copy {
+    margin-top: 4px;
+}

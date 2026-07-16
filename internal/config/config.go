@@ -70,6 +70,7 @@ type Config struct {
 
 	// Extension: fgt_adm_vpn_conf
 	ExtAdmVpnConf          bool
+	ExtFgtConfGen          bool
 	GraylogURL             string
 	GraylogToken           string
 	GraylogSearchTimeframe string
@@ -90,6 +91,11 @@ type Config struct {
 	GraylogTopoRange      string // seconds of history for the sparse switch-interlink query (wider than the device window)
 	GraylogLinkRange      string // seconds of history for the latest-per-port link-state aggregation (wide, like the topo window)
 	GraylogDeviceInterval int    // background refresh interval in seconds
+
+	// Extension: fgt_polsplit (policy split advisor — analyze a policy's real
+	// traffic from Graylog and recommend tighter replacement policies)
+	ExtFgtPolSplit       bool
+	GraylogPolsplitQuery string // Graylog query template, %s = source host, policyid:%s = policy ID
 
 	// Live SSH diagnostics: query the FortiGate CLI directly for authoritative
 	// per-switch-port link state, STP role/state and interlink trunks (data the
@@ -173,6 +179,7 @@ func Load(logger *slog.Logger) *Config {
 		MailRecipient: getenv("MAIL_RECIPIENT", getenv("MAIL_USER", "user@example.com")),
 
 		ExtAdmVpnConf:          boolenv("EXT_ADM_VPN_CONF", false),
+		ExtFgtConfGen:          boolenv("EXT_FGT_CONF_GEN", false),
 		GraylogURL:             os.Getenv("GRAYLOG_URL"),
 		GraylogToken:           os.Getenv("GRAYLOG_TOKEN"),
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),
@@ -201,6 +208,9 @@ func Load(logger *slog.Logger) *Config {
 		GraylogTopoRange:      getenv("GRAYLOG_TOPO_RANGE", "2592000"),
 		GraylogLinkRange:      getenv("GRAYLOG_LINK_RANGE", "2592000"),
 		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
+
+		ExtFgtPolSplit:       boolenv("EXT_FGT_POLSPLIT", false),
+		GraylogPolsplitQuery: getenv("GRAYLOG_POLSPLIT_QUERY", `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip`),
 
 		FgtDiagSSHEnabled:       boolenv("FGT_DIAG_SSH_ENABLED", false),
 		FgtDiagSSHBackgroundSec: intenv("FGT_DIAG_SSH_BACKGROUND_SECONDS", 3600), // hourly background sweep

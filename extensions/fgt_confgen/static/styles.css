@@ -1,0 +1,234 @@
+/* ConfGen Layout and Form Styling — Adapts to the FortiSafe TTY design system. */
+
+.container {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 20px;
+    align-items: start;
+    margin-top: 20px;
+}
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.main-content {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+/* Template Select list, buttons and lists */
+.template-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.btn-group {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+    gap: 8px;
+}
+
+.w-100 {
+    width: 100%;
+}
+
+.text-center {
+    text-align: center;
+}
+
+/* Form layout inside cards */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 12px;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.field label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+/* Form controls matching FortiSafe styling */
+.form-control, 
+input[type="text"], 
+select {
+    width: 100%;
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.12s ease;
+}
+
+.form-control:focus, 
+input[type="text"]:focus, 
+select:focus {
+    border-color: var(--accent);
+}
+
+/* Checkboxes */
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.checkbox-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* Policy Items in Sidebar */
+#policy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.policy-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+
+.policy-item:hover {
+    border-color: var(--accent-hover);
+}
+
+.policy-item.active {
+    background-color: var(--accent-soft);
+    border-color: var(--accent);
+    box-shadow: var(--glow);
+}
+
+.policy-item span {
+    flex: 1;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-transform: none;
+}
+
+.policy-item button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-dim);
+    transition: color 0.12s ease;
+    padding: 0 4px;
+}
+
+.policy-item button:hover {
+    color: var(--accent);
+}
+
+/* Interface/Address/Service Lists and Items (Chips) */
+.interface-items,
+.address-items,
+.service-items,
+.user-group-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+    min-height: 24px;
+}
+
+.chip-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--surface-3);
+    border: 1px solid var(--border-strong);
+    padding: 4px 8px;
+    font-size: 11px;
+    text-transform: none;
+}
+
+.chip-item .remove-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-weight: bold;
+    padding: 0;
+    font-size: 12px;
+}
+
+.chip-item .remove-btn:hover {
+    color: var(--accent-hover);
+}
+
+/* Generated output views */
+.output-section pre {
+    margin: 0;
+    padding: 15px;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+    max-height: 400px;
+    text-transform: none;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+}
+
+.btn-outline {
+    background-color: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+}
+
+.btn-outline:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.field-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.field-toggle label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
