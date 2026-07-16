@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // InitDB initializes SQLite schema.
@@ -142,7 +145,18 @@ var errShortCodeCollision = errors.New("short code already exists")
 
 func (e *Extension) shortenURLInDB(url, shortCode string) error {
 	_, err := e.db.Exec("INSERT INTO short_urls (short_code, url) VALUES (?, ?)", shortCode, url)
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	if err == nil {
+		return nil
+	}
+	// Classify as a retryable collision only when SQLite itself reports a
+	// constraint violation on exactly short_urls.short_code: the typed error's
+	// extended result code keeps SQLITE_CONSTRAINT in its low byte, and the
+	// message names the offending table.column. Everything else propagates as
+	// a fatal database error.
+	var se *sqlite.Error
+	if errors.As(err, &se) &&
+		se.Code()&0xff == sqlite3.SQLITE_CONSTRAINT &&
+		strings.Contains(se.Error(), "UNIQUE constraint failed: short_urls.short_code") {
 		return fmt.Errorf("%w: %v", errShortCodeCollision, err)
 	}
 	return err

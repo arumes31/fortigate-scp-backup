@@ -38,6 +38,17 @@ function initSearchableSelect(selectElement, options = {}) {
     } else {
         comboInput.setAttribute('aria-label', selectElement.getAttribute('aria-label') || placeholder);
     }
+
+    // An explicit label association must follow the visible control: while the
+    // select is hidden, point the label's for= at the combo input so label
+    // clicks focus it. Restored on teardown; wrapping labels (no for=) are
+    // left untouched.
+    let labelForRestore = null;
+    if (labelEl && selectElement.id && labelEl.htmlFor === selectElement.id) {
+        comboInput.id = listboxId + '-input';
+        labelForRestore = labelEl.htmlFor;
+        labelEl.htmlFor = comboInput.id;
+    }
     
     wrapper.insertBefore(comboInput, selectElement);
 
@@ -245,6 +256,9 @@ function initSearchableSelect(selectElement, options = {}) {
     // Dismantle teardown logic
     selectElement._searchableTeardown = () => {
         controller.abort();
+        if (labelForRestore !== null && labelEl) {
+            labelEl.htmlFor = labelForRestore;
+        }
         if (wrapper && wrapper.parentNode) {
             wrapper.parentNode.insertBefore(selectElement, wrapper);
             wrapper.remove();
