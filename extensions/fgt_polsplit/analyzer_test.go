@@ -220,6 +220,29 @@ func TestPreprocessPairsRPC(t *testing.T) {
 	}
 }
 
+// TestPreprocessPairsRPCIPv6: synthesized range tuples must inherit the
+// pair's IPv6 status, or IPv6 traffic would leak into the IPv4-only output.
+func TestPreprocessPairsRPCIPv6(t *testing.T) {
+	tuples := []TrafficTuple{tup("fd00::1", "fd00::2", "tcp", 135, "", 50)}
+	for _, p := range []int{49700, 50123, 52001, 55555, 60001, 61234} {
+		tuples = append(tuples, tup("fd00::1", "fd00::2", "tcp", p, "", 10))
+	}
+	for i := range tuples {
+		tuples[i].IPv6 = true
+	}
+	out, _ := preprocessPairs(tuples)
+	for _, o := range out {
+		if o.PortEnd == 65535 && !o.IPv6 {
+			t.Errorf("synthesized range tuple lost the IPv6 flag: %+v", o)
+		}
+	}
+	// End to end: Analyze must still exclude everything as IPv6.
+	a := Analyze(tuples, AnalyzeOptions{})
+	if len(a.Tuples) != 0 {
+		t.Errorf("IPv6 tuples leaked into the analysis: %+v", a.Tuples)
+	}
+}
+
 // TestPreprocessPairsFTP: passive FTP data channels fold into the control
 // tuple, preserving total hits.
 func TestPreprocessPairsFTP(t *testing.T) {

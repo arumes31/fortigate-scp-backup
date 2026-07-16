@@ -306,7 +306,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		p := &policies[i]
 		p.ID = nextID
 		nextID++
-		p.Name = polNamer.allocSanitized(sanitizePolicyName(policyBaseName(orig, *p)), 35)
+		p.Name = polNamer.allocSanitized(sanitizePolicyName(policyBaseName(orig, *p)), maxPolicyNameLen)
 
 		src := resolveSide(p.Src, p.Name, "src")
 		dst := resolveSide(p.Dst, p.Name, "dst")
@@ -350,8 +350,8 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	// every split — fallthrough traffic logs loudly instead of dying silently.
 	if opts.EmitDeny {
 		denyID := nextID // last allocated ID; nothing follows in this batch
-		denyName := polNamer.allocSanitized(sanitizePolicyName(
-			fmt.Sprintf("%s>%s (DENY-REST)", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf))), 35)
+		denyName := polNamer.allocSanitized(sanitizePolicyName(fitPolicyName(
+			fmt.Sprintf("%s>%s", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf)), "DENY-REST", maxPolicyNameLen)), maxPolicyNameLen)
 		orDefault := func(vals []string, def string) []string {
 			if len(vals) == 0 {
 				return []string{def}
@@ -362,10 +362,15 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		fmt.Fprintf(&b, "    edit %d\n", denyID)
 		fmt.Fprintf(&b, "        set name %q\n", denyName)
 		for _, line := range orig.CloneLines {
-			// Only the scope-defining clone lines: action/NAT/UTM must not be
-			// carried into a deny policy.
+			// Only the scope-defining clone lines: interfaces, schedule and the
+			// identity selectors (users/groups/FSSO). Dropping an identity
+			// selector would widen the deny beyond the original's scope and
+			// block traffic that used to fall through to policies below.
+			// Action/NAT/UTM must not be carried into a deny policy.
 			if strings.HasPrefix(line, "set srcintf ") || strings.HasPrefix(line, "set dstintf ") ||
-				strings.HasPrefix(line, "set schedule ") {
+				strings.HasPrefix(line, "set schedule ") ||
+				strings.HasPrefix(line, "set users ") || strings.HasPrefix(line, "set groups ") ||
+				strings.HasPrefix(line, "set fsso-groups ") {
 				b.WriteString("        " + line + "\n")
 			}
 		}
@@ -424,6 +429,9 @@ func displayAction(a string) string {
 	return a
 }
 
+// maxPolicyNameLen is FortiOS's policy-name length limit.
+const maxPolicyNameLen = 35
+
 // policyBaseName builds the path-based policy name convention:
 // "SRCINTF>DSTINTF (SERVICE)" — e.g. "VL1>VL51 (RDP)", "PORT1>PORT2 (SSH)".
 // Multiple interfaces sharing a common prefix collapse to prefix+XX
@@ -439,7 +447,26 @@ func policyBaseName(orig *OrigPolicy, p RecPolicy) string {
 			label += fmt.Sprintf("+%d", len(p.Services)-1)
 		}
 	}
-	return fmt.Sprintf("%s>%s (%s)", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf), label)
+	return fitPolicyName(fmt.Sprintf("%s>%s", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf)), label, maxPolicyNameLen)
+}
+
+// fitPolicyName combines path and label into "PATH (LABEL)" within maxLen.
+// The label is what distinguishes sibling splits ("…(RDP)" vs "…(SSH)"), so
+// when the combination is too long the PATH is truncated, never the label —
+// plain byte truncation would leave a batch of near-identical names carrying
+// zero information about which service each policy covers.
+func fitPolicyName(path, label string, maxLen int) string {
+	suffix := " (" + label + ")"
+	if len(path)+len(suffix) <= maxLen {
+		return path + suffix
+	}
+	budget := maxLen - len(suffix)
+	if budget < 4 {
+		// Degenerate label longer than the whole budget: keep what fits.
+		name := path + suffix
+		return name[:maxLen]
+	}
+	return path[:budget] + suffix
 }
 
 func hasTag(p RecPolicy, tag string) bool {

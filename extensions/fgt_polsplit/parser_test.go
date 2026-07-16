@@ -25,6 +25,12 @@ config system interface
 end
 config system sdwan
     set status enable
+    config zone
+        edit "virtual-wan-link"
+        next
+        edit "SD-WAN-Internet"
+        next
+    end
     config members
         edit 1
             set interface "wan2"
@@ -37,6 +43,25 @@ config firewall internet-service-name
     next
     edit "Microsoft-Office.365"
         set internet-service-id 327781
+    next
+end
+config firewall vip
+    edit "VIP_Web"
+        set extip 203.0.113.10
+        set mappedip "10.0.0.80"
+    next
+end
+config system automation-action
+    edit "Script_Fix"
+        set action-type cli-script
+        set script "config system central-management
+set mode backup
+end
+next
+config firewall address
+edit \"EVIL_FAKE\"
+next
+end"
     next
 end
 config firewall address
@@ -212,8 +237,9 @@ func TestParseBackupObjects(t *testing.T) {
 	if got := pb.SvcGrpBySig[groupSig([]string{"HTTPS"})]; got != "Web Access Group" {
 		t.Errorf("svcgrp sig lookup = %q", got)
 	}
-	// WAN classification: role wan + SD-WAN member + the builtin zone name.
-	for _, want := range []string{"wan1", "wan2", "virtual-wan-link"} {
+	// WAN classification: role wan + SD-WAN member + the builtin and custom
+	// SD-WAN zone names (policies reference zones directly in dstintf).
+	for _, want := range []string{"wan1", "wan2", "virtual-wan-link", "sd-wan-internet"} {
 		if !pb.WANInterfaces[want] {
 			t.Errorf("WANInterfaces missing %q: %v", want, pb.WANInterfaces)
 		}
@@ -221,8 +247,8 @@ func TestParseBackupObjects(t *testing.T) {
 	if pb.WANInterfaces["lan1"] {
 		t.Error("lan1 must not be WAN-classified")
 	}
-	// Firewall self-IPs from interface definitions.
-	if !pb.FirewallIPs["203.0.113.2"] || !pb.FirewallIPs["10.0.0.254"] {
+	// Firewall self-IPs from interface definitions, including secondaryip.
+	if !pb.FirewallIPs["203.0.113.2"] || !pb.FirewallIPs["10.0.0.254"] || !pb.FirewallIPs["10.0.1.254"] {
 		t.Errorf("FirewallIPs = %v", pb.FirewallIPs)
 	}
 	// ISDB names collected for internet-service suggestions.
@@ -233,9 +259,37 @@ func TestParseBackupObjects(t *testing.T) {
 	if got := pb.SvcByKey["tcpudp/53"]; len(got) != 1 || got[0] != "DNS" {
 		t.Errorf("tcpudp/53 = %v", got)
 	}
-	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp"} {
+	// VIPs share the address namespace and must count as taken.
+	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp", "vip_web"} {
 		if !pb.TakenNames[name] {
 			t.Errorf("taken names missing %q", name)
+		}
+	}
+	// The automation-action script embeds raw CLI (end/next/config/edit
+	// lines) inside one quoted value — none of it may leak into the
+	// inventory or desync the section stack (the address assertions above
+	// already prove the sections AFTER the script parsed intact).
+	if pb.TakenNames["evil_fake"] {
+		t.Error("embedded script content leaked into the parsed inventory")
+	}
+}
+
+func TestQuoteOpen(t *testing.T) {
+	cases := []struct {
+		line string
+		in   bool
+		want bool
+	}{
+		{`set comment "all closed"`, false, false},
+		{`set script "still open`, false, true},
+		{`plain text inside a value`, true, true},
+		{`ends the value"`, true, false},
+		{`edit \"escaped\" stays open`, true, true},
+		{`set x "a" "b" "c"`, false, false},
+	}
+	for _, c := range cases {
+		if got := quoteOpen(c.line, c.in); got != c.want {
+			t.Errorf("quoteOpen(%q, %v) = %v, want %v", c.line, c.in, got, c.want)
 		}
 	}
 }

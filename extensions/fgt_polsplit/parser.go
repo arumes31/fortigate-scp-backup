@@ -65,6 +65,23 @@ func splitConfigValues(s string) []string {
 	return out
 }
 
+// quoteOpen reports whether a double-quoted value is still open after
+// scanning s with the given starting state. Backslash escapes only apply
+// inside quotes (FortiGate escapes `\"` and `\\` within quoted values).
+func quoteOpen(s string, open bool) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			if open {
+				i++ // skip the escaped character
+			}
+		case '"':
+			open = !open
+		}
+	}
+	return open
+}
+
 // addrEntry / svcEntry accumulate one object while its section is open.
 type addrEntry struct {
 	name    string
@@ -269,8 +286,22 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		}
 	}
 
-	for _, raw := range strings.Split(content, "\n") {
-		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+	lines := strings.Split(content, "\n")
+	for li := 0; li < len(lines); li++ {
+		line := strings.TrimSpace(strings.TrimRight(lines[li], "\r"))
+		// Multi-line quoted values (automation-action scripts, certificates)
+		// embed raw text — including lines that look exactly like `next`,
+		// `end` or `config …` — inside one `set` value. When a set line
+		// leaves a double quote open, consume lines until it closes so the
+		// embedded text can never desync the section stack. The value itself
+		// is discarded: no tracked key carries multi-line values.
+		if strings.HasPrefix(line, "set ") && quoteOpen(line, false) {
+			for li+1 < len(lines) && quoteOpen(lines[li+1], true) {
+				li++
+			}
+			li++ // the line that closed the quote
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "config "):
 			stack = append(stack, frame{section: strings.TrimSpace(strings.TrimPrefix(line, "config "))})
@@ -319,6 +350,18 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 					isdbSet[name] = true
 					isdbNames = append(isdbNames, name)
 				}
+			case "firewall vip", "firewall vipgrp", "firewall vip46", "firewall vip64":
+				// VIP names share the address namespace: FortiOS rejects an
+				// address object named like an existing VIP, so they must
+				// count as taken even though their mappings aren't reusable.
+				getInv(currentVDOM()).takenNames[strings.ToLower(name)] = true
+			case "zone":
+				// Custom SD-WAN zones (config zone inside config system sdwan)
+				// are referenced by name in policy dstintf and are as
+				// internet-facing as their member interfaces.
+				if stackHas("system sdwan") || stackHas("system virtual-wan-link") {
+					wanIfaces[strings.ToLower(name)] = true
+				}
 			}
 		case strings.HasPrefix(line, "set "):
 			f := top()
@@ -343,6 +386,14 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 						if ip := net.ParseIP(fields[0]); ip != nil {
 							firewallIPs[fields[0]] = true
 						}
+					}
+				}
+			case f.section == "secondaryip" && key == "ip" && stackHas("system interface"):
+				// Secondary interface addresses (config secondaryip) are
+				// firewall-local too — traffic to them is local-in.
+				if fields := strings.Fields(val); len(fields) >= 1 {
+					if ip := net.ParseIP(fields[0]); ip != nil {
+						firewallIPs[fields[0]] = true
 					}
 				}
 			case key == "interface" && (stackHas("system sdwan") || stackHas("system virtual-wan-link")):

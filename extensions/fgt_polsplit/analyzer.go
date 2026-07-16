@@ -134,6 +134,10 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 		if len(idxs) < rpcMinHighPorts {
 			continue
 		}
+		// All tuples of one pair share src/dst, so their IPv6 status is
+		// uniform; synthesized tuples must inherit it or IPv6 traffic would
+		// leak past the IPv4-only exclusion in Analyze.
+		pairV6 := tuples[idxs[0]].IPv6
 		ports := map[int]bool{}
 		var maxHits int64
 		ctrl135, ctrl21 := -1, -1
@@ -171,7 +175,7 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 				}
 			}
 			synth = append(synth, TrafficTuple{SrcIP: k.src, DstIP: k.dst, Proto: "tcp",
-				Port: rpcRangeLo, PortEnd: 65535, Service: "RPC-dynamic", Hits: hits, LastSeen: last})
+				Port: rpcRangeLo, PortEnd: 65535, Service: "RPC-dynamic", Hits: hits, LastSeen: last, IPv6: pairV6})
 			rpcPairs++
 		case ctrl21 >= 0 && len(highIdxs) >= ftpMinHighPorts:
 			for _, i := range highIdxs {
@@ -190,7 +194,7 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 				}
 			}
 			synth = append(synth, TrafficTuple{SrcIP: k.src, DstIP: k.dst, Proto: "tcp",
-				Port: 1, PortEnd: 65535, Service: "ALL-TCP", Hits: hits, LastSeen: last})
+				Port: 1, PortEnd: 65535, Service: "ALL-TCP", Hits: hits, LastSeen: last, IPv6: pairV6})
 			ceilPairs++
 		}
 	}

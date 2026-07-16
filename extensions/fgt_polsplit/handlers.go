@@ -314,6 +314,40 @@ func isdbSuggestions(dns []dnsSuggestion, isdbNames []string) []isdbSuggestion {
 	return out
 }
 
+// isdbKey normalizes an application or ISDB object name for matching:
+// lowercase, alphanumerics only — "Microsoft.Office.365" and
+// "Microsoft-Office365" both become "microsoftoffice365".
+func isdbKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// appISDBMatches maps an application-control app name to Internet-Service
+// objects present in the backup (exact normalized match or ISDB name
+// extending the app name), capped at 3 examples.
+func appISDBMatches(app string, isdbNames []string) []string {
+	key := isdbKey(app)
+	if len(key) < 4 { // too short to match meaningfully ("SSL", "DNS", …)
+		return nil
+	}
+	var out []string
+	for _, n := range isdbNames {
+		nk := isdbKey(n)
+		if nk == key || strings.HasPrefix(nk, key) {
+			out = append(out, n)
+			if len(out) == 3 {
+				break
+			}
+		}
+	}
+	return out
+}
+
 // graylogTimeLayout is Graylog's absolute-timerange format (UTC, ms).
 const graylogTimeLayout = "2006-01-02T15:04:05.000Z"
 
@@ -452,11 +486,31 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Progress reporting for the UI poller: 8 base stages (backup, message
-	// count, 2×tuple aggregation, 2×service names, UTM check, strategies)
-	// plus the optional baseline and DNS stages.
+	// Progress reporting for the UI poller: 9 base stages (backup, message
+	// count, 2×tuple aggregation, 2×service names, UTM check, identity/app
+	// usage, strategies) plus the optional baseline and DNS stages.
 	baselineActive := req.CompareSeconds > 0 && req.RangeSeconds > 0 && req.CompareSeconds > req.RangeSeconds
-	totalSteps := 8
+
+	// When a baseline runs, both windows derive from ONE UTC anchor captured
+	// before any query: the current window becomes absolute [now-range, now]
+	// so it butts exactly against the baseline [now-compare, now-range].
+	// Calling time.Now() again after the current fetch would let the windows
+	// drift apart (overlap or gap around the boundary).
+	var baseTr timeRange
+	if baselineActive {
+		if req.CompareSeconds > maxRangeSeconds {
+			req.CompareSeconds = maxRangeSeconds
+		}
+		now := time.Now().UTC()
+		rangeStart := now.Add(-time.Duration(req.RangeSeconds) * time.Second).Format(graylogTimeLayout)
+		tr = timeRange{From: rangeStart, To: now.Format(graylogTimeLayout)}
+		baseTr = timeRange{
+			From: now.Add(-time.Duration(req.CompareSeconds) * time.Second).Format(graylogTimeLayout),
+			To:   rangeStart,
+		}
+	}
+
+	totalSteps := 9
 	if baselineActive {
 		totalSteps++
 	}
@@ -465,9 +519,12 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	}
 	report := e.progressReporter(req.ProgressID, totalSteps)
 	defer e.progressDone(req.ProgressID)
+	// Sub-stage notes (chunked-loading steps, message counts) travel via the
+	// context so the Graylog helpers can publish them without extra plumbing.
+	ctx := withProgressNote(r.Context(), e.progressNoter(req.ProgressID))
 
 	report("Loading latest config backup")
-	fqdn, content, ts, err := e.loadBackup(r.Context(), req.FwID)
+	fqdn, content, ts, err := e.loadBackup(ctx, req.FwID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			e.jsonError(w, http.StatusNotFound, err.Error())
@@ -493,12 +550,18 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr, report)
+	tuples, totalMessages, warnings, vdDropped, err := e.fetchPolicyTraffic(ctx, fqdn, req.PolicyID, parsed.Policy.VDOM, tr, report)
 	if err != nil {
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	warnings = append(warnings, policyWarnings(parsed.Policy)...)
+	// When the vd filter was dropped (deployment doesn't index the field),
+	// the follow-up queries must drop it too or they'd zero out.
+	qVDOM := parsed.Policy.VDOM
+	if vdDropped {
+		qVDOM = ""
+	}
 
 	// Baseline comparison: flag tuples new since [now-compare, now-range] and
 	// collect baseline-only (stale) flows. Only meaningful for preset windows.
@@ -510,16 +573,10 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		case req.CompareSeconds <= req.RangeSeconds:
 			warnings = append(warnings, "baseline comparison window must be longer than the analysis window — skipped")
 		default:
-			if req.CompareSeconds > maxRangeSeconds {
-				req.CompareSeconds = maxRangeSeconds
-			}
-			now := time.Now().UTC()
-			baseTr := timeRange{
-				From: now.Add(-time.Duration(req.CompareSeconds) * time.Second).Format(graylogTimeLayout),
-				To:   now.Add(-time.Duration(req.RangeSeconds) * time.Second).Format(graylogTimeLayout),
-			}
+			// baseTr was derived above from the same anchor as the current
+			// window, so the two ranges line up exactly.
 			report("Comparing against baseline window")
-			baseTuples, baseErr := e.fetchBaselineTuples(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, baseTr)
+			baseTuples, baseErr := e.fetchBaselineTuples(ctx, fqdn, req.PolicyID, qVDOM, baseTr)
 			if baseErr != nil {
 				warnings = append(warnings, "baseline comparison failed: "+baseErr.Error())
 			} else {
@@ -573,12 +630,36 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	// Destinations that triggered UTM blocks under this policy: review before
 	// re-allowing them in a split.
 	report("Checking UTM-blocked destinations")
-	utmDsts, utmErr := e.fetchUTMBlocked(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
+	utmDsts, utmErr := e.fetchUTMBlocked(ctx, fqdn, req.PolicyID, qVDOM, tr)
 	if utmErr != nil {
 		e.logger.Warn("polsplit: UTM block check failed", "err", utmErr)
 		warnings = append(warnings, "UTM block check failed: "+utmErr.Error())
 	} else if len(utmDsts) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d destination(s) triggered UTM block verdicts under this policy — review the 'UTM-blocked destinations' list before re-allowing them", len(utmDsts)))
+		if len(utmDsts) >= utmGroupLimit {
+			warnings = append(warnings, fmt.Sprintf("the UTM-blocked destination list reached the aggregation limit (%d) — only the top destinations by volume are shown", utmGroupLimit))
+		}
+	}
+
+	// Identity and application usage: best-effort context for the operator.
+	// Identity traffic suggests splitting by user group instead of source IP;
+	// app-control detections map to ISDB objects that track provider IPs.
+	report("Analyzing users and applications")
+	users, userErr := e.fetchUserActivity(ctx, fqdn, req.PolicyID, qVDOM, tr)
+	if userErr != nil {
+		e.logger.Warn("polsplit: user-activity aggregation failed", "err", userErr)
+		warnings = append(warnings, "user-activity check failed: "+userErr.Error())
+	} else if len(users) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d authenticated user(s) observed in this policy's traffic — for identity-based (VPN/FSSO) policies consider splitting by user group rather than by source IP, since client IPs are pool-assigned", len(users)))
+	}
+	apps, appErr := e.fetchAppUsage(ctx, fqdn, req.PolicyID, qVDOM, tr)
+	if appErr != nil {
+		e.logger.Warn("polsplit: app-usage aggregation failed", "err", appErr)
+		warnings = append(warnings, "application-usage check failed: "+appErr.Error())
+	} else {
+		for i := range apps {
+			apps[i].ISDB = appISDBMatches(apps[i].App, parsed.ISDBNames)
+		}
 	}
 
 	prefix := req.Prefix
@@ -592,6 +673,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		{Key: "per_destination", Label: "One policy per destination"},
 		{Key: "hybrid", Label: "Hybrid (similarity-clustered)"},
 	}
+	polCount := map[string]int{}
 	for i := range strategies {
 		var pols []RecPolicy
 		switch strategies[i].Key {
@@ -606,13 +688,25 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		strategies[i].Policies = pols
 		strategies[i].Config = gen.Config
 		strategies[i].NewObjects = gen.NewObjects
+		polCount[strategies[i].Key] = len(pols)
 		for _, gw := range gen.Warnings {
 			if !containsString(warnings, gw) {
 				warnings = append(warnings, gw)
 			}
 		}
 	}
-	markRecommended(strategies)
+	// The hybrid strategy merges per-service policies whose endpoint sets
+	// overlap ≥75% but are not identical (identical sets already merge inside
+	// per-service), so every hybrid merge unions the sets — it can allow
+	// source/destination/service combinations that were never individually
+	// observed. Disclose it and keep the RECOMMENDED badge off widened hybrids.
+	ineligible := map[string]bool{}
+	if widened := polCount["per_service"] - polCount["hybrid"]; widened > 0 {
+		ineligible["hybrid"] = true
+		warnings = append(warnings, fmt.Sprintf(
+			"hybrid strategy merged %d similar per-service policies — merged policies can allow source/destination/service combinations that were not individually observed; review its scope before applying", widened))
+	}
+	markRecommended(strategies, ineligible)
 
 	respTuples := analysis.Tuples
 	if len(respTuples) > maxTuplesInResponse {
@@ -625,7 +719,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	var isdbSugg []isdbSuggestion
 	if req.ResolveDNS {
 		report("Resolving destination DNS names")
-		dnsSuggestions = resolveDstNames(r.Context(), analysis.Tuples)
+		dnsSuggestions = resolveDstNames(ctx, analysis.Tuples)
 		isdbSugg = isdbSuggestions(dnsSuggestions, parsed.ISDBNames)
 	}
 
@@ -647,6 +741,8 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		"dns_suggestions":  dnsSuggestions,
 		"isdb_suggestions": isdbSugg,
 		"utm_blocked":      utmDsts,
+		"user_activity":    users,
+		"app_usage":        apps,
 		"wan_as_all":       wanAsAll,
 		"strategies":       strategies,
 		"warnings":         warnings,
@@ -655,11 +751,12 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 
 // markRecommended flags the strategy with the lowest score: policy count
 // first, then the number of objects that must be created. Ties favour
-// per-service (the more idiomatic FortiGate layout).
-func markRecommended(strategies []Strategy) {
+// per-service (the more idiomatic FortiGate layout). Strategies whose key is
+// in ineligible (e.g. a scope-widening hybrid) never get the badge.
+func markRecommended(strategies []Strategy, ineligible map[string]bool) {
 	best := -1
 	for i, s := range strategies {
-		if len(s.Policies) == 0 {
+		if len(s.Policies) == 0 || ineligible[s.Key] {
 			continue
 		}
 		if best == -1 {

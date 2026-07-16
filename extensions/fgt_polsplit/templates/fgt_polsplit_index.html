@@ -135,9 +135,11 @@
                 <button id="ps-analyze-btn" class="btn btn-primary">Analyze Traffic</button>
                 <div id="ps-progress" class="ps-progress" hidden>
                     <div class="ps-progress-track"><div id="ps-progress-bar"></div></div>
-                    <span id="ps-progress-text" class="ps-muted">Starting analysis…</span>
+                    <span id="ps-progress-meta" class="ps-progress-meta" aria-hidden="true"></span>
+                    <span id="ps-progress-text" class="ps-muted" role="status" aria-live="polite">Starting analysis…</span>
                 </div>
             </div>
+            <div id="ps-progress-log" class="ps-progress-log" hidden></div>
         </div>
 
         <div id="ps-results" hidden>
@@ -192,6 +194,32 @@
                         <table class="ps-table" id="ps-isdb-table">
                             <thead>
                             <tr><th>Vendor</th><th>Destinations</th><th>Hits</th><th>ISDB objects in this config</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="ps-users-wrap" hidden>
+                    <h3>Authenticated identities <span class="ps-count" id="ps-users-count"></span></h3>
+                    <p class="ps-muted">Users observed in this policy's traffic (FortiGate identity fields). For VPN/FSSO policies, consider splitting by user group instead of source IP — client IPs are pool-assigned and ephemeral.</p>
+                    <div class="ps-table-wrap">
+                        <table class="ps-table" id="ps-users-table">
+                            <thead>
+                            <tr><th>User</th><th>Group</th><th>Hits</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="ps-apps-wrap" hidden>
+                    <h3>Application usage <span class="ps-count" id="ps-apps-count"></span></h3>
+                    <p class="ps-muted">Application-control detections under this policy. Matching Internet-Service (ISDB) objects track the provider's IP ranges automatically — often better than IP or FQDN objects for SaaS traffic.</p>
+                    <div class="ps-table-wrap">
+                        <table class="ps-table" id="ps-apps-table">
+                            <thead>
+                            <tr><th>Application</th><th>Category</th><th>Hits</th><th>Matching ISDB objects</th></tr>
                             </thead>
                             <tbody></tbody>
                         </table>

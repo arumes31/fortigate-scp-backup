@@ -288,42 +288,234 @@ func (e *Extension) aggregate(ctx context.Context, body aggregateRequest) ([]agg
 // as a truncation warning.
 const groupLimit = 1000
 
+// Chunked-loading tuning: windows larger than chunkAlwaysAbove are ALWAYS
+// aggregated as a series of absolute sub-windows and merged — long windows on
+// busy policies push a single Graylog aggregation past its execution limits,
+// and per-step aggregation also raises the effective group limits. Shorter
+// windows run as one call and fall back to the same chunking when the
+// full-window call fails. Steps are one hour; long windows grow the step so
+// a run never exceeds maxChunks calls (30 days → 48 × 15h instead of 720 × 1h).
+const (
+	chunkStep        = time.Hour
+	chunkAlwaysAbove = 12 * time.Hour
+	maxChunks        = 48
+	// minChunk floors the adaptive subdivision: a failing sub-window is
+	// halved and retried until it either succeeds or reaches this size —
+	// extremely busy policies can overrun Graylog's aggregation limits even
+	// within a single hour.
+	minChunk = 15 * time.Minute
+)
+
+// bounds resolves the window to absolute UTC instants (relative windows are
+// anchored at now).
+func (t timeRange) bounds(now time.Time) (from, to time.Time, err error) {
+	if t.RelativeSec > 0 {
+		to = now.UTC()
+		return to.Add(-time.Duration(t.RelativeSec) * time.Second), to, nil
+	}
+	if from, err = time.Parse(graylogTimeLayout, t.From); err != nil {
+		return from, to, err
+	}
+	to, err = time.Parse(graylogTimeLayout, t.To)
+	return from, to, err
+}
+
+// splitTimeRange cuts the window into consecutive absolute sub-windows of
+// chunkStep (grown so at most maxChunks result). Windows that fit in a single
+// step return nil — there is nothing to split.
+func splitTimeRange(tr timeRange, now time.Time) []timeRange {
+	from, to, err := tr.bounds(now)
+	if err != nil || !to.After(from) {
+		return nil
+	}
+	window := to.Sub(from)
+	if window <= chunkStep {
+		return nil
+	}
+	step := chunkStep
+	if window > time.Duration(maxChunks)*step {
+		step = (window + maxChunks - 1) / maxChunks
+	}
+	var out []timeRange
+	for cur := from; cur.Before(to); cur = cur.Add(step) {
+		end := cur.Add(step)
+		if end.After(to) {
+			end = to
+		}
+		out = append(out, timeRange{
+			From: cur.UTC().Format(graylogTimeLayout),
+			To:   end.UTC().Format(graylogTimeLayout),
+		})
+	}
+	return out
+}
+
+// mergeTuples folds per-chunk aggregation results back into one tuple set:
+// identical (src,dst,proto,port,service) rows sum their hits and keep the
+// latest timestamp.
+func mergeTuples(lists ...[]TrafficTuple) []TrafficTuple {
+	type key struct {
+		src, dst, proto, svc string
+		port                 int
+	}
+	idx := map[key]int{}
+	var out []TrafficTuple
+	for _, list := range lists {
+		for _, t := range list {
+			k := key{t.SrcIP, t.DstIP, t.Proto, t.Service, t.Port}
+			if i, ok := idx[k]; ok {
+				out[i].Hits += t.Hits
+				if t.LastSeen > out[i].LastSeen {
+					out[i].LastSeen = t.LastSeen
+				}
+			} else {
+				idx[k] = len(out)
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// runTupleAggregation executes one tuple aggregation. Windows larger than
+// chunkAlwaysAbove go straight to chunked sub-window loading; shorter windows
+// run as one full-window call and fall back to chunking when that call fails.
+// Sub-window progress is published as a note (never a step) so the UI bar can
+// interpolate within the current stage.
+func (e *Extension) runTupleAggregation(ctx context.Context, body aggregateRequest, tr timeRange, label string) ([]TrafficTuple, []string, error) {
+	now := time.Now()
+	if from, to, berr := tr.bounds(now); berr == nil && to.Sub(from) > chunkAlwaysAbove {
+		if chunks := splitTimeRange(tr, now); len(chunks) >= 2 {
+			tuples, err := e.runChunks(ctx, body, chunks, label)
+			return tuples, nil, err
+		}
+	}
+	schema, rows, err := e.aggregate(ctx, body)
+	if err == nil {
+		return parseTupleRows(schema, rows), nil, nil
+	}
+	if ctx.Err() != nil {
+		return nil, nil, err // caller gone — don't hammer Graylog with retries
+	}
+	chunks := splitTimeRange(tr, now)
+	if len(chunks) < 2 {
+		return nil, nil, err
+	}
+	e.logger.Warn("polsplit: full-window aggregation failed, retrying in sub-windows",
+		"label", label, "chunks", len(chunks), "err", err)
+	tuples, cerr := e.runChunks(ctx, body, chunks, label)
+	if cerr != nil {
+		return nil, nil, cerr
+	}
+	warning := fmt.Sprintf("%s: the full-window aggregation failed and was completed in %d smaller time steps instead (full-window error: %v)",
+		label, len(chunks), err)
+	return tuples, []string{warning}, nil
+}
+
+// runChunks runs the aggregation once per sub-window and merges the results,
+// publishing per-step progress notes.
+func (e *Extension) runChunks(ctx context.Context, body aggregateRequest, chunks []timeRange, label string) ([]TrafficTuple, error) {
+	note := progressNoteFrom(ctx)
+	lists := make([][]TrafficTuple, 0, len(chunks))
+	for i, c := range chunks {
+		note(fmt.Sprintf("time step %d/%d", i+1, len(chunks)), i, len(chunks))
+		tuples, err := e.runChunkWindow(ctx, body, c)
+		if err != nil {
+			return nil, fmt.Errorf("%s: sub-window %d/%d (%s to %s): %w", label, i+1, len(chunks), c.From, c.To, err)
+		}
+		lists = append(lists, tuples)
+	}
+	note(fmt.Sprintf("merging %d time steps", len(chunks)), len(chunks), len(chunks))
+	return mergeTuples(lists...), nil
+}
+
+// runChunkWindow aggregates one sub-window, adaptively halving it on failure
+// down to minChunk — the busiest policies can exceed Graylog's aggregation
+// limits even inside a one-hour step.
+func (e *Extension) runChunkWindow(ctx context.Context, body aggregateRequest, c timeRange) ([]TrafficTuple, error) {
+	body.Timerange = c.aggregate()
+	schema, rows, err := e.aggregate(ctx, body)
+	if err == nil {
+		return parseTupleRows(schema, rows), nil
+	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
+	from, ferr := time.Parse(graylogTimeLayout, c.From)
+	to, terr := time.Parse(graylogTimeLayout, c.To)
+	if ferr != nil || terr != nil || to.Sub(from) <= minChunk {
+		return nil, err
+	}
+	e.logger.Warn("polsplit: sub-window aggregation failed, halving", "from", c.From, "to", c.To, "err", err)
+	mid := from.Add(to.Sub(from) / 2).UTC().Format(graylogTimeLayout)
+	first, err := e.runChunkWindow(ctx, body, timeRange{From: c.From, To: mid})
+	if err != nil {
+		return nil, err
+	}
+	second, err := e.runChunkWindow(ctx, body, timeRange{From: mid, To: c.To})
+	if err != nil {
+		return nil, err
+	}
+	return mergeTuples(first, second), nil
+}
+
 // fetchPolicyTraffic aggregates the policy's traffic into src/dst/service
 // tuples. Two aggregations run because grouping drops documents missing a
 // grouped field: one over port-carrying logs (tcp/udp/sctp) grouped by dstport,
 // one over portless logs (icmp/gre/esp/…) without it. totalMessages carries the
 // window's raw match count for diagnostics.
-func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange, report func(string)) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
+// vdDropped reports that the VDOM filter was dropped because the deployment
+// does not index the vd field — the caller must drop it from its follow-up
+// queries (baseline, UTM, identity) too.
+func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange, report func(string)) (tuples []TrafficTuple, totalMessages int64, warnings []string, vdDropped bool, err error) {
 	if report == nil {
 		report = func(string) {}
 	}
 	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
-		return nil, 0, []string{"Graylog is not configured (set GRAYLOG_URL and GRAYLOG_TOKEN) — no traffic data available"}, nil
+		return nil, 0, []string{"Graylog is not configured (set GRAYLOG_URL and GRAYLOG_TOKEN) — no traffic data available"}, false, nil
 	}
 	if !tr.valid() {
-		return nil, 0, nil, errors.New("invalid time range")
+		return nil, 0, nil, false, errors.New("invalid time range")
 	}
 	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, false, err
 	}
 
 	report("Counting matching log messages")
 	totalMessages, err = e.countMessages(ctx, query, tr)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, false, err
 	}
+	// Many Graylog deployments never index the `vd` field even though the
+	// raw syslog carries it — the filter then silently zeroes every result.
+	// Detect it: if the vd-qualified query matches nothing but the same
+	// query without the clause does, drop the clause and say so.
+	if totalMessages == 0 && vdom != "" {
+		if noVd, qerr := e.buildPolicyQuery(fqdn, policyID, ""); qerr == nil {
+			if n, cerr := e.countMessages(ctx, noVd, tr); cerr == nil && n > 0 {
+				query, totalMessages, vdDropped = noVd, n, true
+				warnings = append(warnings, fmt.Sprintf(
+					"the VDOM filter (vd:%q) matched nothing but %d message(s) match without it — this Graylog deployment likely does not index the vd field; the VDOM filter was dropped for this analysis (results may include other VDOMs' traffic for the same policy ID)",
+					vdom, n))
+			}
+		}
+	}
+	progressNoteFrom(ctx)(fmt.Sprintf("%d log messages in the window", totalMessages), 0, 0)
 
 	// 1. Authoritative complete result without service grouping (so no messages are omitted)
-	tuples, warnings, err = e.aggregateTuples(ctx, query, tr, false, report)
+	var tupleWarnings []string
+	tuples, tupleWarnings, err = e.aggregateTuples(ctx, query, tr, false, report)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, vdDropped, err
 	}
+	warnings = append(warnings, tupleWarnings...)
 
 	// 2. Separate query with service grouping to get service names
 	svcTuples, svcWarnings, err := e.aggregateTuples(ctx, query, tr, true, report)
 	if err != nil {
 		e.logger.Warn("polsplit: service-present aggregation failed, using no-service results only", "err", err)
+		warnings = append(warnings, "service-name aggregation failed — traffic tuples are complete but shown without FortiOS service names: "+err.Error())
 	} else {
 		warnings = append(warnings, svcWarnings...)
 		svcMap := make(map[string]string)
@@ -344,7 +536,7 @@ func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyI
 	warnings = append(warnings, truncationWarnings(tuples)...)
 	e.logger.Info("polsplit: graylog traffic fetch", "fqdn", fqdn, "policyid", policyID,
 		"sources", strings.Join(e.graylogSources(fqdn), ","), "messages", totalMessages, "tuples", len(tuples))
-	return tuples, totalMessages, warnings, nil
+	return tuples, totalMessages, warnings, vdDropped, nil
 }
 
 // buildPolicyQuery resolves the firewall's Graylog sources and assembles the
@@ -382,6 +574,10 @@ func (e *Extension) fetchBaselineTuples(ctx context.Context, fqdn string, policy
 	return tuples, err
 }
 
+// utmGroupLimit caps the UTM-blocked destination aggregation; reaching it is
+// reported by the handler as a truncation warning.
+const utmGroupLimit = 1000
+
 // utmBlocked is one destination that triggered UTM block verdicts under the
 // analyzed policy — a signal to review before re-allowing it in a split.
 type utmBlocked struct {
@@ -399,11 +595,13 @@ func (e *Extension) fetchUTMBlocked(ctx context.Context, fqdn string, policyID i
 	if err != nil {
 		return nil, err
 	}
-	query += ` AND type:"utm" AND action:("blocked" OR "dropped" OR "reset")`
+	// FortiOS UTM logs use both "blocked" and "block" as action values
+	// depending on the inspecting engine — both are real block verdicts.
+	query += ` AND type:"utm" AND action:("blocked" OR "block" OR "dropped" OR "reset")`
 	body := aggregateRequest{
 		Query:     query,
 		Timerange: tr.aggregate(),
-		GroupBy:   []aggregateGroup{{Field: "dstip", Limit: 500}},
+		GroupBy:   []aggregateGroup{{Field: "dstip", Limit: utmGroupLimit}},
 		Metrics:   []aggregateMetric{{Function: "count"}},
 	}
 	schema, rows, err := e.aggregate(ctx, body)
@@ -479,11 +677,12 @@ func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRa
 		GroupBy:   append(append([]aggregateGroup{}, base...), aggregateGroup{Field: "dstport", Limit: groupLimit}),
 		Metrics:   metrics,
 	}
-	schema, rows, err := e.aggregate(ctx, withPort)
+	portTuples, w, err := e.runTupleAggregation(ctx, withPort, tr, stage+" (port traffic)")
 	if err != nil {
 		return nil, nil, err
 	}
-	tuples = append(tuples, parseTupleRows(schema, rows)...)
+	warnings = append(warnings, w...)
+	tuples = append(tuples, portTuples...)
 
 	report(stage + " (portless protocols)")
 	withoutPort := aggregateRequest{
@@ -492,12 +691,13 @@ func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRa
 		GroupBy:   base,
 		Metrics:   metrics,
 	}
-	schema, rows, err = e.aggregate(ctx, withoutPort)
+	plTuples, w, err := e.runTupleAggregation(ctx, withoutPort, tr, stage+" (portless protocols)")
 	if err != nil {
 		e.logger.Warn("polsplit: portless-traffic aggregation failed, continuing with port-carrying tuples only", "err", err)
 		warnings = append(warnings, "portless-protocol aggregation failed: "+err.Error())
 	} else {
-		tuples = append(tuples, parseTupleRows(schema, rows)...)
+		warnings = append(warnings, w...)
+		tuples = append(tuples, plTuples...)
 	}
 	return tuples, warnings, nil
 }
@@ -592,6 +792,162 @@ func protoName(proto string, port int) string {
 		return "ip-" + p
 	}
 	return "unknown"
+}
+
+// userActivity is one authenticated identity observed under the policy.
+// FortiGate populates user/group on identity-based traffic (VPN, FSSO,
+// captive portal) — for those policies, splitting by group beats splitting
+// by source IP, since client IPs are pool-assigned and ephemeral.
+type userActivity struct {
+	User  string `json:"user"`
+	Group string `json:"group"`
+	Hits  int64  `json:"hits"`
+}
+
+// fetchUserActivity aggregates the authenticated users (and their groups)
+// seen in the policy's traffic. Best-effort: policies without identity
+// traffic simply return nothing.
+func (e *Extension) fetchUserActivity(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) ([]userActivity, error) {
+	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
+		return nil, nil
+	}
+	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
+	if err != nil {
+		return nil, err
+	}
+	body := aggregateRequest{
+		Query:     query + " AND _exists_:user",
+		Timerange: tr.aggregate(),
+		GroupBy:   []aggregateGroup{{Field: "user", Limit: 200}, {Field: "group", Limit: 50}},
+		Metrics:   []aggregateMetric{{Function: "count"}},
+	}
+	schema, rows, err := e.aggregate(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	userCol, grpCol, cntCol := -1, -1, -1
+	for i, c := range schema {
+		switch {
+		case c.ColumnType == "grouping" && c.Field == "user":
+			userCol = i
+		case c.ColumnType == "grouping" && c.Field == "group":
+			grpCol = i
+		case c.ColumnType == "metric" && c.Function == "count":
+			cntCol = i
+		}
+	}
+	if userCol < 0 || cntCol < 0 {
+		return nil, fmt.Errorf("graylog user aggregation: unexpected schema %+v", schema)
+	}
+	var out []userActivity
+	for _, row := range rows {
+		if userCol >= len(row) || cntCol >= len(row) || row[userCol] == nil {
+			continue
+		}
+		user, _ := row[userCol].(string)
+		user = strings.TrimSpace(user)
+		if user == "" || strings.EqualFold(user, "(Empty Value)") {
+			continue
+		}
+		group := ""
+		if grpCol >= 0 && grpCol < len(row) {
+			group, _ = row[grpCol].(string)
+			group = strings.TrimSpace(group)
+			if strings.EqualFold(group, "(Empty Value)") {
+				group = ""
+			}
+		}
+		var hits int64
+		if f, ok := row[cntCol].(float64); ok {
+			hits = int64(f)
+		}
+		out = append(out, userActivity{User: user, Group: group, Hits: hits})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		return out[i].User < out[j].User
+	})
+	return out, nil
+}
+
+// appUsage is one application-control detection under the policy, with the
+// backup's matching Internet-Service objects (ISDB tracks the provider's IP
+// ranges automatically — usually better than IP/FQDN objects for SaaS).
+type appUsage struct {
+	App      string   `json:"app"`
+	Category string   `json:"category"`
+	Hits     int64    `json:"hits"`
+	ISDB     []string `json:"isdb"`
+}
+
+// fetchAppUsage aggregates application-control detections (app/appcat) in
+// the policy's traffic. Best-effort: policies without an application-list
+// simply log no app field and return nothing.
+func (e *Extension) fetchAppUsage(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) ([]appUsage, error) {
+	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
+		return nil, nil
+	}
+	query, err := e.buildPolicyQuery(fqdn, policyID, vdom)
+	if err != nil {
+		return nil, err
+	}
+	body := aggregateRequest{
+		Query:     query + " AND _exists_:app",
+		Timerange: tr.aggregate(),
+		GroupBy:   []aggregateGroup{{Field: "app", Limit: 200}, {Field: "appcat", Limit: 50}},
+		Metrics:   []aggregateMetric{{Function: "count"}},
+	}
+	schema, rows, err := e.aggregate(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	appCol, catCol, cntCol := -1, -1, -1
+	for i, c := range schema {
+		switch {
+		case c.ColumnType == "grouping" && c.Field == "app":
+			appCol = i
+		case c.ColumnType == "grouping" && c.Field == "appcat":
+			catCol = i
+		case c.ColumnType == "metric" && c.Function == "count":
+			cntCol = i
+		}
+	}
+	if appCol < 0 || cntCol < 0 {
+		return nil, fmt.Errorf("graylog app aggregation: unexpected schema %+v", schema)
+	}
+	var out []appUsage
+	for _, row := range rows {
+		if appCol >= len(row) || cntCol >= len(row) || row[appCol] == nil {
+			continue
+		}
+		app, _ := row[appCol].(string)
+		app = strings.TrimSpace(app)
+		if app == "" || strings.EqualFold(app, "(Empty Value)") {
+			continue
+		}
+		cat := ""
+		if catCol >= 0 && catCol < len(row) {
+			cat, _ = row[catCol].(string)
+			cat = strings.TrimSpace(cat)
+			if strings.EqualFold(cat, "(Empty Value)") {
+				cat = ""
+			}
+		}
+		var hits int64
+		if f, ok := row[cntCol].(float64); ok {
+			hits = int64(f)
+		}
+		out = append(out, appUsage{App: app, Category: cat, Hits: hits})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		return out[i].App < out[j].App
+	})
+	return out, nil
 }
 
 // truncationWarnings reports when a grouping dimension hit the aggregation

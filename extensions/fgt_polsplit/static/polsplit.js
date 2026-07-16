@@ -2,7 +2,7 @@
  * backup, run the Graylog traffic analysis, render tuples + strategies. */
 'use strict';
 
-const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null };
+const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null };
 
 function $(id) { return document.getElementById(id); }
 
@@ -114,7 +114,12 @@ function selectedRange() {
     };
 }
 
-/* ---------------- progress display ---------------- */
+/* ---------------- progress display ----------------
+ * The server publishes step/total (stage), plus a detail line and optional
+ * sub-progress (chunked Graylog loading). The client adds a spinner, live
+ * elapsed time, an interpolated bar and a per-stage timing log. */
+
+const PS_SPIN = ['|', '/', '-', '\\'];
 
 function newProgressId() {
     return (window.crypto && crypto.randomUUID)
@@ -122,10 +127,48 @@ function newProgressId() {
         : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-function showProgress(message, step, total) {
+// progressPct interpolates within the running stage using the sub-progress:
+// completed stages count fully, the current stage by its sub-fraction.
+function progressPct(p) {
+    if (!p || !(p.total > 0)) return 0;
+    const frac = p.sub_total > 0 ? Math.min(p.sub / p.sub_total, 1) : 1;
+    const pct = Math.round(100 * (Math.max(p.step - 1, 0) + frac) / p.total);
+    return Math.max(0, Math.min(100, pct));
+}
+
+function renderProgress(prog) {
+    const p = prog.state;
     $('ps-progress').hidden = false;
-    $('ps-progress-text').textContent = total > 0 ? `${message}… (${step}/${total})` : message;
-    $('ps-progress-bar').style.width = total > 0 ? Math.round(100 * step / total) + '%' : '0%';
+    $('ps-progress-bar').style.width = progressPct(p) + '%';
+    let text = p.message || '';
+    if (p.detail) text += ' — ' + p.detail;
+    if (p.total > 0) text += ` (${p.step}/${p.total})`;
+    const t = $('ps-progress-text');
+    if (t.textContent !== text) t.textContent = text; // aria-live fires on real changes only
+    renderProgressMeta(prog);
+}
+
+function renderProgressMeta(prog) {
+    const secs = ((Date.now() - prog.startedAt) / 1000).toFixed(1);
+    $('ps-progress-meta').textContent = `[${PS_SPIN[prog.spin]}] ${progressPct(prog.state)}% · ${secs}s`;
+}
+
+// updateProgress folds a poll result in; a message change closes the previous
+// stage into the timing log.
+function updateProgress(prog, p) {
+    if (p.message !== prog.state.message && prog.state.message) {
+        logStage(prog, prog.state.message);
+    }
+    prog.state = p;
+    renderProgress(prog);
+}
+
+function logStage(prog, msg) {
+    const secs = ((Date.now() - prog.stageStart) / 1000).toFixed(1);
+    const line = document.createElement('div');
+    line.textContent = `✓ ${msg} (${secs}s)`;
+    $('ps-progress-log').appendChild(line);
+    prog.stageStart = Date.now();
 }
 
 function hideProgress() {
@@ -141,6 +184,10 @@ async function analyze() {
     if (psState.abortCtrl) psState.abortCtrl.abort();
     const ctrl = new AbortController();
     psState.abortCtrl = ctrl;
+    // Progress-display ownership: only a NEWER analyze() run takes it over.
+    // Cancellation from elsewhere (loadPolicy, invalidatePolicy) must still
+    // let this run's teardown hide the bar and re-enable the button.
+    psState.analyzeCtrl = ctrl;
     const signal = ctrl.signal;
 
     const progressId = newProgressId();
@@ -163,7 +210,21 @@ async function analyze() {
 
     const btn = $('ps-analyze-btn');
     btn.disabled = true;
-    showProgress('Starting analysis', 0, 0);
+    const prog = {
+        startedAt: Date.now(), stageStart: Date.now(), spin: 0,
+        state: { message: 'Starting analysis', detail: '', step: 0, total: 0, sub: 0, sub_total: 0 },
+    };
+    const logEl = $('ps-progress-log');
+    logEl.innerHTML = '';
+    logEl.hidden = false;
+    renderProgress(prog);
+    // Spinner + elapsed tick between polls (skipped for reduced-motion users;
+    // the meta line still refreshes with every poll).
+    const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const anim = reduceMotion ? 0 : setInterval(() => {
+        prog.spin = (prog.spin + 1) % PS_SPIN.length;
+        renderProgressMeta(prog);
+    }, 200);
     // Poll the server-side stage while the analyze request runs; overlapping
     // polls are prevented and errors ignored (the bar is best-effort).
     let polling = false;
@@ -174,12 +235,12 @@ async function analyze() {
             const resp = await fetch(`/fgt-polsplit/progress?id=${encodeURIComponent(progressId)}`, { signal });
             if (resp.ok) {
                 const p = await resp.json();
-                if (p.active) showProgress(p.message, p.step, p.total);
+                if (p.active) updateProgress(prog, p);
             }
         } catch { /* best-effort */ } finally {
             polling = false;
         }
-    }, 500);
+    }, 400);
     try {
         const data = await fetchJSON('/fgt-polsplit/analyze', {
             method: 'POST',
@@ -187,15 +248,24 @@ async function analyze() {
             body: JSON.stringify(req),
             signal,
         });
+        if (prog.state.message) logStage(prog, prog.state.message);
+        const doneLine = document.createElement('div');
+        doneLine.className = 'ps-progress-done';
+        doneLine.textContent = `Analysis complete in ${((Date.now() - prog.startedAt) / 1000).toFixed(1)}s`;
+        logEl.appendChild(doneLine);
         renderResults(data);
     } catch (err) {
         if (err.name === 'AbortError') return;
         alert('Analysis failed: ' + err.message);
     } finally {
         clearInterval(poll);
-        // A superseding run owns the progress display now — only the run that
-        // is still current may tear it down.
-        if (psState.abortCtrl === ctrl) {
+        if (anim) clearInterval(anim);
+        // A superseding analyze() run owns the progress display now — only
+        // the run that still owns it may tear it down. Aborts from other
+        // controls (loadPolicy, invalidatePolicy) leave ownership with this
+        // run, so the bar is hidden and the button re-enabled either way.
+        if (psState.analyzeCtrl === ctrl) {
+            psState.analyzeCtrl = null;
             hideProgress();
             btn.disabled = false;
         }
@@ -255,6 +325,21 @@ function renderResults(data) {
     $('ps-isdb-table').querySelector('tbody').innerHTML = isdb.map(s => `<tr>
         <td>${esc(s.vendor)}</td><td class="ps-num">${esc(s.ips)}</td><td class="ps-num">${esc(s.hits)}</td>
         <td>${(s.names && s.names.length) ? s.names.map(esc).join(', ') : '<span class="ps-muted">none parsed from backup</span>'}</td></tr>`).join('');
+
+    // Authenticated identities (user/group fields)
+    const users = data.user_activity || [];
+    $('ps-users-wrap').hidden = users.length === 0;
+    $('ps-users-count').textContent = users.length;
+    $('ps-users-table').querySelector('tbody').innerHTML = users.map(u => `<tr>
+        <td>${esc(u.user)}</td><td>${esc(u.group || '—')}</td><td class="ps-num">${esc(u.hits)}</td></tr>`).join('');
+
+    // Application-control usage with ISDB object matches
+    const apps = data.app_usage || [];
+    $('ps-apps-wrap').hidden = apps.length === 0;
+    $('ps-apps-count').textContent = apps.length;
+    $('ps-apps-table').querySelector('tbody').innerHTML = apps.map(a => `<tr>
+        <td>${esc(a.app)}</td><td>${esc(a.category || '—')}</td><td class="ps-num">${esc(a.hits)}</td>
+        <td>${(a.isdb && a.isdb.length) ? a.isdb.map(esc).join(', ') : '<span class="ps-muted">—</span>'}</td></tr>`).join('');
 
     // UTM-blocked destinations
     const utm = data.utm_blocked || [];

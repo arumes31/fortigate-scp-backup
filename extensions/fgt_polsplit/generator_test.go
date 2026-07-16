@@ -150,6 +150,48 @@ func TestGeneratePathNaming(t *testing.T) {
 	}
 }
 
+// TestFitPolicyName: the 35-char limit must eat the interface path, never the
+// service label — the label is what distinguishes sibling splits.
+func TestFitPolicyName(t *testing.T) {
+	cases := []struct {
+		path, label, want string
+	}{
+		{"LAN1>WAN1", "RDP", "LAN1>WAN1 (RDP)"},
+		{"ONBOARDING_D1X>VIRTUAL-WAN-LINK", "RDP", "ONBOARDING_D1X>VIRTUAL-WAN-LI (RDP)"},
+		{"ONBOARDING_D1X>VIRTUAL-WAN-LINK", "DENY-REST", "ONBOARDING_D1X>VIRTUAL- (DENY-REST)"},
+	}
+	for _, c := range cases {
+		got := fitPolicyName(c.path, c.label, maxPolicyNameLen)
+		if got != c.want {
+			t.Errorf("fitPolicyName(%q, %q) = %q, want %q", c.path, c.label, got, c.want)
+		}
+		if len(got) > maxPolicyNameLen {
+			t.Errorf("fitPolicyName(%q, %q) = %q exceeds %d chars", c.path, c.label, got, maxPolicyNameLen)
+		}
+	}
+}
+
+// TestGenerateLongPathKeepsLabel: end-to-end — long real-world interface
+// names must not truncate away the distinguishing service label.
+func TestGenerateLongPathKeepsLabel(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.SrcIntf = []string{"onboarding_d1x"}
+	pb.Policy.DstIntf = []string{"virtual-wan-link"}
+	pols := []RecPolicy{
+		{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+			Services: []ServiceSpec{{Key: "tcp/3389", Proto: "tcp", Port: 3389, LogName: "RDP"}}, Hits: 9},
+		{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.8")},
+			Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 5},
+	}
+	Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.HasSuffix(pols[0].Name, "(RDP)") || !strings.HasSuffix(pols[1].Name, "(SSH)") {
+		t.Errorf("labels lost to truncation: %q / %q", pols[0].Name, pols[1].Name)
+	}
+	if pols[0].Name == pols[1].Name {
+		t.Errorf("sibling splits share one name: %q", pols[0].Name)
+	}
+}
+
 func TestIfaceLabel(t *testing.T) {
 	cases := []struct {
 		in   []string
@@ -396,6 +438,10 @@ func TestGenerateEmitDeny(t *testing.T) {
 	pb.Policy.SrcAddr = []string{"all"}
 	pb.Policy.DstAddr = []string{"all"}
 	pb.Policy.Services = []string{"ALL"}
+	// Identity selectors restrict the original's scope — the deny must carry
+	// them, or it would block traffic that used to fall through to policies
+	// below the original.
+	pb.Policy.CloneLines = append(pb.Policy.CloneLines, `set groups "VPN-Users"`)
 	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 1}}
 	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5", EmitDeny: true})
@@ -421,6 +467,9 @@ func TestGenerateEmitDeny(t *testing.T) {
 	}
 	if strings.Contains(denyBlock, "set nat enable") || strings.Contains(denyBlock, "set action accept") {
 		t.Errorf("deny policy inherited accept-side clone lines:\n%s", denyBlock)
+	}
+	if !strings.Contains(denyBlock, `set groups "VPN-Users"`) {
+		t.Errorf("deny policy must preserve the identity selectors:\n%s", denyBlock)
 	}
 
 	// Without the option, no deny is emitted.
