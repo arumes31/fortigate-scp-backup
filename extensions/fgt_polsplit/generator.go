@@ -215,7 +215,10 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, pref
 		if len(names) <= groupInlineMax {
 			return names
 		}
-		sig := strings.Join(names, "|")
+		sig := fmt.Sprintf("%d:", len(names))
+		for _, n := range names {
+			sig += fmt.Sprintf("%d:%s", len(n), n)
+		}
 		if g, ok := grpBySig[sig]; ok {
 			return []string{g}
 		}

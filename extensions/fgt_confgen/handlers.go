@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -18,6 +19,11 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
+
+// isValidTemplateName rejects names containing URL-unsafe characters.
+func isValidTemplateName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "/?#")
+}
 
 //go:embed templates/fgt_confgen_index.html
 var templatesFS embed.FS
@@ -126,7 +132,8 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) listFirewalls(w http.ResponseWriter, r *http.Request) {
 	rows, err := e.pgPool.Query(r.Context(), "SELECT id, fqdn FROM firewalls ORDER BY fqdn")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		e.logger.Error("Failed to list firewalls", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -197,6 +204,46 @@ func (e *Extension) loadFirewallConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	e.log(r, "Load Firewall Config", fmt.Sprintf("Loaded latest config from firewall ID %d", fwID))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(parsed)
+}
+
+func (e *Extension) parseConfig(w http.ResponseWriter, r *http.Request) {
+	username := e.currentUser(r)
+
+	// Parse multipart form up to 32MB
+	_ = r.ParseMultipartForm(32 << 20)
+
+	file, _, err := r.FormFile("config_file")
+	if err != nil {
+		// Empty request or no file uploaded: return user's last parsed configuration
+		lastConfig, err := e.getLastConfigFromDB(username)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(ParsedConfig{})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lastConfig)
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	contentBytes, err := io.ReadAll(file)
+	if err != nil {
+		e.logger.Error("Failed to read uploaded config file", "err", err)
+		http.Error(w, "Failed to read file", http.StatusBadRequest)
+		return
+	}
+
+	parsed := ParseConfig(string(contentBytes))
+
+	if err := e.saveLastConfigToDB(username, parsed); err != nil {
+		e.logger.Error("Failed to save config to SQLite", "err", err)
+	}
+
+	e.log(r, "Parse Config", "Parsed and saved uploaded configuration file")
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(parsed)
@@ -354,8 +401,8 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 	policiesJSON := r.FormValue("policies")
 	isGlobal := r.FormValue("is_global") == "true" || r.FormValue("is_global") == "on"
 
-	if templateName == "" {
-		http.Error(w, "template_name is required", http.StatusBadRequest)
+	if !isValidTemplateName(templateName) {
+		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
 		return
 	}
 	if policiesJSON == "" {
@@ -440,6 +487,11 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isValidTemplateName(body.NewName) {
+		http.Error(w, "new_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		return
+	}
+
 	username := e.currentUser(r)
 	owner := username
 	if body.IsGlobal {
@@ -468,6 +520,13 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 	if affected == 0 {
 		http.Error(w, "Template not found", http.StatusNotFound)
 		return
+	}
+
+	// Update associated short URLs to point to the new template name.
+	oldURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.OldName)
+	newURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.NewName)
+	if _, err := e.db.Exec("UPDATE short_urls SET url = REPLACE(url, ?, ?) WHERE url LIKE ?", oldURL, newURL, "%"+oldURL+"%"); err != nil {
+		e.logger.Error("Failed to update short URLs after rename", "old", body.OldName, "new", body.NewName, "err", err)
 	}
 
 	e.log(r, "Rename Template", fmt.Sprintf("Renamed template from '%s' to '%s' (global: %v)", body.OldName, body.NewName, body.IsGlobal))
@@ -607,8 +666,12 @@ func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
 	templateName := r.FormValue("template_name")
 	templateDataStr := r.FormValue("template_data")
 
-	if templateName == "" || templateDataStr == "" {
-		http.Error(w, "Missing fields", http.StatusBadRequest)
+	if !isValidTemplateName(templateName) {
+		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		return
+	}
+	if templateDataStr == "" {
+		http.Error(w, "Missing template_data", http.StatusBadRequest)
 		return
 	}
 
@@ -681,9 +744,21 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 
 	var shortCode string
 	err := e.db.QueryRow("SELECT short_code FROM short_urls WHERE url = ?", body.URL).Scan(&shortCode)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
 	if err == sql.ErrNoRows {
-		shortCode = randHex(6)
-		_ = e.shortenURLInDB(body.URL, shortCode)
+		for attempts := 0; attempts < 5; attempts++ {
+			shortCode = randHex(6)
+			if err := e.shortenURLInDB(body.URL, shortCode); err == nil {
+				break
+			}
+			if attempts == 4 {
+				http.Error(w, "Failed to generate unique short code", http.StatusInternalServerError)
+				return
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

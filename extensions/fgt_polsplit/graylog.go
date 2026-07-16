@@ -2,6 +2,7 @@ package fgt_polsplit
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -198,7 +199,7 @@ func (e *Extension) graylogAuth(req *http.Request) {
 // countMessages returns the total number of log messages matching the query in
 // the window — a diagnostic anchor: tuples==0 with messages>0 means the field
 // extraction (srcip/dstip/…) is missing, not the traffic.
-func (e *Extension) countMessages(query string, tr timeRange) (int64, error) {
+func (e *Extension) countMessages(ctx context.Context, query string, tr timeRange) (int64, error) {
 	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
 	params := url.Values{}
 	params.Set("query", query)
@@ -212,7 +213,7 @@ func (e *Extension) countMessages(query string, tr timeRange) (int64, error) {
 		params.Set("to", tr.To)
 		apiURL = graylogURL + "/api/search/universal/absolute?" + params.Encode()
 	}
-	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -242,13 +243,13 @@ func (e *Extension) countMessages(query string, tr timeRange) (int64, error) {
 
 // aggregate runs one aggregation via the Search Scripting API. The endpoint is
 // a state-changing POST, so it needs the X-Requested-By CSRF header.
-func (e *Extension) aggregate(body aggregateRequest) ([]aggregateColumn, [][]any, error) {
+func (e *Extension) aggregate(ctx context.Context, body aggregateRequest) ([]aggregateColumn, [][]any, error) {
 	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, graylogURL+"/api/search/aggregate", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graylogURL+"/api/search/aggregate", bytes.NewReader(payload))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -291,7 +292,7 @@ const groupLimit = 1000
 // grouped field: one over port-carrying logs (tcp/udp/sctp) grouped by dstport,
 // one over portless logs (icmp/gre/esp/…) without it. totalMessages carries the
 // window's raw match count for diagnostics.
-func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
+func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyID int, vdom string, tr timeRange) (tuples []TrafficTuple, totalMessages int64, warnings []string, err error) {
 	if strings.TrimRight(e.cfg.GraylogURL, "/") == "" || e.cfg.GraylogToken == "" {
 		return nil, 0, []string{"Graylog is not configured (set GRAYLOG_URL and GRAYLOG_TOKEN) — no traffic data available"}, nil
 	}
@@ -309,19 +310,19 @@ func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, t
 		query = query + ` AND vd:"` + escapeGraylogValue(vdom) + `"`
 	}
 
-	totalMessages, err = e.countMessages(query, tr)
+	totalMessages, err = e.countMessages(ctx, query, tr)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
 	// 1. Authoritative complete result without service grouping (so no messages are omitted)
-	tuples, warnings, err = e.aggregateTuples(query, tr, false)
+	tuples, warnings, err = e.aggregateTuples(ctx, query, tr, false)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
 	// 2. Separate query with service grouping to get service names
-	svcTuples, svcWarnings, err := e.aggregateTuples(query, tr, true)
+	svcTuples, svcWarnings, err := e.aggregateTuples(ctx, query, tr, true)
 	if err != nil {
 		e.logger.Warn("polsplit: service-present aggregation failed, using no-service results only", "err", err)
 	} else {
@@ -351,7 +352,7 @@ func (e *Extension) fetchPolicyTraffic(fqdn string, policyID int, vdom string, t
 // port-carrying logs (tcp/udp/sctp) grouped by dstport, one over portless logs
 // (icmp/gre/esp/…) without it — grouping drops documents that miss a grouped
 // field, so a single combined aggregation would silently lose ICMP traffic.
-func (e *Extension) aggregateTuples(query string, tr timeRange, includeService bool) (tuples []TrafficTuple, warnings []string, err error) {
+func (e *Extension) aggregateTuples(ctx context.Context, query string, tr timeRange, includeService bool) (tuples []TrafficTuple, warnings []string, err error) {
 	base := []aggregateGroup{
 		{Field: "srcip", Limit: groupLimit},
 		{Field: "dstip", Limit: groupLimit},
@@ -371,7 +372,7 @@ func (e *Extension) aggregateTuples(query string, tr timeRange, includeService b
 		GroupBy:   append(append([]aggregateGroup{}, base...), aggregateGroup{Field: "dstport", Limit: groupLimit}),
 		Metrics:   metrics,
 	}
-	schema, rows, err := e.aggregate(withPort)
+	schema, rows, err := e.aggregate(ctx, withPort)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -383,7 +384,7 @@ func (e *Extension) aggregateTuples(query string, tr timeRange, includeService b
 		GroupBy:   base,
 		Metrics:   metrics,
 	}
-	schema, rows, err = e.aggregate(withoutPort)
+	schema, rows, err = e.aggregate(ctx, withoutPort)
 	if err != nil {
 		e.logger.Warn("polsplit: portless-traffic aggregation failed, continuing with port-carrying tuples only", "err", err)
 		warnings = append(warnings, "portless-protocol aggregation failed: "+err.Error())
@@ -435,10 +436,14 @@ func parseTupleRows(schema []aggregateColumn, rows [][]any) []TrafficTuple {
 		if port < 0 || port > 65535 {
 			port = 0 // unparseable/out-of-range dstport → treated as portless
 		}
+		proto := protoName(cell(row, "proto"), port)
+		if proto == "unknown" {
+			continue
+		}
 		t := TrafficTuple{
 			SrcIP:    src,
 			DstIP:    dst,
-			Proto:    protoName(cell(row, "proto"), port),
+			Proto:    proto,
 			Port:     port,
 			Service:  cell(row, "service"),
 			Hits:     hits,
@@ -465,17 +470,20 @@ func protoName(proto string, port int) string {
 		return "icmp"
 	case "58", "icmp6", "ipv6-icmp":
 		return "icmp6"
+	case "47", "gre":
+		return "ip-47"
+	case "50", "esp":
+		return "ip-50"
+	case "51", "ah":
+		return "ip-51"
 	case "":
-		// No proto field extracted: infer the common case from the port.
-		if port > 0 {
-			return "tcp"
-		}
-		return "ip-0"
+		// No proto field extracted — do not infer a protocol.
+		return "unknown"
 	}
 	if _, err := strconv.Atoi(p); err == nil {
 		return "ip-" + p
 	}
-	return p
+	return "unknown"
 }
 
 // truncationWarnings reports when a grouping dimension hit the aggregation

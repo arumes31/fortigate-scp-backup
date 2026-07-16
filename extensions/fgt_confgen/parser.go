@@ -328,6 +328,10 @@ func ParseConfig(content string) ParsedConfig {
 			if m := setSvcProtoRe.FindStringSubmatch(line); len(m) > 2 {
 				svcProtocol = strings.ToUpper(m[1])
 				svcPort = strings.TrimSpace(m[2])
+			} else if strings.HasPrefix(line, "set protocol ICMP") {
+				svcProtocol = "ICMP"
+			} else if strings.HasPrefix(line, "set icmptype ") {
+				svcPort = strings.TrimSpace(strings.TrimPrefix(line, "set icmptype "))
 			} else if m := setSvcProto2Re.FindStringSubmatch(line); len(m) > 2 {
 				proto := strings.ToLower(m[1])
 				if proto == "tcp" || proto == "udp" || proto == "sctp" {

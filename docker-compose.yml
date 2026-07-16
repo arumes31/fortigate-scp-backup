@@ -120,14 +120,22 @@ services:
 
   fortisafe-db:
     container_name: "fortisafe-db"
-    # NOTE for existing deployments upgrading in place: this file previously
-    # used the pinned image postgres:16-alpine with the named volume
-    # fortisafe-db-data. Your data still lives in that volume — move it into
-    # ./pgdata (pg_dump/pg_restore) or restore the old volume mapping before
-    # starting, or the app will come up against an empty database. An
-    # unpinned :latest also means a future Postgres major bump can refuse to
-    # open an existing ./pgdata; pin a major version if that risk matters.
-    image: postgres:latest
+    # NOTE for existing deployments upgrading in place: this file uses the
+    # pinned image postgres:16-alpine. Upgrading to a new PostgreSQL major
+    # version is required to be an explicit procedure (e.g., using pg_dump on the
+    # old version and pg_restore on the new version) as Postgres does not
+    # automatically migrate data directories across major versions.
+    # To upgrade existing data directories:
+    # 1. Run pg_dumpall with the current version to backup all databases:
+    #    docker exec -t fortisafe-db pg_dumpall -U postgre > backup.sql
+    # 2. Stop the old container and move/clear the old ./pgdata directory.
+    # 3. Start the new version container.
+    # 4. Restore the dump:
+    #    cat backup.sql | docker exec -i fortisafe-db psql -U postgre -d firewall_backups
+    # Preserve your existing persistent-data: if your data lives in the old
+    # fortisafe-db-data volume, move it into ./pgdata or restore the old volume
+    # mapping before starting to avoid starting with an empty database.
+    image: postgres:16-alpine
     environment:
       - "POSTGRES_USER=postgre"
       - "POSTGRES_PASSWORD=XXXXXXTDB"

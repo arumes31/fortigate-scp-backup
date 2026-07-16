@@ -343,6 +343,7 @@ function renderServices(container, items) {
                 <select onchange="updateCustomService(${index}, 'protocol', this.value)">
                     <option value="TCP" ${item.protocol === 'TCP' ? 'selected' : ''}>TCP</option>
                     <option value="UDP" ${item.protocol === 'UDP' ? 'selected' : ''}>UDP</option>
+                    <option value="SCTP" ${item.protocol === 'SCTP' ? 'selected' : ''}>SCTP</option>
                     <option value="ICMP" ${item.protocol === 'ICMP' ? 'selected' : ''}>ICMP</option>
                 </select>
                 <input type="text" value="${escHtml(item.port)}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
@@ -911,67 +912,25 @@ function clonePolicy(button) {
         logToBackend('Policy ID not found for cloning policy');
         return;
     }
-    fetch('/fgt-confgen/clone_policy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ policy_id: policyId })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'success') {
-            const isGlobalCheckbox = document.getElementById('template-global');
-            if (isGlobalCheckbox) {
-                isGlobalCheckbox.checked = data.is_global || false;
-            }
-            policies.push({
-                id: data.new_policy.policy_id,
-                name: data.new_policy.policy_name,
-                comment: data.new_policy.policy_comment,
-                srcInterfaces: data.new_policy.src_interfaces,
-                dstInterfaces: data.new_policy.dst_interfaces,
-                srcAddresses: data.new_policy.src_addresses,
-                srcAddressGroups: data.new_policy.src_address_groups,
-                srcInternetServices: data.new_policy.src_internet_services,
-                srcVips: data.new_policy.src_vips,
-                dstAddresses: data.new_policy.dst_addresses,
-                dstAddressGroups: data.new_policy.dst_address_groups,
-                dstInternetServices: data.new_policy.dst_internet_services,
-                dstVips: data.new_policy.dst_vips,
-                services: data.new_policy.services,
-                action: data.new_policy.action,
-                inspectionMode: data.new_policy.inspection_mode,
-                ssl_ssh_profile: data.new_policy.ssl_ssh_profile,
-                webfilter_profile: data.new_policy.webfilter_profile,
-                webfilter_enabled: data.new_policy.webfilter_enabled,
-                application_list: data.new_policy.application_list,
-                application_list_enabled: data.new_policy.application_list_enabled,
-                av_profile: data.new_policy.av_profile,
-                av_enabled: data.new_policy.av_enabled,
-                ips_sensor: data.new_policy.ips_sensor,
-                ips_sensor_enabled: data.new_policy.ips_sensor_enabled,
-                logtraffic: data.new_policy.logtraffic,
-                logtraffic_start: data.new_policy.logtraffic_start,
-                auto_asic_offload: data.new_policy.auto_asic_offload,
-                nat: data.new_policy.nat,
-                ip_pool: data.new_policy.ip_pool,
-                users: data.new_policy.users,
-                groups: data.new_policy.groups
-            });
-            renderPolicyList();
-            selectPolicy(data.new_policy.policy_id);
-            showNotification('Policy cloned successfully', 'success');
-            logToBackend('Policy cloned successfully');
-        } else {
-            console.error('Error cloning policy:', data.error);
-            logToBackend(`Error cloning policy: ${data.error}`);
-            showNotification('Error cloning policy: ' + data.error, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error cloning policy:', error);
-        logToBackend(`Error cloning policy: ${error.message}`);
-        showNotification('Error cloning policy', 'error');
-    });
+    const policy = policies.find(p => p.id === policyId);
+    if (!policy) {
+        console.error(`Policy with ID ${policyId} not found`);
+        logToBackend(`Policy with ID ${policyId} not found`);
+        showNotification('Policy not found', 'error');
+        return;
+    }
+    const clone = JSON.parse(JSON.stringify(policy));
+    clone.id = Date.now().toString();
+    if (clone.name.length > 20) {
+        clone.name = clone.name.substring(0, 20) + '_cl';
+    } else {
+        clone.name = clone.name + '_cl';
+    }
+    policies.push(clone);
+    renderPolicyList();
+    selectPolicy(clone.id);
+    showNotification('Policy cloned successfully', 'success');
+    logToBackend('Policy cloned successfully (client-side)');
 }
 
 function clearForm(button) {
@@ -1829,7 +1788,10 @@ document.addEventListener('DOMContentLoaded', () => {
     logToBackend(`DOM loaded, initial preselected template: ${window.preselectedTemplate || 'none'}`);
 
     // Function to initialize templates
+    let _templatesInitialized = false;
     const initializeTemplates = () => {
+        if (_templatesInitialized) return;
+        _templatesInitialized = true;
         console.log('Initializing template list, final preselected template:', window.preselectedTemplate);
         logToBackend(`Initializing template list, final preselected template: ${window.preselectedTemplate || 'none'}`);
         loadTemplateList().then(() => {

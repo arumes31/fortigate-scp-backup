@@ -106,7 +106,7 @@ func TestSvcKeyAndProtoName(t *testing.T) {
 			t.Errorf("protoName(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := protoName("", 443); got != "tcp" {
+	if got := protoName("", 443); got != "unknown" {
 		t.Errorf("protoName empty with port = %q", got)
 	}
 }

@@ -3,13 +3,56 @@ package fgt_confgen
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 var (
-	safePortRegex = regexp.MustCompile(`^[0-9\-\s,:]+$`)
 	icmpTypeRegex = regexp.MustCompile(`^[0-9]+$`)
 )
+
+// validatePortRange checks that s is a comma-separated list of ports or
+// port ranges (e.g. "80", "80,443", "1024-2048") where every port
+// number is between 1 and 65535 and range starts do not exceed ends.
+func validatePortRange(s string) error {
+	parts := strings.Split(s, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return fmt.Errorf("empty component in port range: %q", s)
+		}
+		if idx := strings.Index(part, "-"); idx >= 0 {
+			startStr := strings.TrimSpace(part[:idx])
+			endStr := strings.TrimSpace(part[idx+1:])
+			start, err := strconv.Atoi(startStr)
+			if err != nil {
+				return fmt.Errorf("invalid port number %q in range %q", startStr, s)
+			}
+			end, err := strconv.Atoi(endStr)
+			if err != nil {
+				return fmt.Errorf("invalid port number %q in range %q", endStr, s)
+			}
+			if start < 1 || start > 65535 {
+				return fmt.Errorf("port %d out of range (1-65535) in %q", start, s)
+			}
+			if end < 1 || end > 65535 {
+				return fmt.Errorf("port %d out of range (1-65535) in %q", end, s)
+			}
+			if start > end {
+				return fmt.Errorf("start port %d exceeds end port %d in %q", start, end, s)
+			}
+		} else {
+			port, err := strconv.Atoi(part)
+			if err != nil {
+				return fmt.Errorf("invalid port number %q in %q", part, s)
+			}
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("port %d out of range (1-65535) in %q", port, s)
+			}
+		}
+	}
+	return nil
+}
 
 func hasControlOrQuote(s string) bool {
 	for i := 0; i < len(s); i++ {
@@ -106,7 +149,7 @@ func validatePolicy(p Policy, services []Service) error {
 		return fmt.Errorf("invalid nat: %q", p.Nat)
 	}
 
-	for _, svc := range services {
+	for i, svc := range services {
 		if hasControlOrQuote(svc.Name) || hasControlOrQuote(svc.Type) || hasControlOrQuote(svc.Protocol) || hasControlOrQuote(svc.Port) {
 			return fmt.Errorf("invalid characters in service %q", svc.Name)
 		}
@@ -117,15 +160,19 @@ func validatePolicy(p Policy, services []Service) error {
 			continue
 		}
 
+		// Canonicalize type early so downstream branches (GenerateOutput2,
+		// GenerateOutput3, GenerateSinglePolicyCLI) match reliably.
+		services[i].Type = strings.ToLower(svc.Type)
+		svc = services[i]
+
 		// The frontend sends "template" (predefined service), "group"
 		// (service group) or "custom"; "predefined" is kept for
 		// compatibility with stored templates.
-		svcType := strings.ToLower(svc.Type)
-		if svcType != "custom" && svcType != "predefined" && svcType != "template" && svcType != "group" {
+		if svc.Type != "custom" && svc.Type != "predefined" && svc.Type != "template" && svc.Type != "group" {
 			return fmt.Errorf("invalid service type: %q", svc.Type)
 		}
 
-		if svcType == "custom" {
+		if svc.Type == "custom" {
 			protocol := strings.ToUpper(svc.Protocol)
 			if protocol != "TCP" && protocol != "UDP" && protocol != "SCTP" && protocol != "ICMP" {
 				return fmt.Errorf("unsupported protocol: %s", svc.Protocol)
@@ -140,8 +187,8 @@ func validatePolicy(p Policy, services []Service) error {
 					return fmt.Errorf("ICMP type out of range (0-255): %q", svc.Port)
 				}
 			} else {
-				if !safePortRegex.MatchString(svc.Port) {
-					return fmt.Errorf("invalid port range: %q", svc.Port)
+				if err := validatePortRange(svc.Port); err != nil {
+					return fmt.Errorf("invalid port range for service %q: %w", svc.Name, err)
 				}
 			}
 		}
@@ -216,8 +263,14 @@ func GenerateOutput3(p Policy) (string, error) {
 		}
 	}
 
-	if len(srcIntfs) == 0 || len(dstIntfs) == 0 || len(filteredServices) == 0 {
-		return "No valid source interfaces, destination interfaces, or services defined.", nil
+	if len(srcIntfs) == 0 {
+		return "", fmt.Errorf("no source interfaces defined")
+	}
+	if len(dstIntfs) == 0 {
+		return "", fmt.Errorf("no destination interfaces defined")
+	}
+	if len(filteredServices) == 0 {
+		return "", fmt.Errorf("no services defined")
 	}
 
 	var sb strings.Builder
@@ -248,6 +301,11 @@ func GenerateOutput3(p Policy) (string, error) {
 
 // GenerateSinglePolicyCLI generates the actual FortiGate config CLI commands.
 func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (string, error) {
+	// Normalize service types so case-insensitive comparisons work for
+	// callers that bypass validatePolicy (unlikely but defensive).
+	for i := range services {
+		services[i].Type = strings.ToLower(services[i].Type)
+	}
 	var srcIntfs []string
 	for _, intf := range p.SrcInterfaces {
 		if intf != "" {
@@ -318,19 +376,22 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 		}
 	}
 
-	if len(srcIntfs) == 0 || len(dstIntfs) == 0 {
-		return "", nil
+	if len(srcIntfs) == 0 {
+		return "", fmt.Errorf("no source interfaces defined")
+	}
+	if len(dstIntfs) == 0 {
+		return "", fmt.Errorf("no destination interfaces defined")
 	}
 	hasSrcAddr := len(srcAddrs) > 0 || len(srcAddrGroups) > 0 || len(srcVIPs) > 0
 	hasDstAddr := len(dstAddrs) > 0 || len(dstAddrGroups) > 0 || len(dstVIPs) > 0
 	if !hasSrcAddr && len(srcISDB) == 0 {
-		return "", nil
+		return "", fmt.Errorf("no source addresses or internet services defined")
 	}
 	if !hasDstAddr && len(dstISDB) == 0 {
-		return "", nil
+		return "", fmt.Errorf("no destination addresses or internet services defined")
 	}
 	if len(filteredServices) == 0 {
-		return "", nil
+		return "", fmt.Errorf("no services defined")
 	}
 
 	var sb strings.Builder

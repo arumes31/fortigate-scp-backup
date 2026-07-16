@@ -262,7 +262,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:latest
+    image: postgres:16-alpine
     container_name: fortisafe-db
     environment:
       POSTGRES_USER: fortisafe

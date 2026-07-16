@@ -16,6 +16,10 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
+// ErrNotFound is returned by loadBackup when the firewall or backup does not
+// exist, allowing handlers to distinguish 404 from unexpected failures.
+var ErrNotFound = errors.New("not found")
+
 // maxTuplesInResponse caps the observed-traffic table sent to the UI; the
 // strategies are always computed over the full tuple set.
 const maxTuplesInResponse = 500
@@ -83,7 +87,7 @@ func (e *Extension) listFirewalls(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content string, ts time.Time, err error) {
 	if err = e.pgPool.QueryRow(ctx, `SELECT fqdn FROM firewalls WHERE id = $1`, fwID).Scan(&fqdn); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", ts, fmt.Errorf("firewall %d not found", fwID)
+			return "", "", ts, fmt.Errorf("%w: firewall %d not found", ErrNotFound, fwID)
 		}
 		return "", "", ts, err
 	}
@@ -92,7 +96,7 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content str
 		"SELECT filename, timestamp FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC LIMIT 1", fwID).Scan(&filename, &ts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", ts, fmt.Errorf("no backups found for firewall %d", fwID)
+			return "", "", ts, fmt.Errorf("%w: no backups found for firewall %d", ErrNotFound, fwID)
 		}
 		return "", "", ts, err
 	}
@@ -126,7 +130,12 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 	vdom := r.URL.Query().Get("vdom")
 	fqdn, content, ts, err := e.loadBackup(r.Context(), fwID)
 	if err != nil {
-		e.jsonError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, ErrNotFound) {
+			e.jsonError(w, http.StatusNotFound, err.Error())
+		} else {
+			e.logger.Error("polsplit: loadBackup failed", "err", err)
+			e.jsonError(w, http.StatusInternalServerError, "internal server error")
+		}
 		return
 	}
 	parsed := ParseBackup(content, policyID, vdom)
@@ -143,6 +152,10 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 	if parsed.Policy == nil {
 		e.jsonError(w, http.StatusNotFound,
 			fmt.Sprintf("policy %d not found in the latest backup of %s (%s)", policyID, fqdn, ts.Format("2006-01-02 15:04")))
+		return
+	}
+	if parsed.Policy.Action != "accept" {
+		e.jsonError(w, http.StatusBadRequest, fmt.Sprintf("policy %d has action %q — only accept policies can be split", policyID, displayAction(parsed.Policy.Action)))
 		return
 	}
 	warnings := policyWarnings(parsed.Policy)
@@ -222,7 +235,12 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 
 	fqdn, content, ts, err := e.loadBackup(r.Context(), req.FwID)
 	if err != nil {
-		e.jsonError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, ErrNotFound) {
+			e.jsonError(w, http.StatusNotFound, err.Error())
+		} else {
+			e.logger.Error("polsplit: loadBackup failed", "err", err)
+			e.jsonError(w, http.StatusInternalServerError, "internal server error")
+		}
 		return
 	}
 	parsed := ParseBackup(content, req.PolicyID, req.VDOM)
@@ -236,8 +254,12 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("policy %d not found in the latest backup of %s", req.PolicyID, fqdn))
 		return
 	}
+	if parsed.Policy.Action != "accept" {
+		e.jsonError(w, http.StatusBadRequest, fmt.Sprintf("policy %d has action %q — only accept policies can be split", req.PolicyID, displayAction(parsed.Policy.Action)))
+		return
+	}
 
-	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
+	tuples, totalMessages, warnings, err := e.fetchPolicyTraffic(r.Context(), fqdn, req.PolicyID, parsed.Policy.VDOM, tr)
 	if err != nil {
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return

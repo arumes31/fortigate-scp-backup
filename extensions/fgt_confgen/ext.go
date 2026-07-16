@@ -80,6 +80,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Get("/", e.index)
 		pr.Get("/list_firewalls", e.listFirewalls)
 		pr.Get("/load_firewall_config", e.loadFirewallConfig)
+		pr.Post("/parse_config", e.parseConfig)
 		pr.Get("/load_templates", e.loadTemplatesEndpoint)
 		pr.Get("/get_template/{templateName}", e.getTemplate)
 		pr.Post("/save_template", e.saveTemplate)

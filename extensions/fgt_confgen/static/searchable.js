@@ -1,4 +1,4 @@
-// searchable.js (Version 1.3)
+// searchable.js (Version 1.4)
 function initSearchableSelect(selectElement, options = {}) {
     if (selectElement._searchableTeardown) {
         selectElement._searchableTeardown();
@@ -16,11 +16,22 @@ function initSearchableSelect(selectElement, options = {}) {
     comboInput.type = 'text';
     comboInput.className = 'searchable-select-input';
     comboInput.placeholder = placeholder;
+    
+    // Unique listbox ID for ARIA
+    const listboxId = 'listbox-' + Math.random().toString(36).substr(2, 9);
+    comboInput.setAttribute('role', 'combobox');
+    comboInput.setAttribute('aria-autocomplete', 'list');
+    comboInput.setAttribute('aria-expanded', 'false');
+    comboInput.setAttribute('aria-haspopup', 'listbox');
+    comboInput.setAttribute('aria-controls', listboxId);
+    
     wrapper.insertBefore(comboInput, selectElement);
 
     // Create dropdown container
     const dropdown = document.createElement('div');
     dropdown.className = 'searchable-select-dropdown';
+    dropdown.id = listboxId;
+    dropdown.setAttribute('role', 'listbox');
     wrapper.appendChild(dropdown);
 
     // Store original options from the select element
@@ -30,6 +41,23 @@ function initSearchableSelect(selectElement, options = {}) {
         selected: opt.selected,
         optgroup: opt.closest('optgroup') ? opt.closest('optgroup').label : null
     }));
+
+    let highlightedElement = null;
+
+    // Helper to set highlighted option
+    function highlightOption(el) {
+        if (highlightedElement) {
+            highlightedElement.classList.remove('highlighted');
+        }
+        highlightedElement = el;
+        if (highlightedElement) {
+            highlightedElement.classList.add('highlighted');
+            comboInput.setAttribute('aria-activedescendant', highlightedElement.id);
+            highlightedElement.scrollIntoView({ block: 'nearest' });
+        } else {
+            comboInput.removeAttribute('aria-activedescendant');
+        }
+    }
 
     // Render dropdown options based on filter
     function renderDropdown(filter = '') {
@@ -47,33 +75,66 @@ function initSearchableSelect(selectElement, options = {}) {
             return acc;
         }, {});
 
-        // Render grouped options in defined order
-        optgroupOrder.forEach(group => {
-            if (groupedOptions[group]) {
-                const optgroupLabel = document.createElement('div');
-                optgroupLabel.className = 'searchable-optgroup-label';
-                optgroupLabel.textContent = group;
-                dropdown.appendChild(optgroupLabel);
+        // Helper to render a group of options
+        function renderGroup(groupName, opts) {
+            const optgroupLabel = document.createElement('div');
+            optgroupLabel.className = 'searchable-optgroup-label';
+            optgroupLabel.textContent = groupName;
+            dropdown.appendChild(optgroupLabel);
 
-                groupedOptions[group].forEach(opt => {
-                    const option = document.createElement('div');
-                    option.className = 'searchable-select-option';
-                    if (opt.selected) option.classList.add('selected');
-                    option.textContent = opt.text;
-                    option.dataset.value = opt.value;
-                    option.addEventListener('click', () => {
-                        selectElement.value = opt.value;
-                        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-                        comboInput.value = opt.text;
-                        originalOptions.forEach(o => o.selected = o.value === opt.value);
-                        dropdown.style.display = 'none';
-                    });
-                    dropdown.appendChild(option);
+            opts.forEach(opt => {
+                const option = document.createElement('div');
+                option.className = 'searchable-select-option';
+                option.role = 'option';
+                option.id = 'opt-' + Math.random().toString(36).substr(2, 9);
+                option.setAttribute('aria-selected', opt.selected ? 'true' : 'false');
+                if (opt.selected) option.classList.add('selected');
+                option.textContent = opt.text;
+                option.dataset.value = opt.value;
+                option.addEventListener('click', () => {
+                    selectOption(opt);
                 });
+                dropdown.appendChild(option);
+            });
+        }
+
+        // Render known groups in order
+        optgroupOrder.forEach(group => {
+            if (groupedOptions[group] && groupedOptions[group].length > 0) {
+                renderGroup(group, groupedOptions[group]);
+                delete groupedOptions[group];
             }
         });
 
-        dropdown.style.display = filteredOptions.length > 0 ? 'block' : 'none';
+        // Render any remaining groups (including Ungrouped or other custom groups)
+        Object.keys(groupedOptions).forEach(group => {
+            if (groupedOptions[group] && groupedOptions[group].length > 0) {
+                renderGroup(group, groupedOptions[group]);
+            }
+        });
+
+        const hasResults = filteredOptions.length > 0;
+        dropdown.style.display = hasResults ? 'block' : 'none';
+        comboInput.setAttribute('aria-expanded', hasResults ? 'true' : 'false');
+        
+        // Auto-highlight selected or first option
+        const optionsList = dropdown.querySelectorAll('.searchable-select-option');
+        if (optionsList.length > 0) {
+            const selectedOptEl = Array.from(optionsList).find(el => el.classList.contains('selected'));
+            highlightOption(selectedOptEl || optionsList[0]);
+        } else {
+            highlightOption(null);
+        }
+    }
+
+    function selectOption(opt) {
+        selectElement.value = opt.value;
+        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+        comboInput.value = opt.text;
+        originalOptions.forEach(o => o.selected = o.value === opt.value);
+        dropdown.style.display = 'none';
+        comboInput.setAttribute('aria-expanded', 'false');
+        highlightOption(null);
     }
 
     // Initialize with current selection
@@ -82,42 +143,82 @@ function initSearchableSelect(selectElement, options = {}) {
         comboInput.value = selectedOption.text;
     }
 
-    // Event listeners
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    // Event listeners with abort signal
     comboInput.addEventListener('focus', () => {
-        comboInput.value = ''; // Clear input on focus
-        renderDropdown('');
-    });
+        const selected = originalOptions.find(opt => opt.selected);
+        comboInput.value = selected ? selected.text : '';
+        comboInput.select();
+        renderDropdown(comboInput.value);
+    }, { signal });
 
     comboInput.addEventListener('input', () => {
         renderDropdown(comboInput.value);
-    });
+    }, { signal });
 
     // Handle keyboard navigation
     comboInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && dropdown.style.display === 'block') {
-            const firstOption = dropdown.querySelector('.searchable-select-option');
-            if (firstOption) {
-                firstOption.click();
+        if (dropdown.style.display !== 'block') {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
+                renderDropdown(comboInput.value);
+                e.preventDefault();
+            }
+            return;
+        }
+
+        const optionsList = Array.from(dropdown.querySelectorAll('.searchable-select-option'));
+        if (optionsList.length === 0) return;
+
+        const currentIndex = optionsList.indexOf(highlightedElement);
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const nextIndex = (currentIndex + 1) % optionsList.length;
+            highlightOption(optionsList[nextIndex]);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const prevIndex = (currentIndex - 1 + optionsList.length) % optionsList.length;
+            highlightOption(optionsList[prevIndex]);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (highlightedElement) {
+                const val = highlightedElement.dataset.value;
+                const opt = originalOptions.find(o => o.value === val);
+                if (opt) {
+                    selectOption(opt);
+                }
             }
         } else if (e.key === 'Escape') {
+            e.preventDefault();
             dropdown.style.display = 'none';
+            comboInput.setAttribute('aria-expanded', 'false');
+            highlightOption(null);
             const selected = originalOptions.find(opt => opt.selected);
             comboInput.value = selected ? selected.text : '';
         }
-    });
+    }, { signal });
 
     // Close dropdown when clicking outside
-    const controller = new AbortController();
     document.addEventListener('click', (e) => {
         if (!wrapper.contains(e.target)) {
             dropdown.style.display = 'none';
+            comboInput.setAttribute('aria-expanded', 'false');
+            highlightOption(null);
             const selected = originalOptions.find(opt => opt.selected);
             comboInput.value = selected ? selected.text : '';
         }
-    }, { signal: controller.signal });
+    }, { signal });
 
+    // Dismantle teardown logic
     selectElement._searchableTeardown = () => {
         controller.abort();
+        if (wrapper && wrapper.parentNode) {
+            wrapper.parentNode.insertBefore(selectElement, wrapper);
+            wrapper.remove();
+        }
+        delete selectElement._searchableTeardown;
     };
 
     // Handle select change from external sources
@@ -127,13 +228,14 @@ function initSearchableSelect(selectElement, options = {}) {
         originalOptions.forEach(opt => opt.selected = opt.value === selectElement.value);
         renderDropdown(comboInput.value);
         dropdown.style.display = 'none';
-    });
+        comboInput.setAttribute('aria-expanded', 'false');
+    }, { signal });
 
     // Prevent default select behavior
     selectElement.addEventListener('mousedown', (e) => {
         e.preventDefault();
         comboInput.focus();
-    });
+    }, { signal });
 
     // Clear selection only when input is explicitly emptied and confirmed
     comboInput.addEventListener('change', () => {
@@ -142,6 +244,7 @@ function initSearchableSelect(selectElement, options = {}) {
             selectElement.dispatchEvent(new Event('change', { bubbles: true }));
             originalOptions.forEach(opt => opt.selected = false);
             dropdown.style.display = 'none';
+            comboInput.setAttribute('aria-expanded', 'false');
         }
-    });
+    }, { signal });
 }

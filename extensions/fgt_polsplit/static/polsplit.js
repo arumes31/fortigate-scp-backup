@@ -2,7 +2,7 @@
  * backup, run the Graylog traffic analysis, render tuples + strategies. */
 'use strict';
 
-const psState = { rangeSec: 86400, policyLoaded: false, vdom: '' };
+const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null };
 
 function $(id) { return document.getElementById(id); }
 
@@ -28,6 +28,9 @@ async function loadPolicy() {
     const fwID = $('ps-firewall').value;
     const polID = $('ps-policy-id').value;
     if (!fwID || polID === '') { alert('Select a firewall and enter a policy ID'); return; }
+    if (psState.abortCtrl) psState.abortCtrl.abort();
+    psState.abortCtrl = new AbortController();
+    const signal = psState.abortCtrl.signal;
     const btn = $('ps-load-btn');
     btn.disabled = true;
     try {
@@ -35,7 +38,7 @@ async function loadPolicy() {
         if (psState.vdom) {
             url += `&vdom=${encodeURIComponent(psState.vdom)}`;
         }
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal });
         let body = null;
         try { body = await resp.json(); } catch { }
         if (!resp.ok) {
@@ -61,6 +64,7 @@ async function loadPolicy() {
         $('ps-prefix').placeholder = 'PS' + polID;
         $('ps-results').hidden = true;
     } catch (err) {
+        if (err.name === 'AbortError') return;
         psState.policyLoaded = false;
         psState.vdom = '';
         $('ps-policy-card').hidden = true;
@@ -115,6 +119,10 @@ async function analyze() {
     let range;
     try { range = selectedRange(); } catch (err) { alert(err.message); return; }
 
+    if (psState.abortCtrl) psState.abortCtrl.abort();
+    psState.abortCtrl = new AbortController();
+    const signal = psState.abortCtrl.signal;
+
     const req = Object.assign({
         fw_id: parseInt($('ps-firewall').value, 10),
         policy_id: parseInt($('ps-policy-id').value, 10),
@@ -134,9 +142,11 @@ async function analyze() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(req),
+            signal,
         });
         renderResults(data);
     } catch (err) {
+        if (err.name === 'AbortError') return;
         alert('Analysis failed: ' + err.message);
     } finally {
         btn.disabled = false;
@@ -291,6 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('ps-analyze-btn').addEventListener('click', analyze);
     $('ps-policy-id').addEventListener('keydown', e => { if (e.key === 'Enter') loadPolicy(); });
     const invalidatePolicy = () => {
+        if (psState.abortCtrl) { psState.abortCtrl.abort(); psState.abortCtrl = null; }
         psState.policyLoaded = false;
         psState.vdom = '';
         $('ps-policy-card').hidden = true;
