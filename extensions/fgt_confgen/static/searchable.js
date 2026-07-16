@@ -24,6 +24,20 @@ function initSearchableSelect(selectElement, options = {}) {
     comboInput.setAttribute('aria-expanded', 'false');
     comboInput.setAttribute('aria-haspopup', 'listbox');
     comboInput.setAttribute('aria-controls', listboxId);
+
+    // Carry the select's accessible name over to the combobox input, since
+    // the native select is hidden while wrapped.
+    const labelledby = selectElement.getAttribute('aria-labelledby');
+    const labelEl = (selectElement.id && document.querySelector(`label[for="${CSS.escape(selectElement.id)}"]`))
+        || selectElement.closest('label');
+    if (labelledby) {
+        comboInput.setAttribute('aria-labelledby', labelledby);
+    } else if (labelEl) {
+        if (!labelEl.id) labelEl.id = listboxId + '-label';
+        comboInput.setAttribute('aria-labelledby', labelEl.id);
+    } else {
+        comboInput.setAttribute('aria-label', selectElement.getAttribute('aria-label') || placeholder);
+    }
     
     wrapper.insertBefore(comboInput, selectElement);
 
@@ -151,7 +165,24 @@ function initSearchableSelect(selectElement, options = {}) {
         const selected = originalOptions.find(opt => opt.selected);
         comboInput.value = selected ? selected.text : '';
         comboInput.select();
-        renderDropdown(comboInput.value);
+        // Show ALL options on focus — filtering by the selected label would
+        // leave only the current choice visible; typing narrows from here.
+        renderDropdown('');
+    }, { signal });
+
+    // Clicking an option must not blur the input (options are not focusable,
+    // so the blur would fire focusout and close the dropdown before `click`).
+    dropdown.addEventListener('mousedown', (e) => e.preventDefault(), { signal });
+
+    // Tabbing away behaves like clicking outside: restore the selected text,
+    // close the dropdown and clear transient filter/highlight state.
+    wrapper.addEventListener('focusout', (e) => {
+        if (wrapper.contains(e.relatedTarget)) return;
+        dropdown.style.display = 'none';
+        comboInput.setAttribute('aria-expanded', 'false');
+        highlightOption(null);
+        const selected = originalOptions.find(opt => opt.selected);
+        comboInput.value = selected ? selected.text : '';
     }, { signal });
 
     comboInput.addEventListener('input', () => {

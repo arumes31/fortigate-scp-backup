@@ -87,7 +87,7 @@ func (e *Extension) listFirewalls(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content string, ts time.Time, err error) {
 	if err = e.pgPool.QueryRow(ctx, `SELECT fqdn FROM firewalls WHERE id = $1`, fwID).Scan(&fqdn); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", ts, fmt.Errorf("%w: firewall %d not found", ErrNotFound, fwID)
+			return "", "", ts, fmt.Errorf("firewall %d: %w", fwID, ErrNotFound)
 		}
 		return "", "", ts, err
 	}
@@ -96,7 +96,7 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content str
 		"SELECT filename, timestamp FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC LIMIT 1", fwID).Scan(&filename, &ts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", ts, fmt.Errorf("%w: no backups found for firewall %d", ErrNotFound, fwID)
+			return "", "", ts, fmt.Errorf("backups for firewall %d: %w", fwID, ErrNotFound)
 		}
 		return "", "", ts, err
 	}

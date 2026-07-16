@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -212,20 +213,33 @@ func (e *Extension) loadFirewallConfig(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) parseConfig(w http.ResponseWriter, r *http.Request) {
 	username := e.currentUser(r)
 
-	// Parse multipart form up to 32MB
-	_ = r.ParseMultipartForm(32 << 20)
+	// Hard-cap the upload at 32 MiB: ParseMultipartForm's argument only
+	// bounds in-memory buffering (the rest spills to disk), so the request
+	// body itself must be limited too.
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		http.Error(w, "invalid multipart form or upload larger than 32 MiB", http.StatusBadRequest)
+		return
+	}
 
 	file, _, err := r.FormFile("config_file")
 	if err != nil {
-		// Empty request or no file uploaded: return user's last parsed configuration
-		lastConfig, err := e.getLastConfigFromDB(username)
-		if err != nil {
+		// Only a genuinely absent file falls back to the last parsed
+		// configuration (the UI posts an empty form to fetch it); anything
+		// else is a malformed upload.
+		if errors.Is(err, http.ErrMissingFile) || errors.Is(err, http.ErrNotMultipart) {
+			lastConfig, err := e.getLastConfigFromDB(username)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ParsedConfig{})
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(ParsedConfig{})
+			_ = json.NewEncoder(w).Encode(lastConfig)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(lastConfig)
+		e.logger.Error("Failed to read uploaded config file", "err", err)
+		http.Error(w, "invalid config_file upload", http.StatusBadRequest)
 		return
 	}
 	defer func() { _ = file.Close() }()
@@ -241,6 +255,8 @@ func (e *Extension) parseConfig(w http.ResponseWriter, r *http.Request) {
 
 	if err := e.saveLastConfigToDB(username, parsed); err != nil {
 		e.logger.Error("Failed to save config to SQLite", "err", err)
+		http.Error(w, "Failed to persist parsed configuration", http.StatusInternalServerError)
+		return
 	}
 
 	e.log(r, "Parse Config", "Parsed and saved uploaded configuration file")
@@ -511,8 +527,13 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	affected, err := e.renameTemplateInDB(owner, body.OldName, body.NewName)
+	// Rename and short-URL rewrite run in one transaction so a failure in
+	// either leaves both tables unchanged.
+	oldURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.OldName)
+	newURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.NewName)
+	affected, err := e.renameTemplateInDB(owner, body.OldName, body.NewName, oldURL, newURL)
 	if err != nil {
+		e.logger.Error("Failed to rename template", "old", body.OldName, "new", body.NewName, "err", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -520,13 +541,6 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 	if affected == 0 {
 		http.Error(w, "Template not found", http.StatusNotFound)
 		return
-	}
-
-	// Update associated short URLs to point to the new template name.
-	oldURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.OldName)
-	newURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.NewName)
-	if _, err := e.db.Exec("UPDATE short_urls SET url = REPLACE(url, ?, ?) WHERE url LIKE ?", oldURL, newURL, "%"+oldURL+"%"); err != nil {
-		e.logger.Error("Failed to update short URLs after rename", "old", body.OldName, "new", body.NewName, "err", err)
 	}
 
 	e.log(r, "Rename Template", fmt.Sprintf("Renamed template from '%s' to '%s' (global: %v)", body.OldName, body.NewName, body.IsGlobal))
@@ -749,15 +763,25 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err == sql.ErrNoRows {
+		inserted := false
 		for attempts := 0; attempts < 5; attempts++ {
 			shortCode = randHex(6)
-			if err := e.shortenURLInDB(body.URL, shortCode); err == nil {
+			insErr := e.shortenURLInDB(body.URL, shortCode)
+			if insErr == nil {
+				inserted = true
 				break
 			}
-			if attempts == 4 {
-				http.Error(w, "Failed to generate unique short code", http.StatusInternalServerError)
+			// Only a confirmed short-code collision is worth retrying; any
+			// other database failure would just fail five times.
+			if !errors.Is(insErr, errShortCodeCollision) {
+				e.logger.Error("Failed to store short URL", "err", insErr)
+				http.Error(w, "Database error", http.StatusInternalServerError)
 				return
 			}
+		}
+		if !inserted {
+			http.Error(w, "Failed to generate unique short code", http.StatusInternalServerError)
+			return
 		}
 	}
 

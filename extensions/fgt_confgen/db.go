@@ -3,6 +3,8 @@ package fgt_confgen
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -79,12 +81,37 @@ func (e *Extension) deleteTemplateFromDB(username, name string) (int64, error) {
 	return res.RowsAffected()
 }
 
-func (e *Extension) renameTemplateInDB(username, oldName, newName string) (int64, error) {
-	res, err := e.db.Exec("UPDATE templates SET name = ? WHERE username = ? AND name = ?", newName, username, oldName)
+// renameTemplateInDB renames a template and rewrites its associated short
+// URLs in one transaction, so a failure in either statement leaves both
+// tables unchanged. The LIKE filter is wildcard-escaped because template
+// names may legitimately contain % or _.
+func (e *Extension) renameTemplateInDB(username, oldName, newName, oldURL, newURL string) (int64, error) {
+	tx, err := e.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec("UPDATE templates SET name = ? WHERE username = ? AND name = ?", newName, username, oldName)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected > 0 {
+		// Stored URLs may carry a scheme+host prefix, so match on the exact
+		// template path as an escaped suffix and substitute it in place.
+		if _, err := tx.Exec("UPDATE short_urls SET url = REPLACE(url, ?, ?) WHERE url LIKE ? ESCAPE '\\'",
+			oldURL, newURL, "%"+escapeLike(oldURL)); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (e *Extension) saveLastConfigToDB(username string, config ParsedConfig) error {
@@ -108,8 +135,16 @@ func (e *Extension) getLastConfigFromDB(username string) (ParsedConfig, error) {
 	return config, err
 }
 
+// errShortCodeCollision reports an INSERT that failed only because the random
+// short code already exists, so the caller can retry with a fresh code while
+// treating every other database failure as fatal.
+var errShortCodeCollision = errors.New("short code already exists")
+
 func (e *Extension) shortenURLInDB(url, shortCode string) error {
 	_, err := e.db.Exec("INSERT INTO short_urls (short_code, url) VALUES (?, ?)", shortCode, url)
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return fmt.Errorf("%w: %v", errShortCodeCollision, err)
+	}
 	return err
 }
 
@@ -119,15 +154,20 @@ func (e *Extension) getURLFromShortCode(shortCode string) (string, error) {
 	return originalURL, err
 }
 
-func (e *Extension) deleteShortURLsByTemplate(templateURL string) {
-	// Escape %, _ and \ for SQLite LIKE pattern, using \ as the escape character.
-	var escaped strings.Builder
-	for i := 0; i < len(templateURL); i++ {
-		c := templateURL[i]
+// escapeLike escapes %, _ and \ so a value can be embedded in a LIKE pattern
+// with ESCAPE '\' without wildcard interpretation.
+func escapeLike(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		if c == '\\' || c == '%' || c == '_' {
-			escaped.WriteByte('\\')
+			b.WriteByte('\\')
 		}
-		escaped.WriteByte(c)
+		b.WriteByte(c)
 	}
-	_, _ = e.db.Exec("DELETE FROM short_urls WHERE url LIKE ? ESCAPE '\\'", "%"+escaped.String())
+	return b.String()
+}
+
+func (e *Extension) deleteShortURLsByTemplate(templateURL string) {
+	_, _ = e.db.Exec("DELETE FROM short_urls WHERE url LIKE ? ESCAPE '\\'", "%"+escapeLike(templateURL))
 }

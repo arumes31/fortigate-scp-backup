@@ -50,8 +50,16 @@ function logToBackend(message) {
     });
 }
 
+// newPolicyId returns a collision-resistant client-side policy ID (the server
+// assigns real UUIDs on clone/import; Date.now() collides on rapid clicks).
+function newPolicyId() {
+    return (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
 function addPolicy() {
-    const policyId = Date.now().toString();
+    const policyId = newPolicyId();
     policies.push({
         id: policyId,
         name: '',
@@ -920,7 +928,7 @@ function clonePolicy(button) {
         return;
     }
     const clone = JSON.parse(JSON.stringify(policy));
-    clone.id = Date.now().toString();
+    clone.id = newPolicyId();
     if (clone.name.length > 20) {
         clone.name = clone.name.substring(0, 20) + '_cl';
     } else {

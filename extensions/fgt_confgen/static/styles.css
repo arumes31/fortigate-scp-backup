@@ -250,6 +250,11 @@ select:focus {
     position: relative;
     width: 100%;
 }
+/* Hide the retained native select only while it sits inside the wrapper —
+   teardown moves it back out, which restores its normal display. */
+.searchable-select-wrapper > select {
+    display: none;
+}
 .searchable-select-dropdown {
     position: absolute;
     top: 100%;

@@ -24,6 +24,15 @@ func validatePortRange(s string) error {
 		if idx := strings.Index(part, "-"); idx >= 0 {
 			startStr := strings.TrimSpace(part[:idx])
 			endStr := strings.TrimSpace(part[idx+1:])
+			// ASCII digits only: Atoi would also accept a leading sign
+			// ("+80"), which passes the range check but is emitted verbatim
+			// into the CLI where FortiOS rejects it.
+			if !isNumericID(startStr) {
+				return fmt.Errorf("invalid port number %q in range %q", startStr, s)
+			}
+			if !isNumericID(endStr) {
+				return fmt.Errorf("invalid port number %q in range %q", endStr, s)
+			}
 			start, err := strconv.Atoi(startStr)
 			if err != nil {
 				return fmt.Errorf("invalid port number %q in range %q", startStr, s)
@@ -42,6 +51,9 @@ func validatePortRange(s string) error {
 				return fmt.Errorf("start port %d exceeds end port %d in %q", start, end, s)
 			}
 		} else {
+			if !isNumericID(part) {
+				return fmt.Errorf("invalid port number %q in %q", part, s)
+			}
 			port, err := strconv.Atoi(part)
 			if err != nil {
 				return fmt.Errorf("invalid port number %q in %q", part, s)
