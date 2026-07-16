@@ -49,13 +49,14 @@ type Authenticator interface {
 
 // BaseData carries the shared layout fields every page embeds as `.Base`.
 type BaseData struct {
-	Title                string
-	Username             string
-	ExtEnabled           bool
-	ExtFgtConfGenEnabled bool
-	IsRadius             bool   // RADIUS users cannot change their password locally
-	Lang                 string // UI language: "en" (default) or "de"
-	Active               string // nav key: firewalls|search|activity|admvpn|password
+	Title                 string
+	Username              string
+	ExtEnabled            bool
+	ExtFgtConfGenEnabled  bool
+	ExtFgtPolSplitEnabled bool
+	IsRadius              bool   // RADIUS users cannot change their password locally
+	Lang                  string // UI language: "en" (default) or "de"
+	Active                string // nav key: firewalls|search|activity|admvpn|password
 }
 
 // Server holds the dependencies shared by every handler.
@@ -230,13 +231,14 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 func (s *Server) base(r *http.Request, title, active string) BaseData {
 	d := s.sess.User(r)
 	return BaseData{
-		Title:                title,
-		Username:             d.Username,
-		ExtEnabled:           s.cfg.ExtAdmVpnConf,
-		ExtFgtConfGenEnabled: s.cfg.ExtFgtConfGen,
-		IsRadius:             d.IsRadiusUser,
-		Lang:                 langFromRequest(r),
-		Active:               active,
+		Title:                 title,
+		Username:              d.Username,
+		ExtEnabled:            s.cfg.ExtAdmVpnConf,
+		ExtFgtConfGenEnabled:  s.cfg.ExtFgtConfGen,
+		ExtFgtPolSplitEnabled: s.cfg.ExtFgtPolSplit,
+		IsRadius:              d.IsRadiusUser,
+		Lang:                  langFromRequest(r),
+		Active:                active,
 	}
 }
 

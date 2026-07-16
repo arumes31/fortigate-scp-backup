@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Policy Split Advisor · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/fgt-polsplit/static/styles.css">
+    <script defer src="/fgt-polsplit/static/polsplit.js"></script>
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/search">Search</a>
+            <a href="/audit">Audit</a>
+            <a href="/topology">Topology</a>
+            <a href="/activity_log">Act_Log</a>
+            {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
+            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
+            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/" class="active">Pol_Split</a>{{end}}
+        </nav>
+        <div class="sysinfo">
+            <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+            <form method="post" action="/logout" class="logout-form" style="display:inline; margin:0;">
+                <button type="submit" class="logout-btn">[EXIT]</button>
+            </form>
+        </div>
+    </header>
+
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Split Advisor</h1>
+        <p class="ps-intro">Analyze the traffic an open policy actually carries and split it into tightly-scoped policies. Traffic data comes from Graylog; the policy definition from the latest config backup.</p>
+
+        <div class="card">
+            <h2>Target Policy</h2>
+            <div class="form-grid">
+                <div class="field">
+                    <label for="ps-firewall">Firewall</label>
+                    <select id="ps-firewall" class="form-control">
+                        <option value="">Select Firewall</option>
+                        {{range .Firewalls}}
+                        <option value="{{.ID}}">{{.FQDN}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="ps-policy-id">Policy ID</label>
+                    <input type="number" id="ps-policy-id" class="form-control" min="0" placeholder="e.g. 42">
+                </div>
+                <div class="field ps-field-btn">
+                    <label>&nbsp;</label>
+                    <button id="ps-load-btn" class="btn btn-primary">Load Policy</button>
+                </div>
+            </div>
+            <div id="ps-policy-card" class="ps-policy-box" hidden>
+                <h3>Current definition <span id="ps-backup-time" class="ps-muted"></span></h3>
+                <div id="ps-policy-summary" class="ps-kv"></div>
+            </div>
+        </div>
+
+        <div class="card" id="ps-options-card" hidden>
+            <h2>Analysis Window &amp; Options</h2>
+            <div class="field">
+                <label>Time range</label>
+                <div class="ps-range-row" id="ps-range-row">
+                    <button class="btn btn-sm ps-range" data-sec="1800">30m</button>
+                    <button class="btn btn-sm ps-range" data-sec="3600">1h</button>
+                    <button class="btn btn-sm ps-range" data-sec="10800">3h</button>
+                    <button class="btn btn-sm ps-range" data-sec="21600">6h</button>
+                    <button class="btn btn-sm ps-range" data-sec="43200">12h</button>
+                    <button class="btn btn-sm ps-range active" data-sec="86400">24h</button>
+                    <button class="btn btn-sm ps-range" data-sec="172800">48h</button>
+                    <button class="btn btn-sm ps-range" data-sec="604800">7d</button>
+                    <button class="btn btn-sm ps-range" data-sec="2592000">30d</button>
+                    <button class="btn btn-sm ps-range" data-sec="0">Custom</button>
+                </div>
+            </div>
+            <div class="form-grid" id="ps-custom-range" hidden>
+                <div class="field">
+                    <label for="ps-from">From</label>
+                    <input type="datetime-local" id="ps-from" class="form-control">
+                </div>
+                <div class="field">
+                    <label for="ps-to">To</label>
+                    <input type="datetime-local" id="ps-to" class="form-control">
+                </div>
+            </div>
+            <div class="form-grid">
+                <div class="field">
+                    <label class="checkbox-row"><input type="checkbox" id="ps-rollup-src" checked> Roll up source hosts into subnets</label>
+                    <label class="checkbox-row"><input type="checkbox" id="ps-rollup-dst"> Roll up destination hosts into subnets</label>
+                </div>
+                <div class="field">
+                    <label for="ps-rollup-threshold">Rollup threshold (hosts per net)</label>
+                    <input type="number" id="ps-rollup-threshold" class="form-control" min="2" max="256" value="5">
+                </div>
+                <div class="field">
+                    <label for="ps-rollup-mask">Rollup mask (/bits)</label>
+                    <input type="number" id="ps-rollup-mask" class="form-control" min="8" max="30" value="24">
+                </div>
+                <div class="field">
+                    <label for="ps-prefix">New object prefix</label>
+                    <input type="text" id="ps-prefix" class="form-control" placeholder="PS<policyid>">
+                </div>
+            </div>
+            <button id="ps-analyze-btn" class="btn btn-primary">Analyze Traffic</button>
+            <span id="ps-spinner" class="ps-muted" hidden>Querying Graylog…</span>
+        </div>
+
+        <div id="ps-results" hidden>
+            <div class="card" id="ps-warnings-card" hidden>
+                <h2>Warnings</h2>
+                <ul id="ps-warnings" class="ps-warnings"></ul>
+            </div>
+
+            <div class="card">
+                <h2>Observed Traffic</h2>
+                <div class="ps-stats" id="ps-stats"></div>
+                <div class="ps-table-wrap">
+                    <table class="ps-table" id="ps-tuples-table">
+                        <thead>
+                        <tr><th>Source</th><th>Destination</th><th>Proto</th><th>Port</th><th>Service</th><th>Hits</th><th>Last Seen</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="ps-tuples-note" class="ps-muted"></div>
+            </div>
+
+            <div class="card">
+                <h2>Split Recommendations</h2>
+                <div class="ps-tabs" id="ps-strategy-tabs"></div>
+                <div id="ps-strategy-panels"></div>
+            </div>
+        </div>
+    </main>
+</div>
+</body>
+</html>

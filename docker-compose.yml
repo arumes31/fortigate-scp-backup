@@ -76,6 +76,14 @@ services:
       # Background refresh interval in seconds (default: 3600 = 1h).
       # - "GRAYLOG_DEVICE_INTERVAL=3600"
 
+      # --- Extension: Policy Split Advisor (Optional) ---
+      # Analyzes a policy's real traffic (Graylog) and recommends how to split
+      # open policies into tightly-scoped ones, with ready-to-paste CLI.
+      # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
+      - "EXT_FGT_POLSPLIT=true"
+      # Traffic-log query template (source:"%s" = firewall hostname, policyid:%s = policy ID).
+      # - "GRAYLOG_POLSPLIT_QUERY=source:\"%s\" AND policyid:%s AND _exists_:srcip AND _exists_:dstip"
+
       # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
       # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH
       # credentials) for authoritative per-switch-port link state, STP role/state

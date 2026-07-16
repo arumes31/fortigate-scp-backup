@@ -396,6 +396,14 @@ Powers the live device & state overlay on the [topology page](#-network-topology
 | :--- | :--- | :--- |
 | `EXT_FGT_CONF_GEN` | `false` | Enable the FortiGate Policy Generator extension. |
 
+### Extension: FortiGate Policy Split Advisor (PolSplit)
+Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server-side Graylog aggregations over the firewall's traffic logs.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_FGT_POLSPLIT` | `false` | Enable the Policy Split Advisor extension. |
+| `GRAYLOG_POLSPLIT_QUERY` | `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip` | Traffic-log query template; `source:"%s"` is expanded to the firewall's Graylog source (HA-aware) and `policyid:%s` to the analyzed policy ID. |
+
 ---
 
 ## 🔌 Modules & Extensions
@@ -418,6 +426,16 @@ An optional module (`EXT_FGT_CONF_GEN=true`) for managing templates and generati
 * **Database Configuration Integration** — allows selecting any firewall to load and parse its latest successful backup automatically (decrypting it on-the-fly).
 * **Multi-User Isolation** — saves templates per-user by default, with an optional checkbox to save/edit globally.
 * **Link Shortener** — generates unique shortened URLs (`/fgt-confgen/s/<shortCode>`) to share templates.
+
+### FortiGate Policy Split Advisor (PolSplit)
+
+An optional module (`EXT_FGT_POLSPLIT=true`) that helps restrict overly-open firewall policies by splitting them into smaller, tightly-scoped ones based on the traffic they actually carry.
+
+* **Log-driven analysis** — pick a firewall and a policy ID, choose a window (30 m – 30 d or a custom range), and the module aggregates the policy's Graylog traffic logs server-side into source/destination/service tuples — complete even for month-long windows on busy policies.
+* **Split strategies** — recommendations per service and per destination (identical-signature groups are merged), with the lower-footprint strategy flagged as recommended.
+* **Object reuse & gap list** — existing address/service objects from the latest config backup are referenced when they match exactly; everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix.
+* **Subnet rollup** — optionally collapses many observed hosts in the same subnet (threshold and mask configurable) into one subnet object.
+* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, moves the splits above the original and finally disables (not deletes) it.
 
 
 ---
