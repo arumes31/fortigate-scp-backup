@@ -180,6 +180,7 @@ func (e *Extension) poeCapableSwitches(fwID int) map[string]bool {
 // wedging this firewall's collector. A recovered panic is surfaced as an error
 // so the caller resets the static-tier timer and retries next sweep.
 func (e *Extension) collectDiagSafe(fwID int, withStatic bool) (err error) {
+	defer e.trackRunning("sshdiag", fwID)()
 	defer func() {
 		if rec := recover(); rec != nil {
 			e.logger.Error("fgt ssh diagnostics panicked", "fw_id", fwID, "panic", rec)
@@ -576,6 +577,7 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 		st.busy = false
 		e.diagMu.Unlock()
 	}()
+	defer e.trackRunning("sshdiag", fwID)()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	host, user, pass, prt, err := e.firewallCreds(ctx, fwID)

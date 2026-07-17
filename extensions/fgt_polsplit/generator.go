@@ -98,16 +98,25 @@ func truncName(s string, maxLen int) string {
 // close paren), the suffix goes INSIDE, before the ")", so the parenthesised
 // label stays balanced and legible ("VL1>VL2 (RDP)" → "VL1>VL2 (RD_2)") — a
 // blind tail truncation would instead drop the ")" and part of the label,
-// yielding misleading names like "(udp_1812-181_2". For object names (no
-// trailing ")"), the suffix is appended, truncating the tail to fit.
+// yielding misleading names like "(udp_1812-181_2". When the budget is too
+// tight for the truncated name to retain its opening "(", the parens are
+// dropped entirely (balanced fallback) instead of emitting a stray ")". For
+// object names (no trailing ")"), the suffix is appended, truncating the tail.
 func insertSuffix(base, suffix string, maxLen int) string {
 	if strings.HasSuffix(base, ")") {
-		inner := base[:len(base)-1]
-		keep := maxLen - len(suffix) - 1 // room for suffix + ")"
-		if keep < 0 {
-			keep = 0
+		if open := strings.LastIndex(base, "("); open >= 0 {
+			inner := base[:len(base)-1]
+			keep := maxLen - len(suffix) - 1 // room for suffix + ")"
+			if keep > open {                 // the "(" survives truncation
+				return truncName(inner, keep) + suffix + ")"
+			}
+			// No room for a balanced "(...)": keep only the part before the
+			// parens and fall through to the plain-append path.
+			base = strings.TrimRight(base[:open], " _")
+			if base == "" {
+				base = "PS"
+			}
 		}
-		return truncName(inner, keep) + suffix + ")"
 	}
 	keep := maxLen - len(suffix)
 	if keep < 0 {
@@ -242,17 +251,21 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 			}
 		}
 		if name == "" {
-			var def, disp string
+			// New services carry no PS<id> prefix: the object describes the
+			// protocol itself (TCP443, UDP53, ICMP…) or, when the logs named
+			// the service (RDP, SSH), that name — either way it is reusable
+			// beyond this one split.
+			var base, def, disp string
 			switch s.Proto {
 			case "tcpudp":
 				// Merged tcp+udp same-port pair (e.g. DNS-style services).
-				name = nm.alloc(fmt.Sprintf("%s_tcpudp%d", prefix, s.Port), 79)
+				base = fmt.Sprintf("TCPUDP%d", s.Port)
 				def = fmt.Sprintf("        set tcp-portrange %d\n        set udp-portrange %d", s.Port, s.Port)
 				disp = s.Key
 			case "tcp", "udp", "sctp":
 				if s.PortEnd > s.Port && s.Port > 0 {
 					// Consolidated adjacent-port range (tcp/8080-8082).
-					name = nm.alloc(fmt.Sprintf("%s_%s%d_%d", prefix, s.Proto, s.Port, s.PortEnd), 79)
+					base = fmt.Sprintf("%s%d-%d", strings.ToUpper(s.Proto), s.Port, s.PortEnd)
 					def = fmt.Sprintf("        set %s-portrange %d-%d", s.Proto, s.Port, s.PortEnd)
 					disp = s.Key
 					break
@@ -260,28 +273,32 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 				if s.Port <= 0 || s.Port > 65535 {
 					// Logs carried no usable dstport for this protocol;
 					// `set tcp-portrange 0` would be rejected by FortiOS.
-					name = nm.alloc(fmt.Sprintf("%s_%s_any", prefix, s.Proto), 79)
+					base = strings.ToUpper(s.Proto) + "_any"
 					def = fmt.Sprintf("        set %s-portrange 1-65535", s.Proto)
 					disp = s.Proto + "/any"
 					break
 				}
-				name = nm.alloc(fmt.Sprintf("%s_%s%d", prefix, s.Proto, s.Port), 79)
+				base = fmt.Sprintf("%s%d", strings.ToUpper(s.Proto), s.Port)
 				def = fmt.Sprintf("        set %s-portrange %d", s.Proto, s.Port)
 				disp = s.Key
 			case "icmp":
-				name = nm.alloc(prefix+"_icmp", 79)
+				base = "ICMP"
 				def = "        set protocol ICMP"
 				disp = "icmp"
 			case "icmp6":
-				name = nm.alloc(prefix+"_icmp6", 79)
+				base = "ICMP6"
 				def = "        set protocol ICMP6"
 				disp = "icmp6"
 			default: // ip-<n>
 				n := strings.TrimPrefix(s.Proto, "ip-")
-				name = nm.alloc(fmt.Sprintf("%s_ip%s", prefix, n), 79)
+				base = "IP" + n
 				def = fmt.Sprintf("        set protocol IP\n        set protocol-number %s", n)
 				disp = "ip-" + n // canonical key form (matches ServiceSpec.Key / SvcByKey)
 			}
+			if s.LogName != "" {
+				base = s.LogName // logs already name it (RDP, SSH, …)
+			}
+			name = nm.alloc(base, 79)
 			svcDefs = append(svcDefs, fmt.Sprintf("    edit %q\n%s\n    next", name, def))
 			res.NewObjects = append(res.NewObjects, NewObject{Kind: "service", Name: name, Value: disp})
 		}

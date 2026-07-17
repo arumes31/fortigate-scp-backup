@@ -517,7 +517,7 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	if req.ResolveDNS {
 		totalSteps++
 	}
-	report := e.progressReporter(req.ProgressID, totalSteps)
+	report := e.progressReporter(req.ProgressID, totalSteps, req.FwID, req.PolicyID)
 	defer e.progressDone(req.ProgressID)
 	// Sub-stage notes (chunked-loading steps, message counts) travel via the
 	// context so the Graylog helpers can publish them without extra plumbing.

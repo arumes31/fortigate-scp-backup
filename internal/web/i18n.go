@@ -284,6 +284,14 @@ var uiMsgs = map[string]map[string]string{
 	"topo.ctx_expand":     {"en": "Expand", "de": "Aufklappen"},
 	"topo.ctx_collapse":   {"en": "Collapse", "de": "Zuklappen"},
 
+	// Dashboard page (currently-running card)
+	"dashboard.running_title":      {"en": "Currently running", "de": "Läuft gerade"},
+	"dashboard.running_since":      {"en": "since", "de": "seit"},
+	"dashboard.running_analysis":   {"en": "Graylog analysis", "de": "Graylog-Analyse"},
+	"dashboard.running_devicedata": {"en": "Topology data refresh", "de": "Topologie-Daten-Update"},
+	"dashboard.running_sshdiag":    {"en": "SSH diagnostics", "de": "SSH-Diagnose"},
+	"dashboard.running_audit":      {"en": "Audit scan", "de": "Audit-Scan"},
+
 	// Dashboard page (blocked switch ports card)
 	"dashboard.blocked_title": {"en": "Blocked switch ports (STP / BPDU / loop guard)", "de": "Blockierte Switch-Ports (STP / BPDU / Loop Guard)"},
 	"dashboard.blocked_unit":  {"en": "port(s)", "de": "Port(s)"},

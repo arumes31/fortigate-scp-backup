@@ -47,6 +47,11 @@ type Extension struct {
 	firewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
 	diagMu        sync.Mutex
 	diagState     map[int]*diagRunState // fw_id → serial-execution state
+
+	// In-flight fetches, listed on the core dashboard (see running.go).
+	runningMu  sync.Mutex
+	runningSeq int
+	running    map[int]runningEntry
 }
 
 // diagRunState is one firewall's SSH-collection state: a single-flight guard, a
@@ -85,6 +90,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.dataDir = d.DataDir
 	e.firewallCreds = d.FirewallCreds
 	e.diagState = map[int]*diagRunState{}
+	liveExt.Store(e) // publish for the core dashboard's running-operations card
 
 	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err

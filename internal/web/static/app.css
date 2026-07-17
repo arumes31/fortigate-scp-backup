@@ -595,3 +595,68 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
     transition-duration: .001ms !important;
   }
 }
+
+/* Searchable select (combobox with type-to-filter), used for firewall
+   selection dropdowns — see /static/searchable.js. */
+.searchable-select-wrapper {
+  position: relative;
+  width: 100%;
+}
+/* Hide the retained native select only while it sits inside the wrapper —
+   teardown moves it back out, which restores its normal display. */
+.searchable-select-wrapper > select {
+  display: none;
+}
+.searchable-select-input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  font: inherit;
+  outline: none;
+  border-radius: 4px;
+  transition: border-color 0.12s ease;
+}
+.searchable-select-input:focus {
+  border-color: var(--accent);
+}
+.searchable-select-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  max-height: 240px;
+  overflow-y: auto;
+  display: none;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+.searchable-optgroup-label {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background-color: var(--surface-3);
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.searchable-select-option {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background-color 0.1s;
+}
+.searchable-select-option:hover {
+  background-color: var(--surface-3);
+}
+.searchable-select-option.highlighted {
+  background-color: var(--accent-soft);
+  color: var(--text);
+}
+.searchable-select-option.selected {
+  background-color: var(--accent);
+  color: var(--surface-2);
+}

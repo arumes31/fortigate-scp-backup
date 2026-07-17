@@ -469,6 +469,12 @@ func (e *Extension) runChunks(ctx context.Context, body aggregateRequest, chunks
 	}
 	var wg sync.WaitGroup
 	var done int32
+	// The failure that triggered cancellation is captured directly: after
+	// cancel(), other chunks fail with context.Canceled, and an index-ordered
+	// scan of errs could surface one of those instead of the root cause.
+	var firstErr error
+	var firstIdx int
+	var errOnce sync.Once
 
 	for i := range chunks {
 		wg.Add(1)
@@ -485,6 +491,9 @@ func (e *Extension) runChunks(ctx context.Context, body aggregateRequest, chunks
 			// share the mutated Timerange field.
 			tuples, err := e.runChunkWindow(ctx, body, chunks[i])
 			if err != nil {
+				if ctx.Err() == nil { // a real failure, not cancellation fallout
+					errOnce.Do(func() { firstErr, firstIdx = err, i })
+				}
 				errs[i] = err
 				cancel() // stop remaining sub-windows on the first hard failure
 				return
@@ -496,6 +505,9 @@ func (e *Extension) runChunks(ctx context.Context, body aggregateRequest, chunks
 	}
 	wg.Wait()
 
+	if firstErr != nil {
+		return nil, fmt.Errorf("%s: sub-window %d/%d (%s to %s): %w", label, firstIdx+1, len(chunks), chunks[firstIdx].From, chunks[firstIdx].To, firstErr)
+	}
 	for i, err := range errs {
 		if err != nil {
 			return nil, fmt.Errorf("%s: sub-window %d/%d (%s to %s): %w", label, i+1, len(chunks), chunks[i].From, chunks[i].To, err)

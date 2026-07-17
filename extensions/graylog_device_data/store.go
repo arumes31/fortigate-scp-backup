@@ -176,6 +176,7 @@ const deviceRetention = 30 * 24 * time.Hour
 // this fetch. rangeSec optionally narrows the Graylog search window (used by
 // the live topology refresh); "" uses the configured default.
 func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error) {
+	defer e.trackRunning("devicedata", fwID)()
 	devices, err := e.fetchDevices(fqdn, rangeSec)
 	if err != nil {
 		return 0, err
@@ -462,6 +463,12 @@ type BlockedPort struct {
 // entry point the dashboard uses instead of reaching into the schema directly,
 // so the storage layout stays owned by this package. A missing database
 // (extension disabled or never fetched) is not an error: it yields (nil, nil).
+//
+// It applies the same gate as the topology view: STP role/state blocks only
+// count on inter-switch (trunk) ports — on an edge/access port a discarding or
+// disabled state is normal client churn (a laptop undocking drops the link),
+// not a loop being broken. Only a fired BPDU/loop/root guard blocks an edge
+// port.
 func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	dbFile := filepath.Join(dataDir, "graylog-device-data.db")
 	if _, err := os.Stat(dbFile); err != nil {
@@ -477,7 +484,58 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 
-	rows, err := db.Query(`SELECT fw_id, switch_name, port, role, state, guard, last_change
+	// Inter-switch port legs and switch identities from the stored trunk
+	// observations. An old database without the switch_edges table just yields
+	// empty sets (guard blocks still surface).
+	interSwitch := map[string]bool{} // "fwID|switch(lower)|port"
+	knownSwitch := map[string]bool{} // switch names + serials, lowercased
+	if eRows, qErr := db.Query(`SELECT fw_id, switch_sn, switch_name, ports FROM switch_edges`); qErr == nil {
+		defer func() { _ = eRows.Close() }()
+		for eRows.Next() {
+			var fwID int
+			var sn, name, ports string
+			if scanErr := eRows.Scan(&fwID, &sn, &name, &ports); scanErr != nil {
+				return nil, scanErr
+			}
+			for _, key := range []string{strings.ToLower(sn), strings.ToLower(name)} {
+				if key == "" {
+					continue
+				}
+				knownSwitch[key] = true
+				for _, p := range strings.Split(ports, ",") {
+					if p != "" {
+						interSwitch[fmt.Sprintf("%d|%s|%s", fwID, key, p)] = true
+					}
+				}
+			}
+		}
+		if rErr := eRows.Err(); rErr != nil {
+			return nil, rErr
+		}
+	}
+	// Every switch the STP feed has seen counts as managed, so an LLDP neighbor
+	// naming one marks the local port as inter-switch.
+	sRows, err := db.Query(`SELECT DISTINCT switch_name, serial FROM stp_ports`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = sRows.Close() }()
+	for sRows.Next() {
+		var name, serial string
+		if scanErr := sRows.Scan(&name, &serial); scanErr != nil {
+			return nil, scanErr
+		}
+		for _, key := range []string{strings.ToLower(name), strings.ToLower(serial)} {
+			if key != "" {
+				knownSwitch[key] = true
+			}
+		}
+	}
+	if err := sRows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err := db.Query(`SELECT fw_id, switch_name, serial, port, role, state, guard, neighbor, last_change
 		FROM stp_ports
 		WHERE guard != '' OR lower(state) IN ('discarding', 'blocking')
 			OR lower(role) IN ('alternate', 'backup', 'disabled')
@@ -487,26 +545,43 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []BlockedPort
+	type candidate struct {
+		BlockedPort
+		serial, neighbor, guard string
+	}
+	var cands []candidate
 	for rows.Next() {
-		var b BlockedPort
-		var role, state, guard string
-		// role/state/guard/last_change are NOT NULL DEFAULT '' in the schema, so
-		// scanning into plain strings never hits a NULL.
-		if scanErr := rows.Scan(&b.FwID, &b.Switch, &b.Port, &role, &state, &guard, &b.Since); scanErr != nil {
+		var c candidate
+		var role, state string
+		// role/state/guard/neighbor/last_change are NOT NULL DEFAULT '' in the
+		// schema, so scanning into plain strings never hits a NULL.
+		if scanErr := rows.Scan(&c.FwID, &c.Switch, &c.serial, &c.Port, &role, &state, &c.guard, &c.neighbor, &c.Since); scanErr != nil {
 			return nil, scanErr
 		}
 		switch {
-		case guard != "":
-			b.Reason = guard
+		case c.guard != "":
+			c.Reason = c.guard
 		case state != "":
-			b.Reason = state
+			c.Reason = state
 		default:
-			b.Reason = role
+			c.Reason = role
 		}
-		out = append(out, b)
+		cands = append(cands, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []BlockedPort
+	for _, c := range cands {
+		inter := interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.Switch), c.Port)] ||
+			interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.serial), c.Port)] ||
+			(c.neighbor != "" && knownSwitch[strings.ToLower(c.neighbor)])
+		if c.guard != "" || inter {
+			out = append(out, c.BlockedPort)
+		}
+	}
+	return out, nil
 }
 
 // SharedData opens the extension's private database read-only and returns the

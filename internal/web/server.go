@@ -86,6 +86,10 @@ type Server struct {
 	// warmSem bounds concurrent audit-cache warms (full config parses) so a
 	// fleet-wide backup burst cannot pile up dozens of parses at once.
 	warmSem chan struct{}
+
+	// auditRuns tracks in-flight audit recomputations (full config parses)
+	// for the dashboard's "currently running" card.
+	auditRuns runningTracker
 }
 
 type pageTmpl struct {

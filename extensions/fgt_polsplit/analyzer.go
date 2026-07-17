@@ -26,13 +26,17 @@ type AnalyzeOptions struct {
 // privateNets classify addresses that must NOT be collapsed to the WAN "all"
 // object: RFC1918 + CGNAT + link-local + loopback (genuinely private), plus
 // the non-public-unicast ranges (this-network 0/8, multicast 224/4, reserved
-// 240/4 incl. 255.255.255.255) — a degenerate dstip from a Graylog row must
-// not be mistaken for a routable internet destination.
+// 240/4 incl. 255.255.255.255) and the special-purpose blocks (IETF protocol
+// assignments 192.0.0.0/24, TEST-NET-1/2/3, benchmarking 198.18.0.0/15) — a
+// degenerate dstip from a Graylog row must not be mistaken for a routable
+// internet destination.
 var privateNets = func() []*net.IPNet {
 	var out []*net.IPNet
 	for _, c := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 		"100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8",
-		"0.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4"} {
+		"0.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4",
+		"192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15",
+		"198.51.100.0/24", "203.0.113.0/24"} {
 		_, n, _ := net.ParseCIDR(c)
 		out = append(out, n)
 	}
