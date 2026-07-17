@@ -204,14 +204,17 @@ func validatePolicy(p Policy, services []Service) error {
 			return fmt.Errorf("invalid characters in service %q", svc.Name)
 		}
 
-		if svc.Name == "" {
-			// Blank row (the UI's untouched "Add Service" default) — the
-			// generators skip these, so validation must too.
+		if strings.TrimSpace(svc.Name) == "" {
+			// Blank or whitespace-only row (the UI's untouched "Add Service"
+			// default) — the generators skip these, so validation must too.
 			continue
 		}
 
-		// Canonicalize type early so downstream branches (GenerateOutput2,
-		// GenerateOutput3, GenerateSinglePolicyCLI) match reliably.
+		// Canonicalize name and type early so the emitted object name,
+		// duplicate detection, and downstream branches (GenerateOutput2,
+		// GenerateOutput3, generateSinglePolicyCLI) all agree with what is
+		// generated — the CLI loops trim the same way.
+		services[i].Name = strings.TrimSpace(svc.Name)
 		services[i].Type = strings.ToLower(svc.Type)
 		svc = services[i]
 
@@ -318,19 +321,19 @@ func GenerateOutput3(p Policy) (string, error) {
 	}
 	var srcIntfs []string
 	for _, src := range p.SrcInterfaces {
-		if src != "" {
+		if src = strings.TrimSpace(src); src != "" {
 			srcIntfs = append(srcIntfs, src)
 		}
 	}
 	var dstIntfs []string
 	for _, dst := range p.DstInterfaces {
-		if dst != "" {
+		if dst = strings.TrimSpace(dst); dst != "" {
 			dstIntfs = append(dstIntfs, dst)
 		}
 	}
 	var filteredServices []Service
 	for _, svc := range p.Services {
-		if svc.Name != "" {
+		if strings.TrimSpace(svc.Name) != "" {
 			filteredServices = append(filteredServices, svc)
 		}
 	}
@@ -394,32 +397,32 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	}
 	var srcIntfs []string
 	for _, intf := range p.SrcInterfaces {
-		if intf != "" {
+		if intf = strings.TrimSpace(intf); intf != "" {
 			srcIntfs = append(srcIntfs, intf)
 		}
 	}
 	var dstIntfs []string
 	for _, intf := range p.DstInterfaces {
-		if intf != "" {
+		if intf = strings.TrimSpace(intf); intf != "" {
 			dstIntfs = append(dstIntfs, intf)
 		}
 	}
 
 	var srcAddrs []string
 	for _, a := range p.SrcAddresses {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			srcAddrs = append(srcAddrs, a)
 		}
 	}
 	var srcAddrGroups []string
 	for _, a := range p.SrcAddressGroups {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			srcAddrGroups = append(srcAddrGroups, a)
 		}
 	}
 	var srcVIPs []string
 	for _, a := range p.SrcVIPs {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			srcVIPs = append(srcVIPs, a)
 		}
 	}
@@ -432,19 +435,19 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 
 	var dstAddrs []string
 	for _, a := range p.DstAddresses {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			dstAddrs = append(dstAddrs, a)
 		}
 	}
 	var dstAddrGroups []string
 	for _, a := range p.DstAddressGroups {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			dstAddrGroups = append(dstAddrGroups, a)
 		}
 	}
 	var dstVIPs []string
 	for _, a := range p.DstVIPs {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			dstVIPs = append(dstVIPs, a)
 		}
 	}
@@ -457,7 +460,7 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 
 	var filteredServices []Service
 	for _, svc := range services {
-		if svc.Name != "" {
+		if svc.Name = strings.TrimSpace(svc.Name); svc.Name != "" {
 			filteredServices = append(filteredServices, svc)
 		}
 	}
@@ -593,7 +596,7 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	if len(p.Users) > 0 {
 		var usersList []string
 		for _, u := range p.Users {
-			if u != "" {
+			if u = strings.TrimSpace(u); u != "" {
 				usersList = append(usersList, fmt.Sprintf("\"%s\"", u))
 			}
 		}
@@ -604,7 +607,7 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	if len(p.Groups) > 0 {
 		var groupsList []string
 		for _, g := range p.Groups {
-			if g != "" {
+			if g = strings.TrimSpace(g); g != "" {
 				groupsList = append(groupsList, fmt.Sprintf("\"%s\"", g))
 			}
 		}
