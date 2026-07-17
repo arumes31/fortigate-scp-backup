@@ -61,7 +61,15 @@ type configRow struct {
 	NextCheckISO string
 }
 
+// indexBase carries the cross-extension enablement flags the shared topbar
+// nav needs (the same shape the other extension templates read via .Base).
+type indexBase struct {
+	ExtConfigGenEnabled bool
+	ExtPolSplitEnabled  bool
+}
+
 type indexData struct {
+	Base                   indexBase
 	Configs                []configRow
 	AvailableIPsCount      int
 	AvailableIPsPercentage string
@@ -98,6 +106,10 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := indexData{
+		Base: indexBase{
+			ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
+			ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
+		},
 		Configs:                rows,
 		AvailableIPsCount:      count,
 		AvailableIPsPercentage: fmt.Sprintf("%.2f", pct),
