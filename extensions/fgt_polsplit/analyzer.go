@@ -23,17 +23,25 @@ type AnalyzeOptions struct {
 	FirewallIPs map[string]bool
 }
 
-// privateNets classify RFC1918 + CGNAT + link-local + loopback as "private".
+// privateNets classify addresses that must NOT be collapsed to the WAN "all"
+// object: RFC1918 + CGNAT + link-local + loopback (genuinely private), plus
+// the non-public-unicast ranges (this-network 0/8, multicast 224/4, reserved
+// 240/4 incl. 255.255.255.255) — a degenerate dstip from a Graylog row must
+// not be mistaken for a routable internet destination.
 var privateNets = func() []*net.IPNet {
 	var out []*net.IPNet
 	for _, c := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-		"100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8"} {
+		"100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8",
+		"0.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4"} {
 		_, n, _ := net.ParseCIDR(c)
 		out = append(out, n)
 	}
 	return out
 }()
 
+// isPrivateIPv4 reports whether ip is a non-public-internet IPv4 address
+// (RFC1918/CGNAT/link-local/loopback or this-network/multicast/reserved).
+// Only IPv4 is considered; IPv6 always returns false.
 func isPrivateIPv4(ip net.IP) bool {
 	v4 := ip.To4()
 	if v4 == nil {

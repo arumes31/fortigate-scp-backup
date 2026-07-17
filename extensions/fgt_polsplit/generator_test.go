@@ -192,6 +192,124 @@ func TestGenerateLongPathKeepsLabel(t *testing.T) {
 	}
 }
 
+// TestInsertSuffix: collision disambiguation keeps the parenthesised label
+// balanced and legible instead of truncating away the ")" and label digits.
+func TestInsertSuffix(t *testing.T) {
+	// Exact cases (no truncation needed).
+	exact := []struct {
+		base, suffix string
+		maxLen       int
+		want         string
+	}{
+		{"VL1>VL2 (RDP)", "_2", 35, "VL1>VL2 (RDP_2)"},   // suffix lands inside the parens
+		{"PS5_h_10.0.0.1", "_2", 79, "PS5_h_10.0.0.1_2"}, // object name (no paren) → appended
+		{"udp (X)", "_10", 7, "udp_10)"},                 // tight paren fit
+	}
+	for _, c := range exact {
+		if got := insertSuffix(c.base, c.suffix, c.maxLen); got != c.want {
+			t.Errorf("insertSuffix(%q,%q,%d) = %q, want %q", c.base, c.suffix, c.maxLen, got, c.want)
+		}
+	}
+	// Truncating case: the disambiguator must never leave an unbalanced paren
+	// or drop the "_N" suffix, and must stay within maxLen.
+	got := insertSuffix("LB-EXADM>VPN_EX-ADM (udp_1812-1813)", "_2", 35)
+	if len(got) > 35 {
+		t.Errorf("insertSuffix over budget: %q (%d)", got, len(got))
+	}
+	if !strings.HasSuffix(got, "_2)") {
+		t.Errorf("truncated name must keep the _N inside the close paren: %q", got)
+	}
+	if strings.Count(got, "(") != strings.Count(got, ")") {
+		t.Errorf("unbalanced parens: %q", got)
+	}
+}
+
+// TestGeneratePerDestinationNameCollision: sibling per-destination splits that
+// share interfaces + top service collide on name — the disambiguator must keep
+// each name valid (balanced parens, distinct, ≤35, service label intact).
+func TestGeneratePerDestinationNameCollision(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.SrcIntf = []string{"lb-exadm"}
+	pb.Policy.DstIntf = []string{"vpn_ex-adm"}
+	mk := func(dst string) RecPolicy {
+		return RecPolicy{
+			Src:      []Entity{ent("10.0.0.1")},
+			Dst:      []Entity{ent(dst)},
+			Services: []ServiceSpec{{Key: "udp/1812-1813", Proto: "udp", Port: 1812, PortEnd: 1813}},
+			Hits:     5,
+		}
+	}
+	pols := []RecPolicy{mk("10.9.9.1"), mk("10.9.9.2"), mk("10.9.9.3")}
+	Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	seen := map[string]bool{}
+	for _, p := range pols {
+		if len(p.Name) > maxPolicyNameLen {
+			t.Errorf("name too long: %q (%d)", p.Name, len(p.Name))
+		}
+		if strings.Count(p.Name, "(") != strings.Count(p.Name, ")") {
+			t.Errorf("unbalanced parens in name: %q", p.Name)
+		}
+		if !strings.Contains(p.Name, "udp") {
+			t.Errorf("service label lost from name: %q", p.Name)
+		}
+		if seen[p.Name] {
+			t.Errorf("duplicate policy name: %q", p.Name)
+		}
+		seen[p.Name] = true
+	}
+}
+
+// TestGenerateServiceGroupCap: a policy with more than groupInlineMax services
+// collapses them into a firewall service group instead of inlining a long
+// `set service` line.
+func TestGenerateServiceGroupCap(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{
+		Src: []Entity{ent("10.0.0.1")},
+		Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{
+			{Key: "tcp/22", Proto: "tcp", Port: 22},
+			{Key: "tcp/80", Proto: "tcp", Port: 80},
+			{Key: "tcp/443", Proto: "tcp", Port: 443},
+			{Key: "tcp/3389", Proto: "tcp", Port: 3389},
+		},
+		Hits: 5,
+	}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, "config firewall service group") {
+		t.Errorf("expected a service group for 4 services:\n%s", res.Config)
+	}
+	grp := 0
+	for _, o := range res.NewObjects {
+		if o.Kind == "svcgrp" {
+			grp++
+		}
+	}
+	if grp != 1 {
+		t.Errorf("expected 1 svcgrp new object, got %d", grp)
+	}
+	// The service group must be defined before the policy references it.
+	gi := strings.Index(res.Config, "config firewall service group")
+	pi := strings.Index(res.Config, "config firewall policy")
+	if gi < 0 || pi < 0 || gi > pi {
+		t.Errorf("service group must precede firewall policy:\n%s", res.Config)
+	}
+}
+
+// TestGenerateIPProtoValueFormat: the NewObject.Value for an ip-<n> service
+// uses the canonical hyphen key form, matching ServiceSpec.Key / SvcByKey.
+func TestGenerateIPProtoValueFormat(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "ip-47", Proto: "ip-47"}}, Hits: 3}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	for _, o := range res.NewObjects {
+		if o.Kind == "service" && strings.Contains(o.Value, "/") {
+			t.Errorf("ip-proto NewObject.Value must use hyphen form, got %q", o.Value)
+		}
+	}
+}
+
 func TestIfaceLabel(t *testing.T) {
 	cases := []struct {
 		in   []string
@@ -276,8 +394,13 @@ func TestGeneratePolicyNameCollision(t *testing.T) {
 	if pols[0].Name == "LAN1>WAN1 (SSH)" {
 		t.Errorf("policy name %q collides with an existing policy", pols[0].Name)
 	}
-	if !strings.HasPrefix(pols[0].Name, "LAN1>WAN1 (SSH)") {
+	// The disambiguator goes inside the parenthesised label (paren-aware), so
+	// the name reads "LAN1>WAN1 (SSH_2)" — base recognizable, parens balanced.
+	if !strings.HasPrefix(pols[0].Name, "LAN1>WAN1 (SSH") {
 		t.Errorf("collision suffix should extend the base name, got %q", pols[0].Name)
+	}
+	if strings.Count(pols[0].Name, "(") != strings.Count(pols[0].Name, ")") {
+		t.Errorf("unbalanced parens after disambiguation: %q", pols[0].Name)
 	}
 	if res.Config == "" {
 		t.Error("empty config")

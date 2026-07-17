@@ -407,6 +407,7 @@ Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server
 | `EXT_FGT_POLSPLIT` | `false` | Enable the Policy Split Advisor extension. |
 | `GRAYLOG_POLSPLIT_QUERY` | `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip` | Traffic-log query template; `source:"%s"` is expanded to the firewall's Graylog source (HA-aware) and `policyid:%s` to the analyzed policy ID. |
 | `POLSPLIT_WAN_INTERFACES` | *(Unset)* | Extra interface names to treat as internet-facing (comma-separated), merged with auto-detection (`set role wan`, SD-WAN members, `virtual-wan-link`). Policies whose destination interfaces are all internet-facing keep `dstaddr "all"` instead of enumerating rotating internet IPs. |
+| `POLSPLIT_ANALYZE_TIMEOUT` | `55` | Seconds; hard cap on one analyze request so it fails with a clean error instead of a raw reverse-proxy 504. Windows longer than 12h are loaded in parallel 1-hour chunks; raise this (and the proxy read timeout, e.g. nginx `proxy_read_timeout`) for very busy policies, or `0` to disable the cap. |
 
 ---
 

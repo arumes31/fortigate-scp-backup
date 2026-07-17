@@ -281,6 +281,27 @@ func TestAnalyzeWANAsAll(t *testing.T) {
 	}
 }
 
+// TestWANAsAllNonPublicRanges: degenerate/non-unicast destinations
+// (this-network, multicast, reserved incl. broadcast) are NOT routable
+// internet destinations and must not collapse to "all".
+func TestWANAsAllNonPublicRanges(t *testing.T) {
+	tuples := []TrafficTuple{
+		tup("10.0.0.1", "8.8.8.8", "udp", 53, "DNS", 100),        // genuinely public
+		tup("10.0.0.1", "224.0.0.251", "udp", 5353, "MDNS", 5),   // multicast
+		tup("10.0.0.1", "255.255.255.255", "udp", 67, "DHCP", 5), // broadcast (reserved)
+		tup("10.0.0.1", "0.0.0.0", "udp", 68, "", 3),             // this-network
+	}
+	a := Analyze(tuples, AnalyzeOptions{WANAsAll: true})
+	if e := a.DstEnts["8.8.8.8"]; e.Value != "all" {
+		t.Errorf("public dst should collapse to all: %+v", e)
+	}
+	for _, ip := range []string{"224.0.0.251", "255.255.255.255", "0.0.0.0"} {
+		if e := a.DstEnts[ip]; e.Value != ip {
+			t.Errorf("non-public %s must stay explicit, got %+v", ip, e)
+		}
+	}
+}
+
 // TestAnalyzeFirewallSelfExcluded: flows to the firewall's own addresses are
 // local-in traffic and never reach the recommendations.
 func TestAnalyzeFirewallSelfExcluded(t *testing.T) {

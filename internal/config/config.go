@@ -94,9 +94,10 @@ type Config struct {
 
 	// Extension: fgt_polsplit (policy split advisor — analyze a policy's real
 	// traffic from Graylog and recommend tighter replacement policies)
-	ExtFgtPolSplit        bool
-	GraylogPolsplitQuery  string // Graylog query template, %s = source host, policyid:%s = policy ID
-	PolsplitWANInterfaces string // extra interface names to treat as internet-facing (comma-separated), merged with auto-detection
+	ExtFgtPolSplit         bool
+	GraylogPolsplitQuery   string // Graylog query template, %s = source host, policyid:%s = policy ID
+	PolsplitWANInterfaces  string // extra interface names to treat as internet-facing (comma-separated), merged with auto-detection
+	PolsplitAnalyzeTimeout int    // seconds; hard cap on one analyze request so it fails cleanly before a reverse-proxy 504 (0 = no cap)
 
 	// Live SSH diagnostics: query the FortiGate CLI directly for authoritative
 	// per-switch-port link state, STP role/state and interlink trunks (data the
@@ -210,9 +211,10 @@ func Load(logger *slog.Logger) *Config {
 		GraylogLinkRange:      getenv("GRAYLOG_LINK_RANGE", "2592000"),
 		GraylogDeviceInterval: intenv("GRAYLOG_DEVICE_INTERVAL", 3600),
 
-		ExtFgtPolSplit:        boolenv("EXT_FGT_POLSPLIT", false),
-		GraylogPolsplitQuery:  getenv("GRAYLOG_POLSPLIT_QUERY", `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip`),
-		PolsplitWANInterfaces: getenv("POLSPLIT_WAN_INTERFACES", ""),
+		ExtFgtPolSplit:         boolenv("EXT_FGT_POLSPLIT", false),
+		GraylogPolsplitQuery:   getenv("GRAYLOG_POLSPLIT_QUERY", `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip`),
+		PolsplitWANInterfaces:  getenv("POLSPLIT_WAN_INTERFACES", ""),
+		PolsplitAnalyzeTimeout: intenv("POLSPLIT_ANALYZE_TIMEOUT", 55),
 
 		FgtDiagSSHEnabled:       boolenv("FGT_DIAG_SSH_ENABLED", false),
 		FgtDiagSSHBackgroundSec: intenv("FGT_DIAG_SSH_BACKGROUND_SECONDS", 3600), // hourly background sweep

@@ -522,6 +522,14 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	// Sub-stage notes (chunked-loading steps, message counts) travel via the
 	// context so the Graylog helpers can publish them without extra plumbing.
 	ctx := withProgressNote(r.Context(), e.progressNoter(req.ProgressID))
+	// Cap the whole analysis so a slow Graylog fails with a clean JSON error
+	// instead of a raw reverse-proxy 504 (0 = no cap). The window must beat
+	// the proxy's read timeout to be useful — POLSPLIT_ANALYZE_TIMEOUT.
+	if t := e.cfg.PolsplitAnalyzeTimeout; t > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(t)*time.Second)
+		defer cancel()
+	}
 
 	report("Loading latest config backup")
 	fqdn, content, ts, err := e.loadBackup(ctx, req.FwID)
@@ -552,6 +560,12 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 
 	tuples, totalMessages, warnings, vdDropped, err := e.fetchPolicyTraffic(ctx, fqdn, req.PolicyID, parsed.Policy.VDOM, tr, report)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			e.jsonError(w, http.StatusGatewayTimeout, fmt.Sprintf(
+				"analysis exceeded the %ds time limit while querying Graylog — narrow the time window, or raise POLSPLIT_ANALYZE_TIMEOUT (and the reverse-proxy read timeout) for very busy policies",
+				e.cfg.PolsplitAnalyzeTimeout))
+			return
+		}
 		e.jsonError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -707,6 +721,23 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 			"hybrid strategy merged %d similar per-service policies — merged policies can allow source/destination/service combinations that were not individually observed; review its scope before applying", widened))
 	}
 	markRecommended(strategies, ineligible)
+
+	// Explicit "not eligible" signal: when messages matched but every strategy
+	// is empty, the traffic was entirely filtered (local-in to the firewall's
+	// own addresses, IPv6-only, or port-scan noise). Say so plainly instead of
+	// showing empty recommendation tabs with no explanation.
+	if totalMessages > 0 {
+		anyPolicies := false
+		for _, s := range strategies {
+			if len(s.Policies) > 0 {
+				anyPolicies = true
+				break
+			}
+		}
+		if !anyPolicies {
+			warnings = append(warnings, "no split recommendations were produced — all observed traffic for this policy was excluded (local-in traffic to the firewall's own addresses, IPv6, or port-scan noise; see the warnings above). This policy is not eligible for splitting from the analyzed window.")
+		}
+	}
 
 	respTuples := analysis.Tuples
 	if len(respTuples) > maxTuplesInResponse {
