@@ -171,8 +171,11 @@ func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 		return cached, true
 	}
 	// Cache miss: a full config read + parse — visible on the dashboard's
-	// "currently running" card while it churns.
+	// "currently running" card while it churns, with SSE lifecycle events for
+	// the SYS_STDOUT panel.
 	defer s.auditRuns.track(fwID)()
+	s.hub.broadcast("audit", fwID, "started")
+	defer s.hub.broadcast("audit", fwID, "finished")
 	plain, ok := s.readConfig(fwID, filename)
 	if !ok {
 		return nil, false
@@ -196,6 +199,8 @@ func (s *Server) WarmAuditCache(fwID int) {
 	defer func() { <-s.warmSem }()
 	// Registered after the semaphore, so queued warms don't show as running.
 	defer s.auditRuns.track(fwID)()
+	s.hub.broadcast("audit", fwID, "started")
+	defer s.hub.broadcast("audit", fwID, "finished")
 
 	db, err := s.insightsDB()
 	if err != nil || db == nil {
