@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // groupInlineMax is the largest member count listed directly in a policy's
@@ -71,20 +72,48 @@ func (n *namer) alloc(base string, maxLen int) string {
 // allocSanitized allocates a collision-free name from an already-sanitized
 // base (policy names use the more permissive sanitizePolicyName).
 func (n *namer) allocSanitized(base string, maxLen int) string {
-	if len(base) > maxLen {
-		base = base[:maxLen]
-	}
+	base = truncName(base, maxLen)
 	name := base
 	for i := 2; n.taken[strings.ToLower(name)]; i++ {
-		suffix := fmt.Sprintf("_%d", i)
-		trimmed := base
-		if len(trimmed)+len(suffix) > maxLen {
-			trimmed = trimmed[:maxLen-len(suffix)]
-		}
-		name = trimmed + suffix
+		name = insertSuffix(base, fmt.Sprintf("_%d", i), maxLen)
 	}
 	n.taken[strings.ToLower(name)] = true
 	return name
+}
+
+// truncName truncates to maxLen on a rune boundary so a multi-byte character
+// is never split into an invalid fragment.
+func truncName(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	for maxLen > 0 && !utf8.RuneStart(s[maxLen]) {
+		maxLen--
+	}
+	return s[:maxLen]
+}
+
+// insertSuffix places a disambiguating suffix in base within maxLen. When base
+// follows the path-based policy-name convention "PATH (LABEL)" (ends with a
+// close paren), the suffix goes INSIDE, before the ")", so the parenthesised
+// label stays balanced and legible ("VL1>VL2 (RDP)" → "VL1>VL2 (RD_2)") — a
+// blind tail truncation would instead drop the ")" and part of the label,
+// yielding misleading names like "(udp_1812-181_2". For object names (no
+// trailing ")"), the suffix is appended, truncating the tail to fit.
+func insertSuffix(base, suffix string, maxLen int) string {
+	if strings.HasSuffix(base, ")") {
+		inner := base[:len(base)-1]
+		keep := maxLen - len(suffix) - 1 // room for suffix + ")"
+		if keep < 0 {
+			keep = 0
+		}
+		return truncName(inner, keep) + suffix + ")"
+	}
+	keep := maxLen - len(suffix)
+	if keep < 0 {
+		keep = 0
+	}
+	return truncName(base, keep) + suffix
 }
 
 // GenResult is one strategy's generated configuration.
@@ -152,7 +181,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	}
 	nm := newNamer(parsed.TakenNames)
 
-	var addrDefs, grpDefs, svcDefs []string
+	var addrDefs, grpDefs, svcDefs, svcGrpDefs []string
 
 	// --- address objects -------------------------------------------------
 	addrName := map[string]string{} // entity value → object name
@@ -251,7 +280,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 				n := strings.TrimPrefix(s.Proto, "ip-")
 				name = nm.alloc(fmt.Sprintf("%s_ip%s", prefix, n), 79)
 				def = fmt.Sprintf("        set protocol IP\n        set protocol-number %s", n)
-				disp = "ip/" + n
+				disp = "ip-" + n // canonical key form (matches ServiceSpec.Key / SvcByKey)
 			}
 			svcDefs = append(svcDefs, fmt.Sprintf("    edit %q\n%s\n    next", name, def))
 			res.NewObjects = append(res.NewObjects, NewObject{Kind: "service", Name: name, Value: disp})
@@ -265,7 +294,8 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	if len(parsed.UsedPolicyIDs) > 0 {
 		nextID = parsed.UsedPolicyIDs[len(parsed.UsedPolicyIDs)-1] + 1
 	}
-	grpBySig := map[string]string{} // member signature → group name, dedupes identical groups
+	grpBySig := map[string]string{}    // address member signature → group name, dedupes identical groups
+	svcGrpLocal := map[string]string{} // service member signature → group name
 	resolveSide := func(ents []Entity, polName, side string) []string {
 		names := make([]string, 0, len(ents))
 		for _, e := range ents {
@@ -316,16 +346,30 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		}
 		sort.Strings(svcs)
 		// An existing service group with exactly these members is the same
-		// scope — reference the group instead of the member list.
+		// scope — reference it. Otherwise, like the address side, collapse a
+		// wide member set into a new service group instead of inlining a long
+		// `set service` line.
 		if len(svcs) > 1 {
 			if g, ok := parsed.SvcGrpBySig[groupSig(svcs)]; ok {
 				svcs = []string{g}
+			} else if len(svcs) > groupInlineMax {
+				sig := groupSig(svcs)
+				if g, ok := svcGrpLocal[sig]; ok {
+					svcs = []string{g}
+				} else {
+					g := nm.alloc(fmt.Sprintf("%s_%s_svc", prefix, sanitizeName(p.Name)), 79)
+					svcGrpLocal[sig] = g
+					svcGrpDefs = append(svcGrpDefs, fmt.Sprintf("    edit %q\n        set member %s\n    next", g, quoteList(svcs)))
+					res.NewObjects = append(res.NewObjects, NewObject{Kind: "svcgrp", Name: g,
+						Value: fmt.Sprintf("%d members: %s", len(svcs), strings.Join(svcs, ", "))})
+					svcs = []string{g}
+				}
 			}
 		}
 
 		var b strings.Builder
 		fmt.Fprintf(&b, "    edit %d\n", p.ID)
-		fmt.Fprintf(&b, "        set name %q\n", p.Name)
+		b.WriteString("        set name " + fgtQuote(p.Name) + "\n")
 		for _, line := range orig.CloneLines {
 			b.WriteString("        " + line + "\n")
 		}
@@ -333,11 +377,14 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		fmt.Fprintf(&b, "        set dstaddr %s\n", quoteList(dst))
 		fmt.Fprintf(&b, "        set service %s\n", quoteList(svcs))
 		b.WriteString("        set logtraffic all\n")
+		if orig.Status == "disable" {
+			b.WriteString("        set status disable\n")
+		}
 		comment := fmt.Sprintf("Split from policy %d (FortiSafe polsplit)", orig.ID)
 		if t := sanitizeTicket(ticket); t != "" {
 			comment += " [" + t + "]"
 		}
-		fmt.Fprintf(&b, "        set comments %q\n", comment)
+		b.WriteString("        set comments " + fgtQuote(comment) + "\n")
 		b.WriteString("    next")
 		polDefs = append(polDefs, b.String())
 
@@ -360,7 +407,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "    edit %d\n", denyID)
-		fmt.Fprintf(&b, "        set name %q\n", denyName)
+		b.WriteString("        set name " + fgtQuote(denyName) + "\n")
 		for _, line := range orig.CloneLines {
 			// Only the scope-defining clone lines: interfaces, schedule and the
 			// identity selectors (users/groups/FSSO). Dropping an identity
@@ -379,11 +426,14 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		fmt.Fprintf(&b, "        set service %s\n", quoteList(orDefault(orig.Services, "ALL")))
 		b.WriteString("        set action deny\n")
 		b.WriteString("        set logtraffic all\n")
+		if orig.Status == "disable" {
+			b.WriteString("        set status disable\n")
+		}
 		comment := fmt.Sprintf("Fallthrough deny for policy %d — catches traffic the splits missed (FortiSafe polsplit)", orig.ID)
 		if t := sanitizeTicket(ticket); t != "" {
 			comment += " [" + t + "]"
 		}
-		fmt.Fprintf(&b, "        set comments %q\n", comment)
+		b.WriteString("        set comments " + fgtQuote(comment) + "\n")
 		b.WriteString("    next")
 		polDefs = append(polDefs, b.String())
 		moves = append(moves, fmt.Sprintf("    move %d before %d", denyID, orig.ID))
@@ -402,6 +452,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	section("firewall address", addrDefs)
 	section("firewall addrgrp", grpDefs)
 	section("firewall service custom", svcDefs)
+	section("firewall service group", svcGrpDefs)
 	section("firewall policy", polDefs)
 	section("firewall policy", moves)
 
@@ -412,7 +463,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	if orig.VDOM != "" {
 		// Multi-VDOM unit: the CLI must enter the policy's VDOM first, or the
 		// paste fails at the global context (or lands in the wrong VDOM).
-		cfg = "config vdom\nedit " + orig.VDOM + "\n\n" + cfg + "\nend\n"
+		cfg = "config vdom\nedit " + fgtQuote(orig.VDOM) + "\n\n" + cfg + "\nend\n"
 	}
 	res.Config = cfg
 	if orig.Action != "accept" {
@@ -462,11 +513,11 @@ func fitPolicyName(path, label string, maxLen int) string {
 	}
 	budget := maxLen - len(suffix)
 	if budget < 4 {
-		// Degenerate label longer than the whole budget: keep what fits.
-		name := path + suffix
-		return name[:maxLen]
+		// Degenerate label longer than the whole budget: keep what fits
+		// (rune-safe, so a multi-byte label never leaves a broken fragment).
+		return truncName(path+suffix, maxLen)
 	}
-	return path[:budget] + suffix
+	return truncName(path, budget) + suffix
 }
 
 func hasTag(p RecPolicy, tag string) bool {

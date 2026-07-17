@@ -355,6 +355,12 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				// address object named like an existing VIP, so they must
 				// count as taken even though their mappings aren't reusable.
 				getInv(currentVDOM()).takenNames[strings.ToLower(name)] = true
+			case "system external-resource":
+				// External-resource (threat-feed) objects of type address are
+				// usable directly in srcaddr/dstaddr and share the address
+				// namespace, so their names must count as taken to avoid a
+				// generated object colliding with one.
+				getInv(currentVDOM()).takenNames[strings.ToLower(name)] = true
 			case "zone":
 				// Custom SD-WAN zones (config zone inside config system sdwan)
 				// are referenced by name in policy dstintf and are as

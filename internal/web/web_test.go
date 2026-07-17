@@ -599,8 +599,8 @@ end`
 
 func TestSanitizeBundleName(t *testing.T) {
 	cases := map[string]string{
-		"fw-core-01.corp.local": "fw-core-01.corp.local.conf",
-		"a b/c":                 "a_b_c.conf",
+		"fw-core-01.example.local": "fw-core-01.example.local.conf",
+		"a b/c":                    "a_b_c.conf",
 	}
 	for in, want := range cases {
 		if got := sanitizeBundleName(in, 1); got != want {

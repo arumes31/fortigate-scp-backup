@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,9 +22,20 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
-// isValidTemplateName rejects names containing URL-unsafe characters.
+// isValidTemplateName accepts only a bounded safe alphabet suitable for URL
+// path/query interpolation and Content-Disposition headers: letters, digits,
+// dots, hyphens and underscores. Max 128 characters.
 func isValidTemplateName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, "/?#")
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '.' && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 //go:embed templates/fgt_confgen_index.html
@@ -804,7 +816,7 @@ func (e *Extension) redirectShortURL(w http.ResponseWriter, r *http.Request) {
 	}
 	templateName := parts[1]
 
-	http.Redirect(w, r, "/fgt-confgen/?preselected="+templateName, http.StatusMovedPermanently)
+	http.Redirect(w, r, "/fgt-confgen/?preselected="+url.QueryEscape(templateName), http.StatusFound)
 }
 
 func (e *Extension) logFrontend(w http.ResponseWriter, r *http.Request) {

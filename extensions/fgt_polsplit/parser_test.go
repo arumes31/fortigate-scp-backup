@@ -51,6 +51,12 @@ config firewall vip
         set mappedip "10.0.0.80"
     next
 end
+config system external-resource
+    edit "eworx-IP-Blocklist"
+        set type address
+        set resource "https://example.invalid/blocklist.txt"
+    next
+end
 config system automation-action
     edit "Script_Fix"
         set action-type cli-script
@@ -259,8 +265,9 @@ func TestParseBackupObjects(t *testing.T) {
 	if got := pb.SvcByKey["tcpudp/53"]; len(got) != 1 || got[0] != "DNS" {
 		t.Errorf("tcpudp/53 = %v", got)
 	}
-	// VIPs share the address namespace and must count as taken.
-	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp", "vip_web"} {
+	// VIPs and external-resource objects share the address namespace and must
+	// count as taken.
+	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp", "vip_web", "eworx-ip-blocklist"} {
 		if !pb.TakenNames[name] {
 			t.Errorf("taken names missing %q", name)
 		}

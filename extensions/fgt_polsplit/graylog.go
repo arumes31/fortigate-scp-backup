@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +39,29 @@ type timeRange struct {
 
 func (t timeRange) valid() bool {
 	return t.RelativeSec > 0 || (t.From != "" && t.To != "")
+}
+
+// graylogHTTPTimeout is a generous per-request ceiling on Graylog HTTP calls.
+// It is a backstop only: the effective limit is the caller's context deadline
+// (POLSPLIT_ANALYZE_TIMEOUT), so no single request may be capped shorter than
+// the analysis budget still allows.
+const graylogHTTPTimeout = 120 * time.Second
+
+// chunkSemKey carries a shared chunk-concurrency semaphore through the context.
+// The independent aggregation rounds of one analysis run in parallel but draw
+// their sub-window slots from this single bound, so peak Graylog concurrency
+// stays at chunkConcurrency even while the rounds overlap.
+type chunkSemKey struct{}
+
+func withChunkSem(ctx context.Context, sem chan struct{}) context.Context {
+	return context.WithValue(ctx, chunkSemKey{}, sem)
+}
+
+func chunkSemFrom(ctx context.Context) chan struct{} {
+	if s, ok := ctx.Value(chunkSemKey{}).(chan struct{}); ok {
+		return s
+	}
+	return nil
 }
 
 type aggregateGroup struct {
@@ -219,7 +244,11 @@ func (e *Extension) countMessages(ctx context.Context, query string, tr timeRang
 		return 0, err
 	}
 	e.graylogAuth(req)
-	client := &http.Client{Timeout: 30 * time.Second}
+	// A generous per-request ceiling; the real governor is the caller's
+	// context deadline (POLSPLIT_ANALYZE_TIMEOUT). A fixed 30s here used to
+	// abort the whole analysis at its very first step even when most of the
+	// budget was still available.
+	client := &http.Client{Timeout: graylogHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("graylog count request failed: %w", err)
@@ -259,7 +288,8 @@ func (e *Extension) aggregate(ctx context.Context, body aggregateRequest) ([]agg
 	req.Header.Set("X-Requested-By", "fortisafe")
 
 	// Aggregations scan far more than a page of messages; give them headroom.
-	client := &http.Client{Timeout: 120 * time.Second}
+	// The context deadline (POLSPLIT_ANALYZE_TIMEOUT) is the real governor.
+	client := &http.Client{Timeout: graylogHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("graylog aggregate request failed: %w", err)
@@ -412,21 +442,67 @@ func (e *Extension) runTupleAggregation(ctx context.Context, body aggregateReque
 	return tuples, []string{warning}, nil
 }
 
-// runChunks runs the aggregation once per sub-window and merges the results,
-// publishing per-step progress notes.
+// chunkConcurrency bounds how many sub-window aggregations run at once.
+// Sequential chunking turned a 24h window into ~24 back-to-back Graylog
+// round-trips (60s+ on a small policy — enough to trip a 60s reverse-proxy
+// timeout); running them a few at a time cuts wall time proportionally while
+// staying well within what the Graylog cluster tolerates.
+const chunkConcurrency = 5
+
+// runChunks runs the aggregation for every sub-window (bounded-concurrently)
+// and merges the results, publishing completed-count progress notes. Chunk
+// order does not affect the merge, so results are gathered by index and the
+// first failure cancels the rest.
 func (e *Extension) runChunks(ctx context.Context, body aggregateRequest, chunks []timeRange, label string) ([]TrafficTuple, error) {
 	note := progressNoteFrom(ctx)
-	lists := make([][]TrafficTuple, 0, len(chunks))
-	for i, c := range chunks {
-		note(fmt.Sprintf("time step %d/%d", i+1, len(chunks)), i, len(chunks))
-		tuples, err := e.runChunkWindow(ctx, body, c)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make([][]TrafficTuple, len(chunks))
+	errs := make([]error, len(chunks))
+	// A shared semaphore from the context bounds concurrency across all the
+	// aggregation rounds that run in parallel (see fetchPolicyTraffic); absent
+	// that, each call bounds itself.
+	sem := chunkSemFrom(ctx)
+	if sem == nil {
+		sem = make(chan struct{}, chunkConcurrency)
+	}
+	var wg sync.WaitGroup
+	var done int32
+
+	for i := range chunks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				errs[i] = ctx.Err()
+				return
+			}
+			// runChunkWindow takes body by value, so concurrent calls never
+			// share the mutated Timerange field.
+			tuples, err := e.runChunkWindow(ctx, body, chunks[i])
+			if err != nil {
+				errs[i] = err
+				cancel() // stop remaining sub-windows on the first hard failure
+				return
+			}
+			results[i] = tuples
+			n := atomic.AddInt32(&done, 1)
+			note(fmt.Sprintf("time step %d/%d", n, len(chunks)), int(n), len(chunks))
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
 		if err != nil {
-			return nil, fmt.Errorf("%s: sub-window %d/%d (%s to %s): %w", label, i+1, len(chunks), c.From, c.To, err)
+			return nil, fmt.Errorf("%s: sub-window %d/%d (%s to %s): %w", label, i+1, len(chunks), chunks[i].From, chunks[i].To, err)
 		}
-		lists = append(lists, tuples)
 	}
 	note(fmt.Sprintf("merging %d time steps", len(chunks)), len(chunks), len(chunks))
-	return mergeTuples(lists...), nil
+	return mergeTuples(results...), nil
 }
 
 // runChunkWindow aggregates one sub-window, adaptively halving it on failure
@@ -503,16 +579,39 @@ func (e *Extension) fetchPolicyTraffic(ctx context.Context, fqdn string, policyI
 	}
 	progressNoteFrom(ctx)(fmt.Sprintf("%d log messages in the window", totalMessages), 0, 0)
 
-	// 1. Authoritative complete result without service grouping (so no messages are omitted)
-	var tupleWarnings []string
-	tuples, tupleWarnings, err = e.aggregateTuples(ctx, query, tr, false, report)
-	if err != nil {
-		return nil, 0, nil, vdDropped, err
+	// Two independent aggregation rounds run concurrently: (1) the
+	// authoritative tuple set without service grouping (so no message is
+	// omitted), and (2) the service-grouped set used only to decorate service
+	// names. They share one chunk-concurrency semaphore, so peak Graylog load
+	// stays at chunkConcurrency even though the rounds overlap — this roughly
+	// halves wall time on long windows versus running them back-to-back.
+	sem := make(chan struct{}, chunkConcurrency)
+	cctx := withChunkSem(ctx, sem)
+	var (
+		tupleWarnings, svcWarnings []string
+		svcTuples                  []TrafficTuple
+		tupleErr, svcErr           error
+		wg                         sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		tuples, tupleWarnings, tupleErr = e.aggregateTuples(cctx, query, tr, false, report)
+	}()
+	go func() {
+		defer wg.Done()
+		svcTuples, svcWarnings, svcErr = e.aggregateTuples(cctx, query, tr, true, report)
+	}()
+	wg.Wait()
+
+	// 1. The authoritative round must succeed.
+	if tupleErr != nil {
+		return nil, 0, nil, vdDropped, tupleErr
 	}
 	warnings = append(warnings, tupleWarnings...)
 
-	// 2. Separate query with service grouping to get service names
-	svcTuples, svcWarnings, err := e.aggregateTuples(ctx, query, tr, true, report)
+	// 2. Service-name decoration is best-effort.
+	err = svcErr
 	if err != nil {
 		e.logger.Warn("polsplit: service-present aggregation failed, using no-service results only", "err", err)
 		warnings = append(warnings, "service-name aggregation failed — traffic tuples are complete but shown without FortiOS service names: "+err.Error())

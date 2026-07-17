@@ -69,7 +69,7 @@ func validatePortRange(s string) error {
 func hasControlOrQuote(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == '"' || c == '\'' || c == '`' || c == '\r' || c == '\n' || c < 32 || c == 127 {
+		if c == '"' || c == '\'' || c == '`' || c == '\\' || c == '\r' || c == '\n' || c < 32 || c == 127 {
 			return true
 		}
 	}
@@ -231,7 +231,7 @@ func GenerateOutput2(p Policy) (string, error) {
 		}
 	}
 	if len(filteredServices) == 0 {
-		return "No services defined for this policy.", nil
+		return "", fmt.Errorf("no services defined for this policy")
 	}
 	var sb strings.Builder
 	for _, svc := range filteredServices {

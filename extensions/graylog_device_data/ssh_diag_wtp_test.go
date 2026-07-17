@@ -18,7 +18,7 @@ const wtpStatusFixture = `WTP: AP TEST ONE  0-10.0.0.11:5246
   LLDP               : enabled (total 1)
     local port       : lan1
     chassis id       : mac 00:11:22:CC:DD:01
-    sys name         : EX-TESTSW01
+    sys name         : FSW-FLOOR1-SW01
     sys description  : FortiSwitch-424E-POE v7.6.6
     capability       : Bridge Router
     port id          : port5
@@ -37,7 +37,7 @@ WTP: AP TEST TWO  0-10.0.0.12:5246
   LLDP               : enabled (total 1)
     local port       : lan1
     chassis id       : mac 00:11:22:CC:DD:02
-    sys name         : EX-TESTSW02
+    sys name         : FSW-FLOOR2-SW02
     port id          : port12 (ifname)
     port description : FortiAP-TEST-TWO
   Radio 1            : AP
@@ -67,7 +67,7 @@ func TestParseWtpStatus(t *testing.T) {
 	if !ok {
 		t.Fatal("AP one missing")
 	}
-	if one.Name != "AP TEST ONE" || one.Switch != "EX-TESTSW01" || one.Port != "port5" {
+	if one.Name != "AP TEST ONE" || one.Switch != "FSW-FLOOR1-SW01" || one.Port != "port5" {
 		t.Errorf("AP one: name=%q switch=%q port=%q", one.Name, one.Switch, one.Port)
 	}
 	if one.BoardMac != "00:11:22:aa:bb:01" { // lowercased
@@ -78,8 +78,8 @@ func TestParseWtpStatus(t *testing.T) {
 	}
 
 	two := byId["FP000FTEST0000002"]
-	if two.Switch != "EX-TESTSW02" || two.Port != "port12" { // "(ifname)" suffix stripped
-		t.Errorf("AP two: switch=%q port=%q (want EX-TESTSW02/port12)", two.Switch, two.Port)
+	if two.Switch != "FSW-FLOOR2-SW02" || two.Port != "port12" { // "(ifname)" suffix stripped
+		t.Errorf("AP two: switch=%q port=%q (want FSW-FLOOR2-SW02/port12)", two.Switch, two.Port)
 	}
 
 	// LLDP-disabled AP is still inventoried (serial present) but has no location.

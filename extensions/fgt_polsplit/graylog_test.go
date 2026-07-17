@@ -1,9 +1,118 @@
 package fgt_polsplit
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
+
+// newStubExtension wires an Extension to a fake Graylog that answers
+// /api/search/aggregate with handler-produced rows.
+func newStubExtension(t *testing.T, handler http.HandlerFunc) *Extension {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return &Extension{
+		cfg:          &config.Config{GraylogURL: srv.URL, GraylogToken: "tok"},
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		progressByID: map[string]*progressState{},
+	}
+}
+
+// aggResponse builds one Graylog aggregate response with the tuple schema and
+// the given (srcip,dstip,proto,dstport,count,latest) rows.
+func aggResponse(rows [][]any) []byte {
+	body := map[string]any{
+		"schema": []map[string]any{
+			{"column_type": "grouping", "field": "srcip"},
+			{"column_type": "grouping", "field": "dstip"},
+			{"column_type": "grouping", "field": "proto"},
+			{"column_type": "grouping", "field": "dstport"},
+			{"column_type": "metric", "function": "count"},
+			{"column_type": "metric", "function": "latest"},
+		},
+		"datarows": rows,
+	}
+	b, _ := json.Marshal(body)
+	return b
+}
+
+// TestRunChunksConcurrentMerge: every sub-window is queried, results merge by
+// (src,dst,proto,port) summing hits, and concurrency stays within the bound.
+func TestRunChunksConcurrentMerge(t *testing.T) {
+	var inFlight, maxInFlight, calls int32
+	e := newStubExtension(t, func(w http.ResponseWriter, r *http.Request) {
+		cur := atomic.AddInt32(&inFlight, 1)
+		for {
+			m := atomic.LoadInt32(&maxInFlight)
+			if cur <= m || atomic.CompareAndSwapInt32(&maxInFlight, m, cur) {
+				break
+			}
+		}
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(15 * time.Millisecond) // widen the concurrency window
+		atomic.AddInt32(&inFlight, -1)
+		// Every chunk reports the same flow, so hits must sum across chunks.
+		_, _ = w.Write(aggResponse([][]any{
+			{"10.0.0.1", "10.9.9.9", "6", "443", float64(2), "2026-07-17T00:00:00.000Z"},
+		}))
+	})
+
+	chunks := make([]timeRange, 12)
+	for i := range chunks {
+		chunks[i] = timeRange{From: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i), To: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i+1)}
+	}
+	out, err := e.runChunks(context.Background(), aggregateRequest{}, chunks, "test")
+	if err != nil {
+		t.Fatalf("runChunks: %v", err)
+	}
+	if calls != 12 {
+		t.Errorf("expected 12 sub-window calls, got %d", calls)
+	}
+	if len(out) != 1 || out[0].Hits != 24 { // 12 chunks × 2 hits
+		t.Errorf("merged tuples = %+v (want one tuple, 24 hits)", out)
+	}
+	if maxInFlight < 2 {
+		t.Errorf("expected concurrent execution, max in-flight was %d", maxInFlight)
+	}
+	if maxInFlight > chunkConcurrency {
+		t.Errorf("concurrency %d exceeded the bound %d", maxInFlight, chunkConcurrency)
+	}
+}
+
+// TestRunChunksFirstErrorCancels: one failing sub-window aborts the batch with
+// an error, and the failure stops further work.
+func TestRunChunksFirstErrorCancels(t *testing.T) {
+	var calls int32
+	e := newStubExtension(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		atomic.AddInt32(&calls, 1)
+		// Fail the sub-window covering hour 05.
+		if strings.Contains(string(body), "2026-07-17T05:00:00.000Z") {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+		_, _ = w.Write(aggResponse(nil))
+	})
+	chunks := make([]timeRange, 12)
+	for i := range chunks {
+		chunks[i] = timeRange{From: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i), To: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i+1)}
+	}
+	if _, err := e.runChunks(context.Background(), aggregateRequest{}, chunks, "test"); err == nil {
+		t.Fatal("expected an error from the failing sub-window")
+	}
+}
 
 // TestSplitTimeRange: chunked loading cuts windows into contiguous absolute
 // sub-windows — 1h steps, grown so long windows never exceed maxChunks calls.

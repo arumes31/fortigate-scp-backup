@@ -144,8 +144,8 @@ config system ha
     set monitor "wan1"
 end
 config wireless-controller vap
-    edit "corp_wifi"
-        set ssid "Corp WiFi"
+    edit "office_wifi"
+        set ssid "Office WiFi"
         set security wpa3-only-enterprise
         set vlanid 101
     next
@@ -156,7 +156,7 @@ config wireless-controller wtp-profile
             set type 231F
         end
         config radio-1
-            set vaps "corp_wifi"
+            set vaps "office_wifi"
         end
     next
 end
@@ -251,7 +251,7 @@ func TestParseConfigDataSections(t *testing.T) {
 		len(pc.HA.Monitor) != 1 || pc.HA.Monitor[0] != "wan1" {
 		t.Fatalf("ha wrong: %+v", pc.HA)
 	}
-	if len(pc.SSIDs) != 1 || pc.SSIDs[0].SSID != "Corp WiFi" || pc.SSIDs[0].VlanID != 101 ||
+	if len(pc.SSIDs) != 1 || pc.SSIDs[0].SSID != "Office WiFi" || pc.SSIDs[0].VlanID != 101 ||
 		pc.SSIDs[0].Security != "wpa3-only-enterprise" {
 		t.Fatalf("ssids wrong: %+v", pc.SSIDs)
 	}
@@ -259,7 +259,7 @@ func TestParseConfigDataSections(t *testing.T) {
 		t.Fatalf("aps wrong: %+v", pc.APs)
 	}
 	ap := pc.APs[0]
-	if ap.Name != "AP Office" || ap.Platform != "231F" || len(ap.SSIDs) != 1 || ap.SSIDs[0] != "corp_wifi" {
+	if ap.Name != "AP Office" || ap.Platform != "231F" || len(ap.SSIDs) != 1 || ap.SSIDs[0] != "office_wifi" {
 		t.Fatalf("ap fields wrong: %+v", ap)
 	}
 }

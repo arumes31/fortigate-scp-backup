@@ -131,7 +131,7 @@ function newProgressId() {
 // completed stages count fully, the current stage by its sub-fraction.
 function progressPct(p) {
     if (!p || !(p.total > 0)) return 0;
-    const frac = p.sub_total > 0 ? Math.min(p.sub / p.sub_total, 1) : 1;
+    const frac = p.sub_total > 0 ? Math.min(p.sub / p.sub_total, 1) : 0;
     const pct = Math.round(100 * (Math.max(p.step - 1, 0) + frac) / p.total);
     return Math.max(0, Math.min(100, pct));
 }
@@ -176,6 +176,10 @@ function hideProgress() {
     $('ps-progress-bar').style.width = '0%';
 }
 
+function clearResults() {
+    $('ps-results').hidden = true;
+}
+
 async function analyze() {
     if (!psState.policyLoaded) { alert('Load a policy first'); return; }
     let range;
@@ -218,6 +222,9 @@ async function analyze() {
     logEl.innerHTML = '';
     logEl.hidden = false;
     renderProgress(prog);
+    // Clear any previous results so stale recommendations cannot persist if
+    // this analysis fails or is cancelled.
+    clearResults();
     // Spinner + elapsed tick between polls (skipped for reduced-motion users;
     // the meta line still refreshes with every poll).
     const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -280,9 +287,9 @@ function renderResults(data) {
 
     // stats
     const tuples = data.tuples || [];
-    const srcs = new Set(tuples.map(t => t.srcip)).size;
-    const dsts = new Set(tuples.map(t => t.dstip)).size;
-    const svcs = new Set(tuples.map(t => t.proto + '/' + t.port)).size;
+    const srcs = data.src_count !== undefined ? data.src_count : new Set(tuples.map(t => t.srcip)).size;
+    const dsts = data.dst_count !== undefined ? data.dst_count : new Set(tuples.map(t => t.dstip)).size;
+    const svcs = data.svc_count !== undefined ? data.svc_count : new Set(tuples.map(t => t.proto + '/' + t.port)).size;
     $('ps-stats').innerHTML = [
         ['Log messages', data.total_messages],
         ['Traffic tuples', data.tuple_count],
