@@ -59,13 +59,21 @@ function initSearchableSelect(selectElement, options = {}) {
     dropdown.setAttribute('role', 'listbox');
     wrapper.appendChild(dropdown);
 
-    // Store original options from the select element
-    const originalOptions = Array.from(selectElement.options).map(opt => ({
-        value: opt.value,
-        text: opt.text,
-        selected: opt.selected,
-        optgroup: opt.closest('optgroup') ? opt.closest('optgroup').label : null
-    }));
+    // Snapshot of the native select's options, refreshed before renders and
+    // external change handling so options added, removed or relabeled after
+    // init are reflected. The native select stays authoritative for the
+    // selection (selectOption writes selectElement.value), so a refresh
+    // re-derives `selected` without losing it.
+    let originalOptions = [];
+    function refreshOptions() {
+        originalOptions = Array.from(selectElement.options).map(opt => ({
+            value: opt.value,
+            text: opt.text,
+            selected: opt.selected,
+            optgroup: opt.closest('optgroup') ? opt.closest('optgroup').label : null
+        }));
+    }
+    refreshOptions();
 
     let highlightedElement = null;
 
@@ -86,6 +94,7 @@ function initSearchableSelect(selectElement, options = {}) {
 
     // Render dropdown options based on filter
     function renderDropdown(filter = '') {
+        refreshOptions();
         dropdown.innerHTML = '';
         const filteredOptions = originalOptions.filter(opt => 
             opt.text.toLowerCase().includes(filter.toLowerCase())
@@ -273,6 +282,7 @@ function initSearchableSelect(selectElement, options = {}) {
 
     // Handle select change from external sources
     selectElement.addEventListener('change', () => {
+        refreshOptions();
         const selected = originalOptions.find(opt => opt.value === selectElement.value);
         comboInput.value = selected ? selected.text : '';
         originalOptions.forEach(opt => opt.selected = opt.value === selectElement.value);
