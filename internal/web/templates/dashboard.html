@@ -189,6 +189,15 @@
         }).join('');
     }
 
+    // While anything is running, poll faster than the configured auto-refresh:
+    // a polsplit analysis or manual topology fetch often finishes inside one
+    // 30s tick and would otherwise never appear on the card.
+    var runningPollTimer = null;
+    function scheduleRunningPoll(active) {
+        clearTimeout(runningPollTimer); runningPollTimer = null;
+        if (active) { runningPollTimer = setTimeout(refreshStats, 5000); }
+    }
+
     function refreshStats() {
         fetch('/dashboard/stats', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { if (!r.ok) { throw new Error('bad'); } return r.json(); })
@@ -204,9 +213,16 @@
                 var nb = document.getElementById('nextBackup'); if (nb) { nb.dataset.next = d.nextBackup || ''; }
                 var ca = document.getElementById('clusterAlert'); if (ca) { ca.hidden = !d.clusterAlert; }
                 renderRunning(d.running);
+                scheduleRunningPoll(d.running && d.running.length > 0);
             })
             .catch(function () {});
     }
+
+    // Coming back to the tab refreshes immediately — the card may be minutes
+    // stale after a background stay, whatever the auto-refresh setting.
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') { refreshStats(); }
+    });
 
     // "Next Backup" live countdown.
     function fmtCountdown(ms) {

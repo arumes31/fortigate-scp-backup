@@ -38,18 +38,46 @@ func (e *Extension) trackRunning(kind string, fwID int) func() {
 	}
 }
 
+// liveWindow is how long after the last live topology poll a firewall still
+// counts as being watched live. The topology page polls every ~60s while its
+// "Live" mode is on, so a missed beat keeps the row and a stopped/expired
+// live mode drops it within two minutes.
+const liveWindow = 2 * time.Minute
+
+// liveState tracks one firewall's live-mode polling for the dashboard row:
+// when the current live session began and when it last polled.
+type liveState struct {
+	started, last time.Time
+}
+
+// markLive records a live topology poll (the ?range= short-window refresh)
+// so the dashboard can show a persistent "live view" row between polls.
+func (e *Extension) markLive(fwID int) {
+	now := time.Now()
+	e.runningMu.Lock()
+	if e.liveByFw == nil {
+		e.liveByFw = map[int]*liveState{}
+	}
+	if st := e.liveByFw[fwID]; st != nil && now.Sub(st.last) <= liveWindow {
+		st.last = now
+	} else {
+		e.liveByFw[fwID] = &liveState{started: now, last: now}
+	}
+	e.runningMu.Unlock()
+}
+
 // RunningFetch is one in-flight operation, projected for the core dashboard's
-// "currently running" card: a Graylog device-data refresh or a live SSH
-// diagnostics collection.
+// "currently running" card: a Graylog device-data refresh, a live SSH
+// diagnostics collection, or an active topology live view.
 type RunningFetch struct {
-	Kind    string // "devicedata" | "sshdiag"
+	Kind    string // "devicedata" | "sshdiag" | "live"
 	FwID    int
 	Started time.Time
 }
 
-// RunningFetches returns the currently running device-data refreshes and SSH
-// diagnostics runs (empty when the extension is disabled or idle), newest
-// first.
+// RunningFetches returns the currently running device-data refreshes, SSH
+// diagnostics runs and active live views (empty when the extension is
+// disabled or idle), newest first.
 func RunningFetches() []RunningFetch {
 	e := liveExt.Load()
 	if e == nil {
@@ -57,9 +85,17 @@ func RunningFetches() []RunningFetch {
 	}
 	e.runningMu.Lock()
 	defer e.runningMu.Unlock()
-	out := make([]RunningFetch, 0, len(e.running))
+	out := make([]RunningFetch, 0, len(e.running)+len(e.liveByFw))
 	for _, r := range e.running {
 		out = append(out, RunningFetch{Kind: r.kind, FwID: r.fwID, Started: r.started})
+	}
+	now := time.Now()
+	for fwID, st := range e.liveByFw {
+		if now.Sub(st.last) > liveWindow {
+			delete(e.liveByFw, fwID) // live mode stopped or expired
+			continue
+		}
+		out = append(out, RunningFetch{Kind: "live", FwID: fwID, Started: st.started})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Started.After(out[j].Started) })
 	return out

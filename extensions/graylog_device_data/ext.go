@@ -48,10 +48,12 @@ type Extension struct {
 	diagMu        sync.Mutex
 	diagState     map[int]*diagRunState // fw_id → serial-execution state
 
-	// In-flight fetches, listed on the core dashboard (see running.go).
+	// In-flight fetches and active live views, listed on the core dashboard
+	// (see running.go).
 	runningMu  sync.Mutex
 	runningSeq int
 	running    map[int]runningEntry
+	liveByFw   map[int]*liveState
 }
 
 // diagRunState is one firewall's SSH-collection state: a single-flight guard, a

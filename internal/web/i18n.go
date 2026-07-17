@@ -291,6 +291,7 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.running_analysis":   {"en": "Graylog analysis", "de": "Graylog-Analyse"},
 	"dashboard.running_devicedata": {"en": "Topology data refresh", "de": "Topologie-Daten-Update"},
 	"dashboard.running_sshdiag":    {"en": "SSH diagnostics", "de": "SSH-Diagnose"},
+	"dashboard.running_live":       {"en": "Live view", "de": "Live-Ansicht"},
 	"dashboard.running_audit":      {"en": "Audit scan", "de": "Audit-Scan"},
 
 	// Dashboard page (blocked switch ports card)

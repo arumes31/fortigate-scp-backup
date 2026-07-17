@@ -191,6 +191,9 @@ func (e *Extension) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// every ~minute and passes a small range so it scans only recent logs
 	// instead of the full configured window.
 	rangeSec := liveRangeParam(r.URL.Query().Get("range"))
+	if rangeSec != "" {
+		e.markLive(fwID) // an active live view, shown on the dashboard
+	}
 	if _, err := e.refreshFirewall(fwID, fqdn, rangeSec); err != nil {
 		e.logger.Error("graylog devices: refresh failed", "fw_id", fwID, "err", err)
 		http.Error(w, "graylog fetch failed", http.StatusBadGateway)
