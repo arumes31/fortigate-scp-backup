@@ -14,9 +14,9 @@ func TestIsValidTemplateName(t *testing.T) {
 	valid := []string{
 		"basic",
 		"with.dots-and_underscores",
-		"branch office",   // legacy: spaces were always accepted
+		"branch office",    // legacy: spaces were always accepted
 		"Zweigstelle Büro", // legacy: non-ASCII letters
-		"テンプレート",     // non-Latin scripts
+		"テンプレート",           // non-Latin scripts
 		"a (v2) [prod]!",
 		strings.Repeat("x", 128), // exactly at the length cap
 	}
@@ -28,16 +28,16 @@ func TestIsValidTemplateName(t *testing.T) {
 
 	invalid := []string{
 		"",
-		strings.Repeat("x", 129),  // over the length cap
-		"a/b",                     // path delimiter
-		"a?b",                     // query delimiter
-		"a#b",                     // fragment delimiter
-		"a%20b",                   // escape injection into stored URLs
-		`a"b`,                     // breaks quoted Content-Disposition
-		`a\b`,                     // escape in Content-Disposition
-		"a\x00b",                  // control character
-		"a\nb",                    // control character
-		"a\x7fb",                  // DEL
+		strings.Repeat("x", 129), // over the length cap
+		"a/b",                    // path delimiter
+		"a?b",                    // query delimiter
+		"a#b",                    // fragment delimiter
+		"a%20b",                  // escape injection into stored URLs
+		`a"b`,                    // breaks quoted Content-Disposition
+		`a\b`,                    // escape in Content-Disposition
+		"a\x00b",                 // control character
+		"a\nb",                   // control character
+		"a\x7fb",                 // DEL
 	}
 	for _, name := range invalid {
 		if isValidTemplateName(name) {
