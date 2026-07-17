@@ -176,9 +176,9 @@
         running.innerHTML = list.map(function (r) {
             var name = esc(r.fqdn || ('fw #' + r.fw_id));
             var what = '';
-            // Backups are the default row; every other kind gets a labeled pill
-            // (analysis, devicedata, sshdiag, audit — see dashboard.running_* keys).
-            if (r.kind && r.kind !== 'backup') {
+            // Every kind gets a labeled pill (backup, analysis, devicedata,
+            // sshdiag, audit — see the dashboard.running_* keys).
+            if (r.kind) {
                 what = ' <span class="pill">' + tt('dashboard.running_' + r.kind) +
                     (r.label ? ' · ' + esc(r.label) : '') + '</span>' +
                     (r.detail ? ' <span class="muted">' + esc(r.detail) + '</span>' : '');

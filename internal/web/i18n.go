@@ -287,6 +287,7 @@ var uiMsgs = map[string]map[string]string{
 	// Dashboard page (currently-running card)
 	"dashboard.running_title":      {"en": "Currently running", "de": "Läuft gerade"},
 	"dashboard.running_since":      {"en": "since", "de": "seit"},
+	"dashboard.running_backup":     {"en": "SSH backup", "de": "SSH-Backup"},
 	"dashboard.running_analysis":   {"en": "Graylog analysis", "de": "Graylog-Analyse"},
 	"dashboard.running_devicedata": {"en": "Topology data refresh", "de": "Topologie-Daten-Update"},
 	"dashboard.running_sshdiag":    {"en": "SSH diagnostics", "de": "SSH-Diagnose"},
