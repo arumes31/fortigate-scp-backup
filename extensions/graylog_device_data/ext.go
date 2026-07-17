@@ -50,10 +50,11 @@ type Extension struct {
 
 	// In-flight fetches and active live views, listed on the core dashboard
 	// (see running.go).
-	runningMu  sync.Mutex
-	runningSeq int
-	running    map[int]runningEntry
-	liveByFw   map[int]*liveState
+	runningMu   sync.Mutex
+	runningSeq  int
+	running     map[int]runningEntry
+	liveByFw    map[int]*liveState
+	broadcastOp func(kind string, fwID int, status string)
 }
 
 // diagRunState is one firewall's SSH-collection state: a single-flight guard, a
@@ -88,6 +89,7 @@ func (e *Extension) Enabled() bool { return e.cfg.ExtGraylogDeviceData }
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.broadcastOp = d.BroadcastOp
 	e.pool = d.DB
 	e.dataDir = d.DataDir
 	e.firewallCreds = d.FirewallCreds

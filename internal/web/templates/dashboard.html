@@ -275,8 +275,11 @@
         es.onmessage = function (e) {
             try {
                 var d = JSON.parse(e.data);
-                logLine(tt('dashboard.running_backup') + ' fw #' + d.fw_id + ' → ' + d.status);
-                if (typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
+                // Every event carries its operation kind; the label reuses the
+                // running-card pill names (dashboard.running_*).
+                var kind = d.kind || 'backup';
+                logLine(tt('dashboard.running_' + kind) + ' fw #' + d.fw_id + ' → ' + d.status);
+                if (kind === 'backup' && typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
                     toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
                 }
                 scheduleRefresh();

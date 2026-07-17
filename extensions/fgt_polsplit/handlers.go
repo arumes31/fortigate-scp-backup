@@ -519,6 +519,8 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	}
 	report := e.progressReporter(req.ProgressID, totalSteps, req.FwID, req.PolicyID)
 	defer e.progressDone(req.ProgressID)
+	e.broadcast("analysis", req.FwID, "started")
+	defer e.broadcast("analysis", req.FwID, "finished")
 	// Sub-stage notes (chunked-loading steps, message counts) travel via the
 	// context so the Graylog helpers can publish them without extra plumbing.
 	ctx := withProgressNote(r.Context(), e.progressNoter(req.ProgressID))

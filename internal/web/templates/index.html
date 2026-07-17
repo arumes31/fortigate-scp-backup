@@ -179,6 +179,10 @@
             es.onmessage = function (e) {
                 try {
                     var d = JSON.parse(e.data);
+                    // Only backup status changes drive the status pills; the
+                    // operation lifecycle events (analysis, sshdiag, …) would
+                    // otherwise overwrite a firewall's status with "started".
+                    if (d.kind && d.kind !== 'backup') { return; }
                     var row = table && table.querySelector('tr[data-fw="' + d.fw_id + '"]');
                     if (row) {
                         var cell = row.querySelector('.fw-status');

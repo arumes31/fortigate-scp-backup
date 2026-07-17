@@ -45,14 +45,19 @@ func (h *sseHub) unsubscribe(ch chan string) {
 	h.mu.Unlock()
 }
 
-func (h *sseHub) broadcast(fwID int, status string) {
+// broadcast fans one event out to every client. kind identifies the operation
+// ("backup" status changes, or an operation lifecycle event: "analysis",
+// "devicedata", "sshdiag", "audit", "live" with status "started"/"finished");
+// consumers that only care about backups filter on it.
+func (h *sseHub) broadcast(kind string, fwID int, status string) {
 	// Marshal via encoding/json: fmt %q produces Go quoting (\xNN for control
 	// or invalid-UTF-8 bytes) which is not valid JSON and makes the browser's
 	// JSON.parse throw, silently dropping the status update.
 	payload, err := json.Marshal(struct {
+		Kind   string `json:"kind"`
 		FwID   int    `json:"fw_id"`
 		Status string `json:"status"`
-	}{FwID: fwID, Status: status})
+	}{Kind: kind, FwID: fwID, Status: status})
 	if err != nil {
 		return
 	}

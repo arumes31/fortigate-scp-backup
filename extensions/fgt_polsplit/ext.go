@@ -34,10 +34,19 @@ type Extension struct {
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+	broadcastOp func(kind string, fwID int, status string)
 
 	// Live progress of running analyses, polled by the UI (see progress.go).
 	progressMu   sync.Mutex
 	progressByID map[string]*progressState
+}
+
+// broadcast publishes an operation lifecycle event to the core SSE stream
+// (no-op when the host did not wire the hook).
+func (e *Extension) broadcast(kind string, fwID int, status string) {
+	if e.broadcastOp != nil {
+		e.broadcastOp(kind, fwID, status)
+	}
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
@@ -53,6 +62,7 @@ func (e *Extension) Enabled() bool { return e.cfg.ExtFgtPolSplit }
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.broadcastOp = d.BroadcastOp
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.dataDir = d.DataDir

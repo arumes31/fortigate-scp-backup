@@ -148,6 +148,7 @@ func main() {
 		LogActivity:   store.LogActivity,
 		LoginRequired: sess.LoginRequired,
 		CurrentUser:   func(r *http.Request) string { return sess.User(r).Username },
+		BroadcastOp:   srv.BroadcastOp,
 		Logger:        logger,
 		TZ:            cfg.TZ,
 		DataDir:       cfg.DataDir,

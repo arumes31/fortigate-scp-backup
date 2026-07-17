@@ -122,10 +122,19 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 // On a successful backup it also pre-warms the audit cache in the background so
 // the audit and topology pages stay instant.
 func (s *Server) BroadcastStatus(fwID int, status string) {
-	s.hub.broadcast(fwID, status)
+	s.hub.broadcast("backup", fwID, status)
 	if status == "Success" {
 		go s.WarmAuditCache(fwID)
 	}
+}
+
+// BroadcastOp pushes an operation lifecycle event (kind: "analysis",
+// "devicedata", "sshdiag", "audit", "live"; status: "started"/"finished") to
+// connected SSE clients. The dashboard prints these to the SYS_STDOUT panel
+// and refreshes the currently-running card; extensions publish through the
+// extension.Deps.BroadcastOp hook.
+func (s *Server) BroadcastOp(kind string, fwID int, status string) {
+	s.hub.broadcast(kind, fwID, status)
 }
 
 // Shutdown releases resources that would otherwise keep the process alive

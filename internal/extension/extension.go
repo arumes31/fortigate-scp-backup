@@ -30,6 +30,11 @@ type Deps struct {
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.
 	FirewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
+	// BroadcastOp publishes an operation lifecycle event to the core's SSE
+	// stream (kind e.g. "analysis"/"devicedata"/"sshdiag"/"live", status
+	// "started"/"finished") so dashboards log and refresh live. nil when the
+	// host did not wire it.
+	BroadcastOp func(kind string, fwID int, status string)
 	// Logger is the process logger.
 	Logger *slog.Logger
 	// TZ is the configured timezone.
