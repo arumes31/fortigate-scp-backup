@@ -52,7 +52,7 @@ type Extension struct {
 	// (see running.go).
 	runningMu   sync.Mutex
 	runningSeq  int
-	running     map[int]runningEntry
+	running     map[int]*runningEntry
 	liveByFw    map[int]*liveState
 	broadcastOp func(kind string, fwID int, status string)
 }

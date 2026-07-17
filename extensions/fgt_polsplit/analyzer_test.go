@@ -281,6 +281,32 @@ func TestAnalyzeWANAsAll(t *testing.T) {
 	}
 }
 
+// TestPreprocessMixedScanTail: one busy established port must not drag an
+// otherwise low-hit probe tail into the ALL-TCP ceiling — the tail is dropped
+// as scan noise while the busy port survives explicitly (no 1-65535 widening).
+func TestPreprocessMixedScanTail(t *testing.T) {
+	tuples := []TrafficTuple{tup("10.0.0.1", "10.9.9.9", "tcp", 443, "HTTPS", 5000)}
+	for p := 2000; p < 2099; p++ {
+		tuples = append(tuples, tup("10.0.0.1", "10.9.9.9", "tcp", p, "", 1))
+	}
+	out, warnings := preprocessPairs(tuples)
+	if len(out) != 1 || out[0].Port != 443 || out[0].PortEnd != 0 {
+		t.Fatalf("want only the busy tcp/443 tuple to survive, got %d tuples: %+v", len(out), out)
+	}
+	foundScan := false
+	for _, w := range warnings {
+		if strings.Contains(w, "port scan") {
+			foundScan = true
+		}
+		if strings.Contains(w, "1-65535") {
+			t.Errorf("mixed pair must not collapse to a full range: %v", warnings)
+		}
+	}
+	if !foundScan {
+		t.Errorf("expected a port-scan warning, got %v", warnings)
+	}
+}
+
 // TestWANAsAllNonPublicRanges: degenerate/non-unicast destinations
 // (this-network, multicast, reserved incl. broadcast) are NOT routable
 // internet destinations and must not collapse to "all".

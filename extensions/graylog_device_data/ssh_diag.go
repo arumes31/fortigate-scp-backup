@@ -180,14 +180,15 @@ func (e *Extension) poeCapableSwitches(fwID int) map[string]bool {
 // wedging this firewall's collector. A recovered panic is surfaced as an error
 // so the caller resets the static-tier timer and retries next sweep.
 func (e *Extension) collectDiagSafe(fwID int, withStatic bool) (err error) {
-	defer e.trackRunning("sshdiag", fwID)()
+	progress, done := e.trackRunning("sshdiag", fwID)
+	defer done()
 	defer func() {
 		if rec := recover(); rec != nil {
 			e.logger.Error("fgt ssh diagnostics panicked", "fw_id", fwID, "panic", rec)
 			err = fmt.Errorf("panic: %v", rec)
 		}
 	}()
-	return e.collectDiag(fwID, withStatic)
+	return e.collectDiag(fwID, withStatic, progress)
 }
 
 // collectDiag opens one SSH session to the firewall, enumerates its managed
@@ -195,8 +196,13 @@ func (e *Extension) collectDiagSafe(fwID int, withStatic bool) (err error) {
 // the result. withStatic includes the slow-changing tier (media/optics/LLDP/
 // congestion); live-only sweeps skip it and rely on the stored values, so a large
 // fabric is not re-walked for static facts every poll. Credentials come from the
-// host (decrypted) via FirewallCreds.
-func (e *Extension) collectDiag(fwID int, withStatic bool) error {
+// host (decrypted) via FirewallCreds. progress publishes the current stage
+// (connect, then per-switch counters) for the dashboard's running card.
+func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail string, step, total int)) error {
+	if progress == nil {
+		progress = func(string, int, int) {}
+	}
+	progress("connecting via SSH", 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	host, user, pass, port, err := e.firewallCreds(ctx, fwID)
 	cancel()
@@ -236,7 +242,8 @@ func (e *Extension) collectDiag(fwID int, withStatic bool) error {
 	var storeErr error
 	runErr := runSSHShell(client, overall, func(run func(string) string) {
 		inv := parseSwitchInventory(run(base + "status"))
-		for _, sw := range inv {
+		for swIdx, sw := range inv {
+			progress(fmt.Sprintf("switch %s", sw.Name), swIdx+1, len(inv))
 			portStats := run(base + "port-stats " + sw.Name)
 			stp := run(base + "stp " + sw.Name)
 			dot1x := run(base + "802.1X " + sw.Name)
@@ -577,7 +584,9 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 		st.busy = false
 		e.diagMu.Unlock()
 	}()
-	defer e.trackRunning("sshdiag", fwID)()
+	progress, done := e.trackRunning("sshdiag", fwID)
+	defer done()
+	progress(fmt.Sprintf("port diagnostics %s / %s", sw, port), 0, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	host, user, pass, prt, err := e.firewallCreds(ctx, fwID)

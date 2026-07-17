@@ -124,6 +124,7 @@ func (s *Service) backup(fwID int) {
 		s.logger.Debug("Starting backup attempt",
 			"fw_id", fwID, "fqdn", fw.FQDN, "port", fw.SSHPort, "attempt", attempt, "retries", retries)
 
+		s.setStage(fwID, fmt.Sprintf("downloading configuration (attempt %d/%d)", attempt, retries))
 		if tErr := s.transfer(fw.FQDN, fw.Username, fw.Password, fw.SSHPort, s.cfg.FortigateConfigPath, localPath, s.cfg.SCPTimeout); tErr != nil {
 			s.logger.Error("Backup attempt failed", "attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", tErr)
 			// Always discard a partially written config before retrying or failing,
@@ -156,6 +157,7 @@ func (s *Service) backup(fwID int) {
 		}
 
 		// Compute size/checksum on the plaintext config, then encrypt at rest.
+		s.setStage(fwID, "verifying & encrypting")
 		size, checksum, finErr := s.finalizeFile(localPath)
 		if finErr != nil {
 			status = "Failed: " + finErr.Error()
@@ -163,6 +165,7 @@ func (s *Service) backup(fwID int) {
 			break
 		}
 
+		s.setStage(fwID, "storing & pruning retention")
 		if dbErr := s.recordSuccess(fwID, fw.RetentionCount, now, dbFilename, fwDir, size, checksum); dbErr != nil {
 			status = "Failed: " + dbErr.Error()
 			removeIfEmpty(localPath)

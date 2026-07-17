@@ -11,11 +11,16 @@ import (
 // (the same pattern as fgt_polsplit's RunningAnalyses).
 var liveExt atomic.Pointer[Extension]
 
-// runningEntry is one in-flight operation tracked for the dashboard.
+// runningEntry is one in-flight operation tracked for the dashboard, with an
+// optional live sub-stage (detail + step counters) published via the note
+// function trackRunning returns.
 type runningEntry struct {
 	kind    string // "devicedata" | "sshdiag"
 	fwID    int
 	started time.Time
+	detail  string
+	step    int
+	total   int
 }
 
 // broadcast publishes an operation lifecycle event to the core SSE stream
@@ -26,27 +31,36 @@ func (e *Extension) broadcast(kind string, fwID int, status string) {
 	}
 }
 
-// trackRunning registers an in-flight operation and returns the function that
-// removes it again (deferred by the caller). Entries are keyed by a sequence
-// number, so concurrent operations of the same kind on the same firewall
-// (e.g. a manual refresh racing the background sweep) never clobber each other.
-// Start and finish are also broadcast on the core SSE stream for SYS_STDOUT.
-func (e *Extension) trackRunning(kind string, fwID int) func() {
+// trackRunning registers an in-flight operation and returns a note function
+// (publishing the current sub-stage for the dashboard, pass 0,0 for text-only
+// notes) plus the removal function (deferred by the caller). Entries are
+// keyed by a sequence number, so concurrent operations of the same kind on
+// the same firewall (e.g. a manual refresh racing the background sweep)
+// never clobber each other. Start and finish are also broadcast on the core
+// SSE stream for SYS_STDOUT.
+func (e *Extension) trackRunning(kind string, fwID int) (note func(detail string, step, total int), done func()) {
 	e.runningMu.Lock()
 	e.runningSeq++
 	id := e.runningSeq
 	if e.running == nil {
-		e.running = map[int]runningEntry{}
+		e.running = map[int]*runningEntry{}
 	}
-	e.running[id] = runningEntry{kind: kind, fwID: fwID, started: time.Now()}
+	ent := &runningEntry{kind: kind, fwID: fwID, started: time.Now()}
+	e.running[id] = ent
 	e.runningMu.Unlock()
 	e.broadcast(kind, fwID, "started")
-	return func() {
+	note = func(detail string, step, total int) {
+		e.runningMu.Lock()
+		ent.detail, ent.step, ent.total = detail, step, total
+		e.runningMu.Unlock()
+	}
+	done = func() {
 		e.runningMu.Lock()
 		delete(e.running, id)
 		e.runningMu.Unlock()
 		e.broadcast(kind, fwID, "finished")
 	}
+	return note, done
 }
 
 // liveWindow is how long after the last live topology poll a firewall still
@@ -90,6 +104,9 @@ type RunningFetch struct {
 	Kind    string // "devicedata" | "sshdiag" | "live"
 	FwID    int
 	Started time.Time
+	Detail  string // current sub-stage ("STP / guard states", "switch 2/5: SW1")
+	Step    int    // 0 when the stage has no counter
+	Total   int
 }
 
 // RunningFetches returns the currently running device-data refreshes, SSH
@@ -103,7 +120,8 @@ func RunningFetches() []RunningFetch {
 	e.runningMu.Lock()
 	out := make([]RunningFetch, 0, len(e.running)+len(e.liveByFw))
 	for _, r := range e.running {
-		out = append(out, RunningFetch{Kind: r.kind, FwID: r.fwID, Started: r.started})
+		out = append(out, RunningFetch{Kind: r.kind, FwID: r.fwID, Started: r.started,
+			Detail: r.detail, Step: r.step, Total: r.total})
 	}
 	now := time.Now()
 	var liveEnded []int

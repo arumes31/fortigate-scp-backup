@@ -51,7 +51,10 @@ func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error) { re
 func (fakeStore) DeleteFirewall(context.Context, int) (string, error)       { return "", nil }
 func (fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return nil, nil }
 func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)     { return nil, nil }
-func (fakeStore) CountActivityLogs(context.Context) (int, error)            { return 0, nil }
+func (fakeStore) LastBackupTimes(context.Context) (map[int]time.Time, error) {
+	return map[int]time.Time{}, nil
+}
+func (fakeStore) CountActivityLogs(context.Context) (int, error) { return 0, nil }
 func (fakeStore) DashboardStats(context.Context) (models.DashboardStats, error) {
 	return models.DashboardStats{}, nil
 }
@@ -655,6 +658,48 @@ func TestDashboardStatsJSON(t *testing.T) {
 		if _, ok := m[k]; !ok {
 			t.Errorf("stats JSON missing key %q", k)
 		}
+	}
+}
+
+func TestDashboardRenders(t *testing.T) {
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.handleDashboard(rr, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	// Template must execute end-to-end (not just parse) with the new fields.
+	if body := rr.Body.String(); !strings.Contains(body, "Failing Firewalls") || !strings.Contains(body, "SYS_STDOUT") {
+		t.Error("dashboard missing expected sections")
+	}
+}
+
+// TestComputeStale: a firewall whose last success is far past 2× its cadence is
+// flagged, while a fresh one, a currently-failing one, and a never-backed-up
+// one are not.
+func TestComputeStale(t *testing.T) {
+	srv := testServer(t)
+	now := time.Now()
+	fws := []models.Firewall{
+		{ID: 1, FQDN: "stale.example", IntervalMin: 60},  // hourly, last success 5h ago → stale
+		{ID: 2, FQDN: "fresh.example", IntervalMin: 60},  // hourly, last success 30m ago → ok
+		{ID: 3, FQDN: "failed.example", IntervalMin: 60}, // old success but already Failed → excluded
+		{ID: 4, FQDN: "never.example", IntervalMin: 60},  // never backed up → excluded
+		{ID: 5, FQDN: "noched.example", IntervalMin: 0},  // no schedule → cannot judge → excluded
+	}
+	lastSuccess := map[int]time.Time{
+		1: now.Add(-5 * time.Hour),
+		2: now.Add(-30 * time.Minute),
+		3: now.Add(-10 * 24 * time.Hour),
+		5: now.Add(-10 * 24 * time.Hour),
+	}
+	failedSet := map[int]bool{3: true}
+	stale := srv.computeStale(fws, lastSuccess, failedSet)
+	if len(stale) != 1 || stale[0].ID != 1 {
+		t.Fatalf("want only fw 1 stale, got %+v", stale)
+	}
+	if stale[0].AgeHours != 5 {
+		t.Errorf("age = %dh, want 5h", stale[0].AgeHours)
 	}
 }
 

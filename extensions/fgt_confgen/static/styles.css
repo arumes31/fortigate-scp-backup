@@ -294,3 +294,8 @@ select:focus {
     background-color: var(--accent);
     color: var(--text);
 }
+
+.searchable-select-option.disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}

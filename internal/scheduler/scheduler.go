@@ -21,6 +21,10 @@ type JobInfo struct {
 	LastRun time.Time
 	NextRun time.Time
 	Cron    string
+	// Interval is the job's cadence: the configured interval for interval
+	// jobs, or the gap between the next two activations for cron jobs (0 when
+	// it cannot be determined). Callers use it to judge backup staleness.
+	Interval time.Duration
 }
 
 type job struct {
@@ -51,7 +55,15 @@ func (j *job) markRun(now time.Time) {
 func (j *job) info() JobInfo {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return JobInfo{ID: j.id, LastRun: j.lastRun, NextRun: j.nextRun, Cron: j.cronExpr}
+	interval := j.interval
+	if j.schedule != nil {
+		// Cron cadence: the gap between the next two activations from now.
+		n1 := j.schedule.Next(time.Now())
+		if n2 := j.schedule.Next(n1); !n2.IsZero() && !n1.IsZero() {
+			interval = n2.Sub(n1)
+		}
+	}
+	return JobInfo{ID: j.id, LastRun: j.lastRun, NextRun: j.nextRun, Cron: j.cronExpr, Interval: interval}
 }
 
 // Scheduler owns the set of recurring jobs.

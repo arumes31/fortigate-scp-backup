@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -13,13 +14,18 @@ var (
 
 // validatePortRange checks that s is a comma-separated list of ports or
 // port ranges (e.g. "80", "80,443", "1024-2048") where every port
-// number is between 1 and 65535 and range starts do not exceed ends.
-func validatePortRange(s string) error {
+// number is between 1 and 65535 and range starts do not exceed ends. It
+// returns the canonical FortiOS form — the validated components joined by
+// single spaces ("80 443 1024-2048"), which is the `set …-portrange` list
+// syntax — so callers emit that instead of the raw input (raw commas or
+// stray whitespace would be rejected by FortiOS).
+func validatePortRange(s string) (string, error) {
 	parts := strings.Split(s, ",")
+	canonical := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			return fmt.Errorf("empty component in port range: %q", s)
+			return "", fmt.Errorf("empty component in port range: %q", s)
 		}
 		if idx := strings.Index(part, "-"); idx >= 0 {
 			startStr := strings.TrimSpace(part[:idx])
@@ -28,42 +34,44 @@ func validatePortRange(s string) error {
 			// ("+80"), which passes the range check but is emitted verbatim
 			// into the CLI where FortiOS rejects it.
 			if !isNumericID(startStr) {
-				return fmt.Errorf("invalid port number %q in range %q", startStr, s)
+				return "", fmt.Errorf("invalid port number %q in range %q", startStr, s)
 			}
 			if !isNumericID(endStr) {
-				return fmt.Errorf("invalid port number %q in range %q", endStr, s)
+				return "", fmt.Errorf("invalid port number %q in range %q", endStr, s)
 			}
 			start, err := strconv.Atoi(startStr)
 			if err != nil {
-				return fmt.Errorf("invalid port number %q in range %q", startStr, s)
+				return "", fmt.Errorf("invalid port number %q in range %q", startStr, s)
 			}
 			end, err := strconv.Atoi(endStr)
 			if err != nil {
-				return fmt.Errorf("invalid port number %q in range %q", endStr, s)
+				return "", fmt.Errorf("invalid port number %q in range %q", endStr, s)
 			}
 			if start < 1 || start > 65535 {
-				return fmt.Errorf("port %d out of range (1-65535) in %q", start, s)
+				return "", fmt.Errorf("port %d out of range (1-65535) in %q", start, s)
 			}
 			if end < 1 || end > 65535 {
-				return fmt.Errorf("port %d out of range (1-65535) in %q", end, s)
+				return "", fmt.Errorf("port %d out of range (1-65535) in %q", end, s)
 			}
 			if start > end {
-				return fmt.Errorf("start port %d exceeds end port %d in %q", start, end, s)
+				return "", fmt.Errorf("start port %d exceeds end port %d in %q", start, end, s)
 			}
+			canonical = append(canonical, fmt.Sprintf("%d-%d", start, end))
 		} else {
 			if !isNumericID(part) {
-				return fmt.Errorf("invalid port number %q in %q", part, s)
+				return "", fmt.Errorf("invalid port number %q in %q", part, s)
 			}
 			port, err := strconv.Atoi(part)
 			if err != nil {
-				return fmt.Errorf("invalid port number %q in %q", part, s)
+				return "", fmt.Errorf("invalid port number %q in %q", part, s)
 			}
 			if port < 1 || port > 65535 {
-				return fmt.Errorf("port %d out of range (1-65535) in %q", port, s)
+				return "", fmt.Errorf("port %d out of range (1-65535) in %q", port, s)
 			}
+			canonical = append(canonical, strconv.Itoa(port))
 		}
 	}
-	return nil
+	return strings.Join(canonical, " "), nil
 }
 
 func hasControlOrQuote(s string) bool {
@@ -71,6 +79,19 @@ func hasControlOrQuote(s string) bool {
 		c := s[i]
 		if c == '"' || c == '\'' || c == '`' || c == '\\' || c == '\r' || c == '\n' || c < 32 || c == 127 {
 			return true
+		}
+	}
+	return false
+}
+
+// hasAnyEntry reports whether any of the lists carries a non-empty item (the
+// UI pads lists with blank rows that the generators skip).
+func hasAnyEntry(lists ...[]string) bool {
+	for _, list := range lists {
+		for _, item := range list {
+			if item != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -161,6 +182,21 @@ func validatePolicy(p Policy, services []Service) error {
 		return fmt.Errorf("invalid nat: %q", p.Nat)
 	}
 
+	// Address mode and Internet-Service (ISDB) mode are mutually exclusive per
+	// side on FortiOS: `set internet-service[-src] enable` conflicts with
+	// srcaddr/dstaddr on the same side.
+	if hasAnyEntry(p.SrcAddresses, p.SrcAddressGroups, p.SrcVIPs) && hasAnyEntry(p.SrcInternetServices) {
+		return fmt.Errorf("source addresses and source internet services are mutually exclusive")
+	}
+	if hasAnyEntry(p.DstAddresses, p.DstAddressGroups, p.DstVIPs) && hasAnyEntry(p.DstInternetServices) {
+		return fmt.Errorf("destination addresses and destination internet services are mutually exclusive")
+	}
+
+	// Track the service object names as they will be emitted (custom services
+	// get the custom_ prefix): duplicates — including a custom name colliding
+	// with an existing prefixed name — would emit conflicting object
+	// definitions and duplicate `set service` members, which FortiOS rejects.
+	seenNames := map[string]bool{}
 	for i, svc := range services {
 		if hasControlOrQuote(svc.Name) || hasControlOrQuote(svc.Type) || hasControlOrQuote(svc.Protocol) || hasControlOrQuote(svc.Port) {
 			return fmt.Errorf("invalid characters in service %q", svc.Name)
@@ -184,6 +220,16 @@ func validatePolicy(p Policy, services []Service) error {
 			return fmt.Errorf("invalid service type: %q", svc.Type)
 		}
 
+		emitted := svc.Name
+		if svc.Type == "custom" {
+			emitted = "custom_" + svc.Name
+		}
+		if key := strings.ToLower(emitted); seenNames[key] {
+			return fmt.Errorf("duplicate service name %q", emitted)
+		} else {
+			seenNames[key] = true
+		}
+
 		if svc.Type == "custom" {
 			protocol := strings.ToUpper(svc.Protocol)
 			if protocol != "TCP" && protocol != "UDP" && protocol != "SCTP" && protocol != "ICMP" {
@@ -199,9 +245,13 @@ func validatePolicy(p Policy, services []Service) error {
 					return fmt.Errorf("ICMP type out of range (0-255): %q", svc.Port)
 				}
 			} else {
-				if err := validatePortRange(svc.Port); err != nil {
+				canon, err := validatePortRange(svc.Port)
+				if err != nil {
 					return fmt.Errorf("invalid port range for service %q: %w", svc.Name, err)
 				}
+				// Emit the canonical space-joined FortiOS list instead of the
+				// raw comma-separated input.
+				services[i].Port = canon
 			}
 		}
 	}
@@ -215,14 +265,20 @@ func GenerateOutput1(p Policy) (string, error) {
 	if err := validatePolicy(p, p.Services); err != nil {
 		return "", err
 	}
-	return GenerateSinglePolicyCLI(p, p.PolicyName, p.Services)
+	return generateSinglePolicyCLI(p, p.PolicyName, p.Services)
 }
 
-// GenerateOutput2 generates one policy per service.
+// GenerateOutput2 generates one policy per service. Destination-ISDB policies
+// carry no service list (the Internet-Service object implies the service on
+// FortiOS), so there is no service dimension to split on — they emit the
+// single all-in-one policy instead.
 func GenerateOutput2(p Policy) (string, error) {
 	p = normalizePolicy(p)
 	if err := validatePolicy(p, p.Services); err != nil {
 		return "", err
+	}
+	if hasAnyEntry(p.DstInternetServices) {
+		return generateSinglePolicyCLI(p, p.PolicyName, nil)
 	}
 	var filteredServices []Service
 	for _, svc := range p.Services {
@@ -240,7 +296,7 @@ func GenerateOutput2(p Policy) (string, error) {
 			name = "custom_" + svc.Name
 		}
 		policyName := limitString(fmt.Sprintf("%s-%s", p.PolicyName, name), 32)
-		cli, err := GenerateSinglePolicyCLI(p, policyName, []Service{svc})
+		cli, err := generateSinglePolicyCLI(p, policyName, []Service{svc})
 		if err != nil {
 			return "", err
 		}
@@ -251,6 +307,8 @@ func GenerateOutput2(p Policy) (string, error) {
 }
 
 // GenerateOutput3 generates one policy per source interface, destination interface, and service combination.
+// Destination-ISDB policies have no service dimension, so they split on the
+// interface pairs only.
 func GenerateOutput3(p Policy) (string, error) {
 	p = normalizePolicy(p)
 	if err := validatePolicy(p, p.Services); err != nil {
@@ -281,13 +339,28 @@ func GenerateOutput3(p Policy) (string, error) {
 	if len(dstIntfs) == 0 {
 		return "", fmt.Errorf("no destination interfaces defined")
 	}
-	if len(filteredServices) == 0 {
+	dstISDBActive := hasAnyEntry(p.DstInternetServices)
+	if len(filteredServices) == 0 && !dstISDBActive {
 		return "", fmt.Errorf("no services defined")
 	}
 
 	var sb strings.Builder
 	for _, src := range srcIntfs {
 		for _, dst := range dstIntfs {
+			pCopy := p
+			pCopy.SrcInterfaces = []string{src}
+			pCopy.DstInterfaces = []string{dst}
+
+			if dstISDBActive {
+				policyName := limitString(fmt.Sprintf("%s-%s-%s", p.PolicyName, src, dst), 32)
+				cli, err := generateSinglePolicyCLI(pCopy, policyName, nil)
+				if err != nil {
+					return "", err
+				}
+				sb.WriteString(cli)
+				sb.WriteString("\n")
+				continue
+			}
 			for _, svc := range filteredServices {
 				name := svc.Name
 				if svc.Type == "custom" {
@@ -295,11 +368,7 @@ func GenerateOutput3(p Policy) (string, error) {
 				}
 				policyName := limitString(fmt.Sprintf("%s-%s-%s-%s", p.PolicyName, src, dst, name), 32)
 
-				pCopy := p
-				pCopy.SrcInterfaces = []string{src}
-				pCopy.DstInterfaces = []string{dst}
-
-				cli, err := GenerateSinglePolicyCLI(pCopy, policyName, []Service{svc})
+				cli, err := generateSinglePolicyCLI(pCopy, policyName, []Service{svc})
 				if err != nil {
 					return "", err
 				}
@@ -311,8 +380,11 @@ func GenerateOutput3(p Policy) (string, error) {
 	return sb.String(), nil
 }
 
-// GenerateSinglePolicyCLI generates the actual FortiGate config CLI commands.
-func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (string, error) {
+// generateSinglePolicyCLI generates the actual FortiGate config CLI commands.
+// It is deliberately unexported: every entry point (GenerateOutput1/2/3) runs
+// normalizePolicy + validatePolicy first, so no unvalidated input reaches the
+// CLI interpolation below.
+func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (string, error) {
 	// Normalize service types so case-insensitive comparisons work for
 	// callers that bypass validatePolicy (unlikely but defensive).
 	for i := range services {
@@ -402,25 +474,30 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	if !hasDstAddr && len(dstISDB) == 0 {
 		return "", fmt.Errorf("no destination addresses or internet services defined")
 	}
-	if len(filteredServices) == 0 {
+	// A destination-ISDB policy carries no service list on FortiOS — the
+	// Internet-Service object implies the matched service; `set service` would
+	// be rejected next to `set internet-service enable`.
+	if len(filteredServices) == 0 && len(dstISDB) == 0 {
 		return "", fmt.Errorf("no services defined")
 	}
 
 	var sb strings.Builder
 
-	for _, svc := range filteredServices {
-		if svc.Type == "custom" {
-			protocol := strings.ToUpper(svc.Protocol)
-			sb.WriteString("config firewall service custom\n")
-			fmt.Fprintf(&sb, "edit \"custom_%s\"\n", svc.Name)
-			if protocol == "ICMP" {
-				sb.WriteString("set protocol ICMP\n")
-				fmt.Fprintf(&sb, "set icmptype %s\n", svc.Port)
-			} else {
-				sb.WriteString("set protocol TCP/UDP/SCTP\n")
-				fmt.Fprintf(&sb, "set %s-portrange %s\n", strings.ToLower(protocol), svc.Port)
+	if len(dstISDB) == 0 {
+		for _, svc := range filteredServices {
+			if svc.Type == "custom" {
+				protocol := strings.ToUpper(svc.Protocol)
+				sb.WriteString("config firewall service custom\n")
+				fmt.Fprintf(&sb, "edit \"custom_%s\"\n", svc.Name)
+				if protocol == "ICMP" {
+					sb.WriteString("set protocol ICMP\n")
+					fmt.Fprintf(&sb, "set icmptype %s\n", svc.Port)
+				} else {
+					sb.WriteString("set protocol TCP/UDP/SCTP\n")
+					fmt.Fprintf(&sb, "set %s-portrange %s\n", strings.ToLower(protocol), svc.Port)
+				}
+				sb.WriteString("next\nend\n")
 			}
-			sb.WriteString("next\nend\n")
 		}
 	}
 
@@ -534,17 +611,19 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 		}
 	}
 
-	var svcsList []string
-	for _, svc := range filteredServices {
-		name := svc.Name
-		if svc.Type == "custom" {
-			name = "custom_" + svc.Name
+	if len(dstISDB) == 0 {
+		var svcsList []string
+		for _, svc := range filteredServices {
+			name := svc.Name
+			if svc.Type == "custom" {
+				name = "custom_" + svc.Name
+			}
+			if name != "" {
+				svcsList = append(svcsList, fmt.Sprintf("\"%s\"", name))
+			}
 		}
-		if name != "" {
-			svcsList = append(svcsList, fmt.Sprintf("\"%s\"", name))
-		}
+		sb.WriteString("set service " + strings.Join(svcsList, " ") + "\n")
 	}
-	sb.WriteString("set service " + strings.Join(svcsList, " ") + "\n")
 
 	fmt.Fprintf(&sb, "set action %s\n", p.Action)
 	sb.WriteString("set schedule \"always\"\n")
@@ -590,9 +669,18 @@ func GenerateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	return sb.String(), nil
 }
 
+// limitString truncates s to at most limit BYTES without splitting a
+// multi-byte UTF-8 character (the cut moves back to the nearest rune start).
+// Non-positive limits yield an empty string.
 func limitString(s string, limit int) string {
-	if len(s) > limit {
-		return s[:limit]
+	if limit <= 0 {
+		return ""
 	}
-	return s
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }

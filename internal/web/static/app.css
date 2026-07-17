@@ -559,9 +559,15 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 @keyframes blink { 50% { opacity: 0; } }
 
 /* ---------- Running backups ---------- */
-.running-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.running-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; flex-wrap: wrap; }
 .spinner { width: 12px; height: 12px; border: 2px solid rgba(255, 180, 171, .3); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Thin per-row progress bar for stages that report step/total. */
+.running-bar { height: 4px; width: 160px; max-width: 40%; background: rgba(255, 255, 255, .08); border-radius: 2px; overflow: hidden; }
+.running-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
+/* Failing-table inline error: one truncated line, full text on hover. */
+.err-cell { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #f4a6a0; font-size: .85em; }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } .running-bar-fill { transition: none; } }
 
 /* ---------- Skeleton loading ---------- */
 .skeleton-row { padding: 6px 0; }
@@ -659,4 +665,8 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 .searchable-select-option.selected {
   background-color: var(--accent);
   color: var(--surface-2);
+}
+.searchable-select-option.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

@@ -51,14 +51,14 @@
     {{if .Failures}}
     <div class="table-wrap">
         <table class="data">
-            <thead><tr><th>ID</th><th>FQDN</th><th>Last Backup</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>ID</th><th>FQDN</th><th>Last Success</th><th>Error</th><th>Actions</th></tr></thead>
             <tbody>
             {{range .Failures}}
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
-                    <td class="muted">{{fmtTime .LastBackup}}</td>
-                    <td><span class="pill pill-failed" title="{{.Status}}">Failed</span></td>
+                    <td class="muted">{{if isZero .LastSuccess}}<span class="pill pill-failed">never</span>{{else}}{{fmtTime .LastSuccess}}{{end}}</td>
+                    <td class="err-cell" title="{{.Error}}">{{.Error}}</td>
                     <td>
                         <div class="actions">
                             <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">Retry</button></form>
@@ -75,6 +75,37 @@
     <div class="empty">Keine fehlgeschlagenen Firewalls.</div>
     {{end}}
 </div>
+
+{{if .Stale}}
+<div class="card pad-0" style="border: 1px solid rgba(245,158,11,0.45);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #fbbf24;">◷ Stale backups</h2>
+        <span class="muted" style="font-size: 0.85em;">{{len .Stale}} firewall(s) overdue but not reporting a failure</span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>ID</th><th>FQDN</th><th>Last Success</th><th>Age</th><th>Cadence</th><th>Actions</th></tr></thead>
+            <tbody>
+            {{range .Stale}}
+                <tr>
+                    <td>{{.ID}}</td>
+                    <td>{{.FQDN}}</td>
+                    <td class="muted">{{fmtTime .LastSuccess}}</td>
+                    <td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{.AgeHours}}h ago</span></td>
+                    <td class="muted">{{.Overdue}}</td>
+                    <td>
+                        <div class="actions">
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">Backup now</button></form>
+                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
+                        </div>
+                    </td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
 
 {{if .BlockedPorts}}
 <div class="card pad-0" style="border: 1px solid rgba(249,115,22,0.45);">
@@ -169,25 +200,53 @@
 
     var running = document.getElementById('runningList');
     var runningCard = document.getElementById('runningCard');
+    // fmtElapsed renders a running duration compactly ("42s", "3m 07s", "1h 4m").
+    function fmtElapsed(ms) {
+        var s = Math.max(0, Math.round(ms / 1000));
+        var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+        if (h > 0) { return h + 'h ' + m + 'm'; }
+        if (m > 0) { return m + 'm ' + String(sec).padStart(2, '0') + 's'; }
+        return sec + 's';
+    }
     function renderRunning(list) {
         if (!running || !runningCard) { return; }
         if (!list || !list.length) { runningCard.hidden = true; running.innerHTML = ''; return; }
         runningCard.hidden = false;
         running.innerHTML = list.map(function (r) {
             var name = esc(r.fqdn || ('fw #' + r.fw_id));
-            var what = '';
             // Every kind gets a labeled pill (backup, analysis, devicedata,
             // sshdiag, audit — see the dashboard.running_* keys).
-            if (r.kind) {
-                what = ' <span class="pill">' + tt('dashboard.running_' + r.kind) +
-                    (r.label ? ' · ' + esc(r.label) : '') + '</span>' +
-                    (r.detail ? ' <span class="muted">' + esc(r.detail) + '</span>' : '');
+            var pill = r.kind ? ' <span class="pill">' + tt('dashboard.running_' + r.kind) +
+                (r.label ? ' · ' + esc(r.label) : '') + '</span>' : '';
+            var detail = r.detail ? ' <span class="muted">' + esc(r.detail) + '</span>' : '';
+            // Numeric progress (Graylog stages, per-switch diag, analysis steps)
+            // gets a thin bar; text-only stages (backups) just show the detail.
+            var bar = '';
+            if (r.total > 0) {
+                var pct = Math.max(0, Math.min(100, Math.round(100 * r.step / r.total)));
+                bar = ' <span class="muted">' + r.step + '/' + r.total + '</span>' +
+                    '<div class="running-bar"><div class="running-bar-fill" style="width:' + pct + '%"></div></div>';
             }
-            return '<div class="running-row"><span class="spinner"></span><b>' +
-                name + '</b>' + what + ' <span class="muted">' + tt('dashboard.running_since') + ' ' +
-                new Date(r.since).toLocaleTimeString() + '</span></div>';
+            return '<div class="running-row"><span class="spinner"></span><b>' + name + '</b>' +
+                pill + detail +
+                ' <span class="muted running-elapsed" data-since="' + esc(r.since) + '" title="' +
+                tt('dashboard.running_since') + ' ' + new Date(r.since).toLocaleTimeString() + '"></span>' +
+                bar + '</div>';
         }).join('');
+        tickRunningElapsed();
     }
+
+    // Live elapsed tick: updates each row's duration every second without a
+    // full re-render (which only happens on the ~5s poll).
+    function tickRunningElapsed() {
+        if (!running) { return; }
+        var now = Date.now();
+        running.querySelectorAll('.running-elapsed').forEach(function (el) {
+            var since = el.getAttribute('data-since');
+            if (since) { el.textContent = fmtElapsed(now - new Date(since).getTime()); }
+        });
+    }
+    setInterval(tickRunningElapsed, 1000);
 
     // While anything is running, poll faster than the configured auto-refresh:
     // a polsplit analysis or manual topology fetch often finishes inside one
@@ -270,8 +329,17 @@
     function scheduleRefresh() { clearTimeout(debounce); debounce = setTimeout(refreshStats, 400); }
     if (window.EventSource) {
         var es = new EventSource('/events');
-        es.onopen = function () { if (sseDot) { sseDot.className = 'sse-dot online'; sseDot.title = 'Live verbunden'; } };
-        es.onerror = function () { if (sseDot) { sseDot.className = 'sse-dot offline'; sseDot.title = 'Verbindung verloren – reconnect…'; } };
+        var sseWasDown = false;
+        es.onopen = function () {
+            if (sseDot) { sseDot.className = 'sse-dot online'; sseDot.title = 'Live verbunden'; }
+            // On (re)connect, pull fresh stats immediately: events that fired
+            // while the stream was down (sleep, deploy, network blip) were
+            // missed, so the card and tiles would otherwise stay stale until
+            // the next interval poll.
+            if (sseWasDown) { refreshStats(); }
+            sseWasDown = false;
+        };
+        es.onerror = function () { sseWasDown = true; if (sseDot) { sseDot.className = 'sse-dot offline'; sseDot.title = 'Verbindung verloren – reconnect…'; } };
         es.onmessage = function (e) {
             try {
                 var d = JSON.parse(e.data);

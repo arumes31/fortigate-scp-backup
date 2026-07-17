@@ -474,6 +474,22 @@ func resolveDstNames(ctx context.Context, tuples []TrafficTuple) []dnsSuggestion
 	return out
 }
 
+// baselineWindows anchors both comparison windows at one shared UTC instant:
+// the analysis window is the absolute [now-range, now] and the baseline the
+// compare-duration window immediately PRECEDING it, [now-range-compare,
+// now-range] — "Previous 7 days" means the 7 days before the analyzed window
+// (a 24h analysis with a 7d baseline compares against days 1–8 back), butting
+// exactly against it with neither overlap nor gap.
+func baselineWindows(now time.Time, rangeSec, compareSec int) (tr, baseTr timeRange) {
+	rangeStart := now.Add(-time.Duration(rangeSec) * time.Second).Format(graylogTimeLayout)
+	tr = timeRange{From: rangeStart, To: now.Format(graylogTimeLayout)}
+	baseTr = timeRange{
+		From: now.Add(-time.Duration(rangeSec+compareSec) * time.Second).Format(graylogTimeLayout),
+		To:   rangeStart,
+	}
+	return tr, baseTr
+}
+
 func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	var req analyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -489,25 +505,18 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	// Progress reporting for the UI poller: 9 base stages (backup, message
 	// count, 2×tuple aggregation, 2×service names, UTM check, identity/app
 	// usage, strategies) plus the optional baseline and DNS stages.
-	baselineActive := req.CompareSeconds > 0 && req.RangeSeconds > 0 && req.CompareSeconds > req.RangeSeconds
+	baselineActive := req.CompareSeconds > 0 && req.RangeSeconds > 0
 
 	// When a baseline runs, both windows derive from ONE UTC anchor captured
-	// before any query: the current window becomes absolute [now-range, now]
-	// so it butts exactly against the baseline [now-compare, now-range].
-	// Calling time.Now() again after the current fetch would let the windows
-	// drift apart (overlap or gap around the boundary).
+	// before any query (see baselineWindows). Calling time.Now() again after
+	// the current fetch would let the windows drift apart (overlap or gap
+	// around the boundary).
 	var baseTr timeRange
 	if baselineActive {
 		if req.CompareSeconds > maxRangeSeconds {
 			req.CompareSeconds = maxRangeSeconds
 		}
-		now := time.Now().UTC()
-		rangeStart := now.Add(-time.Duration(req.RangeSeconds) * time.Second).Format(graylogTimeLayout)
-		tr = timeRange{From: rangeStart, To: now.Format(graylogTimeLayout)}
-		baseTr = timeRange{
-			From: now.Add(-time.Duration(req.CompareSeconds) * time.Second).Format(graylogTimeLayout),
-			To:   rangeStart,
-		}
+		tr, baseTr = baselineWindows(time.Now().UTC(), req.RangeSeconds, req.CompareSeconds)
 	}
 
 	totalSteps := 9
@@ -586,8 +595,6 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case req.RangeSeconds <= 0:
 			warnings = append(warnings, "baseline comparison is only available with preset time ranges — skipped")
-		case req.CompareSeconds <= req.RangeSeconds:
-			warnings = append(warnings, "baseline comparison window must be longer than the analysis window — skipped")
 		default:
 			// baseTr was derived above from the same anchor as the current
 			// window, so the two ranges line up exactly.

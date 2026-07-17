@@ -144,13 +144,50 @@ func (e *Extension) vpnConfigSources(fqdn string) []string {
 
 	short := sourceHost(fqdn)
 	var firewallname, clusters string
+	// Exact-identity match first (dns_name_full is the canonical form): the
+	// full FQDN names one config row. The short hostname is only a fallback —
+	// and only when it resolves to exactly ONE row, since short names can
+	// collide across customers and an unordered LIMIT 1 would silently pick
+	// either one's Graylog sources.
 	err = db.QueryRow(`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'')
 		FROM vpn_config
-		WHERE lower(firewallname) IN (lower(?), lower(?))
-		   OR lower(dns_name)      IN (lower(?), lower(?))
-		   OR lower(dns_name_full) IN (lower(?), lower(?))
+		WHERE lower(dns_name_full) = lower(?)
+		   OR lower(firewallname)  = lower(?)
+		   OR lower(dns_name)      = lower(?)
 		LIMIT 1`,
-		fqdn, short, fqdn, short, fqdn, short).Scan(&firewallname, &clusters)
+		fqdn, fqdn, fqdn).Scan(&firewallname, &clusters)
+	if err == sql.ErrNoRows && !strings.EqualFold(short, fqdn) {
+		rows, qerr := db.Query(`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'')
+			FROM vpn_config
+			WHERE lower(firewallname)  = lower(?)
+			   OR lower(dns_name)      = lower(?)
+			   OR lower(dns_name_full) = lower(?)`,
+			short, short, short)
+		if qerr != nil {
+			e.logger.Debug("polsplit: adm-vpn-conf short-name lookup failed", "short", short, "err", qerr)
+			return nil
+		}
+		defer func() { _ = rows.Close() }()
+		matches := 0
+		for rows.Next() {
+			var fn, cl string
+			if scanErr := rows.Scan(&fn, &cl); scanErr != nil {
+				return nil
+			}
+			matches++
+			if matches == 1 {
+				firewallname, clusters = fn, cl
+			}
+		}
+		if rows.Err() != nil || matches != 1 {
+			if matches > 1 {
+				e.logger.Warn("polsplit: short hostname matches multiple adm-vpn-conf entries — ignoring the mapping",
+					"short", short, "matches", matches)
+			}
+			return nil
+		}
+		err = nil
+	}
 	if err != nil {
 		if err != sql.ErrNoRows {
 			e.logger.Debug("polsplit: adm-vpn-conf lookup failed", "fqdn", fqdn, "err", err)
@@ -926,23 +963,26 @@ func (e *Extension) fetchUserActivity(ctx context.Context, fqdn string, policyID
 	if err != nil {
 		return nil, err
 	}
+	// Group by the authoritative field ONLY: adding the optional `group`
+	// field to GroupBy would drop every message that lacks it (grouping
+	// omits documents missing any grouped field), hiding groupless users
+	// and undercounting the rest. Groups are enriched in a second,
+	// best-effort aggregation over the messages that do carry the field.
 	body := aggregateRequest{
 		Query:     query + " AND _exists_:user",
 		Timerange: tr.aggregate(),
-		GroupBy:   []aggregateGroup{{Field: "user", Limit: 200}, {Field: "group", Limit: 50}},
+		GroupBy:   []aggregateGroup{{Field: "user", Limit: 200}},
 		Metrics:   []aggregateMetric{{Function: "count"}},
 	}
 	schema, rows, err := e.aggregate(ctx, body)
 	if err != nil {
 		return nil, err
 	}
-	userCol, grpCol, cntCol := -1, -1, -1
+	userCol, cntCol := -1, -1
 	for i, c := range schema {
 		switch {
 		case c.ColumnType == "grouping" && c.Field == "user":
 			userCol = i
-		case c.ColumnType == "grouping" && c.Field == "group":
-			grpCol = i
 		case c.ColumnType == "metric" && c.Function == "count":
 			cntCol = i
 		}
@@ -960,19 +1000,18 @@ func (e *Extension) fetchUserActivity(ctx context.Context, fqdn string, policyID
 		if user == "" || strings.EqualFold(user, "(Empty Value)") {
 			continue
 		}
-		group := ""
-		if grpCol >= 0 && grpCol < len(row) {
-			group, _ = row[grpCol].(string)
-			group = strings.TrimSpace(group)
-			if strings.EqualFold(group, "(Empty Value)") {
-				group = ""
-			}
-		}
 		var hits int64
 		if f, ok := row[cntCol].(float64); ok {
 			hits = int64(f)
 		}
-		out = append(out, userActivity{User: user, Group: group, Hits: hits})
+		out = append(out, userActivity{User: user, Hits: hits})
+	}
+	for user, group := range e.enrichField(ctx, query+" AND _exists_:user AND _exists_:group", tr, "user", "group") {
+		for i := range out {
+			if out[i].User == user {
+				out[i].Group = group
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Hits != out[j].Hits {
@@ -981,6 +1020,61 @@ func (e *Extension) fetchUserActivity(ctx context.Context, fqdn string, policyID
 		return out[i].User < out[j].User
 	})
 	return out, nil
+}
+
+// enrichField maps each primary-field value to its most-frequent secondary
+// value using an aggregation restricted to messages carrying BOTH fields.
+// Best-effort by design: the caller's authoritative counts come from an
+// aggregation over the primary field alone, so a failure here only loses the
+// decoration, never the entries. Returns nil on any error.
+func (e *Extension) enrichField(ctx context.Context, query string, tr timeRange, primary, secondary string) map[string]string {
+	body := aggregateRequest{
+		Query:     query,
+		Timerange: tr.aggregate(),
+		GroupBy:   []aggregateGroup{{Field: primary, Limit: 200}, {Field: secondary, Limit: 50}},
+		Metrics:   []aggregateMetric{{Function: "count"}},
+	}
+	schema, rows, err := e.aggregate(ctx, body)
+	if err != nil {
+		e.logger.Debug("polsplit: enrichment aggregation failed", "primary", primary, "secondary", secondary, "err", err)
+		return nil
+	}
+	priCol, secCol, cntCol := -1, -1, -1
+	for i, c := range schema {
+		switch {
+		case c.ColumnType == "grouping" && c.Field == primary:
+			priCol = i
+		case c.ColumnType == "grouping" && c.Field == secondary:
+			secCol = i
+		case c.ColumnType == "metric" && c.Function == "count":
+			cntCol = i
+		}
+	}
+	if priCol < 0 || secCol < 0 || cntCol < 0 {
+		return nil
+	}
+	out := map[string]string{}
+	best := map[string]int64{}
+	for _, row := range rows {
+		if priCol >= len(row) || secCol >= len(row) || cntCol >= len(row) || row[priCol] == nil || row[secCol] == nil {
+			continue
+		}
+		pri, _ := row[priCol].(string)
+		sec, _ := row[secCol].(string)
+		pri, sec = strings.TrimSpace(pri), strings.TrimSpace(sec)
+		if pri == "" || sec == "" || strings.EqualFold(pri, "(Empty Value)") || strings.EqualFold(sec, "(Empty Value)") {
+			continue
+		}
+		var hits int64
+		if f, ok := row[cntCol].(float64); ok {
+			hits = int64(f)
+		}
+		if hits > best[pri] {
+			best[pri] = hits
+			out[pri] = sec
+		}
+	}
+	return out
 }
 
 // appUsage is one application-control detection under the policy, with the
@@ -1004,23 +1098,25 @@ func (e *Extension) fetchAppUsage(ctx context.Context, fqdn string, policyID int
 	if err != nil {
 		return nil, err
 	}
+	// Same grouping rule as fetchUserActivity: group only by the
+	// authoritative `app` field (grouping drops documents missing any grouped
+	// field, so adding `appcat` would hide category-less detections), then
+	// decorate categories best-effort from the messages that carry both.
 	body := aggregateRequest{
 		Query:     query + " AND _exists_:app",
 		Timerange: tr.aggregate(),
-		GroupBy:   []aggregateGroup{{Field: "app", Limit: 200}, {Field: "appcat", Limit: 50}},
+		GroupBy:   []aggregateGroup{{Field: "app", Limit: 200}},
 		Metrics:   []aggregateMetric{{Function: "count"}},
 	}
 	schema, rows, err := e.aggregate(ctx, body)
 	if err != nil {
 		return nil, err
 	}
-	appCol, catCol, cntCol := -1, -1, -1
+	appCol, cntCol := -1, -1
 	for i, c := range schema {
 		switch {
 		case c.ColumnType == "grouping" && c.Field == "app":
 			appCol = i
-		case c.ColumnType == "grouping" && c.Field == "appcat":
-			catCol = i
 		case c.ColumnType == "metric" && c.Function == "count":
 			cntCol = i
 		}
@@ -1038,19 +1134,18 @@ func (e *Extension) fetchAppUsage(ctx context.Context, fqdn string, policyID int
 		if app == "" || strings.EqualFold(app, "(Empty Value)") {
 			continue
 		}
-		cat := ""
-		if catCol >= 0 && catCol < len(row) {
-			cat, _ = row[catCol].(string)
-			cat = strings.TrimSpace(cat)
-			if strings.EqualFold(cat, "(Empty Value)") {
-				cat = ""
-			}
-		}
 		var hits int64
 		if f, ok := row[cntCol].(float64); ok {
 			hits = int64(f)
 		}
-		out = append(out, appUsage{App: app, Category: cat, Hits: hits})
+		out = append(out, appUsage{App: app, Hits: hits})
+	}
+	for app, cat := range e.enrichField(ctx, query+" AND _exists_:app AND _exists_:appcat", tr, "app", "appcat") {
+		for i := range out {
+			if out[i].App == app {
+				out[i].Category = cat
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Hits != out[j].Hits {

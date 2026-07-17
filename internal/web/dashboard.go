@@ -25,30 +25,39 @@ import (
 type runningTracker struct {
 	mu  sync.Mutex
 	seq int
-	ops map[int]trackedOp
+	ops map[int]*trackedOp
 }
 
 type trackedOp struct {
 	fwID    int
 	started time.Time
+	detail  string // current stage, shown on the running card
 }
 
-// track registers one operation and returns the function that removes it
-// again (deferred by the caller).
-func (t *runningTracker) track(fwID int) func() {
+// track registers one operation and returns a note function (publishing the
+// current stage) plus the function that removes the entry again (deferred by
+// the caller).
+func (t *runningTracker) track(fwID int) (note func(detail string), done func()) {
 	t.mu.Lock()
 	t.seq++
 	id := t.seq
 	if t.ops == nil {
-		t.ops = map[int]trackedOp{}
+		t.ops = map[int]*trackedOp{}
 	}
-	t.ops[id] = trackedOp{fwID: fwID, started: time.Now()}
+	op := &trackedOp{fwID: fwID, started: time.Now()}
+	t.ops[id] = op
 	t.mu.Unlock()
-	return func() {
+	note = func(detail string) {
+		t.mu.Lock()
+		op.detail = detail
+		t.mu.Unlock()
+	}
+	done = func() {
 		t.mu.Lock()
 		delete(t.ops, id)
 		t.mu.Unlock()
 	}
+	return note, done
 }
 
 // list returns the in-flight operations, newest first.
@@ -57,7 +66,7 @@ func (t *runningTracker) list() []trackedOp {
 	defer t.mu.Unlock()
 	out := make([]trackedOp, 0, len(t.ops))
 	for _, op := range t.ops {
-		out = append(out, op)
+		out = append(out, *op)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].started.After(out[j].started) })
 	return out
@@ -66,12 +75,36 @@ func (t *runningTracker) list() []trackedOp {
 // runningView is one in-flight operation for the "currently running" card: a
 // firewall backup, or a polsplit analysis working through its Graylog queries.
 type runningView struct {
-	Kind     string `json:"kind"` // "backup" | "analysis"
+	Kind     string `json:"kind"` // "backup" | "analysis" | "devicedata" | "sshdiag" | "audit" | "live"
 	FwID     int    `json:"fw_id"`
 	FQDN     string `json:"fqdn"`
-	Label    string `json:"label,omitempty"`  // analysis: what runs ("Policy 162 analysis")
-	Detail   string `json:"detail,omitempty"` // analysis: current stage, e.g. "3/9 · time step 5/24"
+	Label    string `json:"label,omitempty"`  // analysis: what runs ("Policy 162")
+	Detail   string `json:"detail,omitempty"` // current stage text, e.g. "time step 5/24", "switch SW1"
+	Step     int    `json:"step,omitempty"`   // progress within the stage (0 = no numeric progress)
+	Total    int    `json:"total,omitempty"`
 	SinceISO string `json:"since"`
+}
+
+// failureView is one currently-failing firewall for the dashboard's failing
+// table: its last SUCCESSFUL backup (distinct from the last attempt) plus the
+// error message, surfaced inline instead of only in a hover tooltip.
+type failureView struct {
+	ID          int
+	FQDN        string
+	LastSuccess time.Time // zero = never succeeded
+	Error       string    // status with the "Failed:" prefix trimmed
+}
+
+// staleBackup is a firewall whose last successful backup is far older than its
+// schedule would predict, yet is NOT currently reporting a failure — the
+// silent-aging case a "Failed" status never catches (e.g. a scheduler entry
+// that vanished). Ordered oldest-first.
+type staleBackup struct {
+	ID          int
+	FQDN        string
+	LastSuccess time.Time
+	AgeHours    int    // whole hours since the last success, for display
+	Overdue     string // human "expected every 6h" hint
 }
 
 // dashboardData is the full overview payload: DB health counts plus live
@@ -79,7 +112,8 @@ type runningView struct {
 type dashboardData struct {
 	Base     BaseData
 	Stats    models.DashboardStats
-	Failures []models.Firewall
+	Failures []failureView
+	Stale    []staleBackup
 	Events   []models.ActivityLog // seed for the live SYS_STDOUT panel
 
 	StorageBytes  int64
@@ -175,6 +209,67 @@ const (
 	clusterFailRatioPct  = 40
 )
 
+// staleFloor is the minimum age before a backup is considered stale, so very
+// frequent schedules (e.g. every 15 min) do not flag on a single missed run.
+const staleFloor = 2 * time.Hour
+
+// computeStale flags firewalls whose last successful backup is far older than
+// their schedule predicts, excluding those already in a Failed state (shown in
+// the failing table) and those never backed up (counted as New/Pending). The
+// threshold is 2× the schedule's cadence, floored at staleFloor.
+func (s *Server) computeStale(fws []models.Firewall, lastSuccess map[int]time.Time, failedSet map[int]bool) []staleBackup {
+	now := time.Now()
+	var out []staleBackup
+	for _, fw := range fws {
+		if failedSet[fw.ID] {
+			continue // already surfaced in the failing table
+		}
+		last, ok := lastSuccess[fw.ID]
+		if !ok || last.IsZero() {
+			continue // never backed up → the New/Pending tile, not stale
+		}
+		// Effective cadence: prefer the scheduler's live value (handles cron),
+		// fall back to the configured interval.
+		interval := time.Duration(fw.IntervalMin) * time.Minute
+		if info, ok := s.sched.Info(BackupJobID(fw.ID)); ok && info.Interval > 0 {
+			interval = info.Interval
+		}
+		if interval <= 0 {
+			continue // unscheduled → cannot judge staleness
+		}
+		threshold := 2 * interval
+		if threshold < staleFloor {
+			threshold = staleFloor
+		}
+		age := now.Sub(last)
+		if age <= threshold {
+			continue
+		}
+		out = append(out, staleBackup{
+			ID:          fw.ID,
+			FQDN:        fw.FQDN,
+			LastSuccess: last,
+			AgeHours:    int(age.Hours()),
+			Overdue:     "expected every " + humanizeInterval(interval),
+		})
+	}
+	// Oldest first: the most-overdue firewalls lead.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].LastSuccess.Before(out[j].LastSuccess) })
+	return out
+}
+
+// humanizeInterval renders a cadence compactly ("15m", "6h", "1d").
+func humanizeInterval(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	default:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	}
+}
+
 // computeDashboard gathers everything the overview page and its live JSON feed
 // need. It never fails: individual lookup errors are logged and left at zero.
 func (s *Server) computeDashboard(ctx context.Context) dashboardData {
@@ -182,13 +277,19 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 	if err != nil {
 		s.logger.Error("dashboard stats failed", "err", err)
 	}
-	failures, err := s.store.ListErrors(ctx)
+	failedFws, err := s.store.ListErrors(ctx)
 	if err != nil {
 		s.logger.Error("dashboard failures failed", "err", err)
 	}
 	fws, err := s.store.ListFirewalls(ctx)
 	if err != nil {
 		s.logger.Error("dashboard firewall list failed", "err", err)
+	}
+	// Last SUCCESSFUL backup per firewall (the backups table holds successes
+	// only); powers the failing-table "last success" column and stale detection.
+	lastSuccess, err := s.store.LastBackupTimes(ctx)
+	if err != nil {
+		s.logger.Error("dashboard last-backup times failed", "err", err)
 	}
 
 	fqdnByID := make(map[int]string, len(fws))
@@ -202,6 +303,19 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		}
 	}
 
+	failedSet := make(map[int]bool, len(failedFws))
+	failures := make([]failureView, 0, len(failedFws))
+	for _, fw := range failedFws {
+		failedSet[fw.ID] = true
+		failures = append(failures, failureView{
+			ID:          fw.ID,
+			FQDN:        fw.FQDN,
+			LastSuccess: lastSuccess[fw.ID],
+			Error:       strings.TrimSpace(strings.TrimPrefix(fw.Status, "Failed:")),
+		})
+	}
+	stale := s.computeStale(fws, lastSuccess, failedSet)
+
 	total, week, largest, smallest := backupStorageStats(s.cfg.BackupDir)
 
 	running := make([]runningView, 0)
@@ -210,19 +324,18 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 			Kind:     "backup",
 			FwID:     rb.FwID,
 			FQDN:     fqdnByID[rb.FwID],
+			Detail:   rb.Stage,
 			SinceISO: rb.Since.UTC().Format(time.RFC3339),
 		})
 	}
 	// In-flight polsplit analyses (Graylog query sequences) join the card so
 	// long-running traffic analyses are visible fleet-wide, not only in the
-	// browser tab that started them.
+	// browser tab that started them. Step/Total drive a progress bar; the
+	// stage message and sub-detail form the text line.
 	for _, ra := range fgtpolsplit.RunningAnalyses() {
 		detail := ra.Message
 		if ra.Detail != "" {
 			detail += " — " + ra.Detail
-		}
-		if ra.Total > 0 {
-			detail = fmt.Sprintf("%d/%d · %s", ra.Step, ra.Total, detail)
 		}
 		running = append(running, runningView{
 			Kind:     "analysis",
@@ -230,6 +343,8 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 			FQDN:     fqdnByID[ra.FwID],
 			Label:    fmt.Sprintf("Policy %d", ra.PolicyID),
 			Detail:   detail,
+			Step:     ra.Step,
+			Total:    ra.Total,
 			SinceISO: ra.Started.UTC().Format(time.RFC3339),
 		})
 	}
@@ -237,9 +352,12 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 	// from the graylog_device_data extension.
 	for _, rf := range graylogdevicedata.RunningFetches() {
 		running = append(running, runningView{
-			Kind:     rf.Kind, // "devicedata" | "sshdiag"
+			Kind:     rf.Kind, // "devicedata" | "sshdiag" | "live"
 			FwID:     rf.FwID,
 			FQDN:     fqdnByID[rf.FwID],
+			Detail:   rf.Detail,
+			Step:     rf.Step,
+			Total:    rf.Total,
 			SinceISO: rf.Started.UTC().Format(time.RFC3339),
 		})
 	}
@@ -249,6 +367,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 			Kind:     "audit",
 			FwID:     op.fwID,
 			FQDN:     fqdnByID[op.fwID],
+			Detail:   op.detail,
 			SinceISO: op.started.UTC().Format(time.RFC3339),
 		})
 	}
@@ -278,6 +397,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 	return dashboardData{
 		Stats:         stats,
 		Failures:      failures,
+		Stale:         stale,
 		Events:        events,
 		StorageBytes:  total,
 		StorageWeek:   week,
