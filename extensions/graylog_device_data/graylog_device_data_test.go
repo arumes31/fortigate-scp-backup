@@ -697,6 +697,18 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
+	// Cross-firewall isolation: fw 2's port naming fw 1's switch as neighbor
+	// must NOT classify as inter-switch — SW1 is not one of fw 2's switches.
+	if err := e.storeStp(2, []StpPort{
+		{SwitchName: "SW9", Port: "port2", Role: "backup", State: "discarding", LastChange: "T1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.storeDiagStp(2, []StpPort{
+		{SwitchName: "SW9", Port: "port2", Neighbor: "SW1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
 
 	blocked, err := ListBlockedPorts(dataDir)
 	if err != nil {
@@ -711,5 +723,8 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	}
 	if gotPorts["SW1|port5"] {
 		t.Fatalf("edge port in discarding must not be listed: %+v", blocked)
+	}
+	if gotPorts["SW9|port2"] {
+		t.Fatalf("another firewall's switch name must not classify fw 2's port: %+v", blocked)
 	}
 }

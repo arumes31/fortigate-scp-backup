@@ -204,7 +204,12 @@ function initSearchableSelect(selectElement, options = {}) {
     comboInput.addEventListener('keydown', (e) => {
         if (dropdown.style.display !== 'block') {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
-                renderDropdown(comboInput.value);
+                // Reopen with the FULL list when the input just shows the
+                // current selection's label (e.g. after choosing or Escape) —
+                // filtering by that label would strand the list on the single
+                // selected entry. A partially typed filter is kept.
+                const selected = originalOptions.find(opt => opt.selected);
+                renderDropdown(selected && comboInput.value === selected.text ? '' : comboInput.value);
                 e.preventDefault();
             }
             return;

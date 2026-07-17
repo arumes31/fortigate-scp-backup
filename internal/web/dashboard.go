@@ -252,6 +252,9 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 			SinceISO: op.started.UTC().Format(time.RFC3339),
 		})
 	}
+	// One newest-first timeline regardless of which subsystem contributed the
+	// entry (RFC3339 UTC timestamps sort lexicographically).
+	sort.SliceStable(running, func(i, j int) bool { return running[i].SinceISO > running[j].SinceISO })
 
 	nextISO := ""
 	if !next.IsZero() {

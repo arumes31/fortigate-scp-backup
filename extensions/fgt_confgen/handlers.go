@@ -22,16 +22,22 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
-// isValidTemplateName accepts only a bounded safe alphabet suitable for URL
-// path/query interpolation and Content-Disposition headers: letters, digits,
-// dots, hyphens and underscores. Max 128 characters.
+// isValidTemplateName rejects only what would break the places a template
+// name travels: the /get_template/{name} URL path and the stored short-URL
+// strings ('/', '?', '#' and '%' — delimiter/escape injection), quoted
+// Content-Disposition filenames ('"' and '\'), and control characters.
+// Everything else — spaces, umlauts, any non-ASCII — stays valid, so legacy
+// names like "branch office" keep working. Max 128 bytes.
 func isValidTemplateName(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '.' && c != '-' && c != '_' {
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		switch r {
+		case '/', '?', '#', '%', '"', '\\':
 			return false
 		}
 	}
@@ -430,7 +436,7 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 	isGlobal := r.FormValue("is_global") == "true" || r.FormValue("is_global") == "on"
 
 	if !isValidTemplateName(templateName) {
-		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		http.Error(w, "template_name is required and must not contain /, ?, #, %, quotes, backslashes or control characters", http.StatusBadRequest)
 		return
 	}
 	if policiesJSON == "" {
@@ -516,7 +522,7 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isValidTemplateName(body.NewName) {
-		http.Error(w, "new_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		http.Error(w, "new_name is required and must not contain /, ?, #, %, quotes, backslashes or control characters", http.StatusBadRequest)
 		return
 	}
 
@@ -693,7 +699,7 @@ func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
 	templateDataStr := r.FormValue("template_data")
 
 	if !isValidTemplateName(templateName) {
-		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		http.Error(w, "template_name is required and must not contain /, ?, #, %, quotes, backslashes or control characters", http.StatusBadRequest)
 		return
 	}
 	if templateDataStr == "" {

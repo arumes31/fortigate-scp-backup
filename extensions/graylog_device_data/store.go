@@ -485,11 +485,18 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	db.SetMaxOpenConns(1)
 
 	// Inter-switch port legs and switch identities from the stored trunk
-	// observations. An old database without the switch_edges table just yields
-	// empty sets (guard blocks still surface).
+	// observations, both scoped per firewall so one fabric's switch names can
+	// never classify another firewall's ports.
 	interSwitch := map[string]bool{} // "fwID|switch(lower)|port"
-	knownSwitch := map[string]bool{} // switch names + serials, lowercased
-	if eRows, qErr := db.Query(`SELECT fw_id, switch_sn, switch_name, ports FROM switch_edges`); qErr == nil {
+	knownSwitch := map[string]bool{} // "fwID|name-or-serial(lower)"
+	eRows, qErr := db.Query(`SELECT fw_id, switch_sn, switch_name, ports FROM switch_edges`)
+	if qErr != nil {
+		// Only the legacy schema without the switch_edges table is tolerated
+		// (guard blocks still surface); any other failure is real.
+		if !strings.Contains(qErr.Error(), "no such table") {
+			return nil, qErr
+		}
+	} else {
 		defer func() { _ = eRows.Close() }()
 		for eRows.Next() {
 			var fwID int
@@ -501,7 +508,7 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 				if key == "" {
 					continue
 				}
-				knownSwitch[key] = true
+				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
 				for _, p := range strings.Split(ports, ",") {
 					if p != "" {
 						interSwitch[fmt.Sprintf("%d|%s|%s", fwID, key, p)] = true
@@ -515,19 +522,20 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	}
 	// Every switch the STP feed has seen counts as managed, so an LLDP neighbor
 	// naming one marks the local port as inter-switch.
-	sRows, err := db.Query(`SELECT DISTINCT switch_name, serial FROM stp_ports`)
+	sRows, err := db.Query(`SELECT DISTINCT fw_id, switch_name, serial FROM stp_ports`)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = sRows.Close() }()
 	for sRows.Next() {
+		var fwID int
 		var name, serial string
-		if scanErr := sRows.Scan(&name, &serial); scanErr != nil {
+		if scanErr := sRows.Scan(&fwID, &name, &serial); scanErr != nil {
 			return nil, scanErr
 		}
 		for _, key := range []string{strings.ToLower(name), strings.ToLower(serial)} {
 			if key != "" {
-				knownSwitch[key] = true
+				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
 			}
 		}
 	}
@@ -576,7 +584,7 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	for _, c := range cands {
 		inter := interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.Switch), c.Port)] ||
 			interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.serial), c.Port)] ||
-			(c.neighbor != "" && knownSwitch[strings.ToLower(c.neighbor)])
+			(c.neighbor != "" && knownSwitch[fmt.Sprintf("%d|%s", c.FwID, strings.ToLower(c.neighbor))])
 		if c.guard != "" || inter {
 			out = append(out, c.BlockedPort)
 		}
