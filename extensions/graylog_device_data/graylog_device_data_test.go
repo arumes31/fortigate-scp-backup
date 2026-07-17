@@ -598,8 +598,10 @@ func TestStoreStpKeepsAgedOutBlock(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(createStpTableSQL); err != nil {
-		t.Fatal(err)
+	for _, q := range []string{createStpTableSQL, createSwitchEdgesSQL} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
 	}
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
 
@@ -608,6 +610,14 @@ func TestStoreStpKeepsAgedOutBlock(t *testing.T) {
 	layout := "2006-01-02 15:04:05"
 	t1 := time.Now().Add(-time.Hour).Format(layout)
 	t2 := time.Now().Format(layout)
+
+	// port30 is a trunk leg — the dashboard's blocked list gates STP role/state
+	// blocks to inter-switch ports (edge-port discarding is client churn).
+	if err := e.storeSwitchEdges(1, []SwitchEdge{{
+		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port29", "port30"},
+	}}, t2); err != nil {
+		t.Fatal(err)
+	}
 
 	// Fetch 1: the STP block is observed.
 	if err := e.storeStp(1, []StpPort{{
@@ -640,5 +650,81 @@ func TestStoreStpKeepsAgedOutBlock(t *testing.T) {
 	}
 	if len(blocked) != 1 || blocked[0].Reason != "discarding" {
 		t.Fatalf("port must still report as blocked, got %+v", blocked)
+	}
+}
+
+// TestListBlockedPortsEdgeGate mirrors the topology view's rule on the
+// dashboard: an access (edge) port in STP discarding is normal client churn
+// and must NOT be listed; a discarding trunk leg and a fired guard on an edge
+// port must be.
+func TestListBlockedPortsEdgeGate(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "graylog-device-data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	for _, q := range []string{createStpTableSQL, createSwitchEdgesSQL} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
+	now := time.Now().Format("2006-01-02 15:04:05")
+
+	if err := e.storeSwitchEdges(1, []SwitchEdge{{
+		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port29"},
+	}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.storeStp(1, []StpPort{
+		// Trunk leg out of forwarding: a real broken loop → listed.
+		{SwitchName: "SW1", Port: "port29", Role: "alternate", State: "discarding", LastChange: "T1"},
+		// Access port whose client went away: role disabled/discarding → NOT listed.
+		{SwitchName: "SW1", Port: "port5", Role: "disabled", State: "discarding", LastChange: "T1"},
+		// Access port with a fired BPDU guard: real even on an edge port → listed.
+		{SwitchName: "SW1", Port: "port6", Role: "designated", State: "forwarding", Guard: "bpdu-guard", LastChange: "T1"},
+		// Port whose LLDP neighbor is a managed switch → inter-switch → listed.
+		{SwitchName: "SW2", Port: "port1", Role: "backup", State: "discarding", LastChange: "T1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	// The LLDP neighbor comes from the live SSH-diagnostics path, which is the
+	// only source of the neighbor column.
+	if err := e.storeDiagStp(1, []StpPort{
+		{SwitchName: "SW2", Port: "port1", Neighbor: "SW1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	// Cross-firewall isolation: fw 2's port naming fw 1's switch as neighbor
+	// must NOT classify as inter-switch — SW1 is not one of fw 2's switches.
+	if err := e.storeStp(2, []StpPort{
+		{SwitchName: "SW9", Port: "port2", Role: "backup", State: "discarding", LastChange: "T1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.storeDiagStp(2, []StpPort{
+		{SwitchName: "SW9", Port: "port2", Neighbor: "SW1"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := ListBlockedPorts(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPorts := map[string]bool{}
+	for _, b := range blocked {
+		gotPorts[b.Switch+"|"+b.Port] = true
+	}
+	if len(blocked) != 3 || !gotPorts["SW1|port29"] || !gotPorts["SW1|port6"] || !gotPorts["SW2|port1"] {
+		t.Fatalf("edge gate wrong, got %+v", blocked)
+	}
+	if gotPorts["SW1|port5"] {
+		t.Fatalf("edge port in discarding must not be listed: %+v", blocked)
+	}
+	if gotPorts["SW9|port2"] {
+		t.Fatalf("another firewall's switch name must not classify fw 2's port: %+v", blocked)
 	}
 }

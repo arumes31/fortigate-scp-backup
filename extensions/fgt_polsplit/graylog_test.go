@@ -109,8 +109,14 @@ func TestRunChunksFirstErrorCancels(t *testing.T) {
 	for i := range chunks {
 		chunks[i] = timeRange{From: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i), To: fmt.Sprintf("2026-07-17T%02d:00:00.000Z", i+1)}
 	}
-	if _, err := e.runChunks(context.Background(), aggregateRequest{}, chunks, "test"); err == nil {
+	_, err := e.runChunks(context.Background(), aggregateRequest{}, chunks, "test")
+	if err == nil {
 		t.Fatal("expected an error from the failing sub-window")
+	}
+	// The returned error must be the root-cause HTTP 500, not the
+	// context.Canceled fallout of the cancellation it triggered.
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error must carry the HTTP 500 root cause, got: %v", err)
 	}
 }
 

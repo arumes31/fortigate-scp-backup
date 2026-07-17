@@ -36,7 +36,7 @@
 </div>
 
 <div class="card" id="runningCard">
-    <h2 class="mt-0">Läuft gerade</h2>
+    <h2 class="mt-0">{{T .Base.Lang "dashboard.running_title"}}</h2>
     <div id="runningList">
         <div class="skeleton-row"><span class="skeleton"></span></div>
         <div class="skeleton-row"><span class="skeleton" style="width:60%"></span></div>
@@ -144,8 +144,10 @@
 {{end}}
 
 {{define "scripts"}}
+<script>window.I18N = {{i18nJSON .Base.Lang}};</script>
 <script>
 (function () {
+    function tt(key) { return (window.I18N && window.I18N[key]) || key; }
     var sseDot = document.getElementById('sseDot');
     if (sseDot) { sseDot.hidden = false; sseDot.className = 'sse-dot connecting'; }
 
@@ -172,8 +174,17 @@
         if (!list || !list.length) { runningCard.hidden = true; running.innerHTML = ''; return; }
         runningCard.hidden = false;
         running.innerHTML = list.map(function (r) {
+            var name = esc(r.fqdn || ('fw #' + r.fw_id));
+            var what = '';
+            // Backups are the default row; every other kind gets a labeled pill
+            // (analysis, devicedata, sshdiag, audit — see dashboard.running_* keys).
+            if (r.kind && r.kind !== 'backup') {
+                what = ' <span class="pill">' + tt('dashboard.running_' + r.kind) +
+                    (r.label ? ' · ' + esc(r.label) : '') + '</span>' +
+                    (r.detail ? ' <span class="muted">' + esc(r.detail) + '</span>' : '');
+            }
             return '<div class="running-row"><span class="spinner"></span><b>' +
-                esc(r.fqdn || ('fw #' + r.fw_id)) + '</b> <span class="muted">seit ' +
+                name + '</b>' + what + ' <span class="muted">' + tt('dashboard.running_since') + ' ' +
                 new Date(r.since).toLocaleTimeString() + '</span></div>';
         }).join('');
     }
@@ -248,7 +259,7 @@
         es.onmessage = function (e) {
             try {
                 var d = JSON.parse(e.data);
-                logLine('fw #' + d.fw_id + ' &rarr; ' + d.status);
+                logLine('fw #' + d.fw_id + ' → ' + d.status);
                 if (typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
                     toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
                 }

@@ -1788,6 +1788,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Firewall dropdown becomes a searchable combobox.
+    const fwSelect = document.getElementById('firewall-select');
+    if (fwSelect && typeof initSearchableSelect === 'function') {
+        initSearchableSelect(fwSelect, { placeholder: 'Select Firewall' });
+    }
+
     console.log('DOM loaded, checking preselected template immediately:', window.preselectedTemplate);
     logToBackend(`DOM loaded, initial preselected template: ${window.preselectedTemplate || 'none'}`);
 

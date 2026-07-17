@@ -55,11 +55,11 @@ func TestGenerateReuseAndCreate(t *testing.T) {
 		!strings.Contains(res.Config, "set subnet 10.0.0.99 255.255.255.255") {
 		t.Errorf("missing new host object:\n%s", res.Config)
 	}
-	if !strings.Contains(res.Config, `edit "PS5_tcp8443"`) ||
+	if !strings.Contains(res.Config, `edit "TCP8443"`) ||
 		!strings.Contains(res.Config, "set tcp-portrange 8443") {
 		t.Errorf("missing new service object:\n%s", res.Config)
 	}
-	if strings.Contains(res.Config, `edit "PS5_tcp443"`) {
+	if strings.Contains(res.Config, `edit "TCP443"`) {
 		t.Error("tcp/443 must reuse the existing HTTPS object")
 	}
 
@@ -83,7 +83,7 @@ func TestGenerateReuseAndCreate(t *testing.T) {
 		"set nat enable",
 		`set srcaddr "H_Server1" "PS5_h_10.0.0.99"`,
 		`set dstaddr "LAN_Users"`,
-		`set service "HTTPS" "PS5_tcp8443"`,
+		`set service "HTTPS" "TCP8443"`,
 		"set logtraffic all",
 		"move 13 before 5",
 		"set status disable",
@@ -203,11 +203,15 @@ func TestInsertSuffix(t *testing.T) {
 	}{
 		{"VL1>VL2 (RDP)", "_2", 35, "VL1>VL2 (RDP_2)"},   // suffix lands inside the parens
 		{"PS5_h_10.0.0.1", "_2", 79, "PS5_h_10.0.0.1_2"}, // object name (no paren) → appended
-		{"udp (X)", "_10", 7, "udp_10)"},                 // tight paren fit
+		{"udp (X)", "_10", 7, "udp_10"},                  // too tight to keep "()" → balanced fallback
 	}
 	for _, c := range exact {
-		if got := insertSuffix(c.base, c.suffix, c.maxLen); got != c.want {
+		got := insertSuffix(c.base, c.suffix, c.maxLen)
+		if got != c.want {
 			t.Errorf("insertSuffix(%q,%q,%d) = %q, want %q", c.base, c.suffix, c.maxLen, got, c.want)
+		}
+		if strings.Count(got, "(") != strings.Count(got, ")") {
+			t.Errorf("insertSuffix(%q,%q,%d) = %q has unbalanced parens", c.base, c.suffix, c.maxLen, got)
 		}
 	}
 	// Truncating case: the disambiguator must never leave an unbalanced paren
@@ -440,7 +444,7 @@ func TestGenerateRangeService(t *testing.T) {
 	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcp/8080-8082", Proto: "tcp", Port: 8080, PortEnd: 8082}}, Hits: 5}}
 	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
-	if !strings.Contains(res.Config, `edit "PS5_tcp8080_8082"`) ||
+	if !strings.Contains(res.Config, `edit "TCP8080-8082"`) ||
 		!strings.Contains(res.Config, "set tcp-portrange 8080-8082") {
 		t.Errorf("missing range service object:\n%s", res.Config)
 	}
@@ -451,7 +455,7 @@ func TestGenerateRangeService(t *testing.T) {
 	pols = []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcp/8080-8082", Proto: "tcp", Port: 8080, PortEnd: 8082}}, Hits: 5}}
 	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
-	if !strings.Contains(res.Config, `set service "WEB_ALT"`) || strings.Contains(res.Config, "PS5_tcp8080") {
+	if !strings.Contains(res.Config, `set service "WEB_ALT"`) || strings.Contains(res.Config, `"TCP8080-8082"`) {
 		t.Errorf("existing range object not reused:\n%s", res.Config)
 	}
 }
@@ -549,7 +553,7 @@ func TestGenerateDualProtoService(t *testing.T) {
 	pols = []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcpudp/53", Proto: "tcpudp", Port: 53, LogName: "DNS"}}, Hits: 5}}
 	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
-	if !strings.Contains(res.Config, `set service "DNS"`) || strings.Contains(res.Config, "PS5_tcpudp53") {
+	if !strings.Contains(res.Config, `set service "DNS"`) || strings.Contains(res.Config, `"TCPUDP53"`) {
 		t.Errorf("existing dual-proto DNS object not reused:\n%s", res.Config)
 	}
 }

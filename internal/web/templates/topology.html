@@ -108,6 +108,19 @@
 <script src="/static/ui.js"></script>
 <script src="/static/d3.v7.min.js"></script>
 <script src="/static/topology.js"></script>
+<script src="/static/searchable.js"></script>
+<script>
+// Firewall dropdown becomes a searchable combobox; keep the toolbar layout by
+// pinning the wrapper to the select's former width instead of the 100% default.
+(function () {
+    var sel = document.getElementById('topoSelect');
+    if (sel && typeof initSearchableSelect === 'function') {
+        initSearchableSelect(sel, { placeholder: tt('topo.firewall') });
+        var wrap = sel.closest('.searchable-select-wrapper');
+        if (wrap) { wrap.style.width = '240px'; }
+    }
+})();
+</script>
 <script>
 // ---------------------------------------------------------------------------
 // Public share links

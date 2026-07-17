@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,12 +19,15 @@ import (
 // aggregation fallback stepping through sub-windows — without consuming a
 // step.
 type progressState struct {
+	FwID     int // what is being analyzed, for the dashboard's running card
+	PolicyID int
 	Step     int
 	Total    int
 	Message  string
 	Detail   string // sub-stage note shown next to the message
 	Sub      int    // sub-progress within the current step (0 = none)
 	SubTotal int
+	Started  time.Time
 	Updated  time.Time
 }
 
@@ -32,13 +37,15 @@ var progressIDRe = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 
 // progressReporter registers a progress entry and returns the step function.
 // An empty or invalid id yields a no-op, so callers never branch. Advancing a
-// step clears the previous step's detail and sub-progress.
-func (e *Extension) progressReporter(id string, total int) func(string) {
+// step clears the previous step's detail and sub-progress. fwID/policyID name
+// the analysis target for the dashboard's currently-running card.
+func (e *Extension) progressReporter(id string, total, fwID, policyID int) func(string) {
 	if !progressIDRe.MatchString(id) {
 		return func(string) {}
 	}
+	now := time.Now()
 	e.progressMu.Lock()
-	e.progressByID[id] = &progressState{Total: total, Message: "Starting analysis", Updated: time.Now()}
+	e.progressByID[id] = &progressState{FwID: fwID, PolicyID: policyID, Total: total, Message: "Starting analysis", Started: now, Updated: now}
 	e.progressMu.Unlock()
 	return func(msg string) {
 		e.progressMu.Lock()
@@ -97,6 +104,43 @@ func progressNoteFrom(ctx context.Context) progressNoteFn {
 		return fn
 	}
 	return func(string, int, int) {}
+}
+
+// liveExt is the mounted extension instance, published so the core dashboard
+// can list in-flight Graylog analyses without holding a reference to the
+// extension (mirroring how other extensions expose package-level read APIs).
+var liveExt atomic.Pointer[Extension]
+
+// RunningAnalysis is one in-flight policy analysis (a running Graylog query
+// sequence), projected for the core dashboard's "currently running" card.
+type RunningAnalysis struct {
+	FwID     int       `json:"fw_id"`
+	PolicyID int       `json:"policy_id"`
+	Message  string    `json:"message"` // current stage
+	Detail   string    `json:"detail"`  // sub-stage note ("time step 3/24")
+	Step     int       `json:"step"`
+	Total    int       `json:"total"`
+	Started  time.Time `json:"started"`
+}
+
+// RunningAnalyses returns the currently running analyses (empty when the
+// extension is disabled or idle), newest first.
+func RunningAnalyses() []RunningAnalysis {
+	e := liveExt.Load()
+	if e == nil {
+		return nil
+	}
+	e.progressMu.Lock()
+	defer e.progressMu.Unlock()
+	out := make([]RunningAnalysis, 0, len(e.progressByID))
+	for _, p := range e.progressByID {
+		out = append(out, RunningAnalysis{
+			FwID: p.FwID, PolicyID: p.PolicyID, Message: p.Message, Detail: p.Detail,
+			Step: p.Step, Total: p.Total, Started: p.Started,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Started.After(out[j].Started) })
+	return out
 }
 
 // progressDone drops the entry once the analyze response has been written

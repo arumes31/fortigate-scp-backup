@@ -290,12 +290,18 @@ func TestWANAsAllNonPublicRanges(t *testing.T) {
 		tup("10.0.0.1", "224.0.0.251", "udp", 5353, "MDNS", 5),   // multicast
 		tup("10.0.0.1", "255.255.255.255", "udp", 67, "DHCP", 5), // broadcast (reserved)
 		tup("10.0.0.1", "0.0.0.0", "udp", 68, "", 3),             // this-network
+		tup("10.0.0.1", "192.0.2.55", "tcp", 80, "HTTP", 4),      // TEST-NET-1
+		tup("10.0.0.1", "198.51.100.7", "tcp", 80, "HTTP", 4),    // TEST-NET-2
+		tup("10.0.0.1", "203.0.113.9", "tcp", 80, "HTTP", 4),     // TEST-NET-3
+		tup("10.0.0.1", "198.18.0.20", "tcp", 80, "HTTP", 4),     // benchmarking
+		tup("10.0.0.1", "192.0.0.8", "tcp", 80, "HTTP", 4),       // IETF proto assignments
 	}
 	a := Analyze(tuples, AnalyzeOptions{WANAsAll: true})
 	if e := a.DstEnts["8.8.8.8"]; e.Value != "all" {
 		t.Errorf("public dst should collapse to all: %+v", e)
 	}
-	for _, ip := range []string{"224.0.0.251", "255.255.255.255", "0.0.0.0"} {
+	for _, ip := range []string{"224.0.0.251", "255.255.255.255", "0.0.0.0",
+		"192.0.2.55", "198.51.100.7", "203.0.113.9", "198.18.0.20", "192.0.0.8"} {
 		if e := a.DstEnts[ip]; e.Value != ip {
 			t.Errorf("non-public %s must stay explicit, got %+v", ip, e)
 		}

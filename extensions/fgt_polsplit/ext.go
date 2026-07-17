@@ -67,6 +67,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.tmpl = t
 
 	e.progressByID = map[string]*progressState{}
+	liveExt.Store(e) // publish for the core dashboard's running-queries card
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(d.LoginRequired)

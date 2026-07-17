@@ -469,6 +469,10 @@ function strategyPanel(s, i) {
 /* ---------------- wiring ---------------- */
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Firewall dropdown becomes a searchable combobox (shared /static/searchable.js).
+    if (typeof initSearchableSelect === 'function') {
+        initSearchableSelect($('ps-firewall'), { placeholder: 'Select Firewall' });
+    }
     $('ps-load-btn').addEventListener('click', loadPolicy);
     $('ps-analyze-btn').addEventListener('click', analyze);
     $('ps-policy-id').addEventListener('keydown', e => { if (e.key === 'Enter') loadPolicy(); });

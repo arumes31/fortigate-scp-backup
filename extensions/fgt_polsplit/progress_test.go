@@ -14,7 +14,7 @@ func TestProgressLifecycle(t *testing.T) {
 	e := &Extension{progressByID: map[string]*progressState{}}
 	const id = "11111111-2222-3333-4444-555555555555"
 
-	report := e.progressReporter(id, 3)
+	report := e.progressReporter(id, 3, 1, 5)
 	report("step one")
 	report("step two")
 
@@ -58,8 +58,8 @@ func TestProgressLifecycle(t *testing.T) {
 	}
 
 	// Invalid ids: reporter and noter are no-ops, nothing lands in the store.
-	e.progressReporter("nope", 3)("x")
-	e.progressReporter("", 3)("x")
+	e.progressReporter("nope", 3, 1, 5)("x")
+	e.progressReporter("", 3, 1, 5)("x")
 	e.progressNoter("nope")("x", 1, 2)
 	if len(e.progressByID) != 0 {
 		t.Errorf("invalid ids leaked into the store: %v", e.progressByID)
