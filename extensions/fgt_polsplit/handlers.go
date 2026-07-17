@@ -275,7 +275,7 @@ func isdbSuggestions(dns []dnsSuggestion, isdbNames []string) []isdbSuggestion {
 	for _, d := range dns {
 		name := strings.ToLower(d.Name)
 		for suffix, vendor := range isdbVendorDomains {
-			if strings.HasSuffix(name, suffix) {
+			if strings.HasSuffix(name, suffix) && (name == suffix || name[len(name)-len(suffix)-1] == '.') {
 				s := byVendor[vendor]
 				if s == nil {
 					s = &isdbSuggestion{Vendor: vendor}
@@ -739,6 +739,15 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	srcsMap := make(map[string]bool)
+	dstsMap := make(map[string]bool)
+	svcsMap := make(map[string]bool)
+	for _, t := range analysis.Tuples {
+		srcsMap[t.SrcIP] = true
+		dstsMap[t.DstIP] = true
+		svcsMap[fmt.Sprintf("%s/%d", t.Proto, t.Port)] = true
+	}
+
 	respTuples := analysis.Tuples
 	if len(respTuples) > maxTuplesInResponse {
 		respTuples = respTuples[:maxTuplesInResponse]
@@ -767,6 +776,9 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		"backup_time":      ts.In(e.tz).Format("2006-01-02 15:04"),
 		"total_messages":   totalMessages,
 		"tuple_count":      len(analysis.Tuples),
+		"src_count":        len(srcsMap),
+		"dst_count":        len(dstsMap),
+		"svc_count":        len(svcsMap),
 		"tuples":           respTuples,
 		"stale_tuples":     staleTuples,
 		"dns_suggestions":  dnsSuggestions,

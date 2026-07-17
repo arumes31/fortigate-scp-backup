@@ -135,13 +135,13 @@ services:
     # dump/restore — never delete or replace ./pgdata before the dump is
     # taken and the restore verified:
     # 1. Start a container with the SAME major version PG_VERSION reports,
-    #    then dump all databases:
-    #    docker exec -t fortisafe-db pg_dumpall -U postgre > backup.sql
+    #    then dump the firewall_backups database:
+    #    docker exec -t fortisafe-db pg_dump -U postgre firewall_backups > backup.sql
     # 2. Stop the container and move the old ./pgdata aside (keep it until
     #    the restore is verified).
     # 3. Start this pinned image (it initializes a fresh ./pgdata).
     # 4. Restore the dump:
-    #    cat backup.sql | docker exec -i fortisafe-db psql -U postgre -d firewall_backups
+    #    docker exec -i fortisafe-db psql -U postgre -d firewall_backups --set ON_ERROR_STOP=1 < backup.sql
     #
     # If your data still lives in the fortisafe-db-data named volume (used by
     # earlier revisions of this file), dump from there the same way — with an

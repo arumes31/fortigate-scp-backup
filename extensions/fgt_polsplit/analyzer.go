@@ -149,7 +149,8 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 		ports := map[int]bool{}
 		var maxHits int64
 		ctrl135, ctrl21 := -1, -1
-		var highIdxs []int
+		var highIdxs []int    // ports >= dynPortFloor (1024), used by FTP branch
+		var rpcHighIdxs []int // ports >= rpcRangeLo (49152), used by RPC branch
 		for _, i := range idxs {
 			t := tuples[i]
 			ports[t.Port] = true
@@ -165,6 +166,9 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 			if t.Port >= dynPortFloor {
 				highIdxs = append(highIdxs, i)
 			}
+			if t.Port >= rpcRangeLo {
+				rpcHighIdxs = append(rpcHighIdxs, i)
+			}
 		}
 		switch {
 		case len(ports) >= scanMinPorts && maxHits <= scanMaxHitsPerPort:
@@ -172,10 +176,10 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 				drop[i] = true
 			}
 			scanPairs++
-		case ctrl135 >= 0 && len(highIdxs) >= rpcMinHighPorts:
+		case ctrl135 >= 0 && len(rpcHighIdxs) >= rpcMinHighPorts:
 			var hits int64
 			last := ""
-			for _, i := range highIdxs {
+			for _, i := range rpcHighIdxs {
 				drop[i] = true
 				hits += tuples[i].Hits
 				if tuples[i].LastSeen > last {

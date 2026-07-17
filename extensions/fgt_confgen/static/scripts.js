@@ -1430,10 +1430,6 @@ function copyUrl() {
     .then(response => response.json())
     .then(data => {
         if (data.status === 'success') {
-            const isGlobalCheckbox = document.getElementById('template-global');
-            if (isGlobalCheckbox) {
-                isGlobalCheckbox.checked = data.is_global || false;
-            }
             const shortCode = data.short_code;
             const shortUrl = `${window.location.origin}/fgt-confgen/s/${shortCode}`;
             console.log(`URL generated: ${shortUrl}`);

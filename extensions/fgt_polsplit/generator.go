@@ -377,6 +377,9 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		fmt.Fprintf(&b, "        set dstaddr %s\n", quoteList(dst))
 		fmt.Fprintf(&b, "        set service %s\n", quoteList(svcs))
 		b.WriteString("        set logtraffic all\n")
+		if orig.Status == "disable" {
+			b.WriteString("        set status disable\n")
+		}
 		comment := fmt.Sprintf("Split from policy %d (FortiSafe polsplit)", orig.ID)
 		if t := sanitizeTicket(ticket); t != "" {
 			comment += " [" + t + "]"
@@ -423,6 +426,9 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 		fmt.Fprintf(&b, "        set service %s\n", quoteList(orDefault(orig.Services, "ALL")))
 		b.WriteString("        set action deny\n")
 		b.WriteString("        set logtraffic all\n")
+		if orig.Status == "disable" {
+			b.WriteString("        set status disable\n")
+		}
 		comment := fmt.Sprintf("Fallthrough deny for policy %d — catches traffic the splits missed (FortiSafe polsplit)", orig.ID)
 		if t := sanitizeTicket(ticket); t != "" {
 			comment += " [" + t + "]"
@@ -457,7 +463,7 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	if orig.VDOM != "" {
 		// Multi-VDOM unit: the CLI must enter the policy's VDOM first, or the
 		// paste fails at the global context (or lands in the wrong VDOM).
-		cfg = "config vdom\nedit " + orig.VDOM + "\n\n" + cfg + "\nend\n"
+		cfg = "config vdom\nedit " + fgtQuote(orig.VDOM) + "\n\n" + cfg + "\nend\n"
 	}
 	res.Config = cfg
 	if orig.Action != "accept" {

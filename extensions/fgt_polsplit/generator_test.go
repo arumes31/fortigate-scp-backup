@@ -369,7 +369,7 @@ func TestGenerateVDOMWrapper(t *testing.T) {
 	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
 	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
-	if !strings.HasPrefix(res.Config, "config vdom\nedit dmz\n") {
+	if !strings.HasPrefix(res.Config, "config vdom\nedit \"dmz\"\n") {
 		t.Errorf("config must start with the vdom wrapper:\n%s", res.Config)
 	}
 	if !strings.HasSuffix(strings.TrimRight(res.Config, "\n"), "end") {
