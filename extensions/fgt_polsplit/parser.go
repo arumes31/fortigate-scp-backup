@@ -65,6 +65,23 @@ func splitConfigValues(s string) []string {
 	return out
 }
 
+// quoteOpen reports whether a double-quoted value is still open after
+// scanning s with the given starting state. Backslash escapes only apply
+// inside quotes (FortiGate escapes `\"` and `\\` within quoted values).
+func quoteOpen(s string, open bool) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			if open {
+				i++ // skip the escaped character
+			}
+		case '"':
+			open = !open
+		}
+	}
+	return open
+}
+
 // addrEntry / svcEntry accumulate one object while its section is open.
 type addrEntry struct {
 	name    string
@@ -82,11 +99,29 @@ type svcEntry struct {
 	ranges   map[string][]string // proto → port-range tokens ("443", "80-90", "443:1024-65535")
 }
 
+// grpEntry accumulates one address- or service-group while its section is open.
+type grpEntry struct {
+	name    string
+	section string // "firewall addrgrp" | "firewall service group"
+	members []string
+}
+
 type policyEntry struct {
 	id    int
 	vdom  string
 	pol   OrigPolicy
 	lines []string
+}
+
+// groupSig is the canonical identity of a member set: sorted, lowercased,
+// NUL-joined. Used to match recommendation sides against existing groups.
+func groupSig(names []string) string {
+	lower := make([]string, len(names))
+	for i, n := range names {
+		lower[i] = strings.ToLower(n)
+	}
+	sort.Strings(lower)
+	return strings.Join(lower, "\x00")
 }
 
 // frame is one level of the `config … end` nesting stack.
@@ -96,18 +131,22 @@ type frame struct {
 }
 
 type vdomInventory struct {
-	addrByCIDR map[string][]string
-	svcByKey   map[string][]string
-	svcNames   map[string]string
-	takenNames map[string]bool
+	addrByCIDR   map[string][]string
+	svcByKey     map[string][]string
+	svcNames     map[string]string
+	takenNames   map[string]bool
+	addrGrpBySig map[string]string
+	svcGrpBySig  map[string]string
 }
 
 func newVDOMInventory() *vdomInventory {
 	return &vdomInventory{
-		addrByCIDR: make(map[string][]string),
-		svcByKey:   make(map[string][]string),
-		svcNames:   make(map[string]string),
-		takenNames: make(map[string]bool),
+		addrByCIDR:   make(map[string][]string),
+		svcByKey:     make(map[string][]string),
+		svcNames:     make(map[string]string),
+		takenNames:   make(map[string]bool),
+		addrGrpBySig: make(map[string]string),
+		svcGrpBySig:  make(map[string]string),
 	}
 }
 
@@ -144,11 +183,28 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		}
 		return ""
 	}
+	stackHas := func(section string) bool {
+		for i := range stack {
+			if stack[i].section == section {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Config-global inventories (interfaces and ISDB names are not per-VDOM
+	// objects): WAN classification, firewall self-IPs, internet-service names.
+	wanIfaces := map[string]bool{"virtual-wan-link": true}
+	firewallIPs := map[string]bool{}
+	isdbSet := map[string]bool{}
+	var isdbNames []string
 
 	var addr *addrEntry
 	var svc *svcEntry
+	var grp *grpEntry
 	var pol *policyEntry
 	policyIDsByVDOM := map[string][]int{}
+	policyNamesByVDOM := map[string]map[string]bool{}
 	var matched []*policyEntry
 
 	finishAddr := func() {
@@ -174,11 +230,37 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		}
 		svc = nil
 	}
+	finishGrp := func() {
+		if grp == nil {
+			return
+		}
+		if len(grp.members) > 0 {
+			inv := getInv(currentVDOM())
+			sig := groupSig(grp.members)
+			// First definition wins on duplicate member sets.
+			if grp.section == "firewall addrgrp" {
+				if _, ok := inv.addrGrpBySig[sig]; !ok {
+					inv.addrGrpBySig[sig] = grp.name
+				}
+			} else {
+				if _, ok := inv.svcGrpBySig[sig]; !ok {
+					inv.svcGrpBySig[sig] = grp.name
+				}
+			}
+		}
+		grp = nil
+	}
 	finishPol := func() {
 		if pol == nil {
 			return
 		}
 		policyIDsByVDOM[pol.vdom] = append(policyIDsByVDOM[pol.vdom], pol.id)
+		if pol.pol.Name != "" {
+			if policyNamesByVDOM[pol.vdom] == nil {
+				policyNamesByVDOM[pol.vdom] = map[string]bool{}
+			}
+			policyNamesByVDOM[pol.vdom][strings.ToLower(pol.pol.Name)] = true
+		}
 		if pol.id == policyID {
 			p := pol.pol
 			p.ID = pol.id
@@ -197,13 +279,29 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			finishAddr()
 		case "firewall service custom":
 			finishSvc()
+		case "firewall addrgrp", "firewall service group":
+			finishGrp()
 		case "firewall policy":
 			finishPol()
 		}
 	}
 
-	for _, raw := range strings.Split(content, "\n") {
-		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+	lines := strings.Split(content, "\n")
+	for li := 0; li < len(lines); li++ {
+		line := strings.TrimSpace(strings.TrimRight(lines[li], "\r"))
+		// Multi-line quoted values (automation-action scripts, certificates)
+		// embed raw text — including lines that look exactly like `next`,
+		// `end` or `config …` — inside one `set` value. When a set line
+		// leaves a double quote open, consume lines until it closes so the
+		// embedded text can never desync the section stack. The value itself
+		// is discarded: no tracked key carries multi-line values.
+		if strings.HasPrefix(line, "set ") && quoteOpen(line, false) {
+			for li+1 < len(lines) && quoteOpen(lines[li+1], true) {
+				li++
+			}
+			li++ // the line that closed the quote
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "config "):
 			stack = append(stack, frame{section: strings.TrimSpace(strings.TrimPrefix(line, "config "))})
@@ -223,7 +321,13 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				continue
 			}
 			finishSection(f.section)
-			name := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "edit ")), `"`)
+			// Unquote via the escape-aware tokenizer: `edit "A\"B"` must yield
+			// A"B, not a mangled name that later fails collision checks and
+			// CLI emission. Unquoted numeric edits pass through unchanged.
+			name := strings.TrimSpace(strings.TrimPrefix(line, "edit "))
+			if toks := splitConfigValues(name); len(toks) > 0 {
+				name = toks[0]
+			}
 			f.edit = name
 			switch f.section {
 			case "firewall address":
@@ -236,9 +340,27 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 				if f.section == "firewall service group" {
 					inv.svcNames[strings.ToLower(name)] = name
 				}
+				grp = &grpEntry{name: name, section: f.section}
 			case "firewall policy":
 				if id, err := strconv.Atoi(name); err == nil {
 					pol = &policyEntry{id: id, vdom: currentVDOM()}
+				}
+			case "firewall internet-service-name":
+				if !isdbSet[name] {
+					isdbSet[name] = true
+					isdbNames = append(isdbNames, name)
+				}
+			case "firewall vip", "firewall vipgrp", "firewall vip46", "firewall vip64":
+				// VIP names share the address namespace: FortiOS rejects an
+				// address object named like an existing VIP, so they must
+				// count as taken even though their mappings aren't reusable.
+				getInv(currentVDOM()).takenNames[strings.ToLower(name)] = true
+			case "zone":
+				// Custom SD-WAN zones (config zone inside config system sdwan)
+				// are referenced by name in policy dstintf and are as
+				// internet-facing as their member interfaces.
+				if stackHas("system sdwan") || stackHas("system virtual-wan-link") {
+					wanIfaces[strings.ToLower(name)] = true
 				}
 			}
 		case strings.HasPrefix(line, "set "):
@@ -253,6 +375,32 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 			}
 			key, val := rest[:sp], strings.TrimSpace(rest[sp+1:])
 			switch {
+			case f.section == "system interface" && f.edit != "":
+				switch key {
+				case "role":
+					if strings.EqualFold(val, "wan") {
+						wanIfaces[strings.ToLower(f.edit)] = true
+					}
+				case "ip":
+					if fields := strings.Fields(val); len(fields) >= 1 {
+						if ip := net.ParseIP(fields[0]); ip != nil {
+							firewallIPs[fields[0]] = true
+						}
+					}
+				}
+			case f.section == "secondaryip" && key == "ip" && stackHas("system interface"):
+				// Secondary interface addresses (config secondaryip) are
+				// firewall-local too — traffic to them is local-in.
+				if fields := strings.Fields(val); len(fields) >= 1 {
+					if ip := net.ParseIP(fields[0]); ip != nil {
+						firewallIPs[fields[0]] = true
+					}
+				}
+			case key == "interface" && (stackHas("system sdwan") || stackHas("system virtual-wan-link")):
+				// SD-WAN / virtual-wan-link member interfaces are internet-facing.
+				if toks := splitConfigValues(val); len(toks) > 0 {
+					wanIfaces[strings.ToLower(toks[0])] = true
+				}
 			case addr != nil && f.section == "firewall address":
 				switch key {
 				case "type":
@@ -263,6 +411,10 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 					addr.startIP = val
 				case "end-ip":
 					addr.endIP = val
+				}
+			case grp != nil && (f.section == "firewall addrgrp" || f.section == "firewall service group"):
+				if key == "member" {
+					grp.members = append(grp.members, splitConfigValues(val)...)
 				}
 			case svc != nil && f.section == "firewall service custom":
 				switch key {
@@ -310,6 +462,7 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 	// Finalize whatever is still open.
 	finishAddr()
 	finishSvc()
+	finishGrp()
 	finishPol()
 
 	var policyVDOMs []string
@@ -319,24 +472,32 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 
 	var selected *policyEntry
 	if targetVDOM != "" {
+		// An explicit VDOM request must match exactly — silently falling back
+		// to another VDOM's policy would hand the caller the wrong object
+		// inventory and policy-ID space.
 		for _, m := range matched {
 			if m.vdom == targetVDOM {
 				selected = m
 				break
 			}
 		}
-	}
-	if selected == nil && len(matched) > 0 {
+	} else if len(matched) > 0 {
 		selected = matched[0]
 	}
 
+	sort.Strings(isdbNames)
 	pb := &ParsedBackup{
 		PolicyVDOMs:   policyVDOMs,
 		AddrByCIDR:    map[string][]string{},
 		SvcByKey:      map[string][]string{},
 		SvcNames:      map[string]string{},
 		TakenNames:    map[string]bool{},
+		AddrGrpBySig:  map[string]string{},
+		SvcGrpBySig:   map[string]string{},
 		UsedPolicyIDs: []int{},
+		WANInterfaces: wanIfaces,
+		FirewallIPs:   firewallIPs,
+		ISDBNames:     isdbNames,
 	}
 
 	if selected != nil {
@@ -344,12 +505,15 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		pb.Policy = &p
 		pb.UsedPolicyIDs = policyIDsByVDOM[selected.vdom]
 		sort.Ints(pb.UsedPolicyIDs)
+		pb.PolicyNames = policyNamesByVDOM[selected.vdom]
 
 		inv := getInv(selected.vdom)
 		pb.AddrByCIDR = inv.addrByCIDR
 		pb.SvcByKey = inv.svcByKey
 		pb.SvcNames = inv.svcNames
 		pb.TakenNames = inv.takenNames
+		pb.AddrGrpBySig = inv.addrGrpBySig
+		pb.SvcGrpBySig = inv.svcGrpBySig
 	}
 
 	for k := range pb.AddrByCIDR {
@@ -394,9 +558,31 @@ func (a *addrEntry) cidr() string {
 	return ""
 }
 
-// singleKey returns the canonical service key ("tcp/443", "icmp") when the
-// object matches exactly one protocol/port, so it can substitute for observed
-// traffic without widening scope. Ranges, port lists and source-port
+// parsePortToken parses one destination-port token ("443" or "8000-8010")
+// into its bounds; ok is false for source-port restrictions or invalid ports.
+func parsePortToken(tok string) (lo, hi int, ok bool) {
+	if strings.IndexByte(tok, ':') >= 0 {
+		return 0, 0, false // source-port restricted
+	}
+	if i := strings.IndexByte(tok, '-'); i >= 0 {
+		l, errLo := strconv.Atoi(tok[:i])
+		h, errHi := strconv.Atoi(tok[i+1:])
+		if errLo != nil || errHi != nil || l <= 0 || h > 65535 || l > h {
+			return 0, 0, false
+		}
+		return l, h, true
+	}
+	p, err := strconv.Atoi(tok)
+	if err != nil || p <= 0 || p > 65535 {
+		return 0, 0, false
+	}
+	return p, p, true
+}
+
+// singleKey returns the canonical service key ("tcp/443", "tcp/8000-8010",
+// "tcpudp/53", "icmp") when the object matches exactly one protocol/port, one
+// contiguous range, or one identical tcp+udp port pair — so it can substitute
+// for observed traffic without widening scope. Port lists and source-port
 // restrictions return "".
 func (s *svcEntry) singleKey() string {
 	switch strings.ToUpper(s.protocol) {
@@ -416,29 +602,34 @@ func (s *svcEntry) singleKey() string {
 		}
 		return ""
 	}
-	var key string
-	total := 0
+	type bounds struct{ lo, hi int }
+	perProto := map[string]bounds{}
 	for proto, tokens := range s.ranges {
-		for _, tok := range tokens {
-			total++
-			if total > 1 {
-				return ""
+		if len(tokens) != 1 {
+			return ""
+		}
+		lo, hi, ok := parsePortToken(tokens[0])
+		if !ok {
+			return ""
+		}
+		perProto[proto] = bounds{lo, hi}
+	}
+	switch len(perProto) {
+	case 1:
+		for proto, b := range perProto {
+			if b.lo == b.hi {
+				return fmt.Sprintf("%s/%d", proto, b.lo)
 			}
-			dst := tok
-			if i := strings.IndexByte(dst, ':'); i >= 0 {
-				return "" // source-port restricted
-			}
-			if strings.Contains(dst, "-") {
-				lohi := strings.SplitN(dst, "-", 2)
-				if len(lohi) != 2 || lohi[0] != lohi[1] {
-					return ""
-				}
-				dst = lohi[0]
-			}
-			if p, err := strconv.Atoi(dst); err == nil && p > 0 {
-				key = fmt.Sprintf("%s/%d", proto, p)
-			}
+			return fmt.Sprintf("%s/%d-%d", proto, b.lo, b.hi)
+		}
+	case 2:
+		// An identical tcp+udp single-port pair (like the builtin DNS object)
+		// substitutes exactly for a merged tcpudp spec.
+		tc, okT := perProto["tcp"]
+		ud, okU := perProto["udp"]
+		if okT && okU && tc == ud && tc.lo == tc.hi {
+			return fmt.Sprintf("tcpudp/%d", tc.lo)
 		}
 	}
-	return key
+	return ""
 }

@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -19,10 +21,24 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
+// isValidTemplateName rejects names containing URL-unsafe characters.
+func isValidTemplateName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "/?#")
+}
+
 //go:embed templates/fgt_confgen_index.html
 var templatesFS embed.FS
 
 const indexTemplate = "fgt_confgen_index.html"
+
+// canManageGlobalTemplates gates writes to __global__ templates. The app has
+// no role system — the seeded "admin" account is currently the only global
+// manager. NOTE: deployments whose administrators authenticate under other
+// usernames (e.g. via RADIUS) lose global-template management entirely; if
+// that bites, this single chokepoint is the place to widen.
+func canManageGlobalTemplates(username string) bool {
+	return username == "admin"
+}
 
 func (e *Extension) parseTemplates() error {
 	t, err := template.New("").ParseFS(templatesFS, "templates/*.html")
@@ -117,7 +133,8 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) listFirewalls(w http.ResponseWriter, r *http.Request) {
 	rows, err := e.pgPool.Query(r.Context(), "SELECT id, fqdn FROM firewalls ORDER BY fqdn")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		e.logger.Error("Failed to list firewalls", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -188,6 +205,61 @@ func (e *Extension) loadFirewallConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	e.log(r, "Load Firewall Config", fmt.Sprintf("Loaded latest config from firewall ID %d", fwID))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(parsed)
+}
+
+func (e *Extension) parseConfig(w http.ResponseWriter, r *http.Request) {
+	username := e.currentUser(r)
+
+	// Hard-cap the upload at 32 MiB: ParseMultipartForm's argument only
+	// bounds in-memory buffering (the rest spills to disk), so the request
+	// body itself must be limited too.
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		http.Error(w, "invalid multipart form or upload larger than 32 MiB", http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("config_file")
+	if err != nil {
+		// Only a genuinely absent file falls back to the last parsed
+		// configuration (the UI posts an empty form to fetch it); anything
+		// else is a malformed upload.
+		if errors.Is(err, http.ErrMissingFile) || errors.Is(err, http.ErrNotMultipart) {
+			lastConfig, err := e.getLastConfigFromDB(username)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ParsedConfig{})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(lastConfig)
+			return
+		}
+		e.logger.Error("Failed to read uploaded config file", "err", err)
+		http.Error(w, "invalid config_file upload", http.StatusBadRequest)
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	contentBytes, err := io.ReadAll(file)
+	if err != nil {
+		e.logger.Error("Failed to read uploaded config file", "err", err)
+		http.Error(w, "Failed to read file", http.StatusBadRequest)
+		return
+	}
+
+	parsed := ParseConfig(string(contentBytes))
+
+	if err := e.saveLastConfigToDB(username, parsed); err != nil {
+		e.logger.Error("Failed to save config to SQLite", "err", err)
+		http.Error(w, "Failed to persist parsed configuration", http.StatusInternalServerError)
+		return
+	}
+
+	e.log(r, "Parse Config", "Parsed and saved uploaded configuration file")
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(parsed)
@@ -345,8 +417,8 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 	policiesJSON := r.FormValue("policies")
 	isGlobal := r.FormValue("is_global") == "true" || r.FormValue("is_global") == "on"
 
-	if templateName == "" {
-		http.Error(w, "template_name is required", http.StatusBadRequest)
+	if !isValidTemplateName(templateName) {
+		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
 		return
 	}
 	if policiesJSON == "" {
@@ -368,7 +440,7 @@ func (e *Extension) saveTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to save global templates", http.StatusForbidden)
 		return
 	}
@@ -394,7 +466,7 @@ func (e *Extension) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to delete global templates", http.StatusForbidden)
 		return
 	}
@@ -431,13 +503,18 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isValidTemplateName(body.NewName) {
+		http.Error(w, "new_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		return
+	}
+
 	username := e.currentUser(r)
 	owner := username
 	if body.IsGlobal {
 		owner = "__global__"
 	}
 
-	if owner == "__global__" && username != "admin" {
+	if owner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to rename global templates", http.StatusForbidden)
 		return
 	}
@@ -450,8 +527,13 @@ func (e *Extension) renameTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	affected, err := e.renameTemplateInDB(owner, body.OldName, body.NewName)
+	// Rename and short-URL rewrite run in one transaction so a failure in
+	// either leaves both tables unchanged.
+	oldURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.OldName)
+	newURL := fmt.Sprintf("/fgt-confgen/get_template/%s", body.NewName)
+	affected, err := e.renameTemplateInDB(owner, body.OldName, body.NewName, oldURL, newURL)
 	if err != nil {
+		e.logger.Error("Failed to rename template", "old", body.OldName, "new", body.NewName, "err", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -565,7 +647,7 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate permission check
-	if foundOwner == "__global__" && username != "admin" {
+	if foundOwner == "__global__" && !canManageGlobalTemplates(username) {
 		http.Error(w, "Unauthorized to edit global templates", http.StatusForbidden)
 		return
 	}
@@ -589,7 +671,8 @@ func (e *Extension) clonePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "Policy not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "new_policy": newPolicy})
 }
 
 func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
@@ -597,8 +680,12 @@ func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
 	templateName := r.FormValue("template_name")
 	templateDataStr := r.FormValue("template_data")
 
-	if templateName == "" || templateDataStr == "" {
-		http.Error(w, "Missing fields", http.StatusBadRequest)
+	if !isValidTemplateName(templateName) {
+		http.Error(w, "template_name is required and must not contain /, ?, or #", http.StatusBadRequest)
+		return
+	}
+	if templateDataStr == "" {
+		http.Error(w, "Missing template_data", http.StatusBadRequest)
 		return
 	}
 
@@ -671,9 +758,31 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 
 	var shortCode string
 	err := e.db.QueryRow("SELECT short_code FROM short_urls WHERE url = ?", body.URL).Scan(&shortCode)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
 	if err == sql.ErrNoRows {
-		shortCode = randHex(6)
-		_ = e.shortenURLInDB(body.URL, shortCode)
+		inserted := false
+		for attempts := 0; attempts < 5; attempts++ {
+			shortCode = randHex(6)
+			insErr := e.shortenURLInDB(body.URL, shortCode)
+			if insErr == nil {
+				inserted = true
+				break
+			}
+			// Only a confirmed short-code collision is worth retrying; any
+			// other database failure would just fail five times.
+			if !errors.Is(insErr, errShortCodeCollision) {
+				e.logger.Error("Failed to store short URL", "err", insErr)
+				http.Error(w, "Database error", http.StatusInternalServerError)
+				return
+			}
+		}
+		if !inserted {
+			http.Error(w, "Failed to generate unique short code", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

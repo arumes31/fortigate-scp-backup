@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,6 +34,10 @@ type Extension struct {
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+
+	// Live progress of running analyses, polled by the UI (see progress.go).
+	progressMu   sync.Mutex
+	progressByID map[string]*progressState
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
@@ -61,12 +66,15 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	}
 	e.tmpl = t
 
+	e.progressByID = map[string]*progressState{}
+
 	r.Group(func(pr chi.Router) {
 		pr.Use(d.LoginRequired)
 		pr.Get("/", e.index)
 		pr.Get("/list_firewalls", e.listFirewalls)
 		pr.Get("/policy_info", e.policyInfo)
 		pr.Post("/analyze", e.analyze)
+		pr.Get("/progress", e.progressHandler)
 	})
 
 	staticSub, err := fs.Sub(extensionFS, "static")

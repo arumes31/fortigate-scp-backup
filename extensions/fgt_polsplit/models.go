@@ -13,14 +13,19 @@ type FirewallRef struct {
 // TrafficTuple is one aggregated src→dst/service combination observed in the
 // policy's traffic logs.
 type TrafficTuple struct {
-	SrcIP    string `json:"srcip"`
-	DstIP    string `json:"dstip"`
-	Proto    string `json:"proto"` // tcp|udp|sctp|icmp|icmp6|ip-<n>
-	Port     int    `json:"port"`  // 0 for portless protocols
-	Service  string `json:"service"`
-	Hits     int64  `json:"hits"`
+	SrcIP   string `json:"srcip"`
+	DstIP   string `json:"dstip"`
+	Proto   string `json:"proto"`              // tcp|udp|sctp|icmp|icmp6|ip-<n>
+	Port    int    `json:"port"`               // 0 for portless protocols
+	PortEnd int    `json:"port_end,omitempty"` // synthetic range end (pair-pattern collapse)
+	Service string `json:"service"`
+	Hits    int64  `json:"hits"`
+	// LastSeen is an ISO timestamp string (lexicographic order == time order).
 	LastSeen string `json:"last_seen,omitempty"`
 	IPv6     bool   `json:"ipv6"`
+	// Flow marks the tuple relative to the optional baseline window:
+	// "new" (analysis window only) or "stale" (baseline only).
+	Flow string `json:"flow,omitempty"`
 }
 
 // Entity is one side member of a recommended policy: a single host or a
@@ -33,9 +38,10 @@ type Entity struct {
 
 // ServiceSpec is a normalized service observed in the logs.
 type ServiceSpec struct {
-	Key     string `json:"key"`   // canonical "tcp/443", "icmp", "ip/47"
-	Proto   string `json:"proto"` // tcp|udp|sctp|icmp|icmp6|ip-<n>
-	Port    int    `json:"port"`  // 0 when portless
+	Key     string `json:"key"`                // canonical "tcp/443", "tcp/8080-8082", "icmp", "ip/47"
+	Proto   string `json:"proto"`              // tcp|udp|sctp|icmp|icmp6|ip-<n>
+	Port    int    `json:"port"`               // 0 when portless; range start when PortEnd is set
+	PortEnd int    `json:"port_end,omitempty"` // consolidated range end (0 = single port)
 	LogName string `json:"log_name,omitempty"`
 }
 
@@ -47,6 +53,9 @@ type RecPolicy struct {
 	Dst      []Entity      `json:"dst"`
 	Services []ServiceSpec `json:"services"`
 	Hits     int64         `json:"hits"`
+	// Tags classify recognized traffic patterns ("infrastructure",
+	// "active-directory") for display and naming.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // NewObject is one address/service object that does not exist in the current
@@ -98,6 +107,10 @@ type ParsedBackup struct {
 	// UsedPolicyIDs are all policy IDs in the matched policy's VDOM, for
 	// allocating free IDs for the split policies.
 	UsedPolicyIDs []int
+	// PolicyNames are the lowercased names of all policies in the matched
+	// policy's VDOM — FortiGate requires unique policy names per VDOM, so
+	// generated split-policy names must not collide with them.
+	PolicyNames map[string]bool
 
 	// AddrByCIDR maps "10.1.2.3/32" / "10.1.2.0/24" to the names of existing
 	// address objects covering exactly that host/subnet (sorted).
@@ -107,8 +120,25 @@ type ParsedBackup struct {
 	SvcByKey map[string][]string
 	// SvcNames maps lowercased service/service-group names to their exact name.
 	SvcNames map[string]string
+	// AddrGrpBySig maps the member-set signature (groupSig) of every existing
+	// address group to its name, so a recommendation whose member set exactly
+	// matches an existing group references it instead of creating a new one.
+	AddrGrpBySig map[string]string
+	// SvcGrpBySig is the same for existing service groups.
+	SvcGrpBySig map[string]string
 
 	// TakenNames is every existing address/addrgrp/service/service-group name
 	// (lowercased), so newly generated object names never collide.
 	TakenNames map[string]bool
+
+	// WANInterfaces are interfaces classified as internet-facing (lowercased):
+	// `set role wan`, SD-WAN/virtual-wan-link members, plus the zone names
+	// themselves. Config-global (interfaces are not per-VDOM objects).
+	WANInterfaces map[string]bool
+	// FirewallIPs are the firewall's own interface addresses; traffic TO these
+	// is local-in traffic and must not be enshrined in forward policies.
+	FirewallIPs map[string]bool
+	// ISDBNames are the FortiGuard internet-service names present in the
+	// backup, for suggesting internet-service based policies.
+	ISDBNames []string
 }

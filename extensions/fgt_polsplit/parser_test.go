@@ -8,6 +8,62 @@ import (
 )
 
 const testConfig = `
+config system interface
+    edit "wan1"
+        set ip 203.0.113.2 255.255.255.248
+        set role wan
+    next
+    edit "lan1"
+        set ip 10.0.0.254 255.255.255.0
+        set role lan
+        config secondaryip
+            edit 1
+                set ip 10.0.1.254 255.255.255.0
+            next
+        end
+    next
+end
+config system sdwan
+    set status enable
+    config zone
+        edit "virtual-wan-link"
+        next
+        edit "SD-WAN-Internet"
+        next
+    end
+    config members
+        edit 1
+            set interface "wan2"
+        next
+    end
+end
+config firewall internet-service-name
+    edit "Google-Web"
+        set internet-service-id 65537
+    next
+    edit "Microsoft-Office.365"
+        set internet-service-id 327781
+    next
+end
+config firewall vip
+    edit "VIP_Web"
+        set extip 203.0.113.10
+        set mappedip "10.0.0.80"
+    next
+end
+config system automation-action
+    edit "Script_Fix"
+        set action-type cli-script
+        set script "config system central-management
+set mode backup
+end
+next
+config firewall address
+edit \"EVIL_FAKE\"
+next
+end"
+    next
+end
 config firewall address
     edit "H_Server1"
         set uuid aaaa-bbbb
@@ -170,9 +226,70 @@ func TestParseBackupObjects(t *testing.T) {
 	if pb.SvcNames["https"] != "HTTPS" || pb.SvcNames["web access group"] != "Web Access Group" {
 		t.Errorf("service name map = %v", pb.SvcNames)
 	}
-	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp"} {
+	// A single contiguous range registers an exact range key.
+	if got := pb.SvcByKey["tcp/8000-8010"]; len(got) != 1 || got[0] != "MYRANGE" {
+		t.Errorf("range key lookup = %v", got)
+	}
+	// Group member sets are indexed by signature for exact-match reuse.
+	if got := pb.AddrGrpBySig[groupSig([]string{"H_Server1"})]; got != "G_Servers" {
+		t.Errorf("addrgrp sig lookup = %q", got)
+	}
+	if got := pb.SvcGrpBySig[groupSig([]string{"HTTPS"})]; got != "Web Access Group" {
+		t.Errorf("svcgrp sig lookup = %q", got)
+	}
+	// WAN classification: role wan + SD-WAN member + the builtin and custom
+	// SD-WAN zone names (policies reference zones directly in dstintf).
+	for _, want := range []string{"wan1", "wan2", "virtual-wan-link", "sd-wan-internet"} {
+		if !pb.WANInterfaces[want] {
+			t.Errorf("WANInterfaces missing %q: %v", want, pb.WANInterfaces)
+		}
+	}
+	if pb.WANInterfaces["lan1"] {
+		t.Error("lan1 must not be WAN-classified")
+	}
+	// Firewall self-IPs from interface definitions, including secondaryip.
+	if !pb.FirewallIPs["203.0.113.2"] || !pb.FirewallIPs["10.0.0.254"] || !pb.FirewallIPs["10.0.1.254"] {
+		t.Errorf("FirewallIPs = %v", pb.FirewallIPs)
+	}
+	// ISDB names collected for internet-service suggestions.
+	if len(pb.ISDBNames) != 2 || pb.ISDBNames[0] != "Google-Web" {
+		t.Errorf("ISDBNames = %v", pb.ISDBNames)
+	}
+	// The DNS object (tcp+udp 53) is an exact dual-protocol match.
+	if got := pb.SvcByKey["tcpudp/53"]; len(got) != 1 || got[0] != "DNS" {
+		t.Errorf("tcpudp/53 = %v", got)
+	}
+	// VIPs share the address namespace and must count as taken.
+	for _, name := range []string{"h_server1", "g_servers", "https", "all_icmp", "vip_web"} {
 		if !pb.TakenNames[name] {
 			t.Errorf("taken names missing %q", name)
+		}
+	}
+	// The automation-action script embeds raw CLI (end/next/config/edit
+	// lines) inside one quoted value — none of it may leak into the
+	// inventory or desync the section stack (the address assertions above
+	// already prove the sections AFTER the script parsed intact).
+	if pb.TakenNames["evil_fake"] {
+		t.Error("embedded script content leaked into the parsed inventory")
+	}
+}
+
+func TestQuoteOpen(t *testing.T) {
+	cases := []struct {
+		line string
+		in   bool
+		want bool
+	}{
+		{`set comment "all closed"`, false, false},
+		{`set script "still open`, false, true},
+		{`plain text inside a value`, true, true},
+		{`ends the value"`, true, false},
+		{`edit \"escaped\" stays open`, true, true},
+		{`set x "a" "b" "c"`, false, false},
+	}
+	for _, c := range cases {
+		if got := quoteOpen(c.line, c.in); got != c.want {
+			t.Errorf("quoteOpen(%q, %v) = %v, want %v", c.line, c.in, got, c.want)
 		}
 	}
 }
@@ -266,6 +383,17 @@ end
 	}
 	if got := pbDMZ.AddrByCIDR["10.0.0.1/32"]; len(got) != 0 {
 		t.Errorf("root address leaked to dmz: %v", got)
+	}
+
+	// 3. An explicit VDOM that matches nothing must NOT silently fall back to
+	// another VDOM's policy — that would hand the caller the wrong object
+	// inventory and policy-ID space.
+	pbMiss := ParseBackup(cfg, 5, "does-not-exist")
+	if pbMiss.Policy != nil {
+		t.Errorf("expected no policy for unmatched vdom, got vdom %q", pbMiss.Policy.VDOM)
+	}
+	if len(pbMiss.PolicyVDOMs) != 2 {
+		t.Errorf("PolicyVDOMs should still list the matches: %v", pbMiss.PolicyVDOMs)
 	}
 }
 

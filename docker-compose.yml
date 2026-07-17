@@ -83,6 +83,9 @@ services:
       - "EXT_FGT_POLSPLIT=true"
       # Traffic-log query template (source:"%s" = firewall hostname, policyid:%s = policy ID).
       # - "GRAYLOG_POLSPLIT_QUERY=source:\"%s\" AND policyid:%s AND _exists_:srcip AND _exists_:dstip"
+      # Extra internet-facing interface names (comma-separated), merged with the
+      # auto-detected ones (set role wan, SD-WAN members, virtual-wan-link).
+      # - "POLSPLIT_WAN_INTERFACES=wan1,wan2"
 
       # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
       # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH
@@ -120,7 +123,31 @@ services:
 
   fortisafe-db:
     container_name: "fortisafe-db"
-    image: postgres:latest
+    # PINNED to postgres:16-alpine. Postgres refuses to open a data directory
+    # created by a DIFFERENT major version — in both directions. That includes
+    # the downgrade case: a ./pgdata initialized by an earlier revision of this
+    # file that used postgres:latest (i.e. 17/18) will NOT start under 16.
+    #
+    # Before changing this tag or reusing an existing ./pgdata, check which
+    # major version created the data directory:
+    #   cat ./pgdata/PG_VERSION
+    # If it differs from the image's major version, migrate via a tested
+    # dump/restore — never delete or replace ./pgdata before the dump is
+    # taken and the restore verified:
+    # 1. Start a container with the SAME major version PG_VERSION reports,
+    #    then dump all databases:
+    #    docker exec -t fortisafe-db pg_dumpall -U postgre > backup.sql
+    # 2. Stop the container and move the old ./pgdata aside (keep it until
+    #    the restore is verified).
+    # 3. Start this pinned image (it initializes a fresh ./pgdata).
+    # 4. Restore the dump:
+    #    cat backup.sql | docker exec -i fortisafe-db psql -U postgre -d firewall_backups
+    #
+    # If your data still lives in the fortisafe-db-data named volume (used by
+    # earlier revisions of this file), dump from there the same way — with an
+    # image matching that volume's PG_VERSION — before switching to the
+    # ./pgdata bind mount, or restore the old volume mapping instead.
+    image: postgres:16-alpine
     environment:
       - "POSTGRES_USER=postgre"
       - "POSTGRES_PASSWORD=XXXXXXTDB"

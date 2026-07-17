@@ -50,8 +50,16 @@ function logToBackend(message) {
     });
 }
 
+// newPolicyId returns a collision-resistant client-side policy ID (the server
+// assigns real UUIDs on clone/import; Date.now() collides on rapid clicks).
+function newPolicyId() {
+    return (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
 function addPolicy() {
-    const policyId = Date.now().toString();
+    const policyId = newPolicyId();
     policies.push({
         id: policyId,
         name: '',
@@ -242,6 +250,16 @@ function selectPolicy(policyId) {
     }
 }
 
+// escHtml escapes config-derived names (interfaces, addresses, services, …)
+// before they are interpolated into innerHTML/attribute contexts. Object names
+// come from uploaded configs, shared backups and imported templates, so they
+// are attacker-influenceable.
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
 function renderInterfaces(container, items, type) {
     if (!container) {
         console.error('Interface items container not found');
@@ -255,7 +273,7 @@ function renderInterfaces(container, items, type) {
         div.innerHTML = `
             <select onchange="updateInterface('${type}', ${index}, this.value)">
                 <option value="">Select Interface</option>
-                ${interfaces.map(intf => `<option value="${intf}" ${item === intf ? 'selected' : ''}>${intf}</option>`).join('')}
+                ${interfaces.map(intf => `<option value="${escHtml(intf)}" ${item === intf ? 'selected' : ''}>${escHtml(intf)}</option>`).join('')}
             </select>
             <button onclick="deleteInterface('${type}', ${index})">Delete</button>
         `;
@@ -284,16 +302,16 @@ function renderAddresses(container, addrItems, addrGroupItems, isdbItems, vipIte
             <select class="address-select" onchange="updateAddressOrInternetService('${type}', ${index}, this.value)">
                 <option value="">Select Address/ISDB</option>
                 <optgroup label="Addresses">
-                    ${addresses.map(addr => `<option value="address:${addr}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${addr}</option>`).join('')}
+                    ${addresses.map(addr => `<option value="address:${escHtml(addr)}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${escHtml(addr)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Address Groups">
-                    ${addressGroups.map(agrp => `<option value="address_group:${agrp}" ${item.type === 'address_group' && item.value === agrp ? 'selected' : ''}>${agrp}</option>`).join('')}
+                    ${addressGroups.map(agrp => `<option value="address_group:${escHtml(agrp)}" ${item.type === 'address_group' && item.value === agrp ? 'selected' : ''}>${escHtml(agrp)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Internet Services">
-                    ${internetServices.map(isdb => `<option value="isdb:${isdb}" ${item.type === 'isdb' && item.value === isdb ? 'selected' : ''}>${isdb}</option>`).join('')}
+                    ${internetServices.map(isdb => `<option value="isdb:${escHtml(isdb)}" ${item.type === 'isdb' && item.value === isdb ? 'selected' : ''}>${escHtml(isdb)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Virtual IPs">
-                    ${vips.map(vip => `<option value="vip:${vip}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${vip}</option>`).join('')}
+                    ${vips.map(vip => `<option value="vip:${escHtml(vip)}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${escHtml(vip)}</option>`).join('')}
                 </optgroup>
             </select>
             <button onclick="deleteAddressOrInternetService('${type}', ${index})">Delete</button>
@@ -319,23 +337,24 @@ function renderServices(container, items) {
             <select onchange="updateService(${index}, this.value)">
                 <option value="">Select Service/Group</option>
                 <optgroup label="Service Groups">
-                    ${Object.keys(serviceGroups).map(group => `<option value="group:${group}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${group}</option>`).join('')}
+                    ${Object.keys(serviceGroups).map(group => `<option value="group:${escHtml(group)}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Individual Services">
-                    ${services.map(svc => `<option value="template:${svc.name}" ${item.type === 'template' && item.name === svc.name ? 'selected' : ''}>${svc.name}</option>`).join('')}
+                    ${services.map(svc => `<option value="template:${escHtml(svc.name)}" ${item.type === 'template' && item.name === svc.name ? 'selected' : ''}>${escHtml(svc.name)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Custom">
                     <option value="custom" ${item.type === 'custom' ? 'selected' : ''}>Custom</option>
                 </optgroup>
             </select>
             ${item.type === 'custom' ? `
-                <input type="text" value="${item.name}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
+                <input type="text" value="${escHtml(item.name)}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
                 <select onchange="updateCustomService(${index}, 'protocol', this.value)">
                     <option value="TCP" ${item.protocol === 'TCP' ? 'selected' : ''}>TCP</option>
                     <option value="UDP" ${item.protocol === 'UDP' ? 'selected' : ''}>UDP</option>
+                    <option value="SCTP" ${item.protocol === 'SCTP' ? 'selected' : ''}>SCTP</option>
                     <option value="ICMP" ${item.protocol === 'ICMP' ? 'selected' : ''}>ICMP</option>
                 </select>
-                <input type="text" value="${item.port}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
+                <input type="text" value="${escHtml(item.port)}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
             ` : ''}
             <button onclick="deleteService(${index})">Delete</button>
         `;
@@ -358,10 +377,10 @@ function renderUsersGroups(container, userItems, groupItems) {
             <select class="user-group-select" onchange="updateUserOrGroup(${index}, this.value)">
                 <option value="">Select User/Group</option>
                 <optgroup label="Users">
-                    ${users.map(user => `<option value="user:${user}" ${isUser && item === user ? 'selected' : ''}>${user}</option>`).join('')}
+                    ${users.map(user => `<option value="user:${escHtml(user)}" ${isUser && item === user ? 'selected' : ''}>${escHtml(user)}</option>`).join('')}
                 </optgroup>
                 <optgroup label="Groups">
-                    ${groups.map(group => `<option value="group:${group}" ${!isUser && item === group ? 'selected' : ''}>${group}</option>`).join('')}
+                    ${groups.map(group => `<option value="group:${escHtml(group)}" ${!isUser && item === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
             </select>
             <button onclick="deleteUserOrGroup(${index})">Delete</button>
@@ -393,12 +412,13 @@ function updateDropdowns() {
         return;
     }
 
-    sslSshSelect.innerHTML = `<option value="">None</option>${sslSshProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    webfilterSelect.innerHTML = `<option value="">None</option>${webfilterProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    appListSelect.innerHTML = `<option value="">None</option>${applicationLists.map(l => `<option value="${l}">${l}</option>`).join('')}`;
-    avSelect.innerHTML = `<option value="">None</option>${avProfiles.map(p => `<option value="${p}">${p}</option>`).join('')}`;
-    ipsSensorSelect.innerHTML = `<option value="">None</option>${ipsSensors.map(s => `<option value="${s}">${s}</option>`).join('')}`;
-    ipPoolSelect.innerHTML = `<option value="">None</option>${ipPools.map(p => `<option value="${p}">${p}</option>`).join('')}`;
+    const opts = list => `<option value="">None</option>${list.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('')}`;
+    sslSshSelect.innerHTML = opts(sslSshProfiles);
+    webfilterSelect.innerHTML = opts(webfilterProfiles);
+    appListSelect.innerHTML = opts(applicationLists);
+    avSelect.innerHTML = opts(avProfiles);
+    ipsSensorSelect.innerHTML = opts(ipsSensors);
+    ipPoolSelect.innerHTML = opts(ipPools);
 
     const policyId = form.dataset.policyId;
     if (policyId) {
@@ -900,67 +920,25 @@ function clonePolicy(button) {
         logToBackend('Policy ID not found for cloning policy');
         return;
     }
-    fetch('/fgt-confgen/clone_policy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ policy_id: policyId })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'success') {
-            const isGlobalCheckbox = document.getElementById('template-global');
-            if (isGlobalCheckbox) {
-                isGlobalCheckbox.checked = data.is_global || false;
-            }
-            policies.push({
-                id: data.new_policy.policy_id,
-                name: data.new_policy.policy_name,
-                comment: data.new_policy.policy_comment,
-                srcInterfaces: data.new_policy.src_interfaces,
-                dstInterfaces: data.new_policy.dst_interfaces,
-                srcAddresses: data.new_policy.src_addresses,
-                srcAddressGroups: data.new_policy.src_address_groups,
-                srcInternetServices: data.new_policy.src_internet_services,
-                srcVips: data.new_policy.src_vips,
-                dstAddresses: data.new_policy.dst_addresses,
-                dstAddressGroups: data.new_policy.dst_address_groups,
-                dstInternetServices: data.new_policy.dst_internet_services,
-                dstVips: data.new_policy.dst_vips,
-                services: data.new_policy.services,
-                action: data.new_policy.action,
-                inspectionMode: data.new_policy.inspection_mode,
-                ssl_ssh_profile: data.new_policy.ssl_ssh_profile,
-                webfilter_profile: data.new_policy.webfilter_profile,
-                webfilter_enabled: data.new_policy.webfilter_enabled,
-                application_list: data.new_policy.application_list,
-                application_list_enabled: data.new_policy.application_list_enabled,
-                av_profile: data.new_policy.av_profile,
-                av_enabled: data.new_policy.av_enabled,
-                ips_sensor: data.new_policy.ips_sensor,
-                ips_sensor_enabled: data.new_policy.ips_sensor_enabled,
-                logtraffic: data.new_policy.logtraffic,
-                logtraffic_start: data.new_policy.logtraffic_start,
-                auto_asic_offload: data.new_policy.auto_asic_offload,
-                nat: data.new_policy.nat,
-                ip_pool: data.new_policy.ip_pool,
-                users: data.new_policy.users,
-                groups: data.new_policy.groups
-            });
-            renderPolicyList();
-            selectPolicy(data.new_policy.policy_id);
-            showNotification('Policy cloned successfully', 'success');
-            logToBackend('Policy cloned successfully');
-        } else {
-            console.error('Error cloning policy:', data.error);
-            logToBackend(`Error cloning policy: ${data.error}`);
-            showNotification('Error cloning policy: ' + data.error, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error cloning policy:', error);
-        logToBackend(`Error cloning policy: ${error.message}`);
-        showNotification('Error cloning policy', 'error');
-    });
+    const policy = policies.find(p => p.id === policyId);
+    if (!policy) {
+        console.error(`Policy with ID ${policyId} not found`);
+        logToBackend(`Policy with ID ${policyId} not found`);
+        showNotification('Policy not found', 'error');
+        return;
+    }
+    const clone = JSON.parse(JSON.stringify(policy));
+    clone.id = newPolicyId();
+    if (clone.name.length > 20) {
+        clone.name = clone.name.substring(0, 20) + '_cl';
+    } else {
+        clone.name = clone.name + '_cl';
+    }
+    policies.push(clone);
+    renderPolicyList();
+    selectPolicy(clone.id);
+    showNotification('Policy cloned successfully', 'success');
+    logToBackend('Policy cloned successfully (client-side)');
 }
 
 function clearForm(button) {
@@ -1692,7 +1670,15 @@ function generatePolicies() {
         method: 'POST',
         body: formData
     })
-    .then(response => response.json())
+    .then(async response => {
+        if (!response.ok) {
+            // Validation failures come back as plain text — surface the
+            // server's message instead of a JSON parse error.
+            const text = await response.text();
+            throw new Error(text.trim() || `HTTP ${response.status}`);
+        }
+        return response.json();
+    })
     .then(data => {
         document.getElementById('output1').textContent = data.outputs.map(o => o.output1).join('\n\n');
         document.getElementById('output2').textContent = data.outputs.map(o => o.output2).join('\n\n');
@@ -1705,7 +1691,7 @@ function generatePolicies() {
     .catch(error => {
         console.error('Error generating policies:', error);
         logToBackend(`Error generating policies: ${error.message}`);
-        showNotification('Error generating policies', 'error');
+        showNotification(`Error generating policies: ${error.message}`, 'error');
     });
 }
 
@@ -1810,7 +1796,10 @@ document.addEventListener('DOMContentLoaded', () => {
     logToBackend(`DOM loaded, initial preselected template: ${window.preselectedTemplate || 'none'}`);
 
     // Function to initialize templates
+    let _templatesInitialized = false;
     const initializeTemplates = () => {
+        if (_templatesInitialized) return;
+        _templatesInitialized = true;
         console.log('Initializing template list, final preselected template:', window.preselectedTemplate);
         logToBackend(`Initializing template list, final preselected template: ${window.preselectedTemplate || 'none'}`);
         loadTemplateList().then(() => {

@@ -8,8 +8,10 @@ import (
 func testParsedBackup() *ParsedBackup {
 	return &ParsedBackup{
 		Policy: &OrigPolicy{
-			ID:     5,
-			Action: "accept",
+			ID:      5,
+			Action:  "accept",
+			SrcIntf: []string{"lan1"},
+			DstIntf: []string{"wan1"},
 			CloneLines: []string{
 				`set srcintf "lan1"`,
 				`set dstintf "wan1"`,
@@ -43,7 +45,7 @@ func TestGenerateReuseAndCreate(t *testing.T) {
 			Hits:     100,
 		},
 	}
-	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
 
 	// Existing objects reused, only the gaps created.
 	if strings.Contains(res.Config, `edit "H_Server1"`) {
@@ -90,8 +92,9 @@ func TestGenerateReuseAndCreate(t *testing.T) {
 			t.Errorf("config missing %q:\n%s", want, res.Config)
 		}
 	}
-	if !strings.HasPrefix(pols[0].Name, "PS5-HTTPS") {
-		t.Errorf("policy name = %q", pols[0].Name)
+	// Path-based naming convention: SRCINTF>DSTINTF (SERVICE[+N]).
+	if pols[0].Name != "LAN1>WAN1 (HTTPS+1)" {
+		t.Errorf("policy name = %q, want LAN1>WAN1 (HTTPS+1)", pols[0].Name)
 	}
 }
 
@@ -105,7 +108,7 @@ func TestGenerateAddressGroup(t *testing.T) {
 			Hits:     10,
 		},
 	}
-	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
 	if !strings.Contains(res.Config, "config firewall addrgrp") {
 		t.Errorf("expected an address group for 4 members:\n%s", res.Config)
 	}
@@ -124,22 +127,88 @@ func TestGenerateAddressGroup(t *testing.T) {
 	}
 }
 
-func TestGeneratePerDestinationNaming(t *testing.T) {
+// TestGeneratePathNaming: the naming convention is SRCINTF>DSTINTF (SERVICE);
+// multiple interfaces sharing a prefix collapse to prefix+XX.
+func TestGeneratePathNaming(t *testing.T) {
 	pb := testParsedBackup()
+	pb.Policy.SrcIntf = []string{"VL1"}
+	pb.Policy.DstIntf = []string{"VL2", "VL3"}
 	pols := []RecPolicy{
 		{
 			Src:      []Entity{ent("10.0.0.1")},
 			Dst:      []Entity{ent("10.9.9.9")},
-			Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}},
+			Services: []ServiceSpec{{Key: "tcp/3389", Proto: "tcp", Port: 3389, LogName: "RDP"}},
 			Hits:     10,
 		},
 	}
-	res := Generate(pb.Policy, pb, pols, "PS5", "per_destination")
-	if !strings.HasPrefix(pols[0].Name, "PS5-10.9.9.9") {
-		t.Errorf("policy name = %q", pols[0].Name)
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if pols[0].Name != "VL1>VLXX (RDP)" {
+		t.Errorf("policy name = %q, want VL1>VLXX (RDP)", pols[0].Name)
 	}
-	if res.Config == "" {
-		t.Error("empty config")
+	if !strings.Contains(res.Config, `set name "VL1>VLXX (RDP)"`) {
+		t.Errorf("config missing quoted path name:\n%s", res.Config)
+	}
+}
+
+// TestFitPolicyName: the 35-char limit must eat the interface path, never the
+// service label — the label is what distinguishes sibling splits.
+func TestFitPolicyName(t *testing.T) {
+	cases := []struct {
+		path, label, want string
+	}{
+		{"LAN1>WAN1", "RDP", "LAN1>WAN1 (RDP)"},
+		{"ONBOARDING_D1X>VIRTUAL-WAN-LINK", "RDP", "ONBOARDING_D1X>VIRTUAL-WAN-LI (RDP)"},
+		{"ONBOARDING_D1X>VIRTUAL-WAN-LINK", "DENY-REST", "ONBOARDING_D1X>VIRTUAL- (DENY-REST)"},
+	}
+	for _, c := range cases {
+		got := fitPolicyName(c.path, c.label, maxPolicyNameLen)
+		if got != c.want {
+			t.Errorf("fitPolicyName(%q, %q) = %q, want %q", c.path, c.label, got, c.want)
+		}
+		if len(got) > maxPolicyNameLen {
+			t.Errorf("fitPolicyName(%q, %q) = %q exceeds %d chars", c.path, c.label, got, maxPolicyNameLen)
+		}
+	}
+}
+
+// TestGenerateLongPathKeepsLabel: end-to-end — long real-world interface
+// names must not truncate away the distinguishing service label.
+func TestGenerateLongPathKeepsLabel(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.SrcIntf = []string{"onboarding_d1x"}
+	pb.Policy.DstIntf = []string{"virtual-wan-link"}
+	pols := []RecPolicy{
+		{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+			Services: []ServiceSpec{{Key: "tcp/3389", Proto: "tcp", Port: 3389, LogName: "RDP"}}, Hits: 9},
+		{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.8")},
+			Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 5},
+	}
+	Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.HasSuffix(pols[0].Name, "(RDP)") || !strings.HasSuffix(pols[1].Name, "(SSH)") {
+		t.Errorf("labels lost to truncation: %q / %q", pols[0].Name, pols[1].Name)
+	}
+	if pols[0].Name == pols[1].Name {
+		t.Errorf("sibling splits share one name: %q", pols[0].Name)
+	}
+}
+
+func TestIfaceLabel(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"VL1"}, "VL1"},
+		{[]string{"port1"}, "PORT1"},
+		{[]string{"VL2", "VL3"}, "VLXX"},
+		{[]string{"port1", "port2", "port7"}, "PORTXX"},
+		{[]string{"VL2", "port3"}, "MULTI"},
+		{[]string{"voice", "video"}, "MULTI"},
+		{nil, "ANY"},
+	}
+	for _, c := range cases {
+		if got := ifaceLabel(c.in); got != c.want {
+			t.Errorf("ifaceLabel(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -153,7 +222,7 @@ func TestGeneratePortlessServices(t *testing.T) {
 			Hits:     3,
 		},
 	}
-	res := Generate(pb.Policy, pb, pols, "PS5", "per_service")
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
 	if !strings.Contains(res.Config, "set protocol ICMP") {
 		t.Errorf("missing ICMP service:\n%s", res.Config)
 	}
@@ -167,9 +236,268 @@ func TestGenerateWarnsOnNonAcceptPolicy(t *testing.T) {
 	pb.Policy.Action = ""
 	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
 		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}}}
-	res := Generate(pb.Policy, pb, pols, "", "per_service")
+	res := Generate(pb.Policy, pb, pols, GenOptions{})
 	if len(res.Warnings) == 0 {
 		t.Error("expected a warning for a non-accept original policy")
+	}
+}
+
+// TestGenerateVDOMWrapper: policies in a named VDOM must emit the
+// config vdom / edit <vdom> entry wrapper or the paste fails on
+// multi-VDOM units.
+func TestGenerateVDOMWrapper(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.VDOM = "dmz"
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.HasPrefix(res.Config, "config vdom\nedit dmz\n") {
+		t.Errorf("config must start with the vdom wrapper:\n%s", res.Config)
+	}
+	if !strings.HasSuffix(strings.TrimRight(res.Config, "\n"), "end") {
+		t.Errorf("config must close the vdom wrapper:\n%s", res.Config)
+	}
+	// Single-VDOM policies must stay unwrapped.
+	pb.Policy.VDOM = ""
+	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if strings.HasPrefix(res.Config, "config vdom") {
+		t.Errorf("single-vdom config must not be wrapped:\n%s", res.Config)
+	}
+}
+
+// TestGeneratePolicyNameCollision: names of policies already on the device
+// (from the backup) must not be re-allocated.
+func TestGeneratePolicyNameCollision(t *testing.T) {
+	pb := testParsedBackup()
+	pb.PolicyNames = map[string]bool{"lan1>wan1 (ssh)": true}
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if pols[0].Name == "LAN1>WAN1 (SSH)" {
+		t.Errorf("policy name %q collides with an existing policy", pols[0].Name)
+	}
+	if !strings.HasPrefix(pols[0].Name, "LAN1>WAN1 (SSH)") {
+		t.Errorf("collision suffix should extend the base name, got %q", pols[0].Name)
+	}
+	if res.Config == "" {
+		t.Error("empty config")
+	}
+}
+
+// TestGeneratePortlessTCP: a tcp tuple without a usable dstport must emit a
+// 1-65535 range, never `set tcp-portrange 0` (FortiOS rejects it).
+func TestGeneratePortlessTCP(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/any", Proto: "tcp", Port: 0}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if strings.Contains(res.Config, "portrange 0") {
+		t.Errorf("must not emit port 0:\n%s", res.Config)
+	}
+	if !strings.Contains(res.Config, "set tcp-portrange 1-65535") {
+		t.Errorf("missing 1-65535 range for portless tcp:\n%s", res.Config)
+	}
+}
+
+// TestFgtQuoteEscaping: reused object names with embedded quotes/backslashes
+// must be escaped in emitted CLI.
+func TestFgtQuoteEscaping(t *testing.T) {
+	if got := fgtQuote(`Cust "A" Net`); got != `"Cust \"A\" Net"` {
+		t.Errorf("fgtQuote = %s", got)
+	}
+	if got := fgtQuote(`back\slash`); got != `"back\\slash"` {
+		t.Errorf("fgtQuote = %s", got)
+	}
+}
+
+// TestGenerateRangeService: consolidated port ranges emit one range object and
+// reuse an existing exact-range object when the backup has one.
+func TestGenerateRangeService(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/8080-8082", Proto: "tcp", Port: 8080, PortEnd: 8082}}, Hits: 5}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `edit "PS5_tcp8080_8082"`) ||
+		!strings.Contains(res.Config, "set tcp-portrange 8080-8082") {
+		t.Errorf("missing range service object:\n%s", res.Config)
+	}
+
+	// Existing exact-range object must be reused instead.
+	pb = testParsedBackup()
+	pb.SvcByKey["tcp/8080-8082"] = []string{"WEB_ALT"}
+	pols = []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/8080-8082", Proto: "tcp", Port: 8080, PortEnd: 8082}}, Hits: 5}}
+	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `set service "WEB_ALT"`) || strings.Contains(res.Config, "PS5_tcp8080") {
+		t.Errorf("existing range object not reused:\n%s", res.Config)
+	}
+}
+
+// TestGenerateAddrGrpReuse: an existing address group with exactly the
+// resolved member set is referenced instead of creating a new group.
+func TestGenerateAddrGrpReuse(t *testing.T) {
+	pb := testParsedBackup()
+	pb.AddrByCIDR["10.0.0.1/32"] = []string{"H_A"}
+	pb.AddrByCIDR["10.0.0.2/32"] = []string{"H_B"}
+	pb.AddrGrpBySig = map[string]string{groupSig([]string{"H_A", "H_B"}): "G_Pair"}
+	pols := []RecPolicy{{
+		Src:      []Entity{ent("10.0.0.1"), ent("10.0.0.2")},
+		Dst:      []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}},
+		Hits:     5,
+	}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `set srcaddr "G_Pair"`) {
+		t.Errorf("existing addrgrp not reused:\n%s", res.Config)
+	}
+	if strings.Contains(res.Config, "config firewall addrgrp") {
+		t.Errorf("no new addrgrp should be created:\n%s", res.Config)
+	}
+}
+
+// TestGenerateSvcGrpReuse: same for an existing service group.
+func TestGenerateSvcGrpReuse(t *testing.T) {
+	pb := testParsedBackup()
+	pb.SvcByKey["tcp/80"] = []string{"HTTP"}
+	pb.SvcGrpBySig = map[string]string{groupSig([]string{"HTTP", "HTTPS"}): "Web Access"}
+	pols := []RecPolicy{{
+		Src: []Entity{ent("10.0.0.1")},
+		Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{
+			{Key: "tcp/80", Proto: "tcp", Port: 80, LogName: "HTTP"},
+			{Key: "tcp/443", Proto: "tcp", Port: 443, LogName: "HTTPS"},
+		},
+		Hits: 5,
+	}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `set service "Web Access"`) {
+		t.Errorf("existing service group not reused:\n%s", res.Config)
+	}
+}
+
+// TestGenerateTicketComment: a change ticket lands sanitized in the comments.
+func TestGenerateTicketComment(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5", Ticket: `CHG-1234 "quote"`})
+	if !strings.Contains(res.Config, "Split from policy 5 (FortiSafe polsplit) [CHG-1234 _quote_]") {
+		t.Errorf("ticket missing or unsanitized in comments:\n%s", res.Config)
+	}
+}
+
+// TestGenerateWANAllEntity: the WAN-as-all collapse produces entities valued
+// "all", which must resolve to the built-in object without creating anything.
+func TestGenerateWANAllEntity(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{
+		Src:      []Entity{ent("10.0.0.1")},
+		Dst:      []Entity{{Value: "all", IsNet: true, Hosts: 12}},
+		Services: []ServiceSpec{{Key: "tcp/443", Proto: "tcp", Port: 443, LogName: "HTTPS"}},
+		Hits:     100,
+	}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `set dstaddr "all"`) {
+		t.Errorf("dstaddr must reference the builtin all object:\n%s", res.Config)
+	}
+	for _, o := range res.NewObjects {
+		if o.Kind == "address" && strings.Contains(o.Value, "all") {
+			t.Errorf("no address object may be created for 'all': %+v", o)
+		}
+	}
+	if strings.Contains(res.Config, `edit "all"`) {
+		t.Errorf("builtin all must not be redefined:\n%s", res.Config)
+	}
+}
+
+// TestGenerateDualProtoService: a merged tcpudp spec emits one object with
+// both port ranges, or reuses an existing dual-protocol object exactly.
+func TestGenerateDualProtoService(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcpudp/5514", Proto: "tcpudp", Port: 5514}}, Hits: 5}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, "set tcp-portrange 5514") || !strings.Contains(res.Config, "set udp-portrange 5514") {
+		t.Errorf("dual-proto object must set both port ranges:\n%s", res.Config)
+	}
+
+	pb = testParsedBackup()
+	pb.SvcByKey["tcpudp/53"] = []string{"DNS"}
+	pols = []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcpudp/53", Proto: "tcpudp", Port: 53, LogName: "DNS"}}, Hits: 5}}
+	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if !strings.Contains(res.Config, `set service "DNS"`) || strings.Contains(res.Config, "PS5_tcpudp53") {
+		t.Errorf("existing dual-proto DNS object not reused:\n%s", res.Config)
+	}
+}
+
+// TestGenerateEmitDeny: the fallthrough deny policy covers the original's
+// scope, carries deny+log, and moves last (directly above the original).
+func TestGenerateEmitDeny(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.SrcAddr = []string{"all"}
+	pb.Policy.DstAddr = []string{"all"}
+	pb.Policy.Services = []string{"ALL"}
+	// Identity selectors restrict the original's scope — the deny must carry
+	// them, or it would block traffic that used to fall through to policies
+	// below the original.
+	pb.Policy.CloneLines = append(pb.Policy.CloneLines, `set groups "VPN-Users"`)
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22, LogName: "SSH"}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5", EmitDeny: true})
+	for _, want := range []string{
+		`set name "LAN1>WAN1 (DENY-REST)"`,
+		"set action deny",
+		`set srcaddr "all"`,
+		`set service "ALL"`,
+		"move 14 before 5", // deny (ID 14) moves after the split (13) → lands just above the original
+	} {
+		if !strings.Contains(res.Config, want) {
+			t.Errorf("deny block missing %q:\n%s", want, res.Config)
+		}
+	}
+	// Deny must not inherit accept-side settings.
+	denyIdx := strings.Index(res.Config, "edit 14")
+	if denyIdx < 0 {
+		t.Fatalf("deny policy not emitted:\n%s", res.Config)
+	}
+	denyBlock := res.Config[denyIdx:]
+	if end := strings.Index(denyBlock, "next"); end > 0 {
+		denyBlock = denyBlock[:end]
+	}
+	if strings.Contains(denyBlock, "set nat enable") || strings.Contains(denyBlock, "set action accept") {
+		t.Errorf("deny policy inherited accept-side clone lines:\n%s", denyBlock)
+	}
+	if !strings.Contains(denyBlock, `set groups "VPN-Users"`) {
+		t.Errorf("deny policy must preserve the identity selectors:\n%s", denyBlock)
+	}
+
+	// Without the option, no deny is emitted.
+	pols = []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
+	res = Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if strings.Contains(res.Config, "DENY-REST") {
+		t.Errorf("deny emitted without EmitDeny:\n%s", res.Config)
+	}
+}
+
+// TestGenerateADLabel: policies tagged active-directory use the AD path label.
+func TestGenerateADLabel(t *testing.T) {
+	pb := testParsedBackup()
+	pols := []RecPolicy{{
+		Src: []Entity{ent("10.0.0.1")},
+		Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{
+			{Key: "tcp/88", Proto: "tcp", Port: 88},
+			{Key: "tcp/389", Proto: "tcp", Port: 389},
+			{Key: "tcp/445", Proto: "tcp", Port: 445},
+		},
+		Tags: []string{"active-directory"},
+		Hits: 9,
+	}}
+	Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5"})
+	if pols[0].Name != "LAN1>WAN1 (AD)" {
+		t.Errorf("policy name = %q, want LAN1>WAN1 (AD)", pols[0].Name)
 	}
 }
 

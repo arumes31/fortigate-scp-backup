@@ -262,7 +262,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:latest
+    image: postgres:16-alpine
     container_name: fortisafe-db
     environment:
       POSTGRES_USER: fortisafe
@@ -277,6 +277,9 @@ services:
       retries: 5
     restart: unless-stopped
 ```
+
+> [!WARNING]
+> The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dumpall` with the matching old version, then restore into a freshly initialized data directory).
 
 **Available tags:** `latest`, a date tag (`DDMMYYYY`), the commit SHA, and release tags (`vX.Y.Z`). See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for a fully annotated example covering every setting.
 
@@ -403,6 +406,7 @@ Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server
 | :--- | :--- | :--- |
 | `EXT_FGT_POLSPLIT` | `false` | Enable the Policy Split Advisor extension. |
 | `GRAYLOG_POLSPLIT_QUERY` | `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip` | Traffic-log query template; `source:"%s"` is expanded to the firewall's Graylog source (HA-aware) and `policyid:%s` to the analyzed policy ID. |
+| `POLSPLIT_WAN_INTERFACES` | *(Unset)* | Extra interface names to treat as internet-facing (comma-separated), merged with auto-detection (`set role wan`, SD-WAN members, `virtual-wan-link`). Policies whose destination interfaces are all internet-facing keep `dstaddr "all"` instead of enumerating rotating internet IPs. |
 
 ---
 
@@ -432,10 +436,16 @@ An optional module (`EXT_FGT_CONF_GEN=true`) for managing templates and generati
 An optional module (`EXT_FGT_POLSPLIT=true`) that helps restrict overly-open firewall policies by splitting them into smaller, tightly-scoped ones based on the traffic they actually carry.
 
 * **Log-driven analysis** — pick a firewall and a policy ID, choose a window (30 m – 30 d or a custom range), and the module aggregates the policy's Graylog traffic logs server-side into source/destination/service tuples — complete even for month-long windows on busy policies.
-* **Split strategies** — recommendations per service and per destination (identical-signature groups are merged), with the lower-footprint strategy flagged as recommended.
-* **Object reuse & gap list** — existing address/service objects from the latest config backup are referenced when they match exactly; everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix.
+* **Split strategies** — recommendations per service, per destination, and a hybrid strategy that clusters services flowing between strongly overlapping host sets into shared policies; the lowest-footprint strategy is flagged as recommended.
+* **Path-based policy naming** — split policies are named after their interface path plus service, e.g. `VL1>VL51 (RDP)`; multiple interfaces sharing a prefix collapse to `XX` (`VL1>VLXX (RDP)`).
+* **Object & group reuse, gap list** — existing address/service objects *and* address/service groups from the latest config backup are referenced on exact match (including exact port-range objects); everything missing is listed explicitly ("objects to create") and generated under a configurable name prefix. Adjacent single ports consolidate into range objects (`8080-8082`).
 * **Subnet rollup** — optionally collapses many observed hosts in the same subnet (threshold and mask configurable) into one subnet object.
-* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, moves the splits above the original and finally disables (not deletes) it.
+* **Baseline comparison** — optionally compares the analysis window against a preceding baseline window, flagging **new** flows and listing **stale** baseline-only flows that the recommendations would not cover.
+* **Internet-aware destinations** — WAN-bound policies (auto-detected from interface roles/SD-WAN membership, operator-extensible) keep `dstaddr "all"` for public destinations instead of enumerating rotating internet IPs; private destinations stay explicit. Vendor-recognized destinations additionally get Internet-Service (ISDB) object suggestions.
+* **Traffic-pattern intelligence** — port scans are excluded, RPC endpoint-mapper spreads collapse to one dynamic range, passive-FTP data channels fold into FTP, pairs using ≥100 real ports collapse to a range with a review warning; local-in flows (to the firewall's own addresses) are excluded; well-known ports get readable names; DNS-style tcp+udp pairs merge into dual-protocol objects; recognized bundles (Active Directory, infrastructure services) are tagged.
+* **UTM awareness** — destinations whose sessions were blocked by UTM inspection under the analyzed policy are listed for review before being re-allowed.
+* **FQDN suggestions** — optional best-effort PTR resolution of observed destinations, offered as candidate FQDN objects (never applied automatically).
+* **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, wraps multi-VDOM output in the correct `config vdom` context, moves the splits above the original and finally disables (not deletes) it. An optional change-ticket ID is embedded in every generated policy's comments, and an optional explicit **fallthrough deny+log policy** can be placed directly above the disabled original so missed traffic logs loudly instead of dying silently.
 
 
 ---
