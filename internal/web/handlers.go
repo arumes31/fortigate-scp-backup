@@ -169,7 +169,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/change_password", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 // handleLogout clears the session and returns to the login screen.

@@ -275,7 +275,7 @@
         es.onmessage = function (e) {
             try {
                 var d = JSON.parse(e.data);
-                logLine('fw #' + d.fw_id + ' → ' + d.status);
+                logLine(tt('dashboard.running_backup') + ' fw #' + d.fw_id + ' → ' + d.status);
                 if (typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
                     toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
                 }
