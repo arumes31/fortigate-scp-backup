@@ -212,7 +212,7 @@ func TestInsertSuffix(t *testing.T) {
 	}
 	// Truncating case: the disambiguator must never leave an unbalanced paren
 	// or drop the "_N" suffix, and must stay within maxLen.
-	got := insertSuffix("LB-EXADM>VPN_EX-ADM (udp_1812-1813)", "_2", 35)
+	got := insertSuffix("LB-RADGW>VPN_RADGW (udp_1812-1813)", "_2", 35)
 	if len(got) > 35 {
 		t.Errorf("insertSuffix over budget: %q (%d)", got, len(got))
 	}
@@ -229,8 +229,8 @@ func TestInsertSuffix(t *testing.T) {
 // each name valid (balanced parens, distinct, ≤35, service label intact).
 func TestGeneratePerDestinationNameCollision(t *testing.T) {
 	pb := testParsedBackup()
-	pb.Policy.SrcIntf = []string{"lb-exadm"}
-	pb.Policy.DstIntf = []string{"vpn_ex-adm"}
+	pb.Policy.SrcIntf = []string{"lb-radgw"}
+	pb.Policy.DstIntf = []string{"vpn_radgw"}
 	mk := func(dst string) RecPolicy {
 		return RecPolicy{
 			Src:      []Entity{ent("10.0.0.1")},
