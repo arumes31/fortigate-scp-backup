@@ -294,6 +294,29 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.running_live":       {"en": "Live view", "de": "Live-Ansicht"},
 	"dashboard.running_audit":      {"en": "Audit scan", "de": "Audit-Scan"},
 
+	// Dashboard page (failing firewalls table)
+	"dashboard.failing_title": {"en": "Failing Firewalls", "de": "Fehlgeschlagene Firewalls"},
+	"dashboard.all_firewalls": {"en": "All Firewalls", "de": "Alle Firewalls"},
+	"dashboard.col_id":        {"en": "ID", "de": "ID"},
+	"dashboard.col_fqdn":      {"en": "FQDN", "de": "FQDN"},
+	"dashboard.col_last_ok":   {"en": "Last Success", "de": "Letzter Erfolg"},
+	"dashboard.col_error":     {"en": "Error", "de": "Fehler"},
+	"dashboard.col_actions":   {"en": "Actions", "de": "Aktionen"},
+	"dashboard.never":         {"en": "never", "de": "nie"},
+	"dashboard.retry":         {"en": "Retry", "de": "Wiederholen"},
+	"dashboard.test":          {"en": "Test", "de": "Test"},
+	"dashboard.backups":       {"en": "Backups", "de": "Backups"},
+	"dashboard.failing_none":  {"en": "No failing firewalls.", "de": "Keine fehlgeschlagenen Firewalls."},
+
+	// Dashboard page (stale backups card)
+	"dashboard.stale_title": {"en": "Stale backups", "de": "Veraltete Backups"},
+	"dashboard.stale_desc":  {"en": "firewall(s) overdue but not reporting a failure", "de": "Firewall(s) überfällig, aber ohne Fehlermeldung"},
+	"dashboard.col_age":     {"en": "Age", "de": "Alter"},
+	"dashboard.col_cadence": {"en": "Cadence", "de": "Takt"},
+	"dashboard.stale_ago":   {"en": "ago", "de": "her"},
+	"dashboard.stale_every": {"en": "expected every", "de": "erwartet alle"},
+	"dashboard.backup_now":  {"en": "Backup now", "de": "Jetzt sichern"},
+
 	// Dashboard page (blocked switch ports card)
 	"dashboard.blocked_title": {"en": "Blocked switch ports (STP / BPDU / loop guard)", "de": "Blockierte Switch-Ports (STP / BPDU / Loop Guard)"},
 	"dashboard.blocked_unit":  {"en": "port(s)", "de": "Port(s)"},

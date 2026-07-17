@@ -31,8 +31,10 @@ func TestShortenURLCollisionClassification(t *testing.T) {
 }
 
 // TestShortURLOwnerScoping: deleting or renaming one owner's template must
-// not touch another owner's short URLs for a same-named template; legacy
-// rows without an owner keep the old URL-only matching.
+// not touch another owner's short URLs for a same-named template. A legacy
+// row without an owner (owner = ”) is keyed only by URL and cannot be
+// attributed, so owner-scoped mutations must leave it strictly intact —
+// neither deleted nor rewritten by another user's operation.
 func TestShortURLOwnerScoping(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -52,8 +54,12 @@ func TestShortURLOwnerScoping(t *testing.T) {
 	if err := e.shortenURLInDB(urlWeb, "bob", "bbb222"); err != nil {
 		t.Fatal(err)
 	}
+	// Legacy row from before the owner column existed (owner = '').
+	if err := e.shortenURLInDB(urlWeb, "", "leg000"); err != nil {
+		t.Fatal(err)
+	}
 
-	// Bob deletes his "web": Alice's link must survive.
+	// Bob deletes his "web": Alice's link and the legacy link must survive.
 	e.deleteShortURLsByTemplate("bob", urlWeb)
 	if got, err := e.getURLFromShortCode("aaa111"); err != nil || got != urlWeb {
 		t.Fatalf("alice's short URL lost: %q, %v", got, err)
@@ -61,8 +67,12 @@ func TestShortURLOwnerScoping(t *testing.T) {
 	if _, err := e.getURLFromShortCode("bbb222"); err != sql.ErrNoRows {
 		t.Fatalf("bob's short URL must be deleted, got err=%v", err)
 	}
+	if got, err := e.getURLFromShortCode("leg000"); err != nil || got != urlWeb {
+		t.Fatalf("legacy ownerless URL must survive bob's delete: %q, %v", got, err)
+	}
 
-	// Alice renames "web" → "web2": only her rows rewrite.
+	// Alice renames "web" → "web2": only her rows rewrite; bob's and the
+	// legacy ownerless row stay untouched.
 	if err := e.shortenURLInDB(urlWeb, "bob", "bbb333"); err != nil {
 		t.Fatal(err)
 	}
@@ -77,5 +87,8 @@ func TestShortURLOwnerScoping(t *testing.T) {
 	}
 	if got, _ := e.getURLFromShortCode("bbb333"); got != urlWeb {
 		t.Fatalf("bob's short URL must be untouched by alice's rename: %q", got)
+	}
+	if got, _ := e.getURLFromShortCode("leg000"); got != urlWeb {
+		t.Fatalf("legacy ownerless URL must not be rewritten by alice's rename: %q", got)
 	}
 }

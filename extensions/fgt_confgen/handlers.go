@@ -708,27 +708,41 @@ func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept either the export wrapper ({"name":..,"data":{...}}) or a direct
+	// TemplateData ({"policies":[...]}). Probe the top-level keys first: an
+	// arbitrary object carrying neither "data" nor "policies" (e.g.
+	// {"foo":"bar"}) decodes into both shapes without error and would
+	// otherwise be silently stored as an empty template. Requiring one of the
+	// two keys rejects that while still allowing an intentionally-empty import
+	// (a present "data"/"policies" with no entries).
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(templateDataStr), &probe); err != nil {
+		http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
+		return
+	}
+	_, hasData := probe["data"]
+	_, hasPolicies := probe["policies"]
+	if !hasData && !hasPolicies {
+		http.Error(w, `template JSON must contain a "data" or "policies" field`, http.StatusBadRequest)
+		return
+	}
+
 	var imported struct {
 		Name string       `json:"name"`
 		Data TemplateData `json:"data"`
 	}
-	wrapErr := json.Unmarshal([]byte(templateDataStr), &imported)
-	// Direct TemplateData input ({"policies":[...]}) also decodes into the
-	// wrapper without error — with an empty Data, silently importing an
-	// empty template. Accept the wrapper only when it carries meaningful
-	// Data; otherwise try the direct format and keep its policies.
-	if wrapErr != nil || len(imported.Data.Policies) == 0 {
-		var directData TemplateData
-		directErr := json.Unmarshal([]byte(templateDataStr), &directData)
-		switch {
-		case directErr == nil && len(directData.Policies) > 0:
-			imported.Data = directData
-		case wrapErr != nil && directErr != nil:
+	if hasData {
+		if err := json.Unmarshal([]byte(templateDataStr), &imported); err != nil {
 			http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
 			return
 		}
-		// wrapErr == nil with no policies in either form: an intentionally
-		// empty template import — keep the (empty) wrapper data.
+	} else {
+		var directData TemplateData
+		if err := json.Unmarshal([]byte(templateDataStr), &directData); err != nil {
+			http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
+			return
+		}
+		imported.Data = directData
 	}
 
 	for i := range imported.Data.Policies {

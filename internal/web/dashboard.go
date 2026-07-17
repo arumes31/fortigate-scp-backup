@@ -100,11 +100,11 @@ type failureView struct {
 // silent-aging case a "Failed" status never catches (e.g. a scheduler entry
 // that vanished). Ordered oldest-first.
 type staleBackup struct {
-	ID          int
-	FQDN        string
-	LastSuccess time.Time
-	AgeHours    int    // whole hours since the last success, for display
-	Overdue     string // human "expected every 6h" hint
+	ID          int       `json:"fw_id"`
+	FQDN        string    `json:"fqdn"`
+	LastSuccess time.Time `json:"last_success"`
+	AgeHours    int       `json:"age_hours"` // whole hours since the last success, for display
+	Cadence     string    `json:"cadence"`   // humanized schedule cadence, e.g. "6h"
 }
 
 // dashboardData is the full overview payload: DB health counts plus live
@@ -250,7 +250,7 @@ func (s *Server) computeStale(fws []models.Firewall, lastSuccess map[int]time.Ti
 			FQDN:        fw.FQDN,
 			LastSuccess: last,
 			AgeHours:    int(age.Hours()),
-			Overdue:     "expected every " + humanizeInterval(interval),
+			Cadence:     humanizeInterval(interval),
 		})
 	}
 	// Oldest first: the most-overdue firewalls lead.
@@ -258,13 +258,20 @@ func (s *Server) computeStale(fws []models.Firewall, lastSuccess map[int]time.Ti
 	return out
 }
 
-// humanizeInterval renders a cadence compactly ("15m", "6h", "1d").
+// humanizeInterval renders a cadence compactly ("15m", "6h", "1h 30m", "1d").
+// Hour-scale durations with a leftover minute remainder keep both parts so an
+// exact compound interval (e.g. 90m) is not silently rounded down to "1h".
 func humanizeInterval(d time.Duration) string {
 	switch {
 	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
 		return fmt.Sprintf("%dd", d/(24*time.Hour))
 	case d >= time.Hour:
-		return fmt.Sprintf("%dh", d/time.Hour)
+		h := d / time.Hour
+		m := (d % time.Hour) / time.Minute
+		if m > 0 {
+			return fmt.Sprintf("%dh %dm", h, m)
+		}
+		return fmt.Sprintf("%dh", h)
 	default:
 		return fmt.Sprintf("%dm", d/time.Minute)
 	}
@@ -444,6 +451,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"nextBackup":    d.NextBackupISO,
 		"clusterAlert":  d.ClusterAlert,
 		"running":       d.Running,
+		"stale":         d.Stale,
 		"blockedPorts":  d.BlockedPorts,
 		"graylogIssues": d.GraylogIssues,
 	})

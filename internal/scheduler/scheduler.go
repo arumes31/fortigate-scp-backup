@@ -22,8 +22,11 @@ type JobInfo struct {
 	NextRun time.Time
 	Cron    string
 	// Interval is the job's cadence: the configured interval for interval
-	// jobs, or the gap between the next two activations for cron jobs (0 when
-	// it cannot be determined). Callers use it to judge backup staleness.
+	// jobs, or — for cron jobs — the LARGEST gap between consecutive
+	// activations over the next several runs (0 when it cannot be
+	// determined). Callers use it to judge backup staleness, so an irregular
+	// schedule (e.g. weekdays-only, where Fri→Mon is 72h) must report its
+	// widest legitimate gap rather than the momentary next-two-run gap.
 	Interval time.Duration
 }
 
@@ -57,10 +60,27 @@ func (j *job) info() JobInfo {
 	defer j.mu.Unlock()
 	interval := j.interval
 	if j.schedule != nil {
-		// Cron cadence: the gap between the next two activations from now.
-		n1 := j.schedule.Next(time.Now())
-		if n2 := j.schedule.Next(n1); !n2.IsZero() && !n1.IsZero() {
-			interval = n2.Sub(n1)
+		// Cron cadence for staleness: the LARGEST gap between consecutive
+		// activations over the next samples runs. A single next-two-run gap
+		// misjudges irregular schedules (weekdays-only swings between 24h and
+		// 72h depending on the day it is sampled); the max gap reports the
+		// widest legitimate window so a 2× threshold never false-alarms over a
+		// weekend. The sample count is capped so a per-minute cron stays cheap.
+		const samples = 14
+		prev := j.schedule.Next(time.Now())
+		var maxGap time.Duration
+		for i := 0; i < samples && !prev.IsZero(); i++ {
+			next := j.schedule.Next(prev)
+			if next.IsZero() {
+				break
+			}
+			if gap := next.Sub(prev); gap > maxGap {
+				maxGap = gap
+			}
+			prev = next
+		}
+		if maxGap > 0 {
+			interval = maxGap
 		}
 	}
 	return JobInfo{ID: j.id, LastRun: j.lastRun, NextRun: j.nextRun, Cron: j.cronExpr, Interval: interval}

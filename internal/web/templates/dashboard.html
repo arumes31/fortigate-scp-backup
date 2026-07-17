@@ -45,25 +45,25 @@
 
 <div class="card pad-0">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Failing Firewalls</h2>
-        <a href="/?q=Failed" class="btn btn-sm">All Firewalls</a>
+        <h2 class="mt-0 mb-0">{{T .Base.Lang "dashboard.failing_title"}}</h2>
+        <a href="/?q=Failed" class="btn btn-sm">{{T .Base.Lang "dashboard.all_firewalls"}}</a>
     </div>
     {{if .Failures}}
     <div class="table-wrap">
         <table class="data">
-            <thead><tr><th>ID</th><th>FQDN</th><th>Last Success</th><th>Error</th><th>Actions</th></tr></thead>
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_id"}}</th><th>{{T .Base.Lang "dashboard.col_fqdn"}}</th><th>{{T .Base.Lang "dashboard.col_last_ok"}}</th><th>{{T .Base.Lang "dashboard.col_error"}}</th><th>{{T .Base.Lang "dashboard.col_actions"}}</th></tr></thead>
             <tbody>
             {{range .Failures}}
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
-                    <td class="muted">{{if isZero .LastSuccess}}<span class="pill pill-failed">never</span>{{else}}{{fmtTime .LastSuccess}}{{end}}</td>
+                    <td class="muted">{{if isZero .LastSuccess}}<span class="pill pill-failed">{{T $.Base.Lang "dashboard.never"}}</span>{{else}}{{fmtTime .LastSuccess}}{{end}}</td>
                     <td class="err-cell" title="{{.Error}}">{{.Error}}</td>
                     <td>
                         <div class="actions">
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">Retry</button></form>
-                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
-                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.retry"}}</button></form>
+                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">{{T $.Base.Lang "dashboard.test"}}</button>
+                            <a class="btn btn-sm" href="/backups/{{.ID}}">{{T $.Base.Lang "dashboard.backups"}}</a>
                         </div>
                     </td>
                 </tr>
@@ -72,31 +72,30 @@
         </table>
     </div>
     {{else}}
-    <div class="empty">Keine fehlgeschlagenen Firewalls.</div>
+    <div class="empty">{{T .Base.Lang "dashboard.failing_none"}}</div>
     {{end}}
 </div>
 
-{{if .Stale}}
-<div class="card pad-0" style="border: 1px solid rgba(245,158,11,0.45);">
+<div class="card pad-0" id="staleCard" style="border: 1px solid rgba(245,158,11,0.45);"{{if not .Stale}} hidden{{end}}>
     <div class="card-header">
-        <h2 class="mt-0 mb-0" style="color: #fbbf24;">◷ Stale backups</h2>
-        <span class="muted" style="font-size: 0.85em;">{{len .Stale}} firewall(s) overdue but not reporting a failure</span>
+        <h2 class="mt-0 mb-0" style="color: #fbbf24;">◷ {{T .Base.Lang "dashboard.stale_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;" id="staleDesc"><span id="staleCount">{{len .Stale}}</span> {{T .Base.Lang "dashboard.stale_desc"}}</span>
     </div>
     <div class="table-wrap">
         <table class="data">
-            <thead><tr><th>ID</th><th>FQDN</th><th>Last Success</th><th>Age</th><th>Cadence</th><th>Actions</th></tr></thead>
-            <tbody>
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_id"}}</th><th>{{T .Base.Lang "dashboard.col_fqdn"}}</th><th>{{T .Base.Lang "dashboard.col_last_ok"}}</th><th>{{T .Base.Lang "dashboard.col_age"}}</th><th>{{T .Base.Lang "dashboard.col_cadence"}}</th><th>{{T .Base.Lang "dashboard.col_actions"}}</th></tr></thead>
+            <tbody id="staleList">
             {{range .Stale}}
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
                     <td class="muted">{{fmtTime .LastSuccess}}</td>
-                    <td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{.AgeHours}}h ago</span></td>
-                    <td class="muted">{{.Overdue}}</td>
+                    <td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{.AgeHours}}h {{T $.Base.Lang "dashboard.stale_ago"}}</span></td>
+                    <td class="muted">{{T $.Base.Lang "dashboard.stale_every"}} {{.Cadence}}</td>
                     <td>
                         <div class="actions">
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">Backup now</button></form>
-                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.backup_now"}}</button></form>
+                            <a class="btn btn-sm" href="/backups/{{.ID}}">{{T $.Base.Lang "dashboard.backups"}}</a>
                         </div>
                     </td>
                 </tr>
@@ -105,7 +104,6 @@
         </table>
     </div>
 </div>
-{{end}}
 
 {{if .BlockedPorts}}
 <div class="card pad-0" style="border: 1px solid rgba(249,115,22,0.45);">
@@ -248,6 +246,38 @@
     }
     setInterval(tickRunningElapsed, 1000);
 
+    // Stale-backups card: kept in sync on every poll so a backup that clears
+    // (or newly slips overdue) shows/hides without a full page reload, the
+    // same way the running card and tiles already refresh live.
+    var staleCard = document.getElementById('staleCard');
+    var staleList = document.getElementById('staleList');
+    var staleCount = document.getElementById('staleCount');
+    function fmtLocal(iso) { var d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString(); }
+    function renderStale(list) {
+        if (!staleCard || !staleList) { return; }
+        if (!list || !list.length) {
+            staleCard.hidden = true; staleList.innerHTML = '';
+            if (staleCount) { staleCount.textContent = '0'; }
+            return;
+        }
+        staleCard.hidden = false;
+        if (staleCount) { staleCount.textContent = list.length; }
+        staleList.innerHTML = list.map(function (r) {
+            var name = esc(r.fqdn || ('fw #' + r.fw_id));
+            var id = encodeURIComponent(r.fw_id);
+            return '<tr><td>' + esc(r.fw_id) + '</td><td>' + name + '</td>' +
+                '<td class="muted">' + esc(fmtLocal(r.last_success)) + '</td>' +
+                '<td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">' +
+                esc(r.age_hours) + 'h ' + tt('dashboard.stale_ago') + '</span></td>' +
+                '<td class="muted">' + tt('dashboard.stale_every') + ' ' + esc(r.cadence) + '</td>' +
+                '<td><div class="actions">' +
+                '<form method="post" action="/backup_now/' + id + '" style="display:inline">' +
+                '<button type="submit" class="btn btn-sm">' + tt('dashboard.backup_now') + '</button></form> ' +
+                '<a class="btn btn-sm" href="/backups/' + id + '">' + tt('dashboard.backups') + '</a>' +
+                '</div></td></tr>';
+        }).join('');
+    }
+
     // While anything is running, poll faster than the configured auto-refresh:
     // a polsplit analysis or manual topology fetch often finishes inside one
     // 30s tick and would otherwise never appear on the card.
@@ -272,6 +302,7 @@
                 var nb = document.getElementById('nextBackup'); if (nb) { nb.dataset.next = d.nextBackup || ''; }
                 var ca = document.getElementById('clusterAlert'); if (ca) { ca.hidden = !d.clusterAlert; }
                 renderRunning(d.running);
+                renderStale(d.stale);
                 scheduleRunningPoll(d.running && d.running.length > 0);
             })
             .catch(function () {});

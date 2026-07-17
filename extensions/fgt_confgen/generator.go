@@ -85,11 +85,13 @@ func hasControlOrQuote(s string) bool {
 }
 
 // hasAnyEntry reports whether any of the lists carries a non-empty item (the
-// UI pads lists with blank rows that the generators skip).
+// UI pads lists with blank rows that the generators skip). Whitespace-only
+// items count as empty so a stray " " never flips ISDB mode on, suppresses
+// custom objects / set service, or triggers a false mutual-exclusion error.
 func hasAnyEntry(lists ...[]string) bool {
 	for _, list := range lists {
 		for _, item := range list {
-			if item != "" {
+			if strings.TrimSpace(item) != "" {
 				return true
 			}
 		}
@@ -423,7 +425,7 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	}
 	var srcISDB []string
 	for _, a := range p.SrcInternetServices {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			srcISDB = append(srcISDB, a)
 		}
 	}
@@ -448,7 +450,7 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 	}
 	var dstISDB []string
 	for _, a := range p.DstInternetServices {
-		if a != "" {
+		if a = strings.TrimSpace(a); a != "" {
 			dstISDB = append(dstISDB, a)
 		}
 	}
