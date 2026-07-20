@@ -1768,6 +1768,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const form = document.getElementById('policy-form');
     if (form) {
+        // The DOM uses hyphenated data-field names while the policy JSON keys
+        // are underscored — and the *_enabled keys drop the "-profile" suffix
+        // (webfilter_enabled, av_enabled), so a plain hyphen→underscore
+        // mapping is not enough; map each field explicitly.
+        const TOGGLE_KEYS = {
+            'webfilter-profile': { value: 'webfilter_profile', enabled: 'webfilter_enabled' },
+            'av-profile': { value: 'av_profile', enabled: 'av_enabled' },
+            'application-list': { value: 'application_list', enabled: 'application_list_enabled' },
+            'ips-sensor': { value: 'ips_sensor', enabled: 'ips_sensor_enabled' },
+        };
         const toggleCheckboxes = form.querySelectorAll('.toggle-field');
         toggleCheckboxes.forEach(checkbox => {
             checkbox.addEventListener('change', (e) => {
@@ -1777,10 +1787,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const policyId = form.dataset.policyId;
                 const policy = policies.find(p => p.id === policyId);
-                if (policy) {
-                    policy[`${field}_enabled`] = e.target.checked;
+                const keys = TOGGLE_KEYS[field];
+                if (policy && keys) {
+                    policy[keys.enabled] = e.target.checked;
                     if (!e.target.checked) {
-                        policy[field] = '';
+                        policy[keys.value] = '';
                     }
                 }
                 logToBackend(`Toggle field ${field} changed to: ${e.target.checked}`);

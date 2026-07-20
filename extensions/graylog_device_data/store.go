@@ -176,7 +176,11 @@ const deviceRetention = 30 * 24 * time.Hour
 // this fetch. rangeSec optionally narrows the Graylog search window (used by
 // the live topology refresh); "" uses the configured default.
 func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error) {
-	defer e.trackRunning("devicedata", fwID)()
+	// Eight Graylog signals ride one refresh; each publishes its stage so the
+	// dashboard's running card can show real progress instead of a bare row.
+	note, done := e.trackRunning("devicedata", fwID)
+	defer done()
+	note("client devices", 1, 8)
 	devices, err := e.fetchDevices(fqdn, rangeSec)
 	if err != nil {
 		return 0, err
@@ -227,6 +231,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 
 	// STP/guard/link port states ride along on the same refresh; a failure
 	// only costs the STP overlay (stale rows are kept), never the inventory.
+	note("STP / guard states", 2, 8)
 	var edges []SwitchEdge
 	if stp, events, recentEdges, serr := e.fetchStpStates(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog stp fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
@@ -242,6 +247,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	// Interlinks change rarely, so the recent STP window only reveals whichever
 	// switch churned lately. A separate wide-window query keeps every switch's
 	// stable uplinks; storeSwitchEdges upserts, keeping the newest role/ports.
+	note("switch interlinks", 3, 8)
 	if topoEdges, serr := e.fetchSwitchEdges(fqdn); serr != nil {
 		e.logger.Warn("graylog topology-edge fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else {
@@ -259,6 +265,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	// event volume, so a long-unplugged (stable-down) port still reads "down" on
 	// the faceplate. It rides the same refresh and only ever costs the link
 	// column on failure (stale link state is kept).
+	note("port link states", 4, 8)
 	if links, serr := e.fetchLinkStates(fqdn); serr != nil {
 		e.logger.Warn("graylog link-state aggregation failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else if serr := e.storeLinkStates(fwID, links, now); serr != nil {
@@ -266,6 +273,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	}
 
 	// MAC add/move → wired switch-port sightings (the piece traffic logs lack).
+	note("MAC-table sightings", 5, 8)
 	if mp, serr := e.fetchMacPorts(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog mac-port fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else if serr := e.storeMacSightings(fwID, mp, now); serr != nil {
@@ -273,6 +281,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	}
 
 	// Wireless client ↔ AP ↔ SSID associations.
+	note("wireless clients", 6, 8)
 	if wc, serr := e.fetchWifiClients(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog wifi fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else if serr := e.storeWifi(fwID, wc, now); serr != nil {
@@ -280,6 +289,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	}
 
 	// VPN tunnel up/down state.
+	note("VPN tunnel states", 7, 8)
 	if vs, serr := e.fetchVpnStatuses(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog vpn fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else if serr := e.storeVpn(fwID, vs, now); serr != nil {
@@ -287,6 +297,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	}
 
 	// HA liveness (newest HA event summary).
+	note("HA status", 8, 8)
 	if detail, serr := e.fetchHaDetail(fqdn, rangeSec); serr != nil {
 		e.logger.Warn("graylog ha fetch failed", "fw_id", fwID, "fqdn", fqdn, "err", serr)
 	} else if detail != "" {

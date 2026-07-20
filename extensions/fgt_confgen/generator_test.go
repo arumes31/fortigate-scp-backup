@@ -108,3 +108,36 @@ func TestGenerateSrcISDBUsesSrcKeys(t *testing.T) {
 		t.Errorf("src block must not emit the destination-side internet-service-id key:\n%s", out)
 	}
 }
+
+// TestGenerateWhitespaceEntriesExcluded: whitespace-only list values (UI
+// padding) are treated as empty everywhere, so a blank address never validates
+// past mutual-exclusion only to be emitted next to the Internet-Service block
+// (a combination FortiOS rejects), and surrounding whitespace on a real value
+// is trimmed on emission.
+func TestGenerateWhitespaceEntriesExcluded(t *testing.T) {
+	p := minimalPolicy()
+	p.DstAddresses = []string{"   "}
+	p.DstInternetServices = []string{"Google-Web"}
+	p.Services = []Service{{Type: "template", Name: "HTTPS"}}
+	out, err := GenerateOutput1(p)
+	if err != nil {
+		t.Fatalf("whitespace-only dstaddr must be ignored, not rejected: %v", err)
+	}
+	if !strings.Contains(out, "set internet-service enable") {
+		t.Errorf("expected destination ISDB block:\n%s", out)
+	}
+	if strings.Contains(out, "set dstaddr") {
+		t.Errorf("whitespace-only dstaddr must not be emitted alongside ISDB:\n%s", out)
+	}
+
+	p = minimalPolicy()
+	p.SrcAddresses = []string{"  lan-net  ", "   "}
+	p.Services = []Service{{Type: "template", Name: "HTTPS"}}
+	out, err = GenerateOutput1(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `set srcaddr "lan-net"`) {
+		t.Errorf("surrounding whitespace on a real srcaddr must be trimmed:\n%s", out)
+	}
+}

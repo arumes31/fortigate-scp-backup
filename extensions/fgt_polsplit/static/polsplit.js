@@ -242,7 +242,10 @@ async function analyze() {
             const resp = await fetch(`/fgt-polsplit/progress?id=${encodeURIComponent(progressId)}`, { signal });
             if (resp.ok) {
                 const p = await resp.json();
-                if (p.active) updateProgress(prog, p);
+                // Ownership guard: an in-flight poll may resolve after this
+                // run's teardown (hideProgress) or after a newer analyze()
+                // took over — a stale update would resurrect the hidden bar.
+                if (p.active && psState.analyzeCtrl === ctrl) updateProgress(prog, p);
             }
         } catch { /* best-effort */ } finally {
             polling = false;

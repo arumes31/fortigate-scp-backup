@@ -36,26 +36,50 @@ type Service struct {
 
 	// Live operational counters for the dashboard. All in-memory: they describe
 	// activity since process start and reset on restart.
-	running     sync.Map     // fwID(int) -> time.Time: in-flight backup start times
+	running     sync.Map     // fwID(int) -> *runState: in-flight backups
 	durTotalNs  atomic.Int64 // sum of completed run durations, nanoseconds
 	durCount    atomic.Int64 // number of completed runs
 	prunedTotal atomic.Int64 // retention-overflow files pruned since start
+}
+
+// runState tracks one in-flight backup for the dashboard: start time plus the
+// live coarse stage the engine is currently in.
+type runState struct {
+	start time.Time
+	mu    sync.Mutex
+	stage string
 }
 
 // RunningBackup describes an in-flight backup for the dashboard "running now" view.
 type RunningBackup struct {
 	FwID  int
 	Since time.Time
+	Stage string // coarse engine stage ("downloading configuration (attempt 1/3)", …)
 }
 
 // Running returns the firewalls with a backup currently in flight.
 func (s *Service) Running() []RunningBackup {
 	var out []RunningBackup
 	s.running.Range(func(k, v any) bool {
-		out = append(out, RunningBackup{FwID: k.(int), Since: v.(time.Time)})
+		st := v.(*runState)
+		st.mu.Lock()
+		stage := st.stage
+		st.mu.Unlock()
+		out = append(out, RunningBackup{FwID: k.(int), Since: st.start, Stage: stage})
 		return true
 	})
 	return out
+}
+
+// setStage publishes the in-flight backup's current stage for the dashboard
+// (no-op when the firewall is not tracked as running).
+func (s *Service) setStage(fwID int, stage string) {
+	if v, ok := s.running.Load(fwID); ok {
+		st := v.(*runState)
+		st.mu.Lock()
+		st.stage = stage
+		st.mu.Unlock()
+	}
 }
 
 // AvgBackupDuration is the mean wall-clock duration of backup runs since start
@@ -116,7 +140,7 @@ func (s *Service) Backup(fwID int) {
 	defer func() { <-s.sem }()
 
 	start := time.Now()
-	s.running.Store(fwID, start)
+	s.running.Store(fwID, &runState{start: start})
 	defer func() {
 		s.running.Delete(fwID)
 		s.durTotalNs.Add(int64(time.Since(start)))

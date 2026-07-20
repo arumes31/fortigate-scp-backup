@@ -173,13 +173,16 @@ func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 	// Cache miss: a full config read + parse — visible on the dashboard's
 	// "currently running" card while it churns, with SSE lifecycle events for
 	// the SYS_STDOUT panel.
-	defer s.auditRuns.track(fwID)()
+	note, done := s.auditRuns.track(fwID)
+	defer done()
 	s.hub.broadcast("audit", fwID, "started")
 	defer s.hub.broadcast("audit", fwID, "finished")
+	note("reading configuration")
 	plain, ok := s.readConfig(fwID, filename)
 	if !ok {
 		return nil, false
 	}
+	note("running checks")
 	res := computeAudit(fwID, filename, plain, rules)
 	storeAudit(db, fwID, res)
 	return res, true
@@ -198,7 +201,8 @@ func (s *Server) WarmAuditCache(fwID int) {
 	s.warmSem <- struct{}{}
 	defer func() { <-s.warmSem }()
 	// Registered after the semaphore, so queued warms don't show as running.
-	defer s.auditRuns.track(fwID)()
+	note, done := s.auditRuns.track(fwID)
+	defer done()
 	s.hub.broadcast("audit", fwID, "started")
 	defer s.hub.broadcast("audit", fwID, "finished")
 
@@ -211,10 +215,12 @@ func (s *Server) WarmAuditCache(fwID int) {
 	if !ok {
 		return
 	}
+	note("reading configuration")
 	plain, ok := s.readConfig(fwID, filename)
 	if !ok {
 		return
 	}
+	note("running checks")
 	res := computeAudit(fwID, filename, plain, loadCustomRules(db))
 	storeAudit(db, fwID, res)
 	s.logger.Debug("audit cache warmed", "fw_id", fwID, "backup", filename, "findings", len(res.Findings))

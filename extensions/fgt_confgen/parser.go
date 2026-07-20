@@ -11,9 +11,12 @@ var (
 	setSvcProtoRe  = regexp.MustCompile(`^set\s+(\w+)-portrange\s+(.+)`)
 	setSvcProto2Re = regexp.MustCompile(`^set\s+(\w+)\s+(.+)`)
 	setAddrRe      = regexp.MustCompile(`^set (?:srcaddr|dstaddr)\s+(.+)`)
-	setIsdbRe      = regexp.MustCompile(`^set internet-service-id\s+(.+)`)
-	setPoolRe      = regexp.MustCompile(`^set poolname\s+(.+)`)
-	setServiceRe   = regexp.MustCompile(`^set service\s+(.+)`)
+	// All four Internet-Service reference keys a policy can carry: the
+	// destination-side id/name forms and the source-side -src- variants —
+	// any of them names ISDB entries the UI must offer.
+	setIsdbRe    = regexp.MustCompile(`^set internet-service(?:-src)?-(?:id|name)\s+(.+)`)
+	setPoolRe    = regexp.MustCompile(`^set poolname\s+(.+)`)
+	setServiceRe = regexp.MustCompile(`^set service\s+(.+)`)
 )
 
 // KnownServices maps standard service names to protocol and port.

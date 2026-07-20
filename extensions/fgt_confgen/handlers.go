@@ -500,9 +500,10 @@ func (e *Extension) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete associated short URLs
+	// Delete associated short URLs (scoped to this owner, so a same-named
+	// template of another user keeps its links)
 	templateURL := fmt.Sprintf("/fgt-confgen/get_template/%s", templateName)
-	e.deleteShortURLsByTemplate(templateURL)
+	e.deleteShortURLsByTemplate(owner, templateURL)
 
 	e.log(r, "Delete Template", fmt.Sprintf("Deleted template '%s' (global: %v)", templateName, isGlobal))
 
@@ -707,18 +708,41 @@ func (e *Extension) importTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept either the export wrapper ({"name":..,"data":{...}}) or a direct
+	// TemplateData ({"policies":[...]}). Probe the top-level keys first: an
+	// arbitrary object carrying neither "data" nor "policies" (e.g.
+	// {"foo":"bar"}) decodes into both shapes without error and would
+	// otherwise be silently stored as an empty template. Requiring one of the
+	// two keys rejects that while still allowing an intentionally-empty import
+	// (a present "data"/"policies" with no entries).
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(templateDataStr), &probe); err != nil {
+		http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
+		return
+	}
+	_, hasData := probe["data"]
+	_, hasPolicies := probe["policies"]
+	if !hasData && !hasPolicies {
+		http.Error(w, `template JSON must contain a "data" or "policies" field`, http.StatusBadRequest)
+		return
+	}
+
 	var imported struct {
 		Name string       `json:"name"`
 		Data TemplateData `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(templateDataStr), &imported); err != nil {
-		var directData TemplateData
-		if err2 := json.Unmarshal([]byte(templateDataStr), &directData); err2 == nil {
-			imported.Data = directData
-		} else {
+	if hasData {
+		if err := json.Unmarshal([]byte(templateDataStr), &imported); err != nil {
 			http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
 			return
 		}
+	} else {
+		var directData TemplateData
+		if err := json.Unmarshal([]byte(templateDataStr), &directData); err != nil {
+			http.Error(w, "Invalid template JSON format", http.StatusBadRequest)
+			return
+		}
+		imported.Data = directData
 	}
 
 	for i := range imported.Data.Policies {
@@ -769,13 +793,24 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !strings.Contains(body.URL, "/get_template/") {
+	urlParts := strings.SplitN(body.URL, "/get_template/", 2)
+	if len(urlParts) < 2 || urlParts[1] == "" {
 		http.Error(w, "Short URLs only allowed for templates", http.StatusForbidden)
 		return
 	}
 
+	// Resolve which template (and owner) the URL names for the requesting
+	// user, so the stored short URL is scoped to that owner — same-named
+	// templates of other users must never be affected by its lifecycle.
+	username := e.currentUser(r)
+	_, owner, terr := e.getTemplateFromDB(username, urlParts[1])
+	if terr != nil {
+		http.Error(w, "Template not found", http.StatusNotFound)
+		return
+	}
+
 	var shortCode string
-	err := e.db.QueryRow("SELECT short_code FROM short_urls WHERE url = ?", body.URL).Scan(&shortCode)
+	err := e.db.QueryRow("SELECT short_code FROM short_urls WHERE url = ? AND (owner = ? OR owner = '')", body.URL, owner).Scan(&shortCode)
 	if err != nil && err != sql.ErrNoRows {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -784,7 +819,7 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 		inserted := false
 		for attempts := 0; attempts < 5; attempts++ {
 			shortCode = randHex(6)
-			insErr := e.shortenURLInDB(body.URL, shortCode)
+			insErr := e.shortenURLInDB(body.URL, owner, shortCode)
 			if insErr == nil {
 				inserted = true
 				break

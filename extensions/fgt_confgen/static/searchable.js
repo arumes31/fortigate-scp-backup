@@ -70,10 +70,20 @@ function initSearchableSelect(selectElement, options = {}) {
             value: opt.value,
             text: opt.text,
             selected: opt.selected,
+            // Native select semantics: options inside a disabled optgroup are
+            // unselectable, so the optgroup's disabled state is inherited.
+            disabled: opt.disabled || !!(opt.closest('optgroup') && opt.closest('optgroup').disabled),
             optgroup: opt.closest('optgroup') ? opt.closest('optgroup').label : null
         }));
     }
     refreshOptions();
+
+    // syncedSelected refreshes the snapshot first, so dynamically relabeled
+    // or replaced options are reflected before the selection is derived.
+    function syncedSelected() {
+        refreshOptions();
+        return originalOptions.find(opt => opt.selected);
+    }
 
     let highlightedElement = null;
 
@@ -123,9 +133,14 @@ function initSearchableSelect(selectElement, options = {}) {
                 option.id = 'opt-' + Math.random().toString(36).substr(2, 9);
                 option.setAttribute('aria-selected', opt.selected ? 'true' : 'false');
                 if (opt.selected) option.classList.add('selected');
+                if (opt.disabled) {
+                    option.classList.add('disabled');
+                    option.setAttribute('aria-disabled', 'true');
+                }
                 option.textContent = opt.text;
                 option.dataset.value = opt.value;
                 option.addEventListener('click', () => {
+                    if (opt.disabled) return;
                     selectOption(opt);
                 });
                 dropdown.appendChild(option);
@@ -152,7 +167,7 @@ function initSearchableSelect(selectElement, options = {}) {
         comboInput.setAttribute('aria-expanded', hasResults ? 'true' : 'false');
         
         // Auto-highlight selected or first option
-        const optionsList = dropdown.querySelectorAll('.searchable-select-option');
+        const optionsList = dropdown.querySelectorAll('.searchable-select-option:not(.disabled)');
         if (optionsList.length > 0) {
             const selectedOptEl = Array.from(optionsList).find(el => el.classList.contains('selected'));
             highlightOption(selectedOptEl || optionsList[0]);
@@ -182,7 +197,7 @@ function initSearchableSelect(selectElement, options = {}) {
 
     // Event listeners with abort signal
     comboInput.addEventListener('focus', () => {
-        const selected = originalOptions.find(opt => opt.selected);
+        const selected = syncedSelected();
         comboInput.value = selected ? selected.text : '';
         comboInput.select();
         // Show ALL options on focus — filtering by the selected label would
@@ -201,7 +216,7 @@ function initSearchableSelect(selectElement, options = {}) {
         dropdown.style.display = 'none';
         comboInput.setAttribute('aria-expanded', 'false');
         highlightOption(null);
-        const selected = originalOptions.find(opt => opt.selected);
+        const selected = syncedSelected();
         comboInput.value = selected ? selected.text : '';
     }, { signal });
 
@@ -217,14 +232,14 @@ function initSearchableSelect(selectElement, options = {}) {
                 // current selection's label (e.g. after choosing or Escape) —
                 // filtering by that label would strand the list on the single
                 // selected entry. A partially typed filter is kept.
-                const selected = originalOptions.find(opt => opt.selected);
+                const selected = syncedSelected();
                 renderDropdown(selected && comboInput.value === selected.text ? '' : comboInput.value);
                 e.preventDefault();
             }
             return;
         }
 
-        const optionsList = Array.from(dropdown.querySelectorAll('.searchable-select-option'));
+        const optionsList = Array.from(dropdown.querySelectorAll('.searchable-select-option:not(.disabled)'));
         if (optionsList.length === 0) return;
 
         const currentIndex = optionsList.indexOf(highlightedElement);
@@ -251,7 +266,7 @@ function initSearchableSelect(selectElement, options = {}) {
             dropdown.style.display = 'none';
             comboInput.setAttribute('aria-expanded', 'false');
             highlightOption(null);
-            const selected = originalOptions.find(opt => opt.selected);
+            const selected = syncedSelected();
             comboInput.value = selected ? selected.text : '';
         }
     }, { signal });
@@ -262,7 +277,7 @@ function initSearchableSelect(selectElement, options = {}) {
             dropdown.style.display = 'none';
             comboInput.setAttribute('aria-expanded', 'false');
             highlightOption(null);
-            const selected = originalOptions.find(opt => opt.selected);
+            const selected = syncedSelected();
             comboInput.value = selected ? selected.text : '';
         }
     }, { signal });

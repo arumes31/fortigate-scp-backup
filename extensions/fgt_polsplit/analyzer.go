@@ -151,6 +151,8 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 		// leak past the IPv4-only exclusion in Analyze.
 		pairV6 := tuples[idxs[0]].IPv6
 		ports := map[int]bool{}
+		lowPorts := map[int]bool{} // distinct ports with only probe-level hits
+		var lowIdxs []int
 		var maxHits int64
 		ctrl135, ctrl21 := -1, -1
 		var highIdxs []int    // ports >= dynPortFloor (1024), used by FTP branch
@@ -160,6 +162,10 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 			ports[t.Port] = true
 			if t.Hits > maxHits {
 				maxHits = t.Hits
+			}
+			if t.Hits <= scanMaxHitsPerPort {
+				lowPorts[t.Port] = true
+				lowIdxs = append(lowIdxs, i)
 			}
 			switch t.Port {
 			case 135:
@@ -176,6 +182,7 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 		}
 		switch {
 		case len(ports) >= scanMinPorts && maxHits <= scanMaxHitsPerPort:
+			// Pure scan: every port barely hit → exclude the whole pair.
 			for _, i := range idxs {
 				drop[i] = true
 			}
@@ -199,6 +206,17 @@ func preprocessPairs(tuples []TrafficTuple) ([]TrafficTuple, []string) {
 				addHits[ctrl21] += tuples[i].Hits
 			}
 			ftpPairs++
+		case len(lowPorts) >= scanMinPorts:
+			// Mixed pair: genuinely busy port(s) plus a large barely-hit probe
+			// tail. Drop only the tail — the established ports stay explicit;
+			// the pair must NOT fall through to the ALL-TCP ceiling just
+			// because one busy port defeated the pure-scan condition. Ordered
+			// after RPC/FTP so their low-hit dynamic ports keep collapsing
+			// into their recognized patterns.
+			for _, i := range lowIdxs {
+				drop[i] = true
+			}
+			scanPairs++
 		case len(ports) >= ceilingPorts:
 			var hits int64
 			last := ""

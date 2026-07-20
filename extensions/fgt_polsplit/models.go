@@ -62,7 +62,7 @@ type RecPolicy struct {
 // config and must be created for the recommendation to work. The UI lists
 // these explicitly next to the full CLI.
 type NewObject struct {
-	Kind  string `json:"kind"` // address | addrgrp | service
+	Kind  string `json:"kind"` // address | addrgrp | service | svcgrp
 	Name  string `json:"name"`
 	Value string `json:"value"` // human-readable definition ("10.1.2.0/24", "tcp/8443", member list)
 }

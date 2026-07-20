@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
@@ -22,6 +23,7 @@ type Store interface {
 	DeleteFirewall(ctx context.Context, id int) (string, error)
 	ListBackups(ctx context.Context, fwID int) ([]models.Backup, error)
 	ListErrors(ctx context.Context) ([]models.Firewall, error)
+	LastBackupTimes(ctx context.Context) (map[int]time.Time, error)
 	ListActivityLogs(ctx context.Context, limit, offset int) ([]models.ActivityLog, error)
 	CountActivityLogs(ctx context.Context) (int, error)
 	DashboardStats(ctx context.Context) (models.DashboardStats, error)

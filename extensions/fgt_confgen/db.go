@@ -29,10 +29,20 @@ func InitDB(db *sql.DB) error {
 		return err
 	}
 
+	// owner scopes each short URL to the template's owning username (or
+	// __global__): same-named templates of different owners must never
+	// affect each other's short links on rename/delete.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS short_urls (
 		short_code TEXT PRIMARY KEY,
-		url TEXT NOT NULL
+		url TEXT NOT NULL,
+		owner TEXT NOT NULL DEFAULT ''
 	)`); err != nil {
+		return err
+	}
+	// Migration for databases created before the owner column existed; the
+	// duplicate-column error on re-runs is expected.
+	if _, err := db.Exec(`ALTER TABLE short_urls ADD COLUMN owner TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
 
@@ -87,7 +97,11 @@ func (e *Extension) deleteTemplateFromDB(username, name string) (int64, error) {
 // renameTemplateInDB renames a template and rewrites its associated short
 // URLs in one transaction, so a failure in either statement leaves both
 // tables unchanged. The LIKE filter is wildcard-escaped because template
-// names may legitimately contain % or _.
+// names may legitimately contain % or _. Short-URL rewrites are scoped
+// strictly to the renaming owner: because a short URL is keyed only by the
+// template name (which two owners can share), a legacy ownerless row is
+// deliberately NOT rewritten — it may belong to another user, and there is no
+// way to attribute it. Such rows are left intact rather than hijacked.
 func (e *Extension) renameTemplateInDB(username, oldName, newName, oldURL, newURL string) (int64, error) {
 	tx, err := e.db.Begin()
 	if err != nil {
@@ -106,8 +120,8 @@ func (e *Extension) renameTemplateInDB(username, oldName, newName, oldURL, newUR
 	if affected > 0 {
 		// Stored URLs may carry a scheme+host prefix, so match on the exact
 		// template path as an escaped suffix and substitute it in place.
-		if _, err := tx.Exec("UPDATE short_urls SET url = REPLACE(url, ?, ?) WHERE url LIKE ? ESCAPE '\\'",
-			oldURL, newURL, "%"+escapeLike(oldURL)); err != nil {
+		if _, err := tx.Exec("UPDATE short_urls SET url = REPLACE(url, ?, ?) WHERE owner = ? AND url LIKE ? ESCAPE '\\'",
+			oldURL, newURL, username, "%"+escapeLike(oldURL)); err != nil {
 			return 0, err
 		}
 	}
@@ -143,8 +157,8 @@ func (e *Extension) getLastConfigFromDB(username string) (ParsedConfig, error) {
 // treating every other database failure as fatal.
 var errShortCodeCollision = errors.New("short code already exists")
 
-func (e *Extension) shortenURLInDB(url, shortCode string) error {
-	_, err := e.db.Exec("INSERT INTO short_urls (short_code, url) VALUES (?, ?)", shortCode, url)
+func (e *Extension) shortenURLInDB(url, owner, shortCode string) error {
+	_, err := e.db.Exec("INSERT INTO short_urls (short_code, url, owner) VALUES (?, ?, ?)", shortCode, url, owner)
 	if err == nil {
 		return nil
 	}
@@ -182,6 +196,13 @@ func escapeLike(s string) string {
 	return b.String()
 }
 
-func (e *Extension) deleteShortURLsByTemplate(templateURL string) {
-	_, _ = e.db.Exec("DELETE FROM short_urls WHERE url LIKE ? ESCAPE '\\'", "%"+escapeLike(templateURL))
+// deleteShortURLsByTemplate removes the short URLs of one owner's template.
+// It is scoped strictly to that owner: a short URL is keyed only by template
+// name (which two owners can share), so a legacy ownerless row is left intact
+// rather than deleted, since it may belong to another user and cannot be
+// attributed. This guarantees deleting a template never severs another user's
+// same-named template links.
+func (e *Extension) deleteShortURLsByTemplate(owner, templateURL string) {
+	_, _ = e.db.Exec("DELETE FROM short_urls WHERE owner = ? AND url LIKE ? ESCAPE '\\'",
+		owner, "%"+escapeLike(templateURL))
 }

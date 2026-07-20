@@ -107,7 +107,7 @@ func TestLiveDiagStore(t *testing.T) {
 			return p[0], p[2], p[3], port, nil
 		}}
 
-	if err := e.collectDiag(1, true); err != nil {
+	if err := e.collectDiag(1, true, nil); err != nil {
 		t.Fatalf("collectDiag: %v", err)
 	}
 	stp, err := e.listStp(1)

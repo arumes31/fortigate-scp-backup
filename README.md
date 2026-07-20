@@ -279,7 +279,7 @@ services:
 ```
 
 > [!WARNING]
-> The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dumpall` with the matching old version, then restore into a freshly initialized data directory).
+> The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dump` of the `firewall_backups` database with the matching old version into a `backup.sql`, then restore it into a freshly initialized data directory).
 
 **Available tags:** `latest`, a date tag (`DDMMYYYY`), the commit SHA, and release tags (`vX.Y.Z`). See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for a fully annotated example covering every setting.
 

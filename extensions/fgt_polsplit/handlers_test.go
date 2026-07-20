@@ -1,6 +1,9 @@
 package fgt_polsplit
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestAppISDBMatches: application-control names map to ISDB objects via
 // normalized (lowercase, alphanumeric-only) exact-or-prefix matching; short
@@ -49,5 +52,31 @@ func TestMarkRecommended(t *testing.T) {
 	markRecommended(strategies, nil)
 	if !strategies[1].Recommended {
 		t.Errorf("only non-empty strategy should be recommended: %+v", strategies)
+	}
+}
+
+// TestBaselineWindows: the baseline is the compare-duration window immediately
+// PRECEDING the analysis window — "Previous 7 days" on a 24h analysis compares
+// against days 1–8 back ([now-8d, now-24h]), butting exactly against the
+// analysis window with neither overlap nor gap.
+func TestBaselineWindows(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	tr, baseTr := baselineWindows(now, 86400, 7*86400)
+
+	if tr.From != "2026-07-16T12:00:00.000Z" || tr.To != "2026-07-17T12:00:00.000Z" {
+		t.Errorf("analysis window = %s .. %s", tr.From, tr.To)
+	}
+	if baseTr.From != "2026-07-09T12:00:00.000Z" {
+		t.Errorf("baseline must start range+compare back: %s", baseTr.From)
+	}
+	if baseTr.To != tr.From {
+		t.Errorf("baseline must butt against the analysis window: %s != %s", baseTr.To, tr.From)
+	}
+
+	// A baseline SHORTER than the analysis window is valid under these
+	// semantics (30d analysis, 7d baseline).
+	tr, baseTr = baselineWindows(now, 30*86400, 7*86400)
+	if baseTr.To != tr.From || baseTr.From != "2026-06-10T12:00:00.000Z" {
+		t.Errorf("short baseline windows wrong: base %s .. %s, analysis from %s", baseTr.From, baseTr.To, tr.From)
 	}
 }

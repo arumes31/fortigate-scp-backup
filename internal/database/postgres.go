@@ -620,6 +620,27 @@ func (s *Store) LastBackupTime(ctx context.Context, fwID int) (time.Time, bool, 
 	return ts, true, nil
 }
 
+// LastBackupTimes returns the newest successful-backup timestamp per firewall
+// in one query (the backups table only ever holds successes). Firewalls
+// without any backup are simply absent from the map.
+func (s *Store) LastBackupTimes(ctx context.Context) (map[int]time.Time, error) {
+	rows, err := s.pool.Query(ctx, `SELECT fw_id, MAX(timestamp) FROM backups GROUP BY fw_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]time.Time{}
+	for rows.Next() {
+		var fwID int
+		var ts time.Time
+		if err := rows.Scan(&fwID, &ts); err != nil {
+			return nil, err
+		}
+		out[fwID] = ts
+	}
+	return out, rows.Err()
+}
+
 // InsertBackup records a new backup file, its size and checksum (idempotent on
 // the unique constraint).
 func (s *Store) InsertBackup(ctx context.Context, fwID int, ts time.Time, filename string, size int64, checksum string) error {
