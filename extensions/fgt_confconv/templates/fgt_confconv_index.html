@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration Conversions · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/fgt-confconv/static/styles.css">
+    <script defer src="/static/searchable.js"></script>
+    <script defer src="/fgt-confconv/static/confconv.js"></script>
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/search">Search</a>
+            <a href="/audit">Audit</a>
+            <a href="/topology">Topology</a>
+            <a href="/activity_log">Act_Log</a>
+            {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
+            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
+            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
+            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/" class="active">Conf_Conv</a>{{end}}
+        </nav>
+        <div class="sysinfo">
+            <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+            <form method="post" action="/logout" class="logout-form" style="display:inline; margin:0;">
+                <button type="submit" class="logout-btn">[EXIT]</button>
+            </form>
+        </div>
+    </header>
+
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>Configuration Conversions</h1>
+        <p class="cc-intro">Pick a firewall and one or more structural migration recipes. Recipes run as a chained pipeline against the latest config backup and produce one reviewable, copy-paste FortiGate CLI script — nothing is applied to the device automatically.</p>
+
+        <div class="card">
+            <h2>Firewall</h2>
+            <div class="form-grid">
+                <div class="field">
+                    <label for="cc-firewall">Firewall</label>
+                    <select id="cc-firewall" class="form-control">
+                        <option value="">Select Firewall</option>
+                        {{range .Firewalls}}
+                        <option value="{{.ID}}">{{.FQDN}}</option>
+                        {{end}}
+                    </select>
+                </div>
+            </div>
+            <p class="cc-intro" id="cc-backup-info" hidden></p>
+            <p class="cc-error" id="cc-version-warning" hidden></p>
+        </div>
+
+        <div class="card cc-recipe" id="cc-card-fortilink">
+            <h2><label><input type="checkbox" id="cc-fl-enable"> Interface(s) → FortiLink</label></h2>
+            <div class="cc-options" id="cc-fl-options" hidden>
+                <p class="cc-intro">Physical ports that become FortiLink members:</p>
+                <div class="cc-checklist" id="cc-fl-members"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="cc-fl-name">FortiLink interface name</label>
+                        <input type="text" id="cc-fl-name" class="form-control" placeholder="fortilink1">
+                    </div>
+                    <div class="field">
+                        <label><input type="checkbox" id="cc-fl-existing"> Add to an existing FortiLink interface</label>
+                    </div>
+                </div>
+                <p class="cc-intro">VLAN moves — existing interfaces to carry onto the FortiLink as VLANs (keeps their name, IP, and role):</p>
+                <div id="cc-fl-vlanmoves"></div>
+                <button type="button" class="btn btn-sm" id="cc-fl-add-vlanmove">+ Add VLAN move</button>
+            </div>
+        </div>
+
+        <div class="card cc-recipe" id="cc-card-sdwan">
+            <h2><label><input type="checkbox" id="cc-sw-enable"> WAN interface(s) → SD-WAN</label></h2>
+            <div class="cc-options" id="cc-sw-options" hidden>
+                <p class="cc-intro">WAN interfaces to bundle as SD-WAN members (pick at least 2):</p>
+                <div class="cc-checklist" id="cc-sw-members"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="cc-sw-zone">SD-WAN zone name</label>
+                        <input type="text" id="cc-sw-zone" class="form-control" placeholder="virtual-wan-link">
+                    </div>
+                    <div class="field">
+                        <label><input type="checkbox" id="cc-sw-existing"> Add to an existing SD-WAN zone</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card cc-recipe" id="cc-card-zone">
+            <h2><label><input type="checkbox" id="cc-zn-enable"> Interface-based → zone-based policies</label></h2>
+            <div class="cc-options" id="cc-zn-options" hidden>
+                <p class="cc-intro">Interfaces to group into a zone (pick at least 2):</p>
+                <div class="cc-checklist" id="cc-zn-members"></div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="cc-zn-zone">Zone name</label>
+                        <input type="text" id="cc-zn-zone" class="form-control" placeholder="zone-lan">
+                    </div>
+                    <div class="field">
+                        <label><input type="checkbox" id="cc-zn-existing"> Add to an existing zone</label>
+                    </div>
+                    <div class="field">
+                        <label><input type="checkbox" id="cc-zn-intrazone" checked> Allow intrazone traffic</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card cc-recipe" id="cc-card-sdwanrules">
+            <h2><label><input type="checkbox" id="cc-sr-enable"> SD-WAN static routes → SD-WAN rules</label></h2>
+            <div class="cc-options" id="cc-sr-options" hidden>
+                <p class="cc-intro">Requires SD-WAN members already present — either in the backup, or created above in this same run.</p>
+                <div class="field">
+                    <label for="cc-sr-strategy">Strategy</label>
+                    <select id="cc-sr-strategy" class="form-control">
+                        <option value="manual">Manual (explicit member preference order)</option>
+                        <option value="best-quality">Best Quality (latency / jitter / packet-loss)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="cc-actions">
+            <button type="button" class="btn btn-primary" id="cc-generate-btn" disabled>Generate</button>
+        </div>
+
+        <div class="card" id="cc-results" hidden>
+            <h2>Results</h2>
+            <div id="cc-warnings" hidden></div>
+            <div id="cc-sections"></div>
+            <button type="button" class="btn btn-sm" id="cc-copy-all">Copy All</button>
+        </div>
+    </main>
+
+    <footer class="sysfooter">
+        <div>EOF // (C) FORTISAFE_SEC</div>
+    </footer>
+</div>
+</body>
+</html>

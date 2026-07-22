@@ -87,6 +87,11 @@ services:
       # auto-detected ones (set role wan, SD-WAN members, virtual-wan-link).
       # - "POLSPLIT_WAN_INTERFACES=wan1,wan2"
 
+      # --- Extension: Configuration Conversions (Optional) ---
+      # Structural migration recipes (interfaces->FortiLink, WAN->SD-WAN, etc.)
+      # run against the latest config backup, producing a reviewable CLI script.
+      - "EXT_FGT_CONFCONV=true"
+
       # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
       # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH
       # credentials) for authoritative per-switch-port link state, STP role/state

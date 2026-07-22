@@ -409,6 +409,11 @@ Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server
 | `POLSPLIT_WAN_INTERFACES` | *(Unset)* | Extra interface names to treat as internet-facing (comma-separated), merged with auto-detection (`set role wan`, SD-WAN members, `virtual-wan-link`). Policies whose destination interfaces are all internet-facing keep `dstaddr "all"` instead of enumerating rotating internet IPs. |
 | `POLSPLIT_ANALYZE_TIMEOUT` | `55` | Seconds; hard cap on one analyze request so it fails with a clean error instead of a raw reverse-proxy 504. Windows longer than 12h are loaded in parallel chunks — 1-hour steps by default, grown so a run never exceeds 48 chunks (e.g. a 30-day window uses 15-hour chunks); raise this (and the proxy read timeout, e.g. nginx `proxy_read_timeout`) for very busy policies, or `0` to disable the cap. |
 
+### Extension: Configuration Conversions (ConfConv)
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_FGT_CONFCONV` | `false` | Enable the Configuration Conversions extension. |
+
 ---
 
 ## 🔌 Modules & Extensions
@@ -447,6 +452,18 @@ An optional module (`EXT_FGT_POLSPLIT=true`) that helps restrict overly-open fir
 * **UTM awareness** — destinations whose sessions were blocked by UTM inspection under the analyzed policy are listed for review before being re-allowed.
 * **FQDN suggestions** — optional best-effort PTR resolution of observed destinations, offered as candidate FQDN objects (never applied automatically).
 * **Ready-to-paste CLI** — emits the full FortiGate configuration in dependency order (addresses → groups → services → policies), clones the original policy's interfaces/NAT/UTM profiles, allocates free policy IDs, wraps multi-VDOM output in the correct `config vdom` context, moves the splits above the original and finally disables (not deletes) it. An optional change-ticket ID is embedded in every generated policy's comments, and an optional explicit **fallthrough deny+log policy** can be placed directly above the disabled original so missed traffic logs loudly instead of dying silently.
+
+### Configuration Conversions (ConfConv)
+
+An optional module (`EXT_FGT_CONFCONV=true`) for restructuring a firewall's configuration — pick one or more migration recipes, run them as a chained pipeline against the latest config backup, and get back a reviewable FortiGate CLI script. Nothing is applied to the device automatically.
+
+* **Interface(s) → FortiLink** — convert physical port(s) into a FortiLink-managed aggregate/hardware-switch interface, moving any interfaces that carried IP/DHCP config directly onto VLANs stacked on the new FortiLink.
+* **WAN interface(s) → SD-WAN** — bundle WAN interfaces into `config system sdwan` members and a zone, repointing policies and consolidating static routes.
+* **Interface-based → zone-based policies** — group interfaces into a named zone and repoint policies at it.
+* **SD-WAN static routes → SD-WAN rules** — upgrade plain default routes on SD-WAN members into proper SD-WAN Service Rules.
+* **Chained pipeline** — selected recipes run in a fixed dependency order against one in-memory config model, so later recipes see earlier ones' changes (e.g. the routes→rules recipe sees members a WAN→SD-WAN recipe just created in the same run).
+* **Core-traffic-path auto-rewrite, everything else flagged** — policies, static routes, and zone membership are rewritten automatically; anything else referencing a touched interface (VIPs, IPsec, DHCP, HA/SNMP/syslog, admin access) is surfaced as an explicit warning instead of guessed at.
+* **FortiOS 7.4+ only** — backups below 7.4 are rejected per-recipe with a clear message rather than emitting best-effort old-syntax CLI.
 
 
 ---

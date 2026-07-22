@@ -24,6 +24,7 @@
             {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
             {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
             {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/" class="active">Pol_Split</a>{{end}}
+            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
         </nav>
         <div class="sysinfo">
             <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
