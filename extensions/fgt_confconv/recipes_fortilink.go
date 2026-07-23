@@ -3,6 +3,7 @@ package fgt_confconv
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // VLANMove carries an existing interface's L3 config (ip/allowaccess/role)
@@ -20,6 +21,10 @@ type FortiLinkOptions struct {
 	FortilinkName string     `json:"fortilink_name"`
 	UseExisting   bool       `json:"use_existing"`
 	VLANMoves     []VLANMove `json:"vlan_moves"`
+	// BulkVLANParents lists interfaces whose every stacked VLAN should be moved
+	// onto the FortiLink -- each expanded into a VLANMove keeping its existing
+	// name and tag. Handy when an aggregate/port carries dozens of VLANs.
+	BulkVLANParents []string `json:"bulk_vlan_parents"`
 }
 
 const RecipeKeyFortiLink = "iface-to-fortilink"
@@ -43,6 +48,38 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 	}
 	if opts.FortilinkName == "" {
 		return nil, nil, fmt.Errorf("a FortiLink interface name is required")
+	}
+
+	var warnings []Warning
+
+	// Expand "move every VLAN on this interface" selections into concrete VLAN
+	// moves, each keeping its existing name and tag. Explicit moves win, so a
+	// VLAN named both ways is only moved once. Sorted for stable CLI output.
+	if len(opts.BulkVLANParents) > 0 {
+		listed := make(map[string]bool, len(opts.VLANMoves))
+		for _, m := range opts.VLANMoves {
+			listed[m.Interface] = true
+		}
+		for _, parent := range opts.BulkVLANParents {
+			if _, ok := cfg.Interfaces[parent]; !ok {
+				return nil, nil, fmt.Errorf("bulk VLAN source %q not found in this configuration", parent)
+			}
+			var found []VLANMove
+			for name, iface := range cfg.Interfaces {
+				if iface.Type == "vlan" && iface.Parent == parent && iface.VLANID > 0 && !listed[name] {
+					found = append(found, VLANMove{Interface: name, VLANID: iface.VLANID})
+					listed[name] = true
+				}
+			}
+			sort.Slice(found, func(i, j int) bool { return found[i].Interface < found[j].Interface })
+			opts.VLANMoves = append(opts.VLANMoves, found...)
+			if len(found) == 0 {
+				warnings = append(warnings, Warning{
+					Recipe: r.Key(),
+					Detail: fmt.Sprintf("no VLANs are stacked on %q, so \"move all VLANs\" had nothing to move for it", parent),
+				})
+			}
+		}
 	}
 
 	moveTargets := make(map[string]bool, len(opts.VLANMoves))
@@ -73,7 +110,6 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 	}
 
 	var cli []CLIBlock
-	var warnings []Warning
 
 	// Pull member ports out of whatever switch they currently belong to.
 	var pulled []string
@@ -177,7 +213,7 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		for _, hit := range ScanReferences(cfg, mv.Interface) {
 			warnings = append(warnings, Warning{
 				Recipe: r.Key(), Section: hit.Section, Line: hit.Line,
-				Detail: fmt.Sprintf("%q is still referenced in %s (%s) -- review after moving it onto the FortiLink", mv.Interface, hit.Section, hit.Edit),
+				Detail: fmt.Sprintf("%q keeps its name after moving onto the FortiLink as a VLAN, so this reference in %s (%s) stays valid -- no CLI change needed, just confirm it still behaves as intended", mv.Interface, hit.Section, hit.Edit),
 			})
 		}
 	}

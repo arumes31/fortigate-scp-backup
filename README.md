@@ -351,7 +351,7 @@ FortiSafe is configured entirely via environment variables.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `ENCRYPTION_KEY` | *(Unset)* | 32-byte (hex/base64) key to enable AES-256-GCM encryption at rest. |
-| `DEFAULT_SCP_USER` | `test` | Default SSH username when none is specified. |
+| `DEFAULT_SCP_USER` | `admin` | Default SSH username when none is specified. |
 | `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
 | `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |
 | `SCP_TIMEOUT` | `60` | SSH connection and transfer timeout in seconds. |
@@ -386,13 +386,29 @@ Powers the live device & state overlay on the [topology page](#-network-topology
 | :--- | :--- | :--- |
 | `EXT_GRAYLOG_DEVICE_DATA` | `false` | Enable the Graylog switch-device inventory extension (topology device data). |
 | `GRAYLOG_DEVICE_INTERVAL` | `3600` | Background refresh interval in seconds for all signals below. |
-| `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per background fetch. (The topology "Live" button overrides this with a narrower window, clamped to 60–3600 s.) |
+| `GRAYLOG_DEVICE_RANGE` | `86400` | Seconds of log history scanned per background fetch for the device/MAC/wifi/VPN/HA signals. (The topology "Live" button overrides this with a narrower window, clamped to 60–3600 s.) |
+| `GRAYLOG_TOPO_RANGE` | `2592000` | Seconds of history for the sparse switch-interlink (topology) query — wider than the device window, since stable uplinks emit STP events rarely. |
+| `GRAYLOG_LINK_RANGE` | `2592000` | Seconds of history for the latest-per-port link-state aggregation (wide, like the topology window). |
 | `GRAYLOG_DEVICE_QUERY` | `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)` | Client-device logs (MAC/IP/VLAN + OS fingerprint). |
 | `GRAYLOG_MAC_QUERY` | *(FortiSwitch MAC-table add/move/delete + NAC device add/delete logids)* | Device-to-switch-port pinning from FortiSwitch MAC-table events (requires `set mac-event-logging enable` under `config switch-controller global`) and NAC device events. |
-| `GRAYLOG_STP_QUERY` | *(FortiSwitch spanning-tree / port-status / link / BPDU / loop- & root-guard filter)* | Port link up/down and STP / guard state (blocked ports blink on faceplates). |
+| `GRAYLOG_STP_QUERY` | *(FortiSwitch spanning-tree / port-status / link / BPDU / loop- & root-guard filter)* | FortiSwitch STP / loop- / root-guard state (blocked ports blink on faceplates). |
+| `GRAYLOG_TOPO_QUERY` | *(trunk-named FortiSwitch spanning-tree events only)* | Switch-to-switch interlink (topology) detection — trunk-named STP events whose *root* role orients the switch tree; scanned over the wider `GRAYLOG_TOPO_RANGE` window. |
+| `GRAYLOG_LINK_QUERY` | *(FortiSwitch port up/down status carrying `switchphysicalport`)* | Feeds a server-side aggregation returning the latest link status per switch+port, so one row per port survives even when a few flapping ports dominate event volume. |
 | `GRAYLOG_WIFI_QUERY` | `source:"%s" AND subtype:"wireless" AND stamac:* AND (ssid:* OR ap:*)` | Wireless client ↔ AP ↔ SSID associations with signal strength. |
 | `GRAYLOG_VPN_QUERY` | `source:"%s" AND subtype:"vpn" AND tunnelid:*` | IPsec / SSL-VPN tunnel up/down status. |
 | `GRAYLOG_HA_QUERY` | `source:"%s" AND subtype:"ha"` | HA member / role events. |
+
+### Extension: Live SSH Diagnostics (Topology)
+
+An optional authoritative supplement to the log-derived topology overlay. When enabled alongside `EXT_GRAYLOG_DEVICE_DATA`, a background worker opens an SSH session to each firewall using its **stored per-firewall credentials** and queries the FortiGate CLI directly for per-switch-port link state, STP role/state, and interlink trunks — data the Graylog logs only reveal partially. Only one query per device runs at a time.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `FGT_DIAG_SSH_ENABLED` | `false` | Enable the live SSH diagnostics collector (requires `EXT_GRAYLOG_DEVICE_DATA` and stored per-firewall SSH credentials). |
+| `FGT_DIAG_SSH_BACKGROUND_SECONDS` | `3600` | Background sweep cadence per device, in seconds (hourly by default). |
+| `FGT_DIAG_SSH_VIEW_SECONDS` | `1200` | Minimum spacing between queries triggered by opening the topology page, in seconds (≥20 min). |
+| `FGT_DIAG_SSH_FLOOR_SECONDS` | `2` | Hard rate floor between query starts, in seconds (one query per device runs at a time regardless). |
+| `FGT_DIAG_SSH_TIMEOUT_SECONDS` | `180` | Overall SSH session timeout per device, in seconds. |
 
 ### Extension: FortiGate Policy Generator (ConfGen)
 | Variable | Default Value | Description |

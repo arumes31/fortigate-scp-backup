@@ -56,6 +56,7 @@ async function loadSummary() {
         renderChecklist('cc-fl-members', 'fl-mem');
         renderChecklist('cc-sw-members', 'sw-mem');
         renderChecklist('cc-zn-members', 'zn-mem');
+        renderVLANParents();
         refreshVLANMoveOptions();
     } catch (err) {
         $('cc-backup-info').hidden = false;
@@ -65,7 +66,7 @@ async function loadSummary() {
 }
 
 function resetOptionsUI() {
-    ['cc-fl-members', 'cc-sw-members', 'cc-zn-members'].forEach(id => { $(id).innerHTML = ''; });
+    ['cc-fl-members', 'cc-sw-members', 'cc-zn-members', 'cc-fl-bulkvlan'].forEach(id => { $(id).innerHTML = ''; });
     $('cc-fl-vlanmoves').innerHTML = '';
     ccState.vlanMoveRowCount = 0;
 }
@@ -126,6 +127,29 @@ function collectVLANMoves() {
     })).filter(m => m.interface && m.vlan_id);
 }
 
+/* Interfaces that carry stacked VLANs, each check moving every child VLAN
+ * (name + tag preserved) onto the FortiLink in one shot. */
+function renderVLANParents() {
+    const container = $('cc-fl-bulkvlan');
+    if (!container) return;
+    const counts = {};
+    ((ccState.summary && ccState.summary.interfaces) || []).forEach(i => {
+        if (i.type === 'vlan' && i.parent) counts[i.parent] = (counts[i.parent] || 0) + 1;
+    });
+    const parents = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+    if (!parents.length) {
+        container.innerHTML = '<p class="cc-muted">No interface in this backup has VLANs stacked on it.</p>';
+        return;
+    }
+    container.innerHTML = parents.map(p => {
+        const id = `cc-fl-bulk-${p}`;
+        const n = counts[p];
+        return `<label class="cc-check-item" for="${esc(id)}">
+            <input type="checkbox" value="${esc(p)}" id="${esc(id)}">${esc(p)} <span class="cc-muted">(${n} VLAN${n === 1 ? '' : 's'})</span>
+        </label>`;
+    }).join('');
+}
+
 /* ---------------- recipe selection / options ---------------- */
 
 function updateGenerateEnabled() {
@@ -153,6 +177,7 @@ function buildSelections() {
                 fortilink_name: $('cc-fl-name').value.trim(),
                 use_existing: $('cc-fl-existing').checked,
                 vlan_moves: collectVLANMoves(),
+                bulk_vlan_parents: checkedValues('cc-fl-bulkvlan'),
             },
         });
     }

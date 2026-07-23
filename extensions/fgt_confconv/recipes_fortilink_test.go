@@ -165,6 +165,81 @@ func TestFortiLinkRecipe_WarnsOnUntouchedReferences(t *testing.T) {
 	if len(warnings) != 1 || warnings[0].Section != "vpn ipsec phase1-interface" {
 		t.Errorf("expected exactly 1 ipsec warning, got %v", warnings)
 	}
+	// The name is preserved across a VLAN move, so the reference stays valid --
+	// the warning must read as informational, not as a required rewrite.
+	if !strings.Contains(warnings[0].Detail, "stays valid") {
+		t.Errorf("VLAN-move reference warning should be informational, got: %q", warnings[0].Detail)
+	}
+}
+
+func TestFortiLinkRecipe_BulkVLANMove(t *testing.T) {
+	cfg := &FGConfig{
+		Interfaces: map[string]*InterfaceEntry{
+			"x1":    {Name: "x1", IP: "0.0.0.0 0.0.0.0"},
+			"x2":    {Name: "x2", IP: "0.0.0.0 0.0.0.0"},
+			"agg1":  {Name: "agg1", Type: "aggregate", Members: []string{"x1", "x2"}},
+			"VL10":  {Name: "VL10", Type: "vlan", Parent: "agg1", VLANID: 10, IP: "10.0.10.1 255.255.255.0"},
+			"VL20":  {Name: "VL20", Type: "vlan", Parent: "agg1", VLANID: 20},
+			"VL30":  {Name: "VL30", Type: "vlan", Parent: "agg1", VLANID: 30},
+			"other": {Name: "other", Type: "vlan", Parent: "someport", VLANID: 99},
+		},
+		Zones:      map[string]*ZoneEntry{},
+		SDWANZones: map[string]*SDWANZone{},
+	}
+	r := fortiLinkRecipe{}
+
+	cli, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:     []string{"x1", "x2"},
+		FortilinkName:   "fortilink1",
+		BulkVLANParents: []string{"agg1"},
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Every VLAN that sat on agg1 must be re-parented onto the FortiLink,
+	// keeping its name and tag; a VLAN on a different parent stays put.
+	for _, name := range []string{"VL10", "VL20", "VL30"} {
+		v := cfg.Interfaces[name]
+		if v.Type != "vlan" || v.Parent != "fortilink1" {
+			t.Errorf("%s should have moved onto fortilink1, got %+v", name, v)
+		}
+	}
+	if cfg.Interfaces["other"].Parent != "someport" {
+		t.Errorf("a VLAN on a different parent must not move, got %+v", cfg.Interfaces["other"])
+	}
+
+	joined := blockLines(cli)
+	for _, want := range []string{
+		`edit "VL10"`, "set vlanid 10", `edit "VL20"`, "set vlanid 20", `edit "VL30"`, "set vlanid 30",
+		`set interface "fortilink1"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cli missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestFortiLinkRecipe_BulkVLANMoveEmptyParentWarns(t *testing.T) {
+	cfg := freshFortiLinkConfig() // lan1 carries no stacked VLANs
+	r := fortiLinkRecipe{}
+	_, warnings, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:     []string{"port5", "port6"},
+		FortilinkName:   "fortilink1",
+		BulkVLANParents: []string{"lan1"},
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var sawEmpty bool
+	for _, w := range warnings {
+		if strings.Contains(w.Detail, "nothing to move") {
+			sawEmpty = true
+		}
+	}
+	if !sawEmpty {
+		t.Errorf("expected a 'nothing to move' warning for a parent with no VLANs, got %v", warnings)
+	}
 }
 
 // blockLines flattens every CLIBlock's lines into one string for substring
