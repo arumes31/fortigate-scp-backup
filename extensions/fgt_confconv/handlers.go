@@ -195,12 +195,9 @@ func (e *Extension) convert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := ParseConfig(content)
-	if !cfg.Version.SupportsSDWANSyntax() {
-		e.jsonError(w, http.StatusBadRequest, fmt.Sprintf(
-			"unsupported FortiOS version %s (need 7.4+) -- upgrade the device before running these recipes", cfg.Version))
-		return
-	}
-
+	// Version support is enforced per recipe now (only the SD-WAN recipes need
+	// 7.4+); FortiLink and zone conversions run on older trains too, so the
+	// pipeline gates each recipe via its Applicable() check.
 	result, err := RunPipeline(cfg, req.Recipes)
 	if err != nil {
 		var pe *PipelineError

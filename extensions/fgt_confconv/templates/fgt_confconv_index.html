@@ -66,12 +66,21 @@
                         <input type="text" id="cc-fl-name" class="form-control" placeholder="fortilink1">
                     </div>
                     <div class="field">
+                        <label for="cc-fl-ip">Management IP (optional)</label>
+                        <input type="text" id="cc-fl-ip" class="form-control" placeholder="10.255.1.1 255.255.255.0">
+                    </div>
+                    <div class="field">
                         <label><input type="checkbox" id="cc-fl-existing"> Add to an existing FortiLink interface</label>
+                    </div>
+                    <div class="field">
+                        <label><input type="checkbox" id="cc-fl-dualhomed"> Dual-homed to two switches (MC-LAG split)</label>
                     </div>
                 </div>
                 <p class="cc-intro">VLAN moves — existing interfaces to carry onto the FortiLink as VLANs (keeps their name, IP, and role):</p>
                 <div id="cc-fl-vlanmoves"></div>
                 <button type="button" class="btn btn-sm" id="cc-fl-add-vlanmove">+ Add VLAN move</button>
+                <p class="cc-intro">Or bulk-move <strong>every</strong> VLAN currently stacked on an interface onto the FortiLink (each keeps its name and existing tag):</p>
+                <div class="cc-checklist" id="cc-fl-bulkvlan"></div>
             </div>
         </div>
 

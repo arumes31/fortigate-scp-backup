@@ -9,21 +9,33 @@ import (
 // header, e.g. "FGT90G-7.6.7-FW-build3704-260601" -> {7, 6, 7}.
 type FortiOSVersion struct {
 	Major, Minor, Patch int
+	Build               int    // `-buildNNNN-` from the header; the reliable signal
 	Raw                 string // the full header line, for error messages
 }
 
+// fortiOS74GABuild is the build number of FortiOS 7.4.0 GA. Build numbers rise
+// monotonically across trains, so any build at or above it is 7.4+ (e.g. build
+// 2902 is 7.4.12). This is the trustworthy check when the version string is
+// masked/unreliable -- some devices report "7.00" while actually running 7.4.x.
+const fortiOS74GABuild = 2360
+
 // SupportsSDWANSyntax reports whether this version uses the modern
-// `config system sdwan` naming (7.4+) that every recipe here targets. Below
-// 7.4, FortiOS used `config system virtual-wan-link` instead — recipes reject
-// those backups rather than guessing at old syntax.
+// `config system sdwan` naming (7.4+) that the SD-WAN recipes target. Below
+// 7.4, FortiOS used `config system virtual-wan-link` instead. The X.Y.Z string
+// is unreliable on some builds, so the build number is the fallback signal.
 func (v FortiOSVersion) SupportsSDWANSyntax() bool {
-	if v.Major > 7 {
+	if v.Major > 7 || (v.Major == 7 && v.Minor >= 4) {
 		return true
 	}
-	return v.Major == 7 && v.Minor >= 4
+	return v.Build >= fortiOS74GABuild
 }
 
 func (v FortiOSVersion) String() string {
+	if v.Major == 0 && v.Build > 0 {
+		// Version string was masked/unparseable; report the build instead of a
+		// misleading "0.0.0".
+		return fmt.Sprintf("build %d", v.Build)
+	}
 	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
 

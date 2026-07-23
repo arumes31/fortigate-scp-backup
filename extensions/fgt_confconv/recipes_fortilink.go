@@ -3,6 +3,8 @@ package fgt_confconv
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // VLANMove carries an existing interface's L3 config (ip/allowaccess/role)
@@ -20,6 +22,18 @@ type FortiLinkOptions struct {
 	FortilinkName string     `json:"fortilink_name"`
 	UseExisting   bool       `json:"use_existing"`
 	VLANMoves     []VLANMove `json:"vlan_moves"`
+	// BulkVLANParents lists interfaces whose every stacked VLAN should be moved
+	// onto the FortiLink -- each expanded into a VLANMove keeping its existing
+	// name and tag. Handy when an aggregate/port carries dozens of VLANs.
+	BulkVLANParents []string `json:"bulk_vlan_parents"`
+	// FortilinkIP is the FortiLink management subnet (e.g. "10.255.1.1
+	// 255.255.255.0") set on a newly-created FortiLink so managed FortiSwitches
+	// get DHCP addresses. Optional; ignored when adding to an existing FortiLink.
+	FortilinkIP string `json:"fortilink_ip"`
+	// DualHomed enables fortilink-split-interface -- set only when the aggregate
+	// is split across two switches (MC-LAG). A plain LAG to one switch leaves it
+	// disabled.
+	DualHomed bool `json:"dual_homed"`
 }
 
 const RecipeKeyFortiLink = "iface-to-fortilink"
@@ -43,6 +57,38 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 	}
 	if opts.FortilinkName == "" {
 		return nil, nil, fmt.Errorf("a FortiLink interface name is required")
+	}
+
+	var warnings []Warning
+
+	// Expand "move every VLAN on this interface" selections into concrete VLAN
+	// moves, each keeping its existing name and tag. Explicit moves win, so a
+	// VLAN named both ways is only moved once. Sorted for stable CLI output.
+	if len(opts.BulkVLANParents) > 0 {
+		listed := make(map[string]bool, len(opts.VLANMoves))
+		for _, m := range opts.VLANMoves {
+			listed[m.Interface] = true
+		}
+		for _, parent := range opts.BulkVLANParents {
+			if _, ok := cfg.Interfaces[parent]; !ok {
+				return nil, nil, fmt.Errorf("bulk VLAN source %q not found in this configuration", parent)
+			}
+			var found []VLANMove
+			for name, iface := range cfg.Interfaces {
+				if iface.Type == "vlan" && iface.Parent == parent && iface.VLANID > 0 && !listed[name] {
+					found = append(found, VLANMove{Interface: name, VLANID: iface.VLANID})
+					listed[name] = true
+				}
+			}
+			sort.Slice(found, func(i, j int) bool { return found[i].Interface < found[j].Interface })
+			opts.VLANMoves = append(opts.VLANMoves, found...)
+			if len(found) == 0 {
+				warnings = append(warnings, Warning{
+					Recipe: r.Key(),
+					Detail: fmt.Sprintf("no VLANs are stacked on %q, so \"move all VLANs\" had nothing to move for it", parent),
+				})
+			}
+		}
 	}
 
 	moveTargets := make(map[string]bool, len(opts.VLANMoves))
@@ -73,30 +119,45 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 	}
 
 	var cli []CLIBlock
-	var warnings []Warning
 
-	// Pull member ports out of whatever switch they currently belong to.
-	var pulled []string
+	// Pull the chosen member ports out of whatever switch/aggregate they
+	// currently belong to, then rewrite each affected switch's member list
+	// exactly once (removing several ports from one switch must not emit one
+	// block per port -- the last would carry an empty, invalid `set member`).
+	affected := map[string]*InterfaceEntry{}
+	var affectedOrder []string
 	for _, p := range opts.MemberPorts {
 		for name, iface := range cfg.Interfaces {
 			if name == opts.FortilinkName || !containsStr(iface.Members, p) {
 				continue
 			}
 			iface.Members = removeStr(iface.Members, p)
-			if len(iface.Members) == 0 {
-				warnings = append(warnings, Warning{
-					Recipe: r.Key(), Section: "system interface",
-					Detail: fmt.Sprintf("%q has no member ports left after moving %q onto the FortiLink -- review whether the now-empty switch/aggregate should be removed", name, p),
-				})
+			if _, seen := affected[name]; !seen {
+				affected[name] = iface
+				affectedOrder = append(affectedOrder, name)
 			}
-			pulled = append(pulled,
-				"config system interface",
-				fmt.Sprintf("    edit %q", name),
-				fmt.Sprintf("        set member %s", quoteJoin(iface.Members)),
-				"    next",
-				"end",
-			)
 		}
+	}
+	sort.Strings(affectedOrder)
+	var pulled []string
+	for _, name := range affectedOrder {
+		iface := affected[name]
+		if len(iface.Members) == 0 {
+			// A switch/aggregate with no members is invalid CLI, so flag it for
+			// deletion rather than emitting a bare `set member`.
+			warnings = append(warnings, Warning{
+				Recipe: r.Key(), Section: "system interface",
+				Detail: fmt.Sprintf("%q has no member ports left after moving them onto the FortiLink -- delete the now-empty switch/aggregate (and re-point anything still using it) instead of leaving it memberless", name),
+			})
+			continue
+		}
+		pulled = append(pulled,
+			"config system interface",
+			fmt.Sprintf("    edit %q", name),
+			fmt.Sprintf("        set member %s", quoteJoin(iface.Members)),
+			"    next",
+			"end",
+		)
 	}
 	if len(pulled) > 0 {
 		cli = append(cli, CLIBlock{Recipe: r.Key(), Label: "Remove member ports from their current switch", Lines: pulled})
@@ -123,19 +184,52 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		}
 		cfg.Interfaces[opts.FortilinkName] = fl
 	}
-	cli = append(cli, CLIBlock{
-		Recipe: r.Key(),
-		Label:  fmt.Sprintf("FortiLink interface %q", opts.FortilinkName),
-		Lines: []string{
-			"config system interface",
-			fmt.Sprintf("    edit %q", opts.FortilinkName),
+	flLines := []string{"config system interface", fmt.Sprintf("    edit %q", opts.FortilinkName)}
+	if opts.UseExisting {
+		// Existing FortiLink: only extend its member set. Leave its IP,
+		// allowaccess and every other already-configured setting untouched.
+		flLines = append(flLines, fmt.Sprintf("        set member %s", quoteJoin(fl.Members)))
+	} else {
+		// A working FortiLink needs more than the aggregate itself: fabric
+		// access for switch management, LLDP for discovery, and (for a plain
+		// LAG to a single switch) split-interface off. Optional management IP
+		// gives the managed FortiSwitches a DHCP subnet.
+		split := "disable"
+		if opts.DualHomed {
+			split = "enable"
+		}
+		flLines = append(flLines,
 			"        set type aggregate",
 			fmt.Sprintf("        set member %s", quoteJoin(fl.Members)),
 			"        set fortilink enable",
-			"    next",
-			"end",
-		},
+			fmt.Sprintf("        set fortilink-split-interface %s", split),
+			"        set allowaccess ping fabric",
+			"        set lldp-reception enable",
+			"        set lldp-transmission enable",
+		)
+		if ip := strings.TrimSpace(opts.FortilinkIP); ip != "" {
+			fl.IP = ip
+			flLines = append(flLines, fmt.Sprintf("        set ip %s", ip))
+		}
+	}
+	flLines = append(flLines, "    next", "end")
+	cli = append(cli, CLIBlock{
+		Recipe: r.Key(),
+		Label:  fmt.Sprintf("FortiLink interface %q", opts.FortilinkName),
+		Lines:  flLines,
 	})
+
+	// The device generates the rest of a FortiLink setup itself once the switch
+	// is authorized (management address/policy, NAC, switch-group, link-monitor),
+	// so flag that path rather than emitting objects that would clash with the
+	// auto-created ones.
+	if !opts.UseExisting {
+		detail := fmt.Sprintf("authorize the FortiSwitch on %q under \"config switch-controller managed-switch\" (or via the GUI) after applying -- FortiOS then auto-creates the FortiLink management address, policy, NAC, switch-group and link-monitor objects (device-generated, not part of this script)", opts.FortilinkName)
+		if strings.TrimSpace(opts.FortilinkIP) == "" {
+			detail += ". No FortiLink management subnet was set; add \"set ip <addr> <mask>\" unless FortiOS auto-assigns one your switches can DHCP from"
+		}
+		warnings = append(warnings, Warning{Recipe: r.Key(), Detail: detail})
+	}
 
 	for _, mv := range opts.VLANMoves {
 		iface, ok := cfg.Interfaces[mv.Interface]
@@ -177,7 +271,7 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		for _, hit := range ScanReferences(cfg, mv.Interface) {
 			warnings = append(warnings, Warning{
 				Recipe: r.Key(), Section: hit.Section, Line: hit.Line,
-				Detail: fmt.Sprintf("%q is still referenced in %s (%s) -- review after moving it onto the FortiLink", mv.Interface, hit.Section, hit.Edit),
+				Detail: fmt.Sprintf("%q keeps its name after moving onto the FortiLink as a VLAN, so this reference in %s (%s) stays valid -- no CLI change needed, just confirm it still behaves as intended", mv.Interface, hit.Section, hit.Edit),
 			})
 		}
 	}

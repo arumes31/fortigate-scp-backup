@@ -7,6 +7,7 @@ import (
 
 func freshPipelineConfig() *FGConfig {
 	return &FGConfig{
+		Version: FortiOSVersion{Major: 7, Minor: 6, Patch: 1},
 		Interfaces: map[string]*InterfaceEntry{
 			"wan1":  {Name: "wan1", IP: "203.0.113.10 255.255.255.0", Role: "wan"},
 			"wan2":  {Name: "wan2", IP: "203.0.113.20 255.255.255.0", Role: "wan"},

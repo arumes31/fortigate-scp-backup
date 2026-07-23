@@ -46,16 +46,11 @@ async function loadSummary() {
         ccState.summary = data;
         $('cc-backup-info').hidden = false;
         $('cc-backup-info').textContent = `Backup from ${data.backupTime} — FortiOS ${data.version}`;
-        if (!data.versionOK) {
-            $('cc-version-warning').hidden = false;
-            $('cc-version-warning').textContent =
-                `FortiOS ${data.version} is below 7.4 — these recipes need 7.4+ and cannot run against this backup.`;
-        } else {
-            $('cc-version-warning').hidden = true;
-        }
+        applySDWANGate(data.versionOK, data.version);
         renderChecklist('cc-fl-members', 'fl-mem');
         renderChecklist('cc-sw-members', 'sw-mem');
         renderChecklist('cc-zn-members', 'zn-mem');
+        renderVLANParents();
         refreshVLANMoveOptions();
     } catch (err) {
         $('cc-backup-info').hidden = false;
@@ -65,7 +60,7 @@ async function loadSummary() {
 }
 
 function resetOptionsUI() {
-    ['cc-fl-members', 'cc-sw-members', 'cc-zn-members'].forEach(id => { $(id).innerHTML = ''; });
+    ['cc-fl-members', 'cc-sw-members', 'cc-zn-members', 'cc-fl-bulkvlan'].forEach(id => { $(id).innerHTML = ''; });
     $('cc-fl-vlanmoves').innerHTML = '';
     ccState.vlanMoveRowCount = 0;
 }
@@ -126,14 +121,58 @@ function collectVLANMoves() {
     })).filter(m => m.interface && m.vlan_id);
 }
 
+/* Interfaces that carry stacked VLANs, each check moving every child VLAN
+ * (name + tag preserved) onto the FortiLink in one shot. */
+function renderVLANParents() {
+    const container = $('cc-fl-bulkvlan');
+    if (!container) return;
+    const counts = {};
+    ((ccState.summary && ccState.summary.interfaces) || []).forEach(i => {
+        if (i.type === 'vlan' && i.parent) counts[i.parent] = (counts[i.parent] || 0) + 1;
+    });
+    const parents = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+    if (!parents.length) {
+        container.innerHTML = '<p class="cc-muted">No interface in this backup has VLANs stacked on it.</p>';
+        return;
+    }
+    container.innerHTML = parents.map(p => {
+        const id = `cc-fl-bulk-${p}`;
+        const n = counts[p];
+        return `<label class="cc-check-item" for="${esc(id)}">
+            <input type="checkbox" value="${esc(p)}" id="${esc(id)}">${esc(p)} <span class="cc-muted">(${n} VLAN${n === 1 ? '' : 's'})</span>
+        </label>`;
+    }).join('');
+}
+
 /* ---------------- recipe selection / options ---------------- */
 
 function updateGenerateEnabled() {
     const anyEnabled = $('cc-fl-enable').checked || $('cc-sw-enable').checked ||
         $('cc-zn-enable').checked || $('cc-sr-enable').checked;
     const fwPicked = !!$('cc-firewall').value;
-    const versionOK = !ccState.summary || ccState.summary.versionOK;
-    $('cc-generate-btn').disabled = !(anyEnabled && fwPicked && versionOK);
+    // No global version gate: the SD-WAN recipes self-disable below 7.4 (see
+    // applySDWANGate), while FortiLink/zone stay available on older trains.
+    $('cc-generate-btn').disabled = !(anyEnabled && fwPicked);
+}
+
+/* Below FortiOS 7.4 only the SD-WAN recipes are unavailable (they emit 7.4+
+ * `config system sdwan` syntax); FortiLink and zone conversions still run. */
+function applySDWANGate(ok, version) {
+    [['cc-sw-enable', 'cc-sw-options'], ['cc-sr-enable', 'cc-sr-options']].forEach(([enableId, optId]) => {
+        const cb = $(enableId);
+        cb.disabled = !ok;
+        if (!ok) {
+            cb.checked = false;
+            $(optId).hidden = true;
+        }
+    });
+    const note = $('cc-version-warning');
+    note.hidden = ok;
+    if (!ok) {
+        note.textContent =
+            `FortiOS ${version}: SD-WAN recipes need 7.4+ and are disabled here — FortiLink and zone recipes are available.`;
+    }
+    updateGenerateEnabled();
 }
 
 function wireRecipeToggle(enableId, optionsId) {
@@ -153,6 +192,9 @@ function buildSelections() {
                 fortilink_name: $('cc-fl-name').value.trim(),
                 use_existing: $('cc-fl-existing').checked,
                 vlan_moves: collectVLANMoves(),
+                bulk_vlan_parents: checkedValues('cc-fl-bulkvlan'),
+                fortilink_ip: $('cc-fl-ip').value.trim(),
+                dual_homed: $('cc-fl-dualhomed').checked,
             },
         });
     }

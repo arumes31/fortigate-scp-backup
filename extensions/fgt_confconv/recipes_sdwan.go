@@ -23,7 +23,12 @@ var _ Recipe = sdwanRecipe{}
 func (sdwanRecipe) Key() string   { return RecipeKeySDWAN }
 func (sdwanRecipe) Label() string { return "WAN interface(s) -> SD-WAN" }
 
-func (sdwanRecipe) Applicable(cfg *FGConfig) (bool, string) { return true, "" }
+func (sdwanRecipe) Applicable(cfg *FGConfig) (bool, string) {
+	if !cfg.Version.SupportsSDWANSyntax() {
+		return false, fmt.Sprintf("SD-WAN recipes need FortiOS 7.4+ (this backup is %s) -- the FortiLink and zone recipes still work on older trains", cfg.Version)
+	}
+	return true, ""
+}
 
 func (r sdwanRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []Warning, error) {
 	var opts SDWANOptions
