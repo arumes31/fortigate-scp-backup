@@ -22,6 +22,7 @@
                 {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/" class="{{if eq .Base.Active "admvpn"}}active{{end}}">VPN_Conf</a>{{end}}
                 {{if .Base.ExtFgtConfGenEnabled}}<a href="/fgt-confgen/" class="{{if eq .Base.Active "configgen"}}active{{end}}">Policy_Gen</a>{{end}}
                 {{if .Base.ExtFgtPolSplitEnabled}}<a href="/fgt-polsplit/" class="{{if eq .Base.Active "polsplit"}}active{{end}}">Pol_Split</a>{{end}}
+                {{if .Base.ExtFgtConfConvEnabled}}<a href="/fgt-confconv/" class="{{if eq .Base.Active "confconv"}}active{{end}}">Conf_Conv</a>{{end}}
                 {{if not .Base.IsRadius}}<a href="/change_password" class="{{if eq .Base.Active "password"}}active{{end}}">Change_PW</a>{{end}}
             </nav>
             <div class="sysinfo">

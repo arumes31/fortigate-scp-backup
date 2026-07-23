@@ -1,0 +1,181 @@
+package fgt_confconv
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func freshFortiLinkConfig() *FGConfig {
+	return &FGConfig{
+		Interfaces: map[string]*InterfaceEntry{
+			"port5": {Name: "port5", IP: "0.0.0.0 0.0.0.0"},
+			"port6": {Name: "port6", IP: "0.0.0.0 0.0.0.0"},
+			"hwsw1": {Name: "hwsw1", Type: "hard-switch", Members: []string{"port5", "port7"}},
+			"lan1":  {Name: "lan1", IP: "10.10.10.1 255.255.255.0", Allowaccess: "ping https", Role: "lan"},
+			"wan1":  {Name: "wan1", IP: "203.0.113.1 255.255.255.0", Role: "wan"},
+		},
+		Zones:      map[string]*ZoneEntry{},
+		SDWANZones: map[string]*SDWANZone{},
+		Policies: []*PolicyEntry{
+			{ID: 1, SrcIntf: []string{"lan1"}, DstIntf: []string{"wan1"}},
+		},
+	}
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal opts: %v", err)
+	}
+	return b
+}
+
+func TestFortiLinkRecipe_HappyPath(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	r := fortiLinkRecipe{}
+
+	cli, warnings, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+
+	fl, ok := cfg.Interfaces["fortilink1"]
+	if !ok {
+		t.Fatal("fortilink1 was not created")
+	}
+	if fl.Type != "aggregate" || !fl.Fortilink {
+		t.Errorf("fortilink1 = %+v", fl)
+	}
+	if len(fl.Members) != 2 || fl.Members[0] != "port5" || fl.Members[1] != "port6" {
+		t.Errorf("fortilink1 members = %v", fl.Members)
+	}
+
+	// port5 must have been pulled out of hwsw1's member list.
+	if containsStr(cfg.Interfaces["hwsw1"].Members, "port5") {
+		t.Error("port5 should have been removed from hwsw1's members")
+	}
+	if !containsStr(cfg.Interfaces["hwsw1"].Members, "port7") {
+		t.Error("port7 should remain a member of hwsw1")
+	}
+
+	joined := blockLines(cli)
+	for _, want := range []string{
+		`edit "fortilink1"`, "set type aggregate", `set member "port5" "port6"`, "set fortilink enable",
+		`edit "hwsw1"`, `set member "port7"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cli missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestFortiLinkRecipe_VLANMove(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	r := fortiLinkRecipe{}
+
+	_, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+		VLANMoves:     []VLANMove{{Interface: "lan1", VLANID: 100}},
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	lan1 := cfg.Interfaces["lan1"]
+	if lan1.Type != "vlan" || lan1.Parent != "fortilink1" || lan1.VLANID != 100 {
+		t.Errorf("lan1 after move = %+v", lan1)
+	}
+	if lan1.IP != "10.10.10.1 255.255.255.0" {
+		t.Errorf("lan1 IP should be preserved, got %q", lan1.IP)
+	}
+
+	// The policy referencing "lan1" must NOT need rewriting -- the name was
+	// preserved across the move.
+	if cfg.Policies[0].SrcIntf[0] != "lan1" {
+		t.Errorf("policy srcintf should still read lan1, got %v", cfg.Policies[0].SrcIntf)
+	}
+}
+
+func TestFortiLinkRecipe_RejectsLiveMemberPort(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	r := fortiLinkRecipe{}
+	_, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"lan1", "port6"},
+		FortilinkName: "fortilink1",
+	}))
+	if err == nil {
+		t.Fatal("expected an error for a member port with a live IP")
+	}
+	if !strings.Contains(err.Error(), "lan1") {
+		t.Errorf("error should name the offending port, got: %v", err)
+	}
+}
+
+func TestFortiLinkRecipe_RejectsPolicyReferencedMemberPort(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	cfg.Interfaces["port5"].IP = "" // clear the IP so only the policy reference trips it
+	cfg.Policies = append(cfg.Policies, &PolicyEntry{ID: 2, SrcIntf: []string{"port5"}})
+	r := fortiLinkRecipe{}
+	_, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+	}))
+	if err == nil {
+		t.Fatal("expected an error for a member port referenced by a policy")
+	}
+}
+
+func TestFortiLinkRecipe_UseExistingRequiresFortilinkEnabled(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	cfg.Interfaces["fortilink1"] = &InterfaceEntry{Name: "fortilink1", Type: "aggregate"} // Fortilink: false
+	r := fortiLinkRecipe{}
+	_, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+		UseExisting:   true,
+	}))
+	if err == nil {
+		t.Fatal("expected an error: fortilink1 exists but is not fortilink-enabled")
+	}
+}
+
+func TestFortiLinkRecipe_WarnsOnUntouchedReferences(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	cfg.WatchedLines = []WatchedLine{
+		{Section: "vpn ipsec phase1-interface", Edit: "branch", Line: `set interface "lan1"`},
+	}
+	r := fortiLinkRecipe{}
+	_, warnings, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+		VLANMoves:     []VLANMove{{Interface: "lan1", VLANID: 100}},
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Section != "vpn ipsec phase1-interface" {
+		t.Errorf("expected exactly 1 ipsec warning, got %v", warnings)
+	}
+}
+
+// blockLines flattens every CLIBlock's lines into one string for substring
+// assertions.
+func blockLines(blocks []CLIBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		for _, l := range b.Lines {
+			sb.WriteString(l)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}

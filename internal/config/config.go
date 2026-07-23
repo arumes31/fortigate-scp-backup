@@ -99,6 +99,11 @@ type Config struct {
 	PolsplitWANInterfaces  string // extra interface names to treat as internet-facing (comma-separated), merged with auto-detection
 	PolsplitAnalyzeTimeout int    // seconds; hard cap on one analyze request so it fails cleanly before a reverse-proxy 504 (0 = no cap)
 
+	// Extension: fgt_confconv (configuration conversions — chained structural
+	// migration recipes: interfaces->FortiLink, WAN interfaces->SD-WAN,
+	// interface-based->zone-based policies, SD-WAN static routes->SD-WAN rules)
+	ExtFgtConfConv bool
+
 	// Live SSH diagnostics: query the FortiGate CLI directly for authoritative
 	// per-switch-port link state, STP role/state and interlink trunks (data the
 	// logs only reveal partially). Reuses each firewall's stored SSH credentials.
@@ -215,6 +220,8 @@ func Load(logger *slog.Logger) *Config {
 		GraylogPolsplitQuery:   getenv("GRAYLOG_POLSPLIT_QUERY", `source:"%s" AND policyid:%s AND _exists_:srcip AND _exists_:dstip`),
 		PolsplitWANInterfaces:  getenv("POLSPLIT_WAN_INTERFACES", ""),
 		PolsplitAnalyzeTimeout: intenv("POLSPLIT_ANALYZE_TIMEOUT", 55),
+
+		ExtFgtConfConv: boolenv("EXT_FGT_CONFCONV", false),
 
 		FgtDiagSSHEnabled:       boolenv("FGT_DIAG_SSH_ENABLED", false),
 		FgtDiagSSHBackgroundSec: intenv("FGT_DIAG_SSH_BACKGROUND_SECONDS", 3600), // hourly background sweep

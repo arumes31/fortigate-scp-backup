@@ -114,6 +114,7 @@ type baseData struct {
 	ExtEnabled          bool
 	ExtConfigGenEnabled bool
 	ExtPolSplitEnabled  bool
+	ExtConfConvEnabled  bool
 	Lang                string
 	Active              string
 }
@@ -129,6 +130,7 @@ func (e *Extension) baseData(r *http.Request, title, active string) baseData {
 		ExtEnabled:          e.cfg.ExtAdmVpnConf,
 		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
 		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
+		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
 		Lang:                "en",
 		Active:              active,
 	}
