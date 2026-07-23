@@ -18,6 +18,16 @@
     font-size: 11px;
 }
 
+.cc-chips {
+    margin: 8px 0 12px;
+    min-height: 24px;
+    align-items: center;
+}
+.cc-port-chip { cursor: pointer; }
+.cc-chip-x { color: var(--text-dim); font-weight: 700; margin-left: 2px; }
+.cc-port-chip:hover { border-color: var(--danger); color: #fff; }
+.cc-port-chip:hover .cc-chip-x { color: var(--danger); }
+
 /* Pre-release marker in the page title — flags this extension as Alpha. */
 .cc-alpha {
     display: inline-flex;

@@ -3,7 +3,7 @@
  * pipeline, and render the resulting CLI sections + warnings. */
 'use strict';
 
-const ccState = { summary: null, vlanMoveRowCount: 0, combined: '' };
+const ccState = { summary: null, vlanMoveRowCount: 0, combined: '', fortilinkPorts: [] };
 
 function $(id) { return document.getElementById(id); }
 
@@ -47,7 +47,6 @@ async function loadSummary() {
         $('cc-backup-info').hidden = false;
         $('cc-backup-info').textContent = `Backup from ${data.backupTime} — FortiOS ${data.version}`;
         applySDWANGate(data.versionOK, data.version);
-        renderChecklist('cc-fl-members', 'fl-mem');
         renderChecklist('cc-sw-members', 'sw-mem');
         renderChecklist('cc-zn-members', 'zn-mem');
         renderVLANParents();
@@ -60,9 +59,11 @@ async function loadSummary() {
 }
 
 function resetOptionsUI() {
-    ['cc-fl-members', 'cc-sw-members', 'cc-zn-members', 'cc-fl-bulkvlan'].forEach(id => { $(id).innerHTML = ''; });
+    ['cc-sw-members', 'cc-zn-members', 'cc-fl-bulkvlan'].forEach(id => { $(id).innerHTML = ''; });
     $('cc-fl-vlanmoves').innerHTML = '';
     ccState.vlanMoveRowCount = 0;
+    ccState.fortilinkPorts = [];
+    renderFortilinkPorts();
 }
 
 function renderChecklist(containerId, prefix) {
@@ -83,6 +84,71 @@ function renderChecklist(containerId, prefix) {
 
 function checkedValues(containerId) {
     return Array.from($(containerId).querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+}
+
+/* ---------------- FortiLink member ports (popup picker) ---------------- */
+
+// Physical ports are the only valid FortiLink members: exclude aggregates,
+// VLANs, and interfaces that already carry members.
+function physicalPortCandidates() {
+    return sortedInterfaces().filter(i =>
+        (!i.type || i.type === 'physical') && !i.vlanId && !(i.members && i.members.length));
+}
+
+function renderFortilinkPorts() {
+    const box = $('cc-fl-members-chips');
+    if (!box) return;
+    if (!ccState.fortilinkPorts.length) {
+        box.innerHTML = '<span class="cc-muted">No ports selected yet.</span>';
+        return;
+    }
+    box.innerHTML = ccState.fortilinkPorts.map(p =>
+        `<span class="chip cc-port-chip" data-port="${esc(p)}">${esc(p)} <span class="cc-chip-x" aria-hidden="true">×</span></span>`
+    ).join('');
+    box.querySelectorAll('.cc-port-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            ccState.fortilinkPorts = ccState.fortilinkPorts.filter(x => x !== chip.dataset.port);
+            renderFortilinkPorts();
+            updateGenerateEnabled();
+        });
+    });
+}
+
+function openPortModal() {
+    const list = $('cc-fl-port-list');
+    const cands = physicalPortCandidates();
+    if (!cands.length) {
+        list.innerHTML = '<p class="cc-muted">No physical ports found — load a firewall first.</p>';
+    } else {
+        const selected = new Set(ccState.fortilinkPorts);
+        list.innerHTML = cands.map(i => {
+            const id = `cc-port-opt-${i.name}`;
+            const roleTag = i.role ? ` <span class="cc-muted">(${esc(i.role)})</span>` : '';
+            return `<label class="cc-check-item" for="${esc(id)}">
+                <input type="checkbox" value="${esc(i.name)}" id="${esc(id)}"${selected.has(i.name) ? ' checked' : ''}>${esc(i.name)}${roleTag}
+            </label>`;
+        }).join('');
+    }
+    $('cc-port-search').value = '';
+    filterPortList();
+    $('cc-port-modal').classList.add('open');
+    $('cc-port-search').focus();
+}
+
+function closePortModal() { $('cc-port-modal').classList.remove('open'); }
+
+function commitPortModal() {
+    ccState.fortilinkPorts = checkedValues('cc-fl-port-list');
+    renderFortilinkPorts();
+    closePortModal();
+    updateGenerateEnabled();
+}
+
+function filterPortList() {
+    const q = ($('cc-port-search').value || '').toLowerCase();
+    $('cc-fl-port-list').querySelectorAll('.cc-check-item').forEach(item => {
+        item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
 }
 
 /* ---------------- VLAN moves (FortiLink recipe) ---------------- */
@@ -188,7 +254,7 @@ function buildSelections() {
         recipes.push({
             key: 'iface-to-fortilink',
             options: {
-                member_ports: checkedValues('cc-fl-members'),
+                member_ports: ccState.fortilinkPorts,
                 fortilink_name: $('cc-fl-name').value.trim(),
                 use_existing: $('cc-fl-existing').checked,
                 vlan_moves: collectVLANMoves(),
@@ -295,6 +361,15 @@ document.addEventListener('DOMContentLoaded', () => {
     wireRecipeToggle('cc-sr-enable', 'cc-sr-options');
 
     $('cc-fl-add-vlanmove').addEventListener('click', addVLANMoveRow);
+
+    $('cc-fl-add-port').addEventListener('click', openPortModal);
+    $('cc-port-modal-close').addEventListener('click', closePortModal);
+    $('cc-port-modal-done').addEventListener('click', commitPortModal);
+    $('cc-port-search').addEventListener('input', filterPortList);
+    $('cc-port-modal').addEventListener('click', e => { if (e.target === $('cc-port-modal')) closePortModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closePortModal(); });
+    renderFortilinkPorts();
+
     $('cc-generate-btn').addEventListener('click', generate);
     $('cc-copy-all').addEventListener('click', () => {
         if (navigator.clipboard) navigator.clipboard.writeText(ccState.combined || '');

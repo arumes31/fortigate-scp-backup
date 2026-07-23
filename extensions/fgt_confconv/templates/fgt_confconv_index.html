@@ -58,9 +58,10 @@
         <div class="card cc-recipe" id="cc-card-fortilink">
             <h2><label><input type="checkbox" id="cc-fl-enable"> Interface(s) → FortiLink</label></h2>
             <div class="cc-options" id="cc-fl-options" hidden>
-                <p class="cc-intro">Physical ports that become FortiLink members:</p>
-                <div class="cc-checklist" id="cc-fl-members"></div>
-                <div class="form-grid">
+                <label>FortiLink member ports</label>
+                <div class="chips cc-chips" id="cc-fl-members-chips"></div>
+                <button type="button" class="btn btn-sm" id="cc-fl-add-port">+ Add FortiLink Port</button>
+                <div class="form-grid" style="margin-top: 15px;">
                     <div class="field">
                         <label for="cc-fl-name">FortiLink interface name</label>
                         <input type="text" id="cc-fl-name" class="form-control" placeholder="fortilink1">
@@ -81,6 +82,20 @@
                 <button type="button" class="btn btn-sm" id="cc-fl-add-vlanmove">+ Add VLAN move</button>
                 <p class="cc-intro">Or bulk-move <strong>every</strong> VLAN currently stacked on an interface onto the FortiLink (each keeps its name and existing tag):</p>
                 <div class="cc-checklist" id="cc-fl-bulkvlan"></div>
+            </div>
+
+            <!-- FortiLink member-port picker -->
+            <div class="modal" id="cc-port-modal">
+                <div class="modal-content" style="width: min(560px, 100%);">
+                    <button type="button" class="modal-close" id="cc-port-modal-close" aria-label="Close">×</button>
+                    <h2>Select FortiLink member ports</h2>
+                    <p class="cc-intro">Pick the physical port(s) that become FortiLink members.</p>
+                    <input type="text" id="cc-port-search" class="form-control" placeholder="Filter ports…" style="margin-bottom: 10px;">
+                    <div class="cc-checklist" id="cc-fl-port-list"></div>
+                    <div class="cc-actions" style="margin-top: 16px;">
+                        <button type="button" class="btn btn-primary" id="cc-port-modal-done">Done</button>
+                    </div>
+                </div>
             </div>
         </div>
 

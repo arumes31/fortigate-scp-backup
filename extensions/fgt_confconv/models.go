@@ -51,6 +51,10 @@ type InterfaceEntry struct {
 	Members     []string `json:"members"`   // `set member ...` for aggregate/hardware-switch/redundant types
 	Fortilink   bool     `json:"fortilink"` // `set fortilink enable`
 	Lines       []string `json:"-"`         // every other raw `set ...` line, verbatim, for recipes that need to carry settings over
+	// Raw is the complete verbatim block for this interface, from `edit "name"`
+	// through its `next` (including nested `config ...` blocks like secondaryip).
+	// It lets a recipe reproduce untouched interfaces losslessly.
+	Raw []string `json:"-"`
 }
 
 // ZoneEntry is a parsed `config system zone` edit block.
@@ -115,13 +119,17 @@ type RefHit struct {
 // mutates. A pipeline run clones it once per invocation so chained recipes
 // see each other's changes without touching the original parse.
 type FGConfig struct {
-	Version      FortiOSVersion
-	Interfaces   map[string]*InterfaceEntry
-	Zones        map[string]*ZoneEntry
-	Policies     []*PolicyEntry
-	StaticRoutes []*RouteEntry
-	SDWANMembers []*SDWANMember
-	SDWANZones   map[string]*SDWANZone
+	Version    FortiOSVersion
+	Interfaces map[string]*InterfaceEntry
+	// InterfaceOrder is the interface names in the order they appeared in the
+	// backup, so a recipe can re-emit the `config system interface` section in
+	// the original order.
+	InterfaceOrder []string
+	Zones          map[string]*ZoneEntry
+	Policies       []*PolicyEntry
+	StaticRoutes   []*RouteEntry
+	SDWANMembers   []*SDWANMember
+	SDWANZones     map[string]*SDWANZone
 	// SDWANHealthChecks holds just the names of `config system sdwan ->
 	// config health-check` entries -- enough for recipes to tell whether any
 	// exist, without needing to model ping-server details.
@@ -138,10 +146,12 @@ func (c *FGConfig) Clone() *FGConfig {
 		Zones:      make(map[string]*ZoneEntry, len(c.Zones)),
 		SDWANZones: make(map[string]*SDWANZone, len(c.SDWANZones)),
 	}
+	out.InterfaceOrder = append([]string(nil), c.InterfaceOrder...)
 	for k, v := range c.Interfaces {
 		cp := *v
 		cp.Members = append([]string(nil), v.Members...)
 		cp.Lines = append([]string(nil), v.Lines...)
+		cp.Raw = append([]string(nil), v.Raw...)
 		out.Interfaces[k] = &cp
 	}
 	for k, v := range c.Zones {
