@@ -18,6 +18,21 @@
     font-size: 11px;
 }
 
+/* Pre-release marker in the page title — flags this extension as Alpha. */
+.cc-alpha {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--warning);
+    background: var(--warning-soft);
+    border: 1px solid rgba(255, 184, 107, .35);
+}
+.cc-alpha::before { content: ""; width: 6px; height: 6px; margin-right: 6px; background: currentColor; }
+
 main .card {
     margin-bottom: 20px;
 }
