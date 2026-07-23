@@ -334,7 +334,7 @@ func ScanReferences(cfg *FGConfig, ifaceName string) []RefHit {
 		_, val := parseSetLine(wl.Line)
 		for _, tok := range splitConfigValues(val) {
 			if tok == ifaceName {
-				hits = append(hits, RefHit{Section: wl.Section, Edit: wl.Edit, Line: wl.Line})
+				hits = append(hits, RefHit(wl))
 				break
 			}
 		}
