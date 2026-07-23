@@ -118,49 +118,32 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		}
 	}
 
-	var cli []CLIBlock
+	// Track how each interface changes; the section is emitted whole at the end
+	// so unchanged interfaces come through verbatim and the FortiLink lands
+	// above the VLANs that reference it.
+	emptied := map[string]bool{}       // switch left memberless -> deleted
+	memberChanged := map[string]bool{} // switch whose member list we rewrote
 
 	// Pull the chosen member ports out of whatever switch/aggregate they
-	// currently belong to, then rewrite each affected switch's member list
-	// exactly once (removing several ports from one switch must not emit one
-	// block per port -- the last would carry an empty, invalid `set member`).
-	affected := map[string]*InterfaceEntry{}
-	var affectedOrder []string
+	// currently belong to.
 	for _, p := range opts.MemberPorts {
 		for name, iface := range cfg.Interfaces {
 			if name == opts.FortilinkName || !containsStr(iface.Members, p) {
 				continue
 			}
 			iface.Members = removeStr(iface.Members, p)
-			if _, seen := affected[name]; !seen {
-				affected[name] = iface
-				affectedOrder = append(affectedOrder, name)
-			}
+			memberChanged[name] = true
 		}
 	}
-	sort.Strings(affectedOrder)
-	var pulled []string
-	for _, name := range affectedOrder {
-		iface := affected[name]
-		if len(iface.Members) == 0 {
-			// A switch/aggregate with no members is invalid CLI, so flag it for
-			// deletion rather than emitting a bare `set member`.
+	for name := range memberChanged {
+		if len(cfg.Interfaces[name].Members) == 0 {
+			delete(memberChanged, name)
+			emptied[name] = true
 			warnings = append(warnings, Warning{
 				Recipe: r.Key(), Section: "system interface",
-				Detail: fmt.Sprintf("%q has no member ports left after moving them onto the FortiLink -- delete the now-empty switch/aggregate (and re-point anything still using it) instead of leaving it memberless", name),
+				Detail: fmt.Sprintf("%q has no member ports left after moving them onto the FortiLink and is deleted in the output -- re-point anything still using it", name),
 			})
-			continue
 		}
-		pulled = append(pulled,
-			"config system interface",
-			fmt.Sprintf("    edit %q", name),
-			fmt.Sprintf("        set member %s", quoteJoin(iface.Members)),
-			"    next",
-			"end",
-		)
-	}
-	if len(pulled) > 0 {
-		cli = append(cli, CLIBlock{Recipe: r.Key(), Label: "Remove member ports from their current switch", Lines: pulled})
 	}
 
 	fl, exists := cfg.Interfaces[opts.FortilinkName]
@@ -184,45 +167,10 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		}
 		cfg.Interfaces[opts.FortilinkName] = fl
 	}
-	flLines := []string{"config system interface", fmt.Sprintf("    edit %q", opts.FortilinkName)}
-	if opts.UseExisting {
-		// Existing FortiLink: only extend its member set. Leave its IP,
-		// allowaccess and every other already-configured setting untouched.
-		flLines = append(flLines, fmt.Sprintf("        set member %s", quoteJoin(fl.Members)))
-	} else {
-		// A working FortiLink needs more than the aggregate itself: fabric
-		// access for switch management, LLDP for discovery, and (for a plain
-		// LAG to a single switch) split-interface off. Optional management IP
-		// gives the managed FortiSwitches a DHCP subnet.
-		split := "disable"
-		if opts.DualHomed {
-			split = "enable"
-		}
-		flLines = append(flLines,
-			"        set type aggregate",
-			fmt.Sprintf("        set member %s", quoteJoin(fl.Members)),
-			"        set fortilink enable",
-			fmt.Sprintf("        set fortilink-split-interface %s", split),
-			"        set allowaccess ping fabric",
-			"        set lldp-reception enable",
-			"        set lldp-transmission enable",
-		)
-		if ip := strings.TrimSpace(opts.FortilinkIP); ip != "" {
-			fl.IP = ip
-			flLines = append(flLines, fmt.Sprintf("        set ip %s", ip))
-		}
-	}
-	flLines = append(flLines, "    next", "end")
-	cli = append(cli, CLIBlock{
-		Recipe: r.Key(),
-		Label:  fmt.Sprintf("FortiLink interface %q", opts.FortilinkName),
-		Lines:  flLines,
-	})
 
 	// The device generates the rest of a FortiLink setup itself once the switch
-	// is authorized (management address/policy, NAC, switch-group, link-monitor),
-	// so flag that path rather than emitting objects that would clash with the
-	// auto-created ones.
+	// is authorized, so flag that path rather than emitting objects that would
+	// clash with the auto-created ones.
 	if !opts.UseExisting {
 		detail := fmt.Sprintf("authorize the FortiSwitch on %q under \"config switch-controller managed-switch\" (or via the GUI) after applying -- FortiOS then auto-creates the FortiLink management address, policy, NAC, switch-group and link-monitor objects (device-generated, not part of this script)", opts.FortilinkName)
 		if strings.TrimSpace(opts.FortilinkIP) == "" {
@@ -231,6 +179,7 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		warnings = append(warnings, Warning{Recipe: r.Key(), Detail: detail})
 	}
 
+	vlanMoved := map[string]bool{}
 	for _, mv := range opts.VLANMoves {
 		iface, ok := cfg.Interfaces[mv.Interface]
 		if !ok {
@@ -239,34 +188,11 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		if mv.VLANID <= 0 || mv.VLANID > 4094 {
 			return nil, nil, fmt.Errorf("VLAN move for %q needs a VLAN ID between 1 and 4094, got %d", mv.Interface, mv.VLANID)
 		}
-
 		iface.Type = "vlan"
 		iface.Parent = opts.FortilinkName
 		iface.VLANID = mv.VLANID
 		iface.Members = nil
-
-		lines := []string{
-			"config system interface",
-			fmt.Sprintf("    edit %q", mv.Interface),
-			fmt.Sprintf("        set interface %q", opts.FortilinkName),
-			fmt.Sprintf("        set vlanid %d", mv.VLANID),
-			"        set type vlan",
-		}
-		if iface.IP != "" {
-			lines = append(lines, fmt.Sprintf("        set ip %s", iface.IP))
-		}
-		if iface.Allowaccess != "" {
-			lines = append(lines, fmt.Sprintf("        set allowaccess %s", iface.Allowaccess))
-		}
-		if iface.Role != "" {
-			lines = append(lines, fmt.Sprintf("        set role %s", iface.Role))
-		}
-		lines = append(lines, "    next", "end")
-		cli = append(cli, CLIBlock{
-			Recipe: r.Key(),
-			Label:  fmt.Sprintf("Move %q onto FortiLink as VLAN %d", mv.Interface, mv.VLANID),
-			Lines:  lines,
-		})
+		vlanMoved[mv.Interface] = true
 
 		for _, hit := range ScanReferences(cfg, mv.Interface) {
 			warnings = append(warnings, Warning{
@@ -285,5 +211,197 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		}
 	}
 
+	// Emit the whole `config system interface` section as one block: deletions
+	// first, then every non-VLAN interface (member ports + the FortiLink), then
+	// the VLANs -- so a parent always precedes the interfaces referencing it.
+	order := cfg.InterfaceOrder
+	if len(order) == 0 { // e.g. a model built by hand in tests
+		for name := range cfg.Interfaces {
+			order = append(order, name)
+		}
+		sort.Strings(order)
+	}
+
+	block := []string{"config system interface"}
+	var deletes []string
+	for name := range emptied {
+		deletes = append(deletes, name)
+	}
+	sort.Strings(deletes)
+	for _, name := range deletes {
+		block = append(block, fmt.Sprintf("    delete %q", name))
+	}
+
+	var vlanNames []string
+	for _, name := range order {
+		iface := cfg.Interfaces[name]
+		if iface == nil || emptied[name] {
+			continue
+		}
+		if name == opts.FortilinkName && !opts.UseExisting {
+			continue // the new FortiLink is placed explicitly, below
+		}
+		if iface.Type == "vlan" {
+			vlanNames = append(vlanNames, name)
+			continue
+		}
+		block = append(block, emitFortiLinkIface(iface, opts, memberChanged, vlanMoved, fl)...)
+	}
+	if !opts.UseExisting {
+		block = append(block, newFortiLinkEdit(opts, fl)...)
+	}
+	for _, name := range vlanNames {
+		block = append(block, emitFortiLinkIface(cfg.Interfaces[name], opts, memberChanged, vlanMoved, fl)...)
+	}
+	block = append(block, "end")
+
+	cli := []CLIBlock{{
+		Recipe: r.Key(),
+		Label:  fmt.Sprintf("config system interface (full section, FortiLink %q)", opts.FortilinkName),
+		Lines:  reindent(block),
+	}}
 	return cli, warnings, nil
+}
+
+// reindent normalises a config block to standard FortiGate indentation (four
+// spaces per config/edit level). SCP backups come through unindented, and the
+// recipe mixes verbatim source lines with generated ones, so this gives one
+// consistent, readable block. FortiOS ignores the indentation on paste anyway.
+func reindent(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	depth := 0
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			out = append(out, "")
+			continue
+		}
+		if (t == "next" || t == "end") && depth > 0 {
+			depth--
+		}
+		out = append(out, strings.Repeat("    ", depth)+t)
+		if strings.HasPrefix(t, "config ") || strings.HasPrefix(t, "edit ") {
+			depth++
+		}
+	}
+	return out
+}
+
+// emitFortiLinkIface returns one interface's `edit ... next` lines for the
+// consolidated section: verbatim when untouched, or with the single changed
+// line rewritten (a switch's member list, or a moved VLAN's parent), preserving
+// every other setting the parser does not model.
+func emitFortiLinkIface(iface *InterfaceEntry, opts FortiLinkOptions, memberChanged, vlanMoved map[string]bool, fl *InterfaceEntry) []string {
+	base := ifaceBlock(iface)
+	switch {
+	case iface.Name == opts.FortilinkName && opts.UseExisting:
+		out, ok := replaceSetLine(base, "member", quoteJoin(fl.Members))
+		if !ok {
+			out = insertBeforeNext(base, "        set member "+quoteJoin(fl.Members))
+		}
+		return out
+	case memberChanged[iface.Name]:
+		out, _ := replaceSetLine(base, "member", quoteJoin(iface.Members))
+		return out
+	case vlanMoved[iface.Name]:
+		out, ok := replaceSetLine(base, "interface", fmt.Sprintf("%q", opts.FortilinkName))
+		if !ok {
+			out = insertBeforeNext(base, fmt.Sprintf("        set interface %q", opts.FortilinkName))
+		}
+		return out
+	default:
+		return base
+	}
+}
+
+// newFortiLinkEdit builds the `edit ... next` for a freshly-created FortiLink
+// aggregate (fabric access, LLDP, split-interface, optional management IP).
+func newFortiLinkEdit(opts FortiLinkOptions, fl *InterfaceEntry) []string {
+	split := "disable"
+	if opts.DualHomed {
+		split = "enable"
+	}
+	lines := []string{
+		fmt.Sprintf("    edit %q", opts.FortilinkName),
+		"        set type aggregate",
+		fmt.Sprintf("        set member %s", quoteJoin(fl.Members)),
+		"        set fortilink enable",
+		fmt.Sprintf("        set fortilink-split-interface %s", split),
+		"        set allowaccess ping fabric",
+		"        set lldp-reception enable",
+		"        set lldp-transmission enable",
+	}
+	if ip := strings.TrimSpace(opts.FortilinkIP); ip != "" {
+		lines = append(lines, fmt.Sprintf("        set ip %s", ip))
+	}
+	return append(lines, "    next")
+}
+
+// ifaceBlock returns the interface's verbatim `edit ... next` block, or rebuilds
+// a minimal one from the modeled fields when no raw text was captured (chiefly
+// hand-built configs in tests).
+func ifaceBlock(iface *InterfaceEntry) []string {
+	if len(iface.Raw) > 0 {
+		return iface.Raw
+	}
+	lines := []string{fmt.Sprintf("    edit %q", iface.Name)}
+	if iface.Type != "" {
+		lines = append(lines, fmt.Sprintf("        set type %s", iface.Type))
+	}
+	if iface.VLANID > 0 {
+		lines = append(lines, fmt.Sprintf("        set vlanid %d", iface.VLANID))
+	}
+	if iface.Parent != "" {
+		lines = append(lines, fmt.Sprintf("        set interface %q", iface.Parent))
+	}
+	if len(iface.Members) > 0 {
+		lines = append(lines, fmt.Sprintf("        set member %s", quoteJoin(iface.Members)))
+	}
+	if iface.IP != "" {
+		lines = append(lines, fmt.Sprintf("        set ip %s", iface.IP))
+	}
+	if iface.Allowaccess != "" {
+		lines = append(lines, fmt.Sprintf("        set allowaccess %s", iface.Allowaccess))
+	}
+	if iface.Role != "" {
+		lines = append(lines, fmt.Sprintf("        set role %s", iface.Role))
+	}
+	if iface.Fortilink {
+		lines = append(lines, "        set fortilink enable")
+	}
+	for _, l := range iface.Lines {
+		lines = append(lines, "        "+l)
+	}
+	return append(lines, "    next")
+}
+
+// replaceSetLine rewrites the first top-level `set <key> ...` line in an
+// interface block (nested blocks never carry `set member`/`set interface`, so
+// the first match is the interface-level one), preserving indentation.
+func replaceSetLine(block []string, key, newValue string) ([]string, bool) {
+	prefix := "set " + key + " "
+	out := make([]string, len(block))
+	copy(out, block)
+	for i, l := range out {
+		if strings.HasPrefix(strings.TrimSpace(l), prefix) {
+			indent := l[:len(l)-len(strings.TrimLeft(l, " \t"))]
+			out[i] = indent + "set " + key + " " + newValue
+			return out, true
+		}
+	}
+	return out, false
+}
+
+// insertBeforeNext inserts a line just before the block's closing `next`.
+func insertBeforeNext(block []string, newLine string) []string {
+	for i := len(block) - 1; i >= 0; i-- {
+		if strings.TrimSpace(block[i]) == "next" {
+			out := make([]string, 0, len(block)+1)
+			out = append(out, block[:i]...)
+			out = append(out, newLine)
+			out = append(out, block[i:]...)
+			return out
+		}
+	}
+	return append(block, newLine)
 }

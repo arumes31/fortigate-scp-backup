@@ -182,6 +182,13 @@ func ParseConfig(content string) *FGConfig {
 			continue
 		}
 
+		// Accumulate the verbatim body of the interface currently being parsed
+		// (nested blocks and the closing `next` included). The opening `edit`
+		// line is captured where curIface is created.
+		if curIface != nil {
+			curIface.Raw = append(curIface.Raw, raw)
+		}
+
 		if strings.HasPrefix(line, "config ") {
 			stack = append(stack, stackElem{isConfig: true, name: strings.TrimSpace(strings.TrimPrefix(line, "config "))})
 			continue
@@ -203,6 +210,7 @@ func ParseConfig(content string) *FGConfig {
 			switch {
 			case sec == "system interface" && curIface != nil && curIface.Name == edit:
 				cfg.Interfaces[curIface.Name] = curIface
+				cfg.InterfaceOrder = append(cfg.InterfaceOrder, curIface.Name)
 				curIface = nil
 			case sec == "system zone" && curZone != nil && curZone.Name == edit:
 				cfg.Zones[curZone.Name] = curZone
@@ -246,7 +254,7 @@ func ParseConfig(content string) *FGConfig {
 			}
 			switch {
 			case sec == "system interface":
-				curIface = &InterfaceEntry{Name: name}
+				curIface = &InterfaceEntry{Name: name, Raw: []string{raw}}
 			case sec == "system zone":
 				curZone = &ZoneEntry{Name: name}
 			case sec == "firewall policy":

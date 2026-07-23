@@ -292,6 +292,91 @@ func TestRecipeVersionGating(t *testing.T) {
 	}
 }
 
+const fullSectionConfig = `#config-version=FGxx-7.4.1-FW-build2463-230101:opmode=0
+config system interface
+edit "port1"
+set vdom "root"
+set type physical
+next
+edit "port2"
+set vdom "root"
+set type physical
+next
+edit "wan1"
+set vdom "root"
+set ip 203.0.113.1 255.255.255.0
+set type physical
+set role wan
+next
+edit "agg1"
+set vdom "root"
+set type aggregate
+set member "port1" "port2"
+next
+edit "VL10"
+set vdom "root"
+set ip 10.0.10.1 255.255.255.0
+set allowaccess ping https
+set snmp-index 5
+set interface "agg1"
+set vlanid 10
+config secondaryip
+edit 1
+set ip 10.0.11.1 255.255.255.0
+next
+end
+next
+edit "VL20"
+set vdom "root"
+set ip 10.0.20.1 255.255.255.0
+set interface "agg1"
+set vlanid 20
+next
+end
+`
+
+func TestFortiLinkRecipe_FullSectionOutput(t *testing.T) {
+	cfg := ParseConfig(fullSectionConfig)
+	cli, _, err := fortiLinkRecipe{}.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:     []string{"port1", "port2"},
+		FortilinkName:   "fortilink",
+		BulkVLANParents: []string{"agg1"},
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(cli) != 1 {
+		t.Fatalf("want a single consolidated block, got %d", len(cli))
+	}
+	joined := blockLines(cli)
+
+	if n := strings.Count(joined, "config system interface"); n != 1 {
+		t.Errorf("want exactly one `config system interface` wrapper, got %d:\n%s", n, joined)
+	}
+	// Unchanged interfaces must be reproduced, verbatim detail preserved.
+	for _, want := range []string{
+		`edit "wan1"`, "set role wan", // untouched interface carried through
+		`edit "VL10"`, "set snmp-index 5", "config secondaryip", // VLAN detail kept
+		`edit "fortilink"`, "set fortilink enable", // FortiLink created
+		`delete "agg1"`, // emptied aggregate deleted
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("output missing %q:\n%s", want, joined)
+		}
+	}
+	// Both VLANs re-parented onto the FortiLink; none left on agg1.
+	if strings.Contains(joined, `set interface "agg1"`) {
+		t.Errorf("a VLAN is still parented to agg1:\n%s", joined)
+	}
+	if c := strings.Count(joined, `set interface "fortilink"`); c != 2 {
+		t.Errorf("want 2 VLANs re-parented onto fortilink, got %d", c)
+	}
+	// FortiLink must sit above the VLANs that reference it.
+	if fl, vl := strings.Index(joined, `edit "fortilink"`), strings.Index(joined, `edit "VL10"`); fl < 0 || fl > vl {
+		t.Errorf("FortiLink (idx %d) must appear above the VLANs (VL10 idx %d)", fl, vl)
+	}
+}
+
 // blockLines flattens every CLIBlock's lines into one string for substring
 // assertions.
 func blockLines(blocks []CLIBlock) string {
