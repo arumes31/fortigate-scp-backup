@@ -7,6 +7,7 @@ import (
 
 func freshSDWANRulesConfig() *FGConfig {
 	return &FGConfig{
+		Version:    FortiOSVersion{Major: 7, Minor: 6, Patch: 1},
 		Interfaces: map[string]*InterfaceEntry{},
 		Zones:      map[string]*ZoneEntry{},
 		SDWANZones: map[string]*SDWANZone{defaultSDWANZone: {Name: defaultSDWANZone}},
@@ -21,7 +22,8 @@ func freshSDWANRulesConfig() *FGConfig {
 }
 
 func TestSDWANRulesRecipe_Applicable(t *testing.T) {
-	cfg := &FGConfig{}
+	// 7.4+ so the version gate passes and we exercise the no-members gate.
+	cfg := &FGConfig{Version: FortiOSVersion{Major: 7, Minor: 6, Patch: 1}}
 	r := sdwanRulesRecipe{}
 	if ok, reason := r.Applicable(cfg); ok || reason == "" {
 		t.Errorf("expected not-applicable with a reason for an empty config, got ok=%v reason=%q", ok, reason)

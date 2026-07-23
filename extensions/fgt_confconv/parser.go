@@ -13,6 +13,11 @@ var editRe = regexp.MustCompile(`^edit\s+"([^"]+)"`)
 
 var configVersionRe = regexp.MustCompile(`^#config-version=\S*?-(\d+)\.(\d+)\.(\d+)-`)
 
+// configBuildRe pulls the build number from the header. It is the reliable
+// version signal when the X.Y.Z string is masked/unreliable (a 7.4.x device can
+// report "7.00"); build numbers increase monotonically across trains.
+var configBuildRe = regexp.MustCompile(`-build(\d+)-`)
+
 // watchedSections are config sections a touched interface might appear in
 // that recipes deliberately never rewrite -- every `set` line inside one is
 // captured verbatim for the reference scanner (see ScanReferences).
@@ -125,12 +130,23 @@ func splitConfigValues(s string) []string {
 func ParseFortiOSVersion(content string) (v FortiOSVersion, ok bool) {
 	lines := strings.SplitN(content, "\n", 20)
 	for _, line := range lines {
-		if m := configVersionRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			maj, _ := strconv.Atoi(m[1])
-			min, _ := strconv.Atoi(m[2])
-			pat, _ := strconv.Atoi(m[3])
-			return FortiOSVersion{Major: maj, Minor: min, Patch: pat, Raw: strings.TrimSpace(line)}, true
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#config-version=") {
+			continue
 		}
+		v.Raw = line
+		// The X.Y.Z string may be masked/absent (e.g. "7.00"); capture it when
+		// present, but always take the build number, which SupportsSDWANSyntax
+		// relies on as the trustworthy signal.
+		if m := configVersionRe.FindStringSubmatch(line); m != nil {
+			v.Major, _ = strconv.Atoi(m[1])
+			v.Minor, _ = strconv.Atoi(m[2])
+			v.Patch, _ = strconv.Atoi(m[3])
+		}
+		if b := configBuildRe.FindStringSubmatch(line); b != nil {
+			v.Build, _ = strconv.Atoi(b[1])
+		}
+		return v, true
 	}
 	return FortiOSVersion{}, false
 }
@@ -270,6 +286,12 @@ func ParseConfig(content string) *FGConfig {
 				curIface.Parent = strings.Trim(val, `"`)
 			case "vlanid":
 				curIface.VLANID, _ = strconv.Atoi(val)
+				// FortiGate omits `set type vlan` on VLAN interfaces -- the tag
+				// alone implies it. Infer the type so VLAN detection (and the
+				// bulk FortiLink move) still find them.
+				if curIface.Type == "" {
+					curIface.Type = "vlan"
+				}
 			case "ip":
 				curIface.IP = val
 			case "allowaccess":

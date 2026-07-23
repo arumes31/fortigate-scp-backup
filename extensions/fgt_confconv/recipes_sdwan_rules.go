@@ -23,6 +23,9 @@ func (sdwanRulesRecipe) Key() string   { return RecipeKeySDWANRules }
 func (sdwanRulesRecipe) Label() string { return "SD-WAN static routes -> SD-WAN rules" }
 
 func (sdwanRulesRecipe) Applicable(cfg *FGConfig) (bool, string) {
+	if !cfg.Version.SupportsSDWANSyntax() {
+		return false, fmt.Sprintf("SD-WAN recipes need FortiOS 7.4+ (this backup is %s) -- the FortiLink and zone recipes still work on older trains", cfg.Version)
+	}
 	if len(cfg.SDWANMembers) < 2 {
 		return false, "no SD-WAN members in this configuration -- run WAN→SD-WAN first, or check that the backup actually has an SD-WAN set up"
 	}

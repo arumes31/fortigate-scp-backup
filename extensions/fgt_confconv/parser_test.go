@@ -155,6 +155,28 @@ func TestParseFortiOSVersion(t *testing.T) {
 	if old.SupportsSDWANSyntax() {
 		t.Error("7.0.5 must NOT support the modern sdwan syntax")
 	}
+
+	// Some devices mask/omit the real version string (a 7.4.x box can report
+	// "7.00"); the build number is the reliable signal. Build 2902 is 7.4.12,
+	// which is >= the 7.4.0 GA build (2360), so it must count as 7.4+.
+	masked, ok := ParseFortiOSVersion("#config-version=FG100F-7.00-FW-build2902-000000:opmode=0:vdom=0:user=admin\n")
+	if !ok {
+		t.Fatal("masked version header not found")
+	}
+	if masked.Build != 2902 {
+		t.Errorf("build = %d, want 2902", masked.Build)
+	}
+	if !masked.SupportsSDWANSyntax() {
+		t.Error("build 2902 (7.4.12) must be treated as 7.4+ despite the masked '7.00' version string")
+	}
+	if got, want := masked.String(), "build 2902"; got != want {
+		t.Errorf("String() = %q, want %q (unparseable version falls back to build)", got, want)
+	}
+
+	// A genuine pre-7.4 build (7.0.5, build 0304) must still be gated out.
+	if ok := (FortiOSVersion{Major: 7, Minor: 0, Patch: 5, Build: 304}).SupportsSDWANSyntax(); ok {
+		t.Error("7.0.5 / build 304 must NOT support the modern sdwan syntax")
+	}
 }
 
 func TestParseConfigInterfaces(t *testing.T) {
@@ -185,6 +207,11 @@ func TestParseConfigInterfaces(t *testing.T) {
 	}
 	if vl100.Parent != "fortilink1" || vl100.VLANID != 100 {
 		t.Errorf("VL100 parent/vlanid = %q/%d", vl100.Parent, vl100.VLANID)
+	}
+	// FortiGate omits `set type vlan`; the parser must infer it from the tag so
+	// VLAN detection and the bulk FortiLink move find it.
+	if vl100.Type != "vlan" {
+		t.Errorf("VL100 type should be inferred as vlan, got %q", vl100.Type)
 	}
 	if vl100.IP != "10.0.100.1 255.255.255.0" {
 		t.Errorf("VL100 ip = %q", vl100.IP)

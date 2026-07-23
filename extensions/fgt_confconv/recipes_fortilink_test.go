@@ -43,8 +43,9 @@ func TestFortiLinkRecipe_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(warnings) != 0 {
-		t.Errorf("unexpected warnings: %v", warnings)
+	// Creating a FortiLink always emits the switch-authorization guidance note.
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Detail, "managed-switch") {
+		t.Errorf("expected the FortiLink authorization guidance warning, got %v", warnings)
 	}
 
 	fl, ok := cfg.Interfaces["fortilink1"]
@@ -69,7 +70,34 @@ func TestFortiLinkRecipe_HappyPath(t *testing.T) {
 	joined := blockLines(cli)
 	for _, want := range []string{
 		`edit "fortilink1"`, "set type aggregate", `set member "port5" "port6"`, "set fortilink enable",
+		// A usable FortiLink needs fabric access, LLDP discovery and (single
+		// switch) split-interface off -- not just the bare aggregate.
+		"set fortilink-split-interface disable", "set allowaccess ping fabric",
+		"set lldp-reception enable", "set lldp-transmission enable",
 		`edit "hwsw1"`, `set member "port7"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cli missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestFortiLinkRecipe_ManagementIPAndMCLAG(t *testing.T) {
+	cfg := freshFortiLinkConfig()
+	r := fortiLinkRecipe{}
+	cli, _, err := r.Run(cfg, mustJSON(t, FortiLinkOptions{
+		MemberPorts:   []string{"port5", "port6"},
+		FortilinkName: "fortilink1",
+		FortilinkIP:   "10.255.1.1 255.255.255.0",
+		DualHomed:     true,
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	joined := blockLines(cli)
+	for _, want := range []string{
+		"set ip 10.255.1.1 255.255.255.0",
+		"set fortilink-split-interface enable", // dual-homed => split on
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("cli missing %q:\n%s", want, joined)
@@ -162,13 +190,19 @@ func TestFortiLinkRecipe_WarnsOnUntouchedReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(warnings) != 1 || warnings[0].Section != "vpn ipsec phase1-interface" {
-		t.Errorf("expected exactly 1 ipsec warning, got %v", warnings)
+	var ipsec *Warning
+	for i := range warnings {
+		if warnings[i].Section == "vpn ipsec phase1-interface" {
+			ipsec = &warnings[i]
+		}
+	}
+	if ipsec == nil {
+		t.Fatalf("expected an ipsec reference warning, got %v", warnings)
 	}
 	// The name is preserved across a VLAN move, so the reference stays valid --
 	// the warning must read as informational, not as a required rewrite.
-	if !strings.Contains(warnings[0].Detail, "stays valid") {
-		t.Errorf("VLAN-move reference warning should be informational, got: %q", warnings[0].Detail)
+	if !strings.Contains(ipsec.Detail, "stays valid") {
+		t.Errorf("VLAN-move reference warning should be informational, got: %q", ipsec.Detail)
 	}
 }
 
@@ -239,6 +273,22 @@ func TestFortiLinkRecipe_BulkVLANMoveEmptyParentWarns(t *testing.T) {
 	}
 	if !sawEmpty {
 		t.Errorf("expected a 'nothing to move' warning for a parent with no VLANs, got %v", warnings)
+	}
+}
+
+func TestRecipeVersionGating(t *testing.T) {
+	// FortiLink and zone recipes emit version-agnostic CLI and must run on
+	// pre-7.4 trains; only the SD-WAN recipes need the 7.4+ `config system
+	// sdwan` syntax.
+	old := &FGConfig{Version: FortiOSVersion{Major: 7, Minor: 0}}
+	if ok, reason := (fortiLinkRecipe{}).Applicable(old); !ok {
+		t.Errorf("FortiLink recipe should be applicable on FortiOS 7.0, got %q", reason)
+	}
+	if ok, reason := (zoneRecipe{}).Applicable(old); !ok {
+		t.Errorf("zone recipe should be applicable on FortiOS 7.0, got %q", reason)
+	}
+	if ok, reason := (sdwanRecipe{}).Applicable(old); ok || !strings.Contains(reason, "7.4+") {
+		t.Errorf("SD-WAN recipe should be gated on 7.0, got ok=%v reason=%q", ok, reason)
 	}
 }
 
