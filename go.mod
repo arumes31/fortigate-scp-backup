@@ -3,7 +3,7 @@ module github.com/arumes31/fortigate-scp-backup
 go 1.26.5
 
 require (
-	github.com/bramvdbogaerde/go-scp v1.6.0
+	github.com/bramvdbogaerde/go-scp v1.6.1
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
