@@ -41,30 +41,35 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 	var cli []CLIBlock
 	var warnings []Warning
 
+	// A health-check is only consulted by best-quality rules; manual rules
+	// steer on priority-members alone, so skip the placeholder (and its
+	// config mutation) entirely for the manual strategy.
 	healthCheck := ""
-	if len(cfg.SDWANHealthChecks) > 0 {
-		healthCheck = cfg.SDWANHealthChecks[0]
-	} else {
-		healthCheck = placeholderHealthCheck
-		cfg.SDWANHealthChecks = append(cfg.SDWANHealthChecks, healthCheck)
-		cli = append(cli, CLIBlock{
-			Recipe: r.Key(),
-			Label:  "Placeholder SD-WAN health-check",
-			Lines: []string{
-				"config system sdwan",
-				"    config health-check",
-				fmt.Sprintf("        edit %q", healthCheck),
-				`        set server "8.8.8.8"`,
-				"        set members 0",
-				"    next",
-				"    end",
-				"end",
-			},
-		})
-		warnings = append(warnings, Warning{
-			Recipe: r.Key(),
-			Detail: "no SD-WAN health-check existed, so a placeholder pinging 8.8.8.8 was added -- replace it with a real monitored endpoint before relying on quality-based rules",
-		})
+	if opts.Strategy == "best-quality" {
+		if len(cfg.SDWANHealthChecks) > 0 {
+			healthCheck = cfg.SDWANHealthChecks[0]
+		} else {
+			healthCheck = placeholderHealthCheck
+			cfg.SDWANHealthChecks = append(cfg.SDWANHealthChecks, healthCheck)
+			cli = append(cli, CLIBlock{
+				Recipe: r.Key(),
+				Label:  "Placeholder SD-WAN health-check",
+				Lines: []string{
+					"config system sdwan",
+					"    config health-check",
+					fmt.Sprintf("        edit %q", healthCheck),
+					`        set server "8.8.8.8"`,
+					"        set members 0",
+					"    next",
+					"    end",
+					"end",
+				},
+			})
+			warnings = append(warnings, Warning{
+				Recipe: r.Key(),
+				Detail: "no SD-WAN health-check existed, so a placeholder pinging 8.8.8.8 was added -- replace it with a real monitored endpoint before relying on quality-based rules",
+			})
+		}
 	}
 
 	// Only zones that actually have >=1 member get a rule -- a zone with no

@@ -101,14 +101,10 @@ func (r sdwanRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []
 	// Consolidate default static routes on the picked members into one route
 	// on the zone; disable (never delete) every route it supersedes.
 	var routeCLI []string
-	var supersededGW string
 	for _, m := range opts.Members {
 		for _, rt := range cfg.StaticRoutes {
 			if rt.Disabled || rt.Device != m || rt.Dst != "" {
 				continue
-			}
-			if supersededGW == "" {
-				supersededGW = rt.Gateway
 			}
 			rt.Disabled = true
 			routeCLI = append(routeCLI, "config router static",
@@ -140,11 +136,8 @@ func (r sdwanRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []
 		cfg.StaticRoutes = append(cfg.StaticRoutes, newRoute)
 		routeCLI = append(routeCLI, "config router static",
 			fmt.Sprintf("    edit %d", nextRouteSeq),
-			fmt.Sprintf("        set device %q", zoneName),
+			fmt.Sprintf("        set sdwan-zone %q", zoneName),
 			"        set dst 0.0.0.0 0.0.0.0")
-		if supersededGW != "" {
-			routeCLI = append(routeCLI, fmt.Sprintf("        set gateway %s", supersededGW))
-		}
 		routeCLI = append(routeCLI, "    next", "end")
 		cli = append(cli, CLIBlock{Recipe: r.Key(), Label: "Consolidate default routes onto the SD-WAN zone", Lines: routeCLI})
 	}

@@ -83,6 +83,12 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 				continue
 			}
 			iface.Members = removeStr(iface.Members, p)
+			if len(iface.Members) == 0 {
+				warnings = append(warnings, Warning{
+					Recipe: r.Key(), Section: "system interface",
+					Detail: fmt.Sprintf("%q has no member ports left after moving %q onto the FortiLink -- review whether the now-empty switch/aggregate should be removed", name, p),
+				})
+			}
 			pulled = append(pulled,
 				"config system interface",
 				fmt.Sprintf("    edit %q", name),

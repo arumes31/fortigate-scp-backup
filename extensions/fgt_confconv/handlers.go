@@ -173,6 +173,7 @@ type convertRequest struct {
 }
 
 func (e *Extension) convert(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, e.cfg.CSVMaxBytes)
 	var req convertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		e.jsonError(w, http.StatusBadRequest, "invalid request body")

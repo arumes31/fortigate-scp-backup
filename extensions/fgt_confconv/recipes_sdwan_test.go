@@ -82,7 +82,7 @@ func TestSDWANRecipe_HappyPath(t *testing.T) {
 	joined := blockLines(cli)
 	for _, want := range []string{
 		"config system sdwan", `set interface "wan1"`, `set zone "virtual-wan-link"`,
-		`set device "virtual-wan-link"`, "set status disable",
+		`set sdwan-zone "virtual-wan-link"`, "set status disable",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("cli missing %q:\n%s", want, joined)

@@ -410,6 +410,7 @@ Requires `GRAYLOG_URL` / `GRAYLOG_TOKEN` (above) — the analysis runs as server
 | `POLSPLIT_ANALYZE_TIMEOUT` | `55` | Seconds; hard cap on one analyze request so it fails with a clean error instead of a raw reverse-proxy 504. Windows longer than 12h are loaded in parallel chunks — 1-hour steps by default, grown so a run never exceeds 48 chunks (e.g. a 30-day window uses 15-hour chunks); raise this (and the proxy read timeout, e.g. nginx `proxy_read_timeout`) for very busy policies, or `0` to disable the cap. |
 
 ### Extension: Configuration Conversions (ConfConv)
+
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `EXT_FGT_CONFCONV` | `false` | Enable the Configuration Conversions extension. |
