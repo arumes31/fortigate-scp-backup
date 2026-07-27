@@ -77,16 +77,16 @@ func (r zoneRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []W
 		},
 	})
 
+	// A zone is just a grouping on top of interfaces that keep their own
+	// name/IP/role unchanged -- unlike a FortiLink member port, nothing about
+	// an interface's own identity changes by joining one. VIPs/IPsec/DHCP/HA/
+	// etc. referencing it by name stay exactly as valid as before, so
+	// ScanReferences is deliberately not run here: there is nothing for the
+	// operator to review.
 	touched := map[int]bool{}
 	for _, name := range opts.Interfaces {
 		for _, id := range replaceInterfaceInPolicies(cfg, name, opts.ZoneName) {
 			touched[id] = true
-		}
-		for _, hit := range ScanReferences(cfg, name) {
-			warnings = append(warnings, Warning{
-				Recipe: r.Key(), Section: hit.Section, Line: hit.Line,
-				Detail: fmt.Sprintf("%q is still referenced in %s (%s) after joining zone %q", name, hit.Section, hit.Edit, opts.ZoneName),
-			})
 		}
 	}
 	if len(touched) > 0 {
