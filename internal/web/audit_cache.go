@@ -252,13 +252,14 @@ type auditRowJSON struct {
 // splitExemptions partitions raw findings into active and exempted using the
 // stable finding key. Keys with the "check:" prefix (from the legacy-text
 // backfill) exempt every instance of that check; rows without a key fall back
-// to exact text matching.
+// to exact text matching. Exemptions with scope "global" apply regardless of
+// which firewall they were originally registered on.
 func splitExemptions(findings []models.AuditFinding, exemptions []exemption, fwID int) (active, exempted []models.AuditFinding) {
 	byKey := map[string]bool{}
 	byCheck := map[string]bool{}
 	byText := map[string]bool{}
 	for _, ex := range exemptions {
-		if ex.FwID != fwID {
+		if ex.FwID != fwID && ex.Scope != "global" {
 			continue
 		}
 		switch {

@@ -125,6 +125,14 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Migration: an exemption can be promoted to "global" scope so it suppresses
+	// the same finding_key/finding_text on every firewall, not just the one it
+	// was registered on (e.g. a shared admin account's 2FA exemption).
+	if _, err := db.Exec(`ALTER TABLE exemptions ADD COLUMN scope TEXT NOT NULL DEFAULT 'firewall'`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, err
+	}
 	// Migration: a share link can optionally include the live device inventory
 	// (client MAC/IP/hostname/802.1X identity). Default 0 = structure only, so
 	// existing shares stay device-free until re-created with the toggle on.
@@ -260,6 +268,7 @@ type exemption struct {
 	FindingText string
 	Reason      string
 	CreatedAt   time.Time
+	Scope       string // "firewall" (default) or "global" (applies to every firewall)
 }
 
 // auditData is the audit page *shell*: the firewall list plus the custom
@@ -403,13 +412,14 @@ func loadCustomRules(db *sql.DB) []customRule {
 
 // loadExemptions fetches all exemptions (empty on any error).
 func loadExemptions(db *sql.DB) []exemption {
-	return queryExemptions(db, "SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions")
+	return queryExemptions(db, "SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at, scope FROM exemptions")
 }
 
-// loadExemptionsFor fetches the exemptions of one firewall.
+// loadExemptionsFor fetches the exemptions that apply to one firewall: rows
+// registered on that firewall plus any promoted to "global" scope.
 func loadExemptionsFor(db *sql.DB, fwID int) []exemption {
 	return queryExemptions(db,
-		"SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at FROM exemptions WHERE fw_id = ?", fwID)
+		"SELECT id, fw_id, COALESCE(finding_key, ''), finding_text, reason, created_at, scope FROM exemptions WHERE fw_id = ? OR scope = 'global'", fwID)
 }
 
 func queryExemptions(db *sql.DB, query string, args ...any) []exemption {
@@ -425,7 +435,7 @@ func queryExemptions(db *sql.DB, query string, args ...any) []exemption {
 	for rows.Next() {
 		var ex exemption
 		var caRaw string
-		if scanErr := rows.Scan(&ex.ID, &ex.FwID, &ex.FindingKey, &ex.FindingText, &ex.Reason, &caRaw); scanErr == nil {
+		if scanErr := rows.Scan(&ex.ID, &ex.FwID, &ex.FindingKey, &ex.FindingText, &ex.Reason, &caRaw, &ex.Scope); scanErr == nil {
 			if t, tErr := time.Parse(insightsTimeLayout, caRaw); tErr == nil {
 				ex.CreatedAt = t
 			} else {
@@ -449,11 +459,20 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := r.FormValue("action")
-	if action == "delete" {
+	switch action {
+	case "delete":
 		idStr := r.FormValue("id")
 		id, _ := strconv.Atoi(idStr)
 		_, _ = db.Exec("DELETE FROM exemptions WHERE id = ?", id)
-	} else {
+	case "set_scope":
+		idStr := r.FormValue("id")
+		id, _ := strconv.Atoi(idStr)
+		scope := "firewall"
+		if r.FormValue("scope") == "global" {
+			scope = "global"
+		}
+		_, _ = db.Exec("UPDATE exemptions SET scope = ? WHERE id = ?", scope, id)
+	default:
 		fwIDStr := r.FormValue("fw_id")
 		fwID, _ := strconv.Atoi(fwIDStr)
 		findingKey := r.FormValue("finding_key")

@@ -71,6 +71,7 @@ const NODE_STYLE = {
     ap:        { fill: "#082436", stroke: "#38bdf8", icon: "❊", label: "#bae6fd" },
     ssid:      { fill: "#1e1b4b", stroke: "#a78bfa", icon: "≋", label: "#ddd6fe" },
     port:      { fill: "#0f172a", stroke: "#34d399", icon: "•", label: "#a7f3d0" },
+    portgroup: { fill: "#0f172a", stroke: "#34d399", icon: "•", label: "#a7f3d0" },
     route:     { fill: "#1e293b", stroke: "#38bdf8", icon: "→", label: "#bae6fd" },
     device:    { fill: "#082f36", stroke: "#22d3ee", icon: "◇", label: "#a5f3fc" },
     lan:       { fill: "#111827", stroke: "#6b7280", icon: "▦", label: "#e5e7eb" }
@@ -836,7 +837,8 @@ function buildTree(data) {
             else rest.push(dv);
         });
         const portNum = name => { const m = /(\d+)/.exec(name || ""); return m ? Number(m[1]) : 1e9; };
-        const children = Object.entries(byPort)
+        const portEntries = Object.entries(byPort);
+        const portChildren = portEntries
             .sort((a, b) => portNum(a[0]) - portNum(b[0]) || (a[0] < b[0] ? -1 : 1))
             .map(([port, devs]) => {
                 const p = portCfg[port];
@@ -866,9 +868,23 @@ function buildTree(data) {
                 };
             });
         // Devices matched to the switch but with no port association.
-        children.push(...rest.map(deviceNode));
+        portChildren.push(...rest.map(deviceNode));
 
+        // Populated ports (and any unassigned devices) always collapse into one
+        // "Ports" group node, however many there are. Left inline, a busy access
+        // switch draws one box + one fanning edge per port, which buries the
+        // switch-to-switch uplinks the fabric view exists to show; grouped, the
+        // uplink nesting below (already expanded by default) reads clearly, and
+        // the ports are one click away via the same collapse/expand machinery
+        // every other node already uses.
         const devCount = swDevs.length;
+        const children = portChildren.length ? [{
+            name: "Ports", kind: "portgroup",
+            info: `${portEntries.length} ${tt("topo.ports")}` + (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
+            badge: `${portEntries.length} ${tt("topo.ports")}`,
+            children: portChildren
+        }] : [];
+
         const group = swGroupOf[swName(sw)] || "";
         const blockedPorts = ports
             .filter(p => (topoStpIdx[swName(sw) + "|" + p.name] || {}).blocked)
@@ -1012,7 +1028,8 @@ function renderTree(data) {
         // the bulk of the clutter — each switch port's pinned devices and each
         // access point's SSIDs. Click a port or AP to drill into it.
         if (d.data.kind === "route" || d.data.kind === "vlangroup" || d.data.kind === "vpngroup" ||
-            d.data.kind === "lan" || d.data.kind === "port" || d.data.kind === "ap") d.children = null;
+            d.data.kind === "lan" || d.data.kind === "port" || d.data.kind === "ap" ||
+            d.data.kind === "portgroup") d.children = null;
     });
 
     gRoot = svg.append("g");
