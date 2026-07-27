@@ -74,7 +74,7 @@ graph TD
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
   - **Brute-force lockout**: Per-IP + username rate limiting with a configurable lockout window.
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
-- 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, a **Graylog logging-issues** card (VPN devices whose logging is offline / errored / unconfigured, surfaced from the FGT ADM VPN Config module), and an audited activity trail with optional age-based pruning.
+- 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, a **Graylog logging-issues** card (VPN devices whose logging is offline / errored / unconfigured, surfaced from the FGT ADM VPN Config module), a **blocked switch-ports** card (today's STP/BPDU/loop-/root-guard blocks across all firewalls, narrowed to the current calendar day and cleared automatically once a port recovers), with per-port **Check** / **Check All** buttons to re-verify live over SSH on demand (requires `FGT_DIAG_SSH_ENABLED`), and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
 - 🔍 **Security Auditing & Insights**:
   - **Instant, cached audits**: The audit page renders immediately; per-firewall results are computed asynchronously, cached in SQLite, and pre-warmed right after each successful backup. A per-firewall "re-check" recomputes on demand.
@@ -83,12 +83,13 @@ graph TD
   - **Shadow Rule Finder**: Identifies firewall policies shadowed or blocked by preceding rules.
   - **Weak Crypto Policy Flags**: Scans IPsec VPN configurations for weak encryption/integrity settings (DES, 3DES, MD5, weak DH groups) and global outdated TLS settings.
   - **Security Fabric Audit**: Flags missing Fortinet Security Fabric (CSF) setups.
-  - **CVE Correlation & Upgrade Paths**: Maps the detected FortiOS version to known exploited CVEs (2022–2025, e.g. CVE-2022-42475, CVE-2023-27997, CVE-2024-21762, CVE-2024-55591) and computes correct train-by-train upgrade paths (never a downgrade; up-to-date versions are reported as such).
+  - **CVE Correlation & Upgrade Paths**: Matches the detected FortiOS version against a **live, auto-updating CVE database** (NVD CPE search + CISA Known Exploited Vulnerabilities) — see [Security Auditing (Live CVE Database)](#security-auditing-live-cve-database) — falling back to a small bundled offline list (e.g. CVE-2022-42475, CVE-2023-27997, CVE-2024-21762, CVE-2024-55591) until the first live refresh succeeds. Computes correct train-by-train upgrade paths (never a downgrade; up-to-date versions are reported as such).
   - **Compliance Scoring**: Derives PCI-DSS, CIS Benchmark, and HIPAA scores from the structured check results.
   - **Change Tickets & Exemptions**: Link configuration runs to change tickets, and log approved security exemptions (matched by stable finding keys, so dynamic finding texts stay exempt).
 - 🗺️ **Interactive Network Topology** (dedicated page): A D3-powered, CDN-free collapsible tree with a **mirrored layout** — WAN uplinks and IPsec/SSL-VPN tunnels fan out to the *left* of a central Internet node, while the FortiGate, its FortiSwitch stack, VLANs, ports, and client devices grow to the *right*. Pan/zoom, search, filters, a right-click context menu, and:
   - **Device faceplates**: Clicking the firewall or a switch slides in an auto-generated schematic front panel with per-port coloring (WAN / FortiLink / VLAN parent / IP configured), a **VLAN color legend**, and per-port details.
   - **Maximize view**: A one-click ⛶ button (and `Esc`) hides all page chrome so the canvas fills the viewport.
+  - **Debug popup**: A 🐞 button lists every query the page has made this load (topology + device data, manual refreshes, per-port diagnostics) with status, timing, and the raw response — for troubleshooting without opening browser devtools.
   - **Public share links**: Generate revocable, optionally expiring token URLs that expose a single firewall's topology read-only without login (firmware version and VPN remote gateways are redacted).
   - **Live device & state overlay** (optional `graylog_device_data` extension) — derived purely from **config backups + Graylog logs**, with *no REST API and no SSH connection to the firewall*. For firewalls with managed FortiSwitches it adds, refreshed hourly (or on demand):
     - **Client devices** under their switch/VLAN with MAC, IP, and an OS/vendor **fingerprint**; devices sharing a MAC/IP are highlighted;
@@ -317,6 +318,7 @@ FortiSafe is configured entirely via environment variables.
 | `LOG_LEVEL` | `info` | Logging verbosity: `debug` \| `info` \| `warn` \| `error`. |
 | `BACKUP_DIR` | `backups` | Storage directory for configuration backups. |
 | `DATA_DIR` | `/app/data` | Storage directory for SQLite extension data. |
+| `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune the audited activity trail older than N days (0 = keep forever). |
 
 ### PostgreSQL Configuration (Main Database Store)
 | Variable | Default Value | Description |
@@ -376,7 +378,16 @@ FortiSafe is configured entirely via environment variables.
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
-| `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune activity logs older than N days (0 = keep forever). |
+
+### Security Auditing (Live CVE Database)
+
+The audit page's CVE correlation is backed by a live dataset (NVD CPE search + CISA Known Exploited Vulnerabilities), cached in SQLite and refreshed on a schedule and/or on demand via the audit page's "Refresh now" button (which always works regardless of `CVE_AUTOUPDATE`). Until the first live refresh succeeds, a small bundled offline list is used instead.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `CVE_AUTOUPDATE` | `false` | Enable the background job that refreshes the CVE dataset on `CVE_REFRESH_HOURS`. |
+| `CVE_REFRESH_HOURS` | `24` | Background refresh interval in hours (only relevant when `CVE_AUTOUPDATE=true`). |
+| `NVD_API_KEY` | *(Unset)* | Optional NVD API key; raises the keyless rate limit (5 req/30s) to 50 req/30s. |
 
 ### Extension: Graylog Device Data (Topology Overlay)
 

@@ -144,6 +144,7 @@ var uiMsgs = map[string]map[string]string{
 	"topo.debug_title":        {"en": "Debug — queried data & results", "de": "Debug — abgefragte Daten & Ergebnisse"},
 	"topo.debug_empty":        {"en": "No queries recorded yet — reload the topology or trigger a device fetch.", "de": "Noch keine Abfragen erfasst — Topologie neu laden oder Gerätedaten abrufen."},
 	"topo.debug_no_body":      {"en": "no response body", "de": "keine Antwortdaten"},
+	"topo.debug_truncated":    {"en": "truncated, full size", "de": "gekürzt, volle Größe"},
 	"topo.debug_topology":     {"en": "Topology data", "de": "Topologiedaten"},
 	"topo.debug_devices":      {"en": "Device data", "de": "Gerätedaten"},
 	"topo.debug_refresh":      {"en": "Device refresh (manual)", "de": "Gerätedaten-Refresh (manuell)"},

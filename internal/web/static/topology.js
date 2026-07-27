@@ -40,6 +40,7 @@ let topoUpdate = null;  // update(source) closure of the current render
 let svg, gRoot, zoomBehavior;
 let topoDebugLog = [];  // recent network queries this page made, newest first (Debug popup)
 const topoDebugMax = 25;
+const topoDebugBodyMax = 20000; // per-entry stored body cap (chars); bounds total memory across topoDebugMax entries
 
 // View filters (toolbar checkboxes); toggling re-renders the tree.
 let topoFilters = { devices: true, routes: true, vlans: true, edge: true, hideStale: false };
@@ -2008,7 +2009,10 @@ async function runPortDiag(btn, sw, port) {
             if (out) out.innerHTML = `<div style="color:#f59e0b; margin-top:8px; font-size:0.82em;">${tt("topo.diag_busy")}</div>`;
             return;
         }
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        if (!resp.ok) {
+            debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), null);
+            throw new Error("HTTP " + resp.status);
+        }
         const pd = await resp.json();
         debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), pd);
         if (out) out.innerHTML = renderPortDiag(pd);
@@ -2439,7 +2443,10 @@ async function fetchDevicesNow(rangeSec) {
         const url = cfg.devicesBase + "/refresh/" + fwid + (rangeSec ? "?range=" + rangeSec : "");
         const t0 = performance.now();
         const resp = await fetch(url, { method: "POST" });
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        if (!resp.ok) {
+            debugRecord(tt("topo.debug_refresh"), "POST", url, resp.status, Math.round(performance.now() - t0), null);
+            throw new Error("HTTP " + resp.status);
+        }
         const data = await resp.json();
         debugRecord(tt("topo.debug_refresh"), "POST", url, resp.status, Math.round(performance.now() - t0), data);
         if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
@@ -2548,11 +2555,25 @@ function updateLiveBtn() {
 // ---------------------------------------------------------------------------
 
 // debugRecord appends one query's outcome to the in-memory log (newest
-// first, capped) and re-renders the popup live if it's currently open.
+// first, capped) and re-renders the popup live if it's currently open. The
+// body is serialized once here and stored pre-truncated: topology payloads
+// can be large, and keeping topoDebugMax full copies around would otherwise
+// let this purely-diagnostic feature bloat page memory unbounded. `size`
+// still reports the untruncated length so the popup shows the real payload
+// size even when the stored text was cut short.
 function debugRecord(label, method, url, status, ms, body) {
     let size = 0;
-    try { size = body == null ? 0 : JSON.stringify(body).length; } catch (e) { /* circular or unusable — leave 0 */ }
-    topoDebugLog.unshift({ label, method, url, status, ms, size, at: new Date().toLocaleTimeString(), body });
+    let bodyText = null;
+    let truncated = false;
+    if (body != null) {
+        try {
+            const full = JSON.stringify(body, null, 2);
+            size = full.length;
+            truncated = size > topoDebugBodyMax;
+            bodyText = truncated ? full.slice(0, topoDebugBodyMax) : full;
+        } catch (e) { /* circular or unusable — leave null */ }
+    }
+    topoDebugLog.unshift({ label, method, url, status, ms, size, at: new Date().toLocaleTimeString(), bodyText, truncated });
     if (topoDebugLog.length > topoDebugMax) topoDebugLog.length = topoDebugMax;
     const modal = document.getElementById("topoDebugModal");
     if (modal && modal.classList.contains("open")) renderDebugModal();
@@ -2598,14 +2619,16 @@ function renderDebugModal() {
     const logHtml = topoDebugLog.length
         ? topoDebugLog.map(e => {
             const color = e.status >= 200 && e.status < 300 ? "#34d399" : "#f87171";
-            const json = e.body != null ? esc(JSON.stringify(e.body, null, 2)) : "(" + tt("topo.debug_no_body") + ")";
+            const json = e.bodyText != null
+                ? esc(e.bodyText) + (e.truncated ? `\n… (${tt("topo.debug_truncated")}: ${e.size} B)` : "")
+                : "(" + tt("topo.debug_no_body") + ")";
             return `<div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-bottom: 8px;">
-                <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; cursor:pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';">
+                <button type="button" aria-expanded="false" onclick="const b=this.nextElementSibling; const open=b.style.display!=='none'; b.style.display= open ? 'none' : 'block'; this.setAttribute('aria-expanded', String(!open));" style="display:flex; width:100%; align-items:center; gap:10px; padding:8px 10px; background:none; border:none; color:inherit; font:inherit; text-align:left; cursor:pointer;">
                     <strong style="color:#fff; font-size:0.85em;">${esc(e.label)}</strong>
                     <code style="color:${color}; font-size:0.8em;">${esc(e.method)} ${e.status}</code>
                     <span class="muted" style="font-size:0.78em; white-space:nowrap;">${e.ms} ms · ${e.size} B · ${esc(e.at)}</span>
                     <span class="muted" style="margin-left:auto; font-size:0.78em; word-break: break-all;">${esc(e.url)}</span>
-                </div>
+                </button>
                 <div style="display:none; padding: 0 10px 10px;">
                     <pre style="max-height: 320px; overflow:auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size:0.78em; margin:0;">${json}</pre>
                 </div>
@@ -2657,14 +2680,22 @@ async function loadTopology() {
     const meta = document.getElementById("topoMeta");
     if (meta) meta.textContent = tt("topo.loading");
     try {
+        // Both requests are kicked off immediately (still fully parallel), but
+        // timing is captured around the topology fetch alone -- awaiting them
+        // together in one Promise.all would let the (independent, often
+        // slower) device-data fetch inflate the recorded topology-query time.
         const t0 = performance.now();
-        const [resp, devices] = await Promise.all([
-            fetch(url, { headers: { "Accept": "application/json" } }),
-            loadDeviceData()
-        ]);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const respPromise = fetch(url, { headers: { "Accept": "application/json" } });
+        const devicesPromise = loadDeviceData();
+        const resp = await respPromise;
+        if (!resp.ok) {
+            debugRecord(tt("topo.debug_topology"), "GET", url, resp.status, Math.round(performance.now() - t0), null);
+            throw new Error("HTTP " + resp.status);
+        }
         const data = await resp.json();
-        debugRecord(tt("topo.debug_topology"), "GET", url, resp.status, Math.round(performance.now() - t0), data);
+        const topoMs = Math.round(performance.now() - t0);
+        const devices = await devicesPromise;
+        debugRecord(tt("topo.debug_topology"), "GET", url, resp.status, topoMs, data);
         if (seq !== topoLoadSeq) return; // superseded by a newer load
         topo = data;
         topoDevices = devices;
