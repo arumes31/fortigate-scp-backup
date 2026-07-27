@@ -176,6 +176,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Get("/data/{fwID}", e.handleData)
 		pr.Post("/refresh/{fwID}", e.handleRefresh)
 		pr.Post("/port-diag/{fwID}", e.handlePortDiag)
+		pr.Post("/check-blocked-port/{fwID}", e.handleCheckBlockedPort)
 	})
 
 	go e.worker()

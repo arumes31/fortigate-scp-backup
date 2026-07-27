@@ -38,6 +38,8 @@ let topoInterlinks = [];// switch interlinks of the current tree (config-derived
 let topoRootNode = null;// d3 hierarchy root of the current render (search/locate)
 let topoUpdate = null;  // update(source) closure of the current render
 let svg, gRoot, zoomBehavior;
+let topoDebugLog = [];  // recent network queries this page made, newest first (Debug popup)
+const topoDebugMax = 25;
 
 // View filters (toolbar checkboxes); toggling re-renders the tree.
 let topoFilters = { devices: true, routes: true, vlans: true, edge: true, hideStale: false };
@@ -878,10 +880,16 @@ function buildTree(data) {
         // the ports are one click away via the same collapse/expand machinery
         // every other node already uses.
         const devCount = swDevs.length;
+        // Badge/info count both populated ports and any portless devices, so a
+        // switch with only unassigned devices (no port association at all)
+        // does not misleadingly read "0 Ports".
+        const portsLabel = portEntries.length ? `${portEntries.length} ${tt("topo.ports")}` : "";
+        const unassignedLabel = rest.length ? `${rest.length} ${tt("topo.devices")}` : "";
+        const portsBadge = [portsLabel, unassignedLabel].filter(Boolean).join(" + ");
         const children = portChildren.length ? [{
-            name: "Ports", kind: "portgroup",
-            info: `${portEntries.length} ${tt("topo.ports")}` + (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
-            badge: `${portEntries.length} ${tt("topo.ports")}`,
+            name: tt("topo.ports"), kind: "portgroup",
+            info: portsBadge + (devCount ? `\n${tt("topo.devices")}: ${devCount}` : ""),
+            badge: portsBadge,
             children: portChildren
         }] : [];
 
@@ -1993,13 +2001,16 @@ async function runPortDiag(btn, sw, port) {
     if (out) out.innerHTML = "";
     try {
         const url = `${cfg.devicesBase}/port-diag/${fwid}?switch=${encodeURIComponent(sw)}&port=${encodeURIComponent(port)}`;
+        const t0 = performance.now();
         const resp = await fetch(url, { method: "POST" });
         if (resp.status === 429) {
+            debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), null);
             if (out) out.innerHTML = `<div style="color:#f59e0b; margin-top:8px; font-size:0.82em;">${tt("topo.diag_busy")}</div>`;
             return;
         }
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const pd = await resp.json();
+        debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), pd);
         if (out) out.innerHTML = renderPortDiag(pd);
     } catch (e) {
         if (out) out.innerHTML = `<div style="color:#ef4444; margin-top:8px; font-size:0.82em;">${tt("topo.diag_error")}</div>`;
@@ -2376,9 +2387,14 @@ async function loadDeviceData() {
         url = cfg.devicesBase + "/data/" + fwid;
     }
     try {
+        const t0 = performance.now();
         const resp = await fetch(url, { headers: { "Accept": "application/json" } });
-        if (!resp.ok) return null;
+        if (!resp.ok) {
+            debugRecord(tt("topo.debug_devices"), "GET", url, resp.status, Math.round(performance.now() - t0), null);
+            return null;
+        }
         const data = await resp.json();
+        debugRecord(tt("topo.debug_devices"), "GET", url, resp.status, Math.round(performance.now() - t0), data);
         // The refresh/fetch/live controls POST to authenticated endpoints, so they
         // belong to the logged-in view only — never reveal them on a public share.
         if (!shared) {
@@ -2421,9 +2437,11 @@ async function fetchDevicesNow(rangeSec) {
     if (meta) meta.textContent = tt("topo.fetching");
     try {
         const url = cfg.devicesBase + "/refresh/" + fwid + (rangeSec ? "?range=" + rangeSec : "");
+        const t0 = performance.now();
         const resp = await fetch(url, { method: "POST" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
+        debugRecord(tt("topo.debug_refresh"), "POST", url, resp.status, Math.round(performance.now() - t0), data);
         if (fwid !== selectedFwID()) return; // firewall switched mid-refresh
         topoDevices = data.devices || [];
         topoStp = data.stp || [];
@@ -2522,6 +2540,100 @@ function updateLiveBtn() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Debug popup: records every network query this page makes (topology data,
+// device data, manual refresh, per-port diag) so what actually came back can
+// be inspected without opening devtools. Purely client-side — nothing here is
+// persisted or sent anywhere.
+// ---------------------------------------------------------------------------
+
+// debugRecord appends one query's outcome to the in-memory log (newest
+// first, capped) and re-renders the popup live if it's currently open.
+function debugRecord(label, method, url, status, ms, body) {
+    let size = 0;
+    try { size = body == null ? 0 : JSON.stringify(body).length; } catch (e) { /* circular or unusable — leave 0 */ }
+    topoDebugLog.unshift({ label, method, url, status, ms, size, at: new Date().toLocaleTimeString(), body });
+    if (topoDebugLog.length > topoDebugMax) topoDebugLog.length = topoDebugMax;
+    const modal = document.getElementById("topoDebugModal");
+    if (modal && modal.classList.contains("open")) renderDebugModal();
+}
+
+// debugSummary reports the shape of the data currently held in memory (not
+// just the last query) so the popup still shows something useful for state
+// built up over several fetches (e.g. live device mode).
+function debugSummary() {
+    const rows = [];
+    const add = (label, v) => { if (v === undefined || v === null) return; rows.push([label, Array.isArray(v) ? v.length : v]); };
+    if (topo) {
+        add("Interfaces", topo.interfaces);
+        add(tt("topo.routes"), topo.routes);
+        add("Policies", topo.policies);
+        add("Switches", topo.switches);
+        add(tt("topo.switch_groups"), topo.switch_groups);
+        add(tt("topo.zone"), topo.zones);
+        add("DHCP servers", topo.dhcp_servers);
+        add(tt("topo.vpn_tunnels"), topo.vpns);
+        add(tt("topo.aps"), topo.aps);
+        add("SSIDs", topo.ssids);
+    }
+    add(tt("topo.devices"), topoDevices);
+    add("STP ports", topoStp);
+    add(tt("topo.history"), topoStpEvents);
+    add(tt("topo.multi_mac"), topoMultiMac);
+    add(tt("topo.dual_homed"), topoDualHomed);
+    add(tt("topo.violations"), topoViolations);
+    return rows;
+}
+
+// renderDebugModal rebuilds the popup body from the current summary + log.
+function renderDebugModal() {
+    const body = document.getElementById("topoDebugBody");
+    if (!body) return;
+    const summaryRows = debugSummary();
+    const summaryHtml = summaryRows.length
+        ? `<table style="width:100%; border-collapse: collapse; font-size: 0.82em; margin-bottom: 14px;">
+            ${summaryRows.map(([k, v]) => `<tr><td class="muted" style="padding:2px 10px 2px 0;">${esc(k)}</td><td style="padding:2px 0; color:#fff;">${esc(String(v))}</td></tr>`).join("")}
+           </table>`
+        : "";
+    const logHtml = topoDebugLog.length
+        ? topoDebugLog.map(e => {
+            const color = e.status >= 200 && e.status < 300 ? "#34d399" : "#f87171";
+            const json = e.body != null ? esc(JSON.stringify(e.body, null, 2)) : "(" + tt("topo.debug_no_body") + ")";
+            return `<div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-bottom: 8px;">
+                <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; cursor:pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';">
+                    <strong style="color:#fff; font-size:0.85em;">${esc(e.label)}</strong>
+                    <code style="color:${color}; font-size:0.8em;">${esc(e.method)} ${e.status}</code>
+                    <span class="muted" style="font-size:0.78em; white-space:nowrap;">${e.ms} ms · ${e.size} B · ${esc(e.at)}</span>
+                    <span class="muted" style="margin-left:auto; font-size:0.78em; word-break: break-all;">${esc(e.url)}</span>
+                </div>
+                <div style="display:none; padding: 0 10px 10px;">
+                    <pre style="max-height: 320px; overflow:auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size:0.78em; margin:0;">${json}</pre>
+                </div>
+            </div>`;
+        }).join("")
+        : `<div class="muted">${tt("topo.debug_empty")}</div>`;
+    body.innerHTML = summaryHtml + logHtml;
+}
+
+function openDebugModal() {
+    renderDebugModal();
+    const modal = document.getElementById("topoDebugModal");
+    if (modal) modal.classList.add("open");
+}
+
+function closeDebugModal() {
+    const modal = document.getElementById("topoDebugModal");
+    if (modal) modal.classList.remove("open");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const closeBtn = document.getElementById("topoDebugClose");
+    if (closeBtn) closeBtn.addEventListener("click", closeDebugModal);
+    const modal = document.getElementById("topoDebugModal");
+    if (modal) modal.addEventListener("click", e => { if (e.target === modal) closeDebugModal(); });
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDebugModal(); });
+
 function topoMetaText() {
     if (!topo) return "";
     const parts = [];
@@ -2545,12 +2657,14 @@ async function loadTopology() {
     const meta = document.getElementById("topoMeta");
     if (meta) meta.textContent = tt("topo.loading");
     try {
+        const t0 = performance.now();
         const [resp, devices] = await Promise.all([
             fetch(url, { headers: { "Accept": "application/json" } }),
             loadDeviceData()
         ]);
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
+        debugRecord(tt("topo.debug_topology"), "GET", url, resp.status, Math.round(performance.now() - t0), data);
         if (seq !== topoLoadSeq) return; // superseded by a newer load
         topo = data;
         topoDevices = devices;

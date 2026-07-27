@@ -146,16 +146,24 @@ type blockedPortIssue struct {
 // blockedPortIssues asks the graylog_device_data extension for the switch ports
 // currently out of forwarding (STP block or BPDU/loop/root guard). The extension
 // owns the storage; the dashboard only decorates each result with its firewall's
-// FQDN. Any error (extension disabled, DB missing, old schema) yields an empty
-// list — the dashboard renders fine without the card.
+// FQDN and narrows the list to today's events (see blockedPortIsToday) — the
+// extension's own 30-day retention exists to protect the topology page's port
+// history from a genuine still-unresolved block silently vanishing, which is a
+// different concern from the dashboard's "what needs attention right now" card.
+// Any error (extension disabled, DB missing, old schema) yields an empty list —
+// the dashboard renders fine without the card.
 func (s *Server) blockedPortIssues(fqdnByID map[int]string) []blockedPortIssue {
 	ports, err := graylogdevicedata.ListBlockedPorts(s.cfg.DataDir)
 	if err != nil {
 		s.logger.Warn("dashboard blocked-port lookup failed", "err", err)
 		return nil
 	}
+	now := time.Now()
 	out := make([]blockedPortIssue, 0, len(ports))
 	for _, p := range ports {
+		if !blockedPortIsToday(p.Since, now, s.cfg.TZ) {
+			continue
+		}
 		out = append(out, blockedPortIssue{
 			FwID:   p.FwID,
 			FQDN:   fqdnByID[p.FwID],
@@ -166,6 +174,26 @@ func (s *Server) blockedPortIssues(fqdnByID map[int]string) []blockedPortIssue {
 		})
 	}
 	return out
+}
+
+// blockedPortIsToday reports whether a blocked port's last STP state change
+// (RFC3339, as Graylog stores it) falls on the same calendar day as now, in
+// tz. An empty or unparsable timestamp counts as "not today" -- if it can't
+// be confirmed current, it shouldn't read as an active issue.
+func blockedPortIsToday(since string, now time.Time, tz *time.Location) bool {
+	if since == "" {
+		return false
+	}
+	if tz == nil {
+		tz = time.UTC
+	}
+	t, err := time.Parse(time.RFC3339, since)
+	if err != nil {
+		return false
+	}
+	y1, m1, d1 := t.In(tz).Date()
+	y2, m2, d2 := now.In(tz).Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
 }
 
 // graylogIssue is one VPN device whose Graylog logging status is unhealthy,

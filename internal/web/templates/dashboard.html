@@ -109,20 +109,25 @@
 <div class="card pad-0" style="border: 1px solid rgba(249,115,22,0.45);">
     <div class="card-header">
         <h2 class="mt-0 mb-0" style="color: #fb923c;">⃠ {{T .Base.Lang "dashboard.blocked_title"}}</h2>
-        <span class="muted" style="font-size: 0.85em;">{{len .BlockedPorts}} {{T .Base.Lang "dashboard.blocked_unit"}}</span>
+        <span class="muted" style="font-size: 0.85em;" id="blockedPortCount">{{len .BlockedPorts}} {{T .Base.Lang "dashboard.blocked_unit"}}</span>
+        <button type="button" class="btn btn-sm" id="blockedCheckAll">{{T .Base.Lang "dashboard.check_all"}}</button>
     </div>
     <div class="table-wrap">
-        <table class="data">
-            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_switch"}}</th><th>{{T .Base.Lang "dashboard.col_port"}}</th><th>{{T .Base.Lang "dashboard.col_reason"}}</th><th>{{T .Base.Lang "dashboard.col_since"}}</th><th></th></tr></thead>
+        <table class="data" id="blockedPortTable">
+            <thead><tr><th>{{T .Base.Lang "dashboard.col_firewall"}}</th><th>{{T .Base.Lang "dashboard.col_switch"}}</th><th>{{T .Base.Lang "dashboard.col_port"}}</th><th>{{T .Base.Lang "dashboard.col_reason"}}</th><th>{{T .Base.Lang "dashboard.col_since"}}</th><th></th><th></th></tr></thead>
             <tbody>
             {{range .BlockedPorts}}
-                <tr>
+                <tr data-fw="{{.FwID}}" data-switch="{{.Switch}}" data-port="{{.Port}}">
                     <td>{{if .FQDN}}{{.FQDN}}{{else}}#{{.FwID}}{{end}}</td>
                     <td>{{.Switch}}</td>
                     <td><code>{{.Port}}</code></td>
                     <td><span class="pill pill-failed" style="background: rgba(249,115,22,0.15); color: #fb923c; border-color: rgba(249,115,22,0.4);">{{.Reason}}</span></td>
                     <td class="muted">{{.Since}}</td>
                     <td><a class="btn btn-sm" href="/topology?fw={{.FwID}}">{{T $.Base.Lang "dashboard.topology"}}</a></td>
+                    <td>
+                        <button type="button" class="btn btn-sm blocked-check-btn">{{T $.Base.Lang "dashboard.check"}}</button>
+                        <span class="muted blocked-check-result" style="font-size: 0.85em;"></span>
+                    </td>
                 </tr>
             {{end}}
             </tbody>
@@ -415,6 +420,69 @@
 
     // Initial async load: replaces the running-list skeleton.
     refreshStats();
+
+    /* ---------------- blocked switch ports: live re-check ---------------- */
+    var blockedTable = document.getElementById('blockedPortTable');
+    if (blockedTable) {
+        function updateBlockedCount() {
+            var n = blockedTable.querySelectorAll('tbody tr').length;
+            var el = document.getElementById('blockedPortCount');
+            if (el) { el.textContent = n + ' ' + tt('dashboard.blocked_unit'); }
+            if (n === 0) {
+                var card = blockedTable.closest('.card');
+                if (card) { card.hidden = true; }
+            }
+        }
+        // checkOnePort runs one port's live re-check and returns a promise so
+        // checkAllPorts can serialize the ports on the same firewall (they
+        // share one SSH session) while different firewalls run concurrently.
+        function checkOnePort(row) {
+            var fw = row.getAttribute('data-fw'), sw = row.getAttribute('data-switch'), port = row.getAttribute('data-port');
+            var btn = row.querySelector('.blocked-check-btn');
+            var out = row.querySelector('.blocked-check-result');
+            btn.disabled = true;
+            out.textContent = tt('dashboard.checking');
+            var url = '/graylog-devices/check-blocked-port/' + encodeURIComponent(fw) +
+                '?switch=' + encodeURIComponent(sw) + '&port=' + encodeURIComponent(port);
+            return fetch(url, { method: 'POST' }).then(function (r) {
+                if (r.status === 429) { out.textContent = tt('dashboard.check_busy'); btn.disabled = false; return; }
+                if (!r.ok) { out.textContent = tt('dashboard.check_failed'); btn.disabled = false; return; }
+                return r.json().then(function (j) {
+                    if (!j.stillBlocked) {
+                        out.textContent = tt('dashboard.check_recovered');
+                        setTimeout(function () { row.remove(); updateBlockedCount(); }, 900);
+                    } else {
+                        out.textContent = tt('dashboard.check_still_blocked');
+                        btn.disabled = false;
+                    }
+                });
+            }).catch(function () {
+                out.textContent = tt('dashboard.check_failed');
+                btn.disabled = false;
+            });
+        }
+        blockedTable.querySelectorAll('.blocked-check-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () { checkOnePort(btn.closest('tr')); });
+        });
+        var checkAllBtn = document.getElementById('blockedCheckAll');
+        if (checkAllBtn) {
+            checkAllBtn.addEventListener('click', function () {
+                checkAllBtn.disabled = true;
+                var rows = Array.prototype.slice.call(blockedTable.querySelectorAll('tbody tr'));
+                var byFw = {};
+                rows.forEach(function (row) {
+                    var fw = row.getAttribute('data-fw');
+                    (byFw[fw] = byFw[fw] || []).push(row);
+                });
+                var groups = Object.keys(byFw).map(function (fw) {
+                    return byFw[fw].reduce(function (chain, row) {
+                        return chain.then(function () { return checkOnePort(row); });
+                    }, Promise.resolve());
+                });
+                Promise.all(groups).finally(function () { checkAllBtn.disabled = false; });
+            });
+        }
+    }
 })();
 </script>
 {{end}}

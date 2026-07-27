@@ -116,6 +116,13 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
+	if cfg.CVEAutoUpdate {
+		interval := time.Duration(cfg.CVERefreshHours) * time.Hour
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		sched.Schedule("cve-refresh", interval, 30*time.Second, s.refreshCVECacheJob)
+	}
 	return s, nil
 }
 
@@ -297,6 +304,7 @@ func (s *Server) Routes() chi.Router {
 		pr.Get("/audit/results/{fwID}", s.handleAuditResults)
 		pr.HandleFunc("/audit/exemption", s.handleAuditExemption)
 		pr.HandleFunc("/audit/custom_rule", s.handleAuditCustomRule)
+		pr.HandleFunc("/audit/cve_refresh", s.handleAuditCVERefresh)
 		pr.HandleFunc("/audit/ticket", s.handleAuditTicket)
 		pr.Get("/topology", s.handleTopology)
 		pr.Get("/topology/data/{fwID}", s.handleTopologyData)

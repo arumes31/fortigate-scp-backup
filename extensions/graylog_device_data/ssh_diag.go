@@ -630,6 +630,91 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 	return pd, nil
 }
 
+// recheckBlockedPort runs a live STP query for one switch and reads back the
+// current role/state/guard for one port -- the dashboard blocked-ports card's
+// "Check" action. It shares collectPortDiag's per-firewall single-flight guard
+// and cooldown (same SSH session budget), so it never runs concurrently with a
+// background sweep or another on-demand query.
+func (e *Extension) recheckBlockedPort(fwID int, sw, port string) (*BlockedPortCheck, error) {
+	if e.firewallCreds == nil {
+		return nil, errors.New("ssh diagnostics not configured")
+	}
+	// Single-flight only: unlike collectPortDiag this deliberately has no
+	// lastPortDiag/diagFloor cooldown. It runs exactly one lightweight
+	// command, and the dashboard's "Check All" chains every listed port on a
+	// firewall sequentially (awaiting each response before the next), so
+	// there is never actual session contention to guard against -- only the
+	// artificial floor would 429 those chained requests. Note this shares
+	// diagState with collectPortDiag but does not touch lastPortDiag, so it
+	// neither trips nor resets that command's own cooldown.
+	e.diagMu.Lock()
+	st := e.diagState[fwID]
+	if st == nil {
+		st = &diagRunState{}
+		e.diagState[fwID] = st
+	}
+	if st.busy {
+		e.diagMu.Unlock()
+		return nil, errDiagBusy
+	}
+	st.busy = true
+	e.diagMu.Unlock()
+	defer func() {
+		e.diagMu.Lock()
+		st.busy = false
+		e.diagMu.Unlock()
+	}()
+	progress, done := e.trackRunning("sshdiag", fwID)
+	defer done()
+	progress(fmt.Sprintf("recheck %s / %s", sw, port), 0, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	host, user, pass, prt, err := e.firewallCreds(ctx, fwID)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("resolve credentials: %w", err)
+	}
+	if user == "" || pass == "" {
+		return nil, errors.New("no SSH credentials on file for this firewall")
+	}
+	if prt <= 0 {
+		prt = 22
+	}
+	overall := time.Duration(e.cfg.FgtDiagSSHTimeoutSec) * time.Second
+	if overall <= 0 {
+		overall = 90 * time.Second
+	}
+	client, err := dialSSHDiag(host, user, pass, prt, overall)
+	if err != nil {
+		return nil, fmt.Errorf("ssh dial: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	var out string
+	runErr := runSSHShell(client, overall, func(run func(string) string) {
+		out = run("diagnose switch-controller switch-info stp " + sw)
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	ports, _ := parseStp(out)
+	p, ok := ports[port]
+	if !ok {
+		return nil, fmt.Errorf("port %q not found in the live STP table for switch %q", port, sw)
+	}
+
+	now := time.Now()
+	stillBlocked, storeErr := e.storeLiveStpCheck(fwID, sw, port, p.Role, p.State, p.Guard, now)
+	if storeErr != nil {
+		e.logger.Warn("recheck blocked port: store failed", "fw_id", fwID, "switch", sw, "port", port, "err", storeErr)
+		return nil, storeErr
+	}
+	return &BlockedPortCheck{
+		Switch: sw, Port: port, StillBlocked: stillBlocked,
+		Role: p.Role, State: p.State, Guard: p.Guard, Ran: now.Format("2006-01-02 15:04:05"),
+	}, nil
+}
+
 // cleanDiagOutput strips the echoed command line and the trailing CLI prompt
 // from a single command's raw shell output, leaving just the port data.
 func cleanDiagOutput(s string) string {

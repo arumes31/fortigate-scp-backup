@@ -139,7 +139,7 @@ func withURLParam(r *http.Request, key, val string) *http.Request {
 }
 
 func TestComputeAudit(t *testing.T) {
-	res := computeAudit(1, "x.conf", sampleConfig, nil)
+	res := computeAudit(1, "x.conf", sampleConfig, nil, cveFallbackDefs)
 	if res.Model != "FGT60F" || res.Version != "7.6.5" {
 		t.Fatalf("model/version = %q/%q", res.Model, res.Version)
 	}
@@ -896,14 +896,14 @@ func TestSetLangRejectsExternalRedirects(t *testing.T) {
 
 func TestGetCVEsNeverFixedTrains(t *testing.T) {
 	keys := map[string]bool{}
-	for _, f := range getCVEs("6.2.16") {
+	for _, f := range getCVEs("6.2.16", cveFallbackDefs) {
 		keys[f.Key] = true
 	}
 	if !keys["cve:CVE-2024-21762"] {
 		t.Error("6.2 has no fix for CVE-2024-21762 and must be flagged")
 	}
 	keys = map[string]bool{}
-	for _, f := range getCVEs("6.0.17") {
+	for _, f := range getCVEs("6.0.17", cveFallbackDefs) {
 		keys[f.Key] = true
 	}
 	if !keys["cve:CVE-2022-42475"] || !keys["cve:CVE-2024-21762"] {
@@ -916,7 +916,7 @@ func TestComputeAuditExampleConf(t *testing.T) {
 	if err != nil {
 		t.Skip("example.conf not available")
 	}
-	res := computeAudit(1, "example.conf", string(raw), nil)
+	res := computeAudit(1, "example.conf", string(raw), nil, cveFallbackDefs)
 	if res.Model == "" || res.Version == "" {
 		t.Fatalf("model/version not detected: %q %q", res.Model, res.Version)
 	}

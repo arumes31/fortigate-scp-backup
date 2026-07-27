@@ -358,6 +358,122 @@ end`
 	}
 }
 
+func TestNewHardeningChecks(t *testing.T) {
+	cfg := `config system interface
+edit "wan1"
+set allowaccess ping https ssh telnet fgfm
+set role wan
+set src-check disable
+next
+end
+config system global
+set admin-lockout-threshold 50
+set admin-lockout-duration 5
+end
+config system zone
+edit "trust"
+next
+end
+config system ha
+set mode a-p
+end
+config user radius
+edit "rad1"
+set server "1.2.3.4"
+next
+end
+config user ldap
+edit "ldap1"
+set server "1.2.3.4"
+set port 389
+next
+end
+config vpn ssl settings
+set status enable
+set source-interface "wan1"
+next
+end
+config firewall policy
+edit 1
+set action accept
+set srcaddr "internal"
+set dstaddr "all"
+set service "ALL"
+next
+end`
+	ids := findingIDs(structuralFindings(cfg))
+	for _, want := range []string{
+		"fgfm-wan", "intf-src-check-disable",
+		"global-admin-lockout-threshold", "global-admin-lockout-duration",
+		"cert-default-admin", "global-post-login-banner", "cert-default-sslvpn",
+		"zone-intrazone-allow", "radius-no-tls", "ldap-no-tls", "ha-no-password",
+		"local-in-missing", "dos-policy-missing", "policy-no-utm", "policy-service-any",
+	} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("expected finding %s, got %v", want, ids)
+		}
+	}
+	if f, ok := ids["fgfm-wan"]; !ok || f.Severity != "critical" {
+		t.Errorf("fgfm on WAN should be critical, got %+v", f)
+	}
+	if f, ok := ids["ha-no-password"]; !ok || f.Severity != "critical" {
+		t.Errorf("HA without a password should be critical, got %+v", f)
+	}
+	// policy-service-any and policy-any-any are mutually exclusive per policy:
+	// this policy has a restricted srcaddr, so only the service-any variant
+	// should fire.
+	if _, ok := ids["policy-any-any"]; ok {
+		t.Error("a policy with a restricted srcaddr must not also raise policy-any-any")
+	}
+
+	// A fully open policy raises policy-any-any instead of policy-service-any.
+	anyAny := `config firewall policy
+edit 1
+set action accept
+set srcaddr "all"
+set dstaddr "all"
+set service "ALL"
+next
+end`
+	ids = findingIDs(structuralFindings(anyAny))
+	if _, ok := ids["policy-any-any"]; !ok {
+		t.Error("fully open policy should raise policy-any-any")
+	}
+	if _, ok := ids["policy-service-any"]; ok {
+		t.Error("fully open policy should not also raise policy-service-any")
+	}
+
+	// admin-lockout-threshold/duration at their (unset) defaults must not fire:
+	// only an explicit weakening is a finding.
+	defaultLockout := `config system global
+set admintimeout 5
+end`
+	ids = findingIDs(structuralFindings(defaultLockout))
+	for _, absent := range []string{"global-admin-lockout-threshold", "global-admin-lockout-duration"} {
+		if _, ok := ids[absent]; ok {
+			t.Errorf("unset lockout settings should not raise %s", absent)
+		}
+	}
+
+	// A zone with an explicit intrazone deny must not be flagged.
+	deniedZone := `config system zone
+edit "trust"
+set intrazone deny
+next
+end`
+	if _, ok := findingIDs(structuralFindings(deniedZone))["zone-intrazone-allow"]; ok {
+		t.Error("zone with intrazone deny should not be flagged")
+	}
+
+	// A standalone HA config (no cluster) must not require a password.
+	standaloneHA := `config system ha
+set mode standalone
+end`
+	if _, ok := findingIDs(structuralFindings(standaloneHA))["ha-no-password"]; ok {
+		t.Error("standalone HA should not be flagged for a missing cluster password")
+	}
+}
+
 func TestCheckGlobalHardening(t *testing.T) {
 	cfg := `config system global
 set admin-telnet enable
@@ -524,7 +640,7 @@ func TestTr(t *testing.T) {
 func TestGetCVEs(t *testing.T) {
 	ids := func(version string) map[string]bool {
 		out := map[string]bool{}
-		for _, f := range getCVEs(version) {
+		for _, f := range getCVEs(version, cveFallbackDefs) {
 			out[f.Key] = true
 		}
 		return out

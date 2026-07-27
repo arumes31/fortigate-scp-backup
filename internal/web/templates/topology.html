@@ -33,6 +33,7 @@
             <button id="liveDevBtn" class="btn btn-small" onclick="toggleLiveDevices()" title="{{T .Base.Lang "topo.live_hint"}}" style="display: none; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); padding: 4px 10px;">⟳ {{T .Base.Lang "topo.live"}}</button>
             <button class="btn btn-small" onclick="resetZoom()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⤢ {{T .Base.Lang "topo.reset"}}</button>
             <button class="btn btn-small" onclick="toggleMaximize()" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">⛶ {{T .Base.Lang "topo.maximize"}}</button>
+            <button class="btn btn-small" onclick="openDebugModal()" title="{{T .Base.Lang "topo.debug_hint"}}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">🐞 {{T .Base.Lang "topo.debug"}}</button>
         </div>
     </div>
 
@@ -102,6 +103,15 @@
             style="margin-left: auto; padding: 5px 10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; min-width: 220px; font-size: 0.85em;">
     </div>
     <div id="devPanelBody" style="max-height: 300px; overflow-y: auto;"></div>
+</div>
+
+<!-- Debug popup: every query this page made + a live summary of the data in memory -->
+<div class="modal" id="topoDebugModal">
+    <div class="modal-content" style="width: min(900px, 100%); max-height: 85vh; overflow-y: auto;">
+        <button type="button" class="modal-close" id="topoDebugClose" aria-label="Close">×</button>
+        <h2 style="margin-top: 0;">🐞 {{T .Base.Lang "topo.debug_title"}}</h2>
+        <div id="topoDebugBody"></div>
+    </div>
 </div>
 
 <script>window.TOPO_CONFIG = { dataBase: "/topology/data/", devicesBase: "/graylog-devices" }; window.I18N = {{i18nJSON .Base.Lang}};</script>

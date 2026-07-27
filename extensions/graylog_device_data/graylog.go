@@ -174,6 +174,18 @@ type PortDiag struct {
 	Sections []PortDiagSection `json:"sections"`
 }
 
+// BlockedPortCheck is the result of an on-demand live STP re-check of one
+// dashboard-listed blocked port (the blocked-ports card's "Check" action).
+type BlockedPortCheck struct {
+	Switch       string `json:"switch"`
+	Port         string `json:"port"`
+	StillBlocked bool   `json:"stillBlocked"`
+	Role         string `json:"role"`
+	State        string `json:"state"`
+	Guard        string `json:"guard"`
+	Ran          string `json:"ran"`
+}
+
 // PortAttachment is one switch-port a device is wired to.
 type PortAttachment struct {
 	Switch string `json:"switch"`
