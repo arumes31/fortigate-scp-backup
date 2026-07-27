@@ -413,7 +413,7 @@ func stpBlocked(interSwitch bool, role, state, guard string) bool {
 // port was already gated correctly when it first appeared on the dashboard —
 // a guard clearing while role/state alone still looks "blocking" (e.g. an
 // access port that is simply unplugged) must read as recovered, not blocked.
-func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard, now string) (stillBlocked bool, err error) {
+func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard string, now time.Time) (stillBlocked bool, err error) {
 	var curRole, curState, curGuard, curLastChange, curSerial, curNeighbor string
 	scanErr := e.db.QueryRow(
 		`SELECT role, state, guard, last_change, serial, neighbor FROM stp_ports WHERE fw_id = ? AND switch_name = ? AND port = ?`,
@@ -430,7 +430,12 @@ func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard, no
 		interSwitch[fmt.Sprintf("%d|%s|%s", fwID, strings.ToLower(curSerial), port)] ||
 		(curNeighbor != "" && knownSwitch[fmt.Sprintf("%d|%s", fwID, strings.ToLower(curNeighbor))])
 
-	lastChange := now
+	// last_change must be RFC3339 (matching blockedPortIsToday's parsing
+	// contract and every Graylog-sourced row); updated_at keeps the
+	// space-separated local layout the retention prune's lexicographic
+	// comparison against other rows relies on.
+	nowUpdatedAt := now.Format("2006-01-02 15:04:05")
+	lastChange := now.UTC().Format(time.RFC3339)
 	if scanErr == nil && role == curRole && state == curState && guard == curGuard {
 		lastChange = curLastChange
 	}
@@ -444,7 +449,7 @@ func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard, no
 			guard       = excluded.guard,
 			last_change = excluded.last_change,
 			updated_at  = excluded.updated_at`,
-		fwID, sw, curSerial, port, role, state, guard, lastChange, now)
+		fwID, sw, curSerial, port, role, state, guard, lastChange, nowUpdatedAt)
 	return stillBlocked, execErr
 }
 

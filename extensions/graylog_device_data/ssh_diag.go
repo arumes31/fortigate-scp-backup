@@ -639,6 +639,14 @@ func (e *Extension) recheckBlockedPort(fwID int, sw, port string) (*BlockedPortC
 	if e.firewallCreds == nil {
 		return nil, errors.New("ssh diagnostics not configured")
 	}
+	// Single-flight only: unlike collectPortDiag this deliberately has no
+	// lastPortDiag/diagFloor cooldown. It runs exactly one lightweight
+	// command, and the dashboard's "Check All" chains every listed port on a
+	// firewall sequentially (awaiting each response before the next), so
+	// there is never actual session contention to guard against -- only the
+	// artificial floor would 429 those chained requests. Note this shares
+	// diagState with collectPortDiag but does not touch lastPortDiag, so it
+	// neither trips nor resets that command's own cooldown.
 	e.diagMu.Lock()
 	st := e.diagState[fwID]
 	if st == nil {
@@ -649,12 +657,7 @@ func (e *Extension) recheckBlockedPort(fwID int, sw, port string) (*BlockedPortC
 		e.diagMu.Unlock()
 		return nil, errDiagBusy
 	}
-	if !st.lastPortDiag.IsZero() && time.Since(st.lastPortDiag) < e.diagFloor() {
-		e.diagMu.Unlock()
-		return nil, errDiagBusy
-	}
 	st.busy = true
-	st.lastPortDiag = time.Now()
 	e.diagMu.Unlock()
 	defer func() {
 		e.diagMu.Lock()
@@ -700,14 +703,15 @@ func (e *Extension) recheckBlockedPort(fwID int, sw, port string) (*BlockedPortC
 		return nil, fmt.Errorf("port %q not found in the live STP table for switch %q", port, sw)
 	}
 
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now := time.Now()
 	stillBlocked, storeErr := e.storeLiveStpCheck(fwID, sw, port, p.Role, p.State, p.Guard, now)
 	if storeErr != nil {
 		e.logger.Warn("recheck blocked port: store failed", "fw_id", fwID, "switch", sw, "port", port, "err", storeErr)
+		return nil, storeErr
 	}
 	return &BlockedPortCheck{
 		Switch: sw, Port: port, StillBlocked: stillBlocked,
-		Role: p.Role, State: p.State, Guard: p.Guard, Ran: now,
+		Role: p.Role, State: p.State, Guard: p.Guard, Ran: now.Format("2006-01-02 15:04:05"),
 	}, nil
 }
 

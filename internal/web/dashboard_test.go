@@ -30,8 +30,15 @@ func TestBlockedPortIsToday(t *testing.T) {
 			"UTC day matches but Vienna day does not", "2026-07-27T22:30:00.000Z", vienna, false,
 		},
 		{
-			// The same instant IS "today" once shifted into Vienna's
-			// morning, confirming the flip is real, not a fixed mismatch.
+			// Inverse of the case above: 2026-07-26T22:30:00Z is "yesterday"
+			// in raw UTC terms, but shifting +2h into Vienna lands it at
+			// 2026-07-27 00:30, matching now's Vienna calendar day -- proves
+			// the flip genuinely happens both directions, not just UTC->false.
+			"UTC day differs but Vienna day matches", "2026-07-26T22:30:00.000Z", vienna, true,
+		},
+		{
+			// A nil location must fall back to UTC (the function's documented
+			// default), not panic or silently misclassify.
 			"nil tz falls back to UTC", "2026-07-27T02:00:00.000Z", nil, true,
 		},
 	}

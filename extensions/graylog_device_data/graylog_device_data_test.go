@@ -1,12 +1,15 @@
 package graylogdevicedata
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -777,14 +780,15 @@ func TestStoreLiveStpCheck_PreservesSinceOnReconfirm(t *testing.T) {
 	}
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
 
-	t1 := "2026-07-13 12:15:47"
+	// Seeded as RFC3339, matching real Graylog-sourced last_change values.
+	t1 := "2026-07-13T12:15:47Z"
 	if err := e.storeStp(1, []StpPort{
 		{SwitchName: "SW1", Port: "port16", Role: "disabled", State: "discarding", Guard: "bpdu-guard", LastChange: t1},
-	}, t1); err != nil {
+	}, "2026-07-13 12:15:47"); err != nil {
 		t.Fatal(err)
 	}
 
-	t2 := "2026-07-27 09:00:00"
+	t2 := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	stillBlocked, err := e.storeLiveStpCheck(1, "SW1", "port16", "disabled", "discarding", "bpdu-guard", t2)
 	if err != nil {
 		t.Fatal(err)
@@ -824,14 +828,14 @@ func TestStoreLiveStpCheck_ClearsOnRecovery(t *testing.T) {
 	}
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
 
-	t1 := "2026-07-13 12:15:47"
+	t1 := "2026-07-13T12:15:47Z"
 	if err := e.storeStp(1, []StpPort{
 		{SwitchName: "SW1", Port: "port16", Role: "disabled", State: "discarding", Guard: "bpdu-guard", LastChange: t1},
-	}, t1); err != nil {
+	}, "2026-07-13 12:15:47"); err != nil {
 		t.Fatal(err)
 	}
 
-	t2 := "2026-07-27 09:00:00"
+	t2 := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	stillBlocked, err := e.storeLiveStpCheck(1, "SW1", "port16", "designated", "forwarding", "", t2)
 	if err != nil {
 		t.Fatal(err)
@@ -847,8 +851,9 @@ func TestStoreLiveStpCheck_ClearsOnRecovery(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 stored port, got %d: %+v", len(got), got)
 	}
-	if got[0].LastChange != t2 {
-		t.Errorf("last_change = %q, want %q (a genuine recovery must update it)", got[0].LastChange, t2)
+	wantLastChange := t2.Format(time.RFC3339)
+	if got[0].LastChange != wantLastChange {
+		t.Errorf("last_change = %q, want %q (a genuine recovery must update it, in RFC3339)", got[0].LastChange, wantLastChange)
 	}
 	if got[0].Guard != "" || got[0].State != "forwarding" {
 		t.Errorf("recovered port state not persisted: %+v", got[0])
@@ -888,17 +893,17 @@ func TestStoreLiveStpCheck_GuardClearedEdgeRoleStateNotBlocked(t *testing.T) {
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
 	// No storeSwitchEdges call: port16 is never registered as a trunk leg.
 
-	t1 := "2026-07-13 12:15:47"
+	t1 := "2026-07-13T12:15:47Z"
 	if err := e.storeStp(1, []StpPort{
 		{SwitchName: "SW1", Port: "port16", Role: "disabled", State: "discarding", Guard: "bpdu-guard", LastChange: t1},
-	}, t1); err != nil {
+	}, "2026-07-13 12:15:47"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Live re-check: guard has cleared, but the port still reports
 	// disabled/discarding (its normal idle state, since nothing is plugged
 	// in) -- exactly what a real unused FortiSwitch port looks like.
-	t2 := "2026-07-27 09:00:00"
+	t2 := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	stillBlocked, err := e.storeLiveStpCheck(1, "SW1", "port16", "disabled", "discarding", "", t2)
 	if err != nil {
 		t.Fatal(err)
@@ -915,5 +920,40 @@ func TestStoreLiveStpCheck_GuardClearedEdgeRoleStateNotBlocked(t *testing.T) {
 		if b.Switch == "SW1" && b.Port == "port16" {
 			t.Fatalf("must not still appear in ListBlockedPorts: %+v", b)
 		}
+	}
+}
+
+// TestRecheckBlockedPort_NoCooldownButSingleFlight proves the dashboard's
+// "Check All" chain (sequential per-firewall re-checks) is never rejected by
+// the lastPortDiag/diagFloor cooldown collectPortDiag uses, while the
+// single-flight busy guard -- the actual concurrency protection -- still
+// applies. firewallCreds returns empty credentials so the call fails fast
+// past the guard, distinguishing "guard passed, real work attempted" from
+// "still blocked by the cooldown" without needing a real SSH server.
+func TestRecheckBlockedPort_NoCooldownButSingleFlight(t *testing.T) {
+	e := &Extension{
+		cfg:    &config.Config{},
+		logger: slog.New(slog.DiscardHandler),
+		firewallCreds: func(ctx context.Context, fwID int) (string, string, string, int, error) {
+			return "10.0.0.1", "", "", 0, nil // empty creds -> fails fast after the guard
+		},
+		diagState: map[int]*diagRunState{
+			1: {lastPortDiag: time.Now()}, // as if a port-diag JUST ran
+		},
+	}
+
+	_, err := e.recheckBlockedPort(1, "SW1", "port1")
+	if errors.Is(err, errDiagBusy) {
+		t.Fatal("a recent lastPortDiag must not throttle recheckBlockedPort (no cooldown on this path)")
+	}
+	if err == nil || !strings.Contains(err.Error(), "no SSH credentials") {
+		t.Fatalf("expected a credentials error once past the guard, got %v", err)
+	}
+
+	// The single-flight guard must still reject a concurrent run.
+	e.diagState[2] = &diagRunState{busy: true}
+	_, err = e.recheckBlockedPort(2, "SW1", "port1")
+	if !errors.Is(err, errDiagBusy) {
+		t.Fatalf("expected errDiagBusy while a run is already in flight, got %v", err)
 	}
 }
