@@ -114,3 +114,21 @@ func TestZoneRecipe_RejectsSDWANMember(t *testing.T) {
 		t.Fatal("expected an error: port1 is an SD-WAN member")
 	}
 }
+
+// A zoned interface keeps its own name/IP/role -- a zone is a grouping on
+// top of an unchanged interface -- so a VIP/IPsec/etc. reference to it needs
+// no review, unlike a FortiLink member port. Must not warn.
+func TestZoneRecipe_NoWarningForUntouchedReferences(t *testing.T) {
+	cfg := freshZoneConfig()
+	cfg.WatchedLines = []WatchedLine{
+		{Section: "vpn ipsec phase1-interface", Edit: "branch", Line: `set interface "port1"`},
+	}
+	r := zoneRecipe{}
+	_, warnings, err := r.Run(cfg, mustJSON(t, ZoneOptions{Interfaces: []string{"port1", "port2"}, ZoneName: "zone-lan"}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("zone membership must not warn about untouched references, got %v", warnings)
+	}
+}

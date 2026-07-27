@@ -127,3 +127,23 @@ func TestSDWANRecipe_DHCPMemberWithNoRouteWarnsInsteadOfErroring(t *testing.T) {
 		t.Errorf("expected 2 missing-gateway warnings, got %d (%v)", gwWarnings, warnings)
 	}
 }
+
+// An SD-WAN member keeps its own name/IP/role -- membership is a grouping on
+// top of an unchanged interface -- so a VIP/IPsec/etc. reference to it needs
+// no review, unlike a FortiLink member port. Must not warn.
+func TestSDWANRecipe_NoWarningForUntouchedReferences(t *testing.T) {
+	cfg := freshSDWANConfig()
+	cfg.WatchedLines = []WatchedLine{
+		{Section: "firewall vip", Edit: "VIP-WEB", Line: `set extintf "wan1"`},
+	}
+	r := sdwanRecipe{}
+	_, warnings, err := r.Run(cfg, mustJSON(t, SDWANOptions{Members: []string{"wan1", "wan2"}}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, w := range warnings {
+		if w.Section == "firewall vip" {
+			t.Errorf("SD-WAN membership must not warn about untouched references, got %v", w)
+		}
+	}
+}
