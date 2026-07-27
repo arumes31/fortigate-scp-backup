@@ -57,16 +57,36 @@
         {{if .Exemptions}}
         <div style="max-height: 250px; overflow-y: auto;">
             {{range .Exemptions}}
-            <div style="padding: 8px; background: rgba(255,255,255,0.02); border-left: 3px solid #f59e0b; margin-bottom: 6px; border-radius: 4px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center;">
+            <div style="padding: 8px; background: rgba(255,255,255,0.02); border-left: 3px solid #f59e0b; margin-bottom: 6px; border-radius: 4px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
                 <div>
-                    <div><strong>Firewall ID: {{.FwID}}</strong> - <em>{{.FindingText}}</em></div>
+                    <div>
+                        {{if eq .Scope "global"}}
+                        <strong style="color: #22d3ee;">{{T $.Base.Lang "audit.exemption_global_badge"}}</strong>
+                        {{else}}
+                        <strong>Firewall ID: {{.FwID}}</strong>
+                        {{end}}
+                        - <em>{{.FindingText}}</em>
+                    </div>
                     <div class="muted" style="font-size: 0.9em; margin-top: 2px;">{{T $.Base.Lang "audit.exemption_reason"}} {{.Reason}}</div>
                 </div>
-                <form method="post" action="/audit/exemption" style="margin: 0;">
-                    <input type="hidden" name="action" value="delete">
-                    <input type="hidden" name="id" value="{{.ID}}">
-                    <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">{{T $.Base.Lang "audit.exemption_revoke"}}</button>
-                </form>
+                <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                    <form method="post" action="/audit/exemption" style="margin: 0;">
+                        <input type="hidden" name="action" value="set_scope">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        {{if eq .Scope "global"}}
+                        <input type="hidden" name="scope" value="firewall">
+                        <button type="submit" class="btn btn-small" style="background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); padding: 2px 6px;" title="{{T $.Base.Lang "audit.exemption_make_local_hint"}}">{{T $.Base.Lang "audit.exemption_make_local"}}</button>
+                        {{else}}
+                        <input type="hidden" name="scope" value="global">
+                        <button type="submit" class="btn btn-small" style="background: rgba(34, 211, 238, 0.15); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.3); padding: 2px 6px;" title="{{T $.Base.Lang "audit.exemption_make_global_hint"}}">{{T $.Base.Lang "audit.exemption_make_global"}}</button>
+                        {{end}}
+                    </form>
+                    <form method="post" action="/audit/exemption" style="margin: 0;">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">{{T $.Base.Lang "audit.exemption_revoke"}}</button>
+                    </form>
+                </div>
             </div>
             {{end}}
         </div>
