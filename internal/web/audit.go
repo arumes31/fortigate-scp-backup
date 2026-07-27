@@ -109,6 +109,24 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			created_at TEXT NOT NULL,
 			expires_at TEXT
 		)`,
+		// cve_cache holds the live (NVD + CISA KEV) CVE dataset alongside the
+		// offline fallback seed (source='fallback-seed', see cveFallbackDefs) so
+		// getCVEs always has something to match against. See cve_source.go /
+		// audit_cve.go.
+		`CREATE TABLE IF NOT EXISTS cve_cache (
+			id TEXT PRIMARY KEY,
+			summary_en TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			ranges_json TEXT NOT NULL,
+			remediation TEXT NOT NULL,
+			source TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS cve_meta (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			last_success_at TEXT,
+			last_attempt_at TEXT,
+			last_error TEXT
+		)`,
 	}
 	for _, q := range queries {
 		if _, execErr := db.Exec(q); execErr != nil {
@@ -144,6 +162,7 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 	// Backfill: map pre-i18n exemption rows (German finding texts, empty
 	// finding_key) to stable keys so upgrades keep existing exemptions active.
 	s.backfillExemptionKeys(db)
+	seedCVECacheIfEmpty(db)
 	return db, nil
 }
 
@@ -280,6 +299,7 @@ type auditData struct {
 	Error       string
 	CustomRules []customRule
 	Exemptions  []exemption
+	CVEStatus   cveRefreshStatus
 }
 
 // Model structures for parsed config elements
@@ -387,6 +407,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		Firewalls:   refs,
 		CustomRules: loadCustomRules(db),
 		Exemptions:  loadExemptions(db),
+		CVEStatus:   getCVERefreshStatus(db),
 	})
 }
 

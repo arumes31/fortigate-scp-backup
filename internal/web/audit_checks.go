@@ -101,6 +101,20 @@ func checkInterfaces(doc *cfgDoc, routes []StaticRoute) []auditFinding {
 				fmt.Sprintf("config system interface\n  edit %s\n  set allowaccess <access-without-ping>\nnext\nend", b.Name),
 				idx, b))
 		}
+		if wan[b.Name] && has("fgfm") {
+			out = append(out, doc.findingAt("fgfm-wan", "fgfm-wan:"+b.Name, "critical",
+				fmt.Sprintf("FortiGate-to-FortiManager protocol (FGFM) reachable on WAN interface '%s' — a known RCE attack surface (e.g. CVE-2024-23113)", b.Name),
+				fmt.Sprintf("FortiGate-zu-FortiManager-Protokoll (FGFM) auf WAN-Interface '%s' erreichbar — bekannte RCE-Angriffsfläche (z.B. CVE-2024-23113)", b.Name),
+				fmt.Sprintf("config system interface\n  edit %s\n  set allowaccess <access-without-fgfm>\nnext\nend\n# Restrict FortiManager access to trusted networks only.", b.Name),
+				idx, b))
+		}
+		if val, sidx, found := doc.settingDirect(b, "src-check"); found && strings.EqualFold(val, "disable") {
+			out = append(out, doc.findingAt("intf-src-check-disable", "intf-src-check-disable:"+b.Name, "warning",
+				fmt.Sprintf("Anti-spoofing (reverse-path check) explicitly disabled on interface '%s'", b.Name),
+				fmt.Sprintf("Anti-Spoofing (Reverse-Path-Check) auf Interface '%s' explizit deaktiviert", b.Name),
+				fmt.Sprintf("config system interface\n  edit %s\n  unset src-check\nnext\nend", b.Name),
+				sidx, b))
+		}
 	}
 
 	if exposedMgmt > 0 {
@@ -199,7 +213,50 @@ func checkGlobal(doc *cfgDoc) []auditFinding {
 			Remediation: "config system global\n  set pre-login-banner enable\nend",
 		})
 	}
+	if val, _, ok := doc.settingDirect(g, "post-login-banner"); !ok || !strings.EqualFold(val, "enable") {
+		out = append(out, auditFinding{
+			CheckID: "global-post-login-banner", Key: "global-post-login-banner", Severity: "info",
+			Text:        "No post-login banner configured (session terms / last-login notice)",
+			TextDE:      "Kein Post-Login-Banner konfiguriert (Sitzungsbedingungen / Hinweis auf letzte Anmeldung)",
+			Remediation: "config system global\n  set post-login-banner enable\nend",
+		})
+	}
+	// admin-lockout-* defaults (3 attempts / 60s) are safe when unset; only an
+	// explicit weakening is worth flagging, mirroring the admintimeout check.
+	if val, idx, ok := doc.settingDirect(g, "admin-lockout-threshold"); ok {
+		if n, err := strconv.Atoi(val); err == nil && n > 10 {
+			out = append(out, doc.findingAt("global-admin-lockout-threshold", "global-admin-lockout-threshold", "warning",
+				fmt.Sprintf("Admin lockout threshold is very high (%d attempts) — brute-force protection is effectively disabled", n),
+				fmt.Sprintf("Admin-Lockout-Schwelle ist sehr hoch (%d Versuche) — Brute-Force-Schutz ist faktisch deaktiviert", n),
+				"config system global\n  set admin-lockout-threshold 3\n  set admin-lockout-duration 60\nend", idx, g))
+		}
+	}
+	if val, idx, ok := doc.settingDirect(g, "admin-lockout-duration"); ok {
+		if n, err := strconv.Atoi(val); err == nil && n < 60 {
+			out = append(out, doc.findingAt("global-admin-lockout-duration", "global-admin-lockout-duration", "warning",
+				fmt.Sprintf("Admin lockout duration is very short (%ds) — an attacker can retry almost immediately", n),
+				fmt.Sprintf("Admin-Lockout-Dauer ist sehr kurz (%ds) — ein Angreifer kann fast sofort erneut versuchen", n),
+				"config system global\n  set admin-lockout-threshold 3\n  set admin-lockout-duration 60\nend", idx, g))
+		}
+	}
+	if val, idx, ok := doc.settingDirect(g, "admin-server-cert"); !ok || isFactoryCert(val) {
+		line := g.Start
+		if ok {
+			line = idx
+		}
+		out = append(out, doc.findingAt("cert-default-admin", "cert-default-admin", "warning",
+			"Admin GUI uses the factory self-signed certificate — browsers warn on every visit and users learn to click through certificate errors",
+			"Admin-GUI verwendet das werkseitige selbstsignierte Zertifikat — Browser warnen bei jedem Zugriff, Benutzer gewöhnen sich an das Wegklicken von Zertifikatsfehlern",
+			"config system global\n  set admin-server-cert <imported-CA-signed-cert-name>\nend", line, g))
+	}
 	return out
+}
+
+// isFactoryCert reports whether a certificate name looks like FortiOS's
+// built-in factory/self-signed default rather than an imported CA-signed one.
+func isFactoryCert(name string) bool {
+	lv := strings.ToLower(name)
+	return strings.Contains(lv, "factory") || strings.Contains(lv, "self-sign")
 }
 
 // checkAdmins audits `config system admin`: 2FA, default account, trusted hosts.
@@ -352,6 +409,16 @@ func checkSSLVPN(doc *cfgDoc) []auditFinding {
 				"config vpn ssl settings\n  set ssl-min-proto-ver tls1-2\nend", idx, b))
 		}
 	}
+	if val, idx, found := doc.settingDirect(b, "servercert"); !found || isFactoryCert(val) {
+		line := b.Start
+		if found {
+			line = idx
+		}
+		out = append(out, doc.findingAt("cert-default-sslvpn", "cert-default-sslvpn", "warning",
+			"SSL-VPN uses the factory self-signed certificate instead of a CA-signed one",
+			"SSL-VPN verwendet das werkseitige selbstsignierte Zertifikat anstelle eines CA-signierten Zertifikats",
+			"config vpn ssl settings\n  set servercert <imported-CA-signed-cert-name>\nend", line, b))
+	}
 	return out
 }
 
@@ -436,11 +503,13 @@ func checkRemoteLogging(doc *cfgDoc) []auditFinding {
 	}}
 }
 
-// checkPolicies flags any/any/ALL accept policies and aggregates no-log
-// accept policies.
+// checkPolicies flags any/any/ALL accept policies and aggregates no-log /
+// no-security-profile accept policies.
 func checkPolicies(doc *cfgDoc) []auditFinding {
 	var out []auditFinding
 	var noLogIDs []string
+	var noUTMIDs []string
+	utmSettings := []string{"ips-sensor", "av-profile", "webfilter-profile", "dnsfilter-profile", "application-list"}
 	for _, b := range doc.blocksUnder("config firewall policy") {
 		action, _, _ := doc.settingDirect(b, "action")
 		if !strings.EqualFold(action, "accept") {
@@ -449,15 +518,32 @@ func checkPolicies(doc *cfgDoc) []auditFinding {
 		src, _, _ := doc.settingDirect(b, "srcaddr")
 		dst, _, _ := doc.settingDirect(b, "dstaddr")
 		svc, _, _ := doc.settingDirect(b, "service")
-		if strings.EqualFold(src, "all") && strings.EqualFold(dst, "all") && strings.EqualFold(svc, "ALL") {
+		fullAnyAny := strings.EqualFold(src, "all") && strings.EqualFold(dst, "all") && strings.EqualFold(svc, "ALL")
+		if fullAnyAny {
 			out = append(out, doc.findingAt("policy-any-any", "policy-any-any:"+b.Name, "critical",
 				fmt.Sprintf("Firewall policy %s allows EVERYTHING (srcaddr all, dstaddr all, service ALL)", b.Name),
 				fmt.Sprintf("Firewall-Policy %s erlaubt ALLES (srcaddr all, dstaddr all, service ALL)", b.Name),
 				fmt.Sprintf("config firewall policy\n  edit %s\n  set srcaddr <specific>\n  set dstaddr <specific>\n  set service <required-services>\nnext\nend", b.Name),
 				b.Start, b))
+		} else if strings.EqualFold(svc, "ALL") {
+			out = append(out, doc.findingAt("policy-service-any", "policy-service-any:"+b.Name, "warning",
+				fmt.Sprintf("Firewall policy %s allows ALL services regardless of its source/destination restriction", b.Name),
+				fmt.Sprintf("Firewall-Policy %s erlaubt ALLE Dienste unabhängig von der Quelle/Ziel-Einschränkung", b.Name),
+				fmt.Sprintf("config firewall policy\n  edit %s\n  set service <required-services>\nnext\nend", b.Name),
+				b.Start, b))
 		}
 		if val, _, found := doc.settingDirect(b, "logtraffic"); found && strings.EqualFold(val, "disable") {
 			noLogIDs = append(noLogIDs, b.Name)
+		}
+		hasProfile := false
+		for _, setting := range utmSettings {
+			if _, _, ok := doc.settingDirect(b, setting); ok {
+				hasProfile = true
+				break
+			}
+		}
+		if !hasProfile {
+			noUTMIDs = append(noUTMIDs, b.Name)
 		}
 	}
 	if len(noLogIDs) > 0 {
@@ -466,6 +552,14 @@ func checkPolicies(doc *cfgDoc) []auditFinding {
 			Text:        fmt.Sprintf("%d accept policy(s) without traffic logging: ID %s", len(noLogIDs), strings.Join(noLogIDs, ", ")),
 			TextDE:      fmt.Sprintf("%d Accept-Policy(s) ohne Traffic-Logging: ID %s", len(noLogIDs), strings.Join(noLogIDs, ", ")),
 			Remediation: "config firewall policy\n  edit <id>\n  set logtraffic all\nnext\nend",
+		})
+	}
+	if len(noUTMIDs) > 0 {
+		out = append(out, auditFinding{
+			CheckID: "policy-no-utm", Key: "policy-no-utm", Severity: "warning",
+			Text:        fmt.Sprintf("%d accept policy(s) apply no security profile at all (no IPS/AV/web filter/DNS filter/app control): ID %s", len(noUTMIDs), strings.Join(noUTMIDs, ", ")),
+			TextDE:      fmt.Sprintf("%d Accept-Policy(s) ohne jegliches Security-Profil (kein IPS/AV/Webfilter/DNS-Filter/App-Control): ID %s", len(noUTMIDs), strings.Join(noUTMIDs, ", ")),
+			Remediation: "config firewall policy\n  edit <id>\n  set utm-status enable\n  set ips-sensor default\n  set av-profile default\nnext\nend",
 		})
 	}
 	return out
@@ -499,7 +593,117 @@ func runStructuralChecks(doc *cfgDoc, routes []StaticRoute) []auditFinding {
 	out = append(out, checkRemoteLogging(doc)...)
 	out = append(out, checkPolicies(doc)...)
 	out = append(out, auditSecurityFabric(doc)...)
+	out = append(out, checkZones(doc)...)
+	out = append(out, checkRADIUS(doc)...)
+	out = append(out, checkLDAP(doc)...)
+	out = append(out, checkHA(doc)...)
+	out = append(out, checkLocalInPolicy(doc)...)
+	out = append(out, checkDoSPolicy(doc)...)
 	return out
+}
+
+// checkZones flags zones that allow intrazone traffic without policy
+// inspection (CIS FortiGate benchmark: `set intrazone deny`). The default is
+// "allow", so an absent setting is flagged the same as an explicit one.
+func checkZones(doc *cfgDoc) []auditFinding {
+	var out []auditFinding
+	for _, b := range doc.blocksUnder("config system zone") {
+		val, idx, found := doc.settingDirect(b, "intrazone")
+		if found && strings.EqualFold(val, "deny") {
+			continue
+		}
+		line := b.Start
+		if found {
+			line = idx
+		}
+		out = append(out, doc.findingAt("zone-intrazone-allow", "zone-intrazone-allow:"+b.Name, "warning",
+			fmt.Sprintf("Zone '%s' allows intrazone traffic without policy inspection (intrazone not set to deny)", b.Name),
+			fmt.Sprintf("Zone '%s' erlaubt Intrazone-Traffic ohne Policy-Prüfung (intrazone nicht auf deny gesetzt)", b.Name),
+			fmt.Sprintf("config system zone\n  edit %s\n  set intrazone deny\nnext\nend\n# Add explicit intrazone policies for any traffic that should be allowed.", b.Name),
+			line, b))
+	}
+	return out
+}
+
+// checkRADIUS flags RADIUS servers with no CA certificate configured, the
+// simplest static signal that authentication traffic isn't validated/secured.
+func checkRADIUS(doc *cfgDoc) []auditFinding {
+	var out []auditFinding
+	for _, b := range doc.blocksUnder("config user radius") {
+		if _, _, ok := doc.findDirect(b, "set ca-cert"); !ok {
+			out = append(out, doc.findingAt("radius-no-tls", "radius-no-tls:"+b.Name, "warning",
+				fmt.Sprintf("RADIUS server '%s' has no CA certificate configured — authentication traffic is not validated end-to-end", b.Name),
+				fmt.Sprintf("RADIUS-Server '%s' hat kein CA-Zertifikat konfiguriert — Authentifizierungs-Traffic wird nicht durchgängig validiert", b.Name),
+				fmt.Sprintf("config user radius\n  edit %s\n  set ca-cert <ca-cert-name>\nnext\nend\n# Use RADIUS over TLS (RadSec) where the server supports it.", b.Name),
+				b.Start, b))
+		}
+	}
+	return out
+}
+
+// checkLDAP flags LDAP servers without STARTTLS/LDAPS (secure) configured.
+func checkLDAP(doc *cfgDoc) []auditFinding {
+	var out []auditFinding
+	for _, b := range doc.blocksUnder("config user ldap") {
+		if secure, _, found := doc.settingDirect(b, "secure"); found && !strings.EqualFold(secure, "disable") {
+			continue
+		}
+		out = append(out, doc.findingAt("ldap-no-tls", "ldap-no-tls:"+b.Name, "warning",
+			fmt.Sprintf("LDAP server '%s' uses a plaintext connection (secure=starttls/ldaps not set)", b.Name),
+			fmt.Sprintf("LDAP-Server '%s' verwendet eine Klartext-Verbindung (secure=starttls/ldaps nicht gesetzt)", b.Name),
+			fmt.Sprintf("config user ldap\n  edit %s\n  set secure ldaps\n  set ca-cert <ca-cert-name>\nnext\nend", b.Name),
+			b.Start, b))
+	}
+	return out
+}
+
+// checkHA flags a clustered HA configuration with no password set — any
+// device on the heartbeat network can then join and take over the cluster.
+func checkHA(doc *cfgDoc) []auditFinding {
+	b, ok := doc.block("config system ha")
+	if !ok {
+		return nil
+	}
+	if mode, _, found := doc.settingDirect(b, "mode"); !found || strings.EqualFold(mode, "standalone") {
+		return nil
+	}
+	if _, _, ok := doc.findDirect(b, "set password"); !ok {
+		return []auditFinding{doc.findingAt("ha-no-password", "ha-no-password", "critical",
+			"HA cluster has no password set — any device on the heartbeat network can join and hijack the cluster",
+			"HA-Cluster hat kein Passwort gesetzt — jedes Gerät im Heartbeat-Netzwerk kann dem Cluster beitreten und ihn übernehmen",
+			"config system ha\n  set password <strong-password>\nend", b.Start, b)}
+	}
+	return nil
+}
+
+// checkLocalInPolicy flags the complete absence of local-in policies, the
+// explicit control layer for the management plane beyond interface
+// allowaccess/trusthost.
+func checkLocalInPolicy(doc *cfgDoc) []auditFinding {
+	if _, ok := doc.block("config firewall local-in-policy"); ok {
+		return nil
+	}
+	return []auditFinding{{
+		CheckID: "local-in-missing", Key: "local-in-missing", Severity: "info",
+		Text:        "No local-in policy configured — the management plane relies solely on interface allowaccess/trusthost",
+		TextDE:      "Keine Local-In-Policy konfiguriert — die Management-Ebene verlässt sich ausschließlich auf Interface-Allowaccess/Trusthost",
+		Remediation: "config firewall local-in-policy\n  edit 1\n  set intf <mgmt-interface>\n  set srcaddr <trusted-net>\n  set dstaddr all\n  set action accept\n  set service HTTPS SSH\n  set schedule always\nnext\nend\n# Add a final deny rule below it.",
+	}}
+}
+
+// checkDoSPolicy flags the absence of any anomaly-based DoS policy (v4 or v6).
+func checkDoSPolicy(doc *cfgDoc) []auditFinding {
+	_, has4 := doc.block("config firewall DoS-policy")
+	_, has6 := doc.block("config firewall DoS-policy6")
+	if has4 || has6 {
+		return nil
+	}
+	return []auditFinding{{
+		CheckID: "dos-policy-missing", Key: "dos-policy-missing", Severity: "info",
+		Text:        "No DoS policy configured — no anomaly-based flood/scan protection on the perimeter",
+		TextDE:      "Keine DoS-Policy konfiguriert — kein anomaliebasierter Schutz vor Flood/Scan am Perimeter",
+		Remediation: "config firewall DoS-policy\n  edit 1\n  set interface <wan>\n  set srcaddr all\n  set dstaddr all\n  set service ALL\n  set anomaly <name>\n    set status enable\n    set action block\n  next\nend",
+	}}
 }
 
 // ---------------------------------------------------------------------------
@@ -523,7 +727,10 @@ var fortiOSTrains = []osTrain{
 	{"7.2", "7.2.13", "End of Support 09/2026", "End of Support 09/2026"},
 	{"7.4", "7.4.12", "", ""},
 	{"7.6", "7.6.7", "", ""},
-	{"8.0", "8.0.1", "newest release train", "neuester Release-Train"},
+	// 8.0.0 GA'd 2026-07-24; no 8.0.1 exists yet. 7.4/7.6 support windows were
+	// both extended ~1 year by Fortinet CSB-260330-1 (2026-03), so both stay
+	// "fully supported" here despite 8.0 now existing.
+	{"8.0", "8.0.0", "newest release train", "neuester Release-Train"},
 }
 
 // recommendedTrain: upgrades are recommended up to this train; anything
@@ -627,9 +834,15 @@ type cveDef struct {
 	ranges      []cveRange
 }
 
-// cveDefs lists known exploited/critical FortiOS CVEs (table-driven so new
-// entries are one line). Fixed versions per Fortinet PSIRT advisories.
-var cveDefs = []cveDef{
+// cveFallbackDefs is the OFFLINE FALLBACK ONLY: a snapshot of known
+// exploited/critical FortiOS CVEs as of 2026-07, used when the live CVE
+// source (cve_source.go: NVD + CISA KEV, see loadCVEDefs in audit_cve.go) has
+// never successfully fetched — e.g. air-gapped deployments, or before the
+// first scheduled/manual refresh completes. It intentionally goes stale: do
+// not treat it as the thing to keep up to date. See memory note
+// audit-cve-no-hardcoding — CVE tracking must be live, this is the safety net
+// behind it, never the primary source.
+var cveFallbackDefs = []cveDef{
 	{
 		id:          "CVE-2022-40684",
 		summaryEN:   "authentication bypass on the admin interface (actively exploited)",
@@ -688,22 +901,27 @@ var cveDefs = []cveDef{
 	},
 }
 
-// getCVEs maps a FortiOS version to known-vulnerable CVE findings and flags
-// end-of-support trains.
-func getCVEs(version string) []models.AuditFinding {
+// getCVEs maps a FortiOS version to known-vulnerable CVE findings (from defs,
+// see loadCVEDefs for where those come from — live NVD+CISA KEV data, falling
+// back to cveFallbackDefs) and flags end-of-support trains.
+func getCVEs(version string, defs []cveDef) []models.AuditFinding {
 	major, minor, patch, ok := splitVersion(version)
 	if !ok {
 		return nil
 	}
 	var findings []models.AuditFinding
-	for _, def := range cveDefs {
+	for _, def := range defs {
 		for _, r := range def.ranges {
 			if major == r.major && minor == r.minor && patch < r.fixedPatch {
+				textDE := ""
+				if def.summaryDE != "" {
+					textDE = fmt.Sprintf("Kritische Sicherheitslücke %s: %s", def.id, def.summaryDE)
+				}
 				findings = append(findings, models.AuditFinding{
 					CheckID: "cve", Key: "cve:" + def.id,
 					Severity:    def.severity,
 					Text:        fmt.Sprintf("Critical vulnerability %s: %s", def.id, def.summaryEN),
-					TextDE:      fmt.Sprintf("Kritische Sicherheitslücke %s: %s", def.id, def.summaryDE),
+					TextDE:      textDE,
 					Remediation: def.remediation,
 				})
 				break
@@ -732,12 +950,20 @@ func getCVEs(version string) []models.AuditFinding {
 
 // Frameworks score by the fraction of relevant checks without findings.
 var complianceChecks = map[string][]string{
+	// PCI-DSS v4 Req 1 (network security controls) + Req 2/8 (no vendor
+	// defaults, authentication) + Req 10 (time sync).
 	"pci": {"intf-telnet", "intf-http", "global-admin-telnet", "vpn-weak-cipher", "vpn-weak-hash",
-		"pwpolicy-disabled", "admin-no-2fa", "global-weak-tls", "log-no-remote", "policy-any-any"},
+		"pwpolicy-disabled", "admin-no-2fa", "global-weak-tls", "log-no-remote", "policy-any-any",
+		"mgmt-exposed", "admin-default-account", "snmp-default-community", "global-ssh-v1", "ntp-disabled",
+		"global-admin-lockout-threshold", "zone-intrazone-allow", "policy-service-any",
+		"intf-src-check-disable", "fgfm-wan"},
 	"cis": {"intf-telnet", "global-weak-tls", "intf-wan-mgmt", "admin-no-trusthost", "pwpolicy-disabled",
-		"vpn-weak-dhgrp", "snmp-default-community", "global-admintimeout", "auto-install-usb", "global-maintainer"},
+		"vpn-weak-dhgrp", "snmp-default-community", "global-admintimeout", "auto-install-usb", "global-maintainer",
+		"global-admin-lockout-threshold", "policy-no-utm", "local-in-missing", "cert-default-admin",
+		"ha-no-password", "zone-intrazone-allow", "fgfm-wan"},
 	"hipaa": {"intf-telnet", "intf-http", "pwpolicy-disabled", "admin-no-2fa", "vpn-weak-cipher",
-		"log-no-remote", "global-weak-tls", "sslvpn-weak-tls"},
+		"log-no-remote", "global-weak-tls", "sslvpn-weak-tls",
+		"radius-no-tls", "ldap-no-tls", "ha-no-password", "cert-default-sslvpn"},
 }
 
 // calculateComplianceScores derives framework scores from the structured

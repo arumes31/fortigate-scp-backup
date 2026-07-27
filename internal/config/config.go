@@ -113,6 +113,19 @@ type Config struct {
 	FgtDiagSSHFloorSec      int  // hard rate floor between query starts (seconds); one query per device runs at a time regardless
 	FgtDiagSSHTimeoutSec    int  // overall SSH session timeout per device (seconds)
 
+	// CVE auto-update: the audit engine's CVE findings are matched against a
+	// live dataset (NVD CPE search + CISA KEV) instead of a hand-maintained
+	// table, refreshed on this interval plus a manual "Refresh now" button on
+	// the audit page. Defaults to false like every other outbound-integration
+	// flag in this config (Graylog, SSH diagnostics, extensions) — an operator
+	// opts in explicitly rather than this tool silently starting to call out to
+	// NVD/CISA. The manual refresh button always works regardless of this
+	// flag, since that's an explicit operator action, not a background one.
+	// NVDAPIKey is optional (raises NVD's keyless 5 req/30s limit to 50 req/30s).
+	CVEAutoUpdate   bool
+	CVERefreshHours int
+	NVDAPIKey       string
+
 	// Housekeeping
 	ActivityLogRetentionDays int
 
@@ -228,6 +241,10 @@ func Load(logger *slog.Logger) *Config {
 		FgtDiagSSHViewSec:       intenv("FGT_DIAG_SSH_VIEW_SECONDS", 1200),       // ≥20 min between page-triggered queries
 		FgtDiagSSHFloorSec:      intenv("FGT_DIAG_SSH_FLOOR_SECONDS", 2),         // min 2 s between query starts (and only one at a time per device)
 		FgtDiagSSHTimeoutSec:    intenv("FGT_DIAG_SSH_TIMEOUT_SECONDS", 180),
+
+		CVEAutoUpdate:   boolenv("CVE_AUTOUPDATE", false),
+		CVERefreshHours: intenv("CVE_REFRESH_HOURS", 24),
+		NVDAPIKey:       os.Getenv("NVD_API_KEY"),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
 

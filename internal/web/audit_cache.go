@@ -33,6 +33,11 @@ type auditResult struct {
 	// in-flight compute stores results made with an outdated rule set after
 	// the rule-change cache bust).
 	RulesFingerprint string `json:"rules_fingerprint,omitempty"`
+	// CVEFingerprint identifies the CVE dataset (live NVD+KEV or fallback seed)
+	// the result was computed with; a mismatch forces a recompute so a live
+	// refresh (or scheduled/manual re-fetch) shows up without waiting for the
+	// next backup. See loadCVEDefs/cveFingerprint in audit_cve.go.
+	CVEFingerprint string `json:"cve_fingerprint,omitempty"`
 
 	Model   string `json:"model"`
 	Version string `json:"version"`
@@ -70,13 +75,16 @@ func rulesFingerprint(rules []customRule) string {
 	return hex.EncodeToString(h.Sum(nil)[:12])
 }
 
-// computeAudit runs the full audit for one decrypted configuration.
-func computeAudit(fwID int, filename, plain string, customRules []customRule) *auditResult {
+// computeAudit runs the full audit for one decrypted configuration. cveDefs is
+// the current CVE dataset (see loadCVEDefs) — passed in rather than looked up
+// here so callers control exactly which snapshot a compute used.
+func computeAudit(fwID int, filename, plain string, customRules []customRule, cveDefs []cveDef) *auditResult {
 	res := &auditResult{
 		BackupFilename:   filename,
 		ComputedAt:       time.Now(),
 		SchemaVersion:    auditSchemaVersion,
 		RulesFingerprint: rulesFingerprint(customRules),
+		CVEFingerprint:   cveFingerprint(cveDefs),
 	}
 	res.Model, res.Version = parseFortiOSVersion(plain)
 
@@ -89,7 +97,7 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule) *a
 
 	findings := runStructuralChecks(doc, res.Routes)
 	findings = append(findings, findShadowRules(res.Policies)...)
-	findings = append(findings, getCVEs(res.Version)...)
+	findings = append(findings, getCVEs(res.Version, cveDefs)...)
 
 	for _, cr := range customRules {
 		if cr.Pattern == "" {
@@ -165,9 +173,10 @@ func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 		return nil, false
 	}
 	rules := loadCustomRules(db)
+	cveDefs := loadCVEDefs(db)
 	if cached, hit := getCachedAudit(db, fwID); hit &&
 		cached.BackupFilename == filename && cached.RulesFingerprint == rulesFingerprint(rules) &&
-		cached.SchemaVersion == auditSchemaVersion {
+		cached.CVEFingerprint == cveFingerprint(cveDefs) && cached.SchemaVersion == auditSchemaVersion {
 		return cached, true
 	}
 	// Cache miss: a full config read + parse — visible on the dashboard's
@@ -183,7 +192,7 @@ func (s *Server) auditResultFor(db *sql.DB, fwID int) (*auditResult, bool) {
 		return nil, false
 	}
 	note("running checks")
-	res := computeAudit(fwID, filename, plain, rules)
+	res := computeAudit(fwID, filename, plain, rules, cveDefs)
 	storeAudit(db, fwID, res)
 	return res, true
 }
@@ -221,7 +230,7 @@ func (s *Server) WarmAuditCache(fwID int) {
 		return
 	}
 	note("running checks")
-	res := computeAudit(fwID, filename, plain, loadCustomRules(db))
+	res := computeAudit(fwID, filename, plain, loadCustomRules(db), loadCVEDefs(db))
 	storeAudit(db, fwID, res)
 	s.logger.Debug("audit cache warmed", "fw_id", fwID, "backup", filename, "findings", len(res.Findings))
 }

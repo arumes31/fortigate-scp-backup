@@ -256,6 +256,46 @@ func (e *Extension) handlePortDiag(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(pd)
 }
 
+// handleCheckBlockedPort runs a live STP re-check for one dashboard-listed
+// blocked port (the blocked-ports card's "Check" button) and reports whether
+// it is still blocked. Same validation/guard/cooldown as handlePortDiag.
+func (e *Extension) handleCheckBlockedPort(w http.ResponseWriter, r *http.Request) {
+	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
+	if err != nil {
+		http.Error(w, "invalid firewall id", http.StatusBadRequest)
+		return
+	}
+	if !e.cfg.FgtDiagSSHEnabled || e.firewallCreds == nil {
+		http.Error(w, "ssh diagnostics disabled", http.StatusServiceUnavailable)
+		return
+	}
+	sw := strings.TrimSpace(r.URL.Query().Get("switch"))
+	port := strings.TrimSpace(r.URL.Query().Get("port"))
+	if !ValidDiagName(sw) || !ValidDiagName(port) {
+		http.Error(w, "invalid switch or port", http.StatusBadRequest)
+		return
+	}
+	check, err := e.recheckBlockedPort(fwID, sw, port)
+	if err != nil {
+		if errors.Is(err, errDiagBusy) {
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
+		e.logger.Warn("graylog devices: blocked-port recheck failed", "fw_id", fwID, "switch", sw, "port", port, "err", err)
+		http.Error(w, "recheck failed", http.StatusBadGateway)
+		return
+	}
+	if e.logActivity != nil {
+		user := ""
+		if e.currentUser != nil {
+			user = e.currentUser(r)
+		}
+		e.logActivity(user, "graylog_blocked_port_check", "fw_id="+strconv.Itoa(fwID)+" switch="+sw+" port="+port)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(check)
+}
+
 // firewallFQDN resolves a firewall id to its FQDN via the shared store.
 func (e *Extension) firewallFQDN(fwID int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

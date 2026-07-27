@@ -98,6 +98,12 @@ var uiMsgs = map[string]map[string]string{
 	"audit.col_actions":                {"en": "Actions & details", "de": "Aktionen & Details"},
 	"audit.no_firewalls":               {"en": "No firewalls configured.", "de": "Keine Firewalls konfiguriert."},
 	"audit.loading":                    {"en": "loading…", "de": "lädt…"},
+	"audit.cve_db_live":                {"en": "CVE database: live (NVD + CISA KEV)", "de": "CVE-Datenbank: live (NVD + CISA KEV)"},
+	"audit.cve_db_fallback":            {"en": "CVE database: offline fallback (never refreshed live)", "de": "CVE-Datenbank: Offline-Fallback (noch nie live aktualisiert)"},
+	"audit.cve_db_never":               {"en": "no live update yet", "de": "noch kein Live-Update"},
+	"audit.cve_db_updated":             {"en": "updated", "de": "aktualisiert"},
+	"audit.cve_db_error":               {"en": "last refresh attempt failed", "de": "letzter Aktualisierungsversuch fehlgeschlagen"},
+	"audit.cve_db_refresh":             {"en": "Refresh now", "de": "Jetzt aktualisieren"},
 
 	// Audit page (JS strings)
 	"audit.no_backup":      {"en": "— No backup —", "de": "— Kein Backup —"},
@@ -331,6 +337,13 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.col_reason":    {"en": "Reason", "de": "Grund"},
 	"dashboard.col_since":     {"en": "Since", "de": "Seit"},
 	"dashboard.topology":      {"en": "Topology", "de": "Topologie"},
+	"dashboard.check":         {"en": "Check", "de": "Prüfen"},
+	"dashboard.check_all":     {"en": "Check All", "de": "Alle prüfen"},
+	"dashboard.checking":      {"en": "Checking…", "de": "Prüfe…"},
+	"dashboard.check_recovered": {"en": "Recovered — removed", "de": "Behoben — entfernt"},
+	"dashboard.check_still_blocked": {"en": "Still blocked (confirmed just now)", "de": "Weiterhin blockiert (soeben bestätigt)"},
+	"dashboard.check_failed":  {"en": "Check failed", "de": "Prüfung fehlgeschlagen"},
+	"dashboard.check_busy":    {"en": "Busy, try again shortly", "de": "Beschäftigt, bitte gleich erneut versuchen"},
 
 	// Dashboard page (Graylog logging status card, from the FGT ADM VPN config)
 	"dashboard.graylog_title":     {"en": "Graylog logging issues", "de": "Graylog-Logging-Probleme"},

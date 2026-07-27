@@ -375,6 +375,79 @@ func (e *Extension) storeStp(fwID int, stp []StpPort, now string) error {
 	return tx.Commit()
 }
 
+// stpBlocked applies the same guard/role/state rule ListBlockedPorts' query
+// does, minus the inter-switch gate: a port only reaches this check because it
+// was already on the dashboard's blocked-ports list, which means that gate
+// already passed (a port's physical role as a trunk vs. an access port is a
+// stable topology fact that a live re-check does not need to re-derive).
+// stpBlocked applies the same rule ListBlockedPorts' query does: a guard is
+// always authoritative (real on any port, edge or trunk); role/state alone
+// only counts on an inter-switch (trunk) port, since a discarding/disabled
+// access port is normal client churn, not a broken loop.
+func stpBlocked(interSwitch bool, role, state, guard string) bool {
+	if guard != "" {
+		return true
+	}
+	if !interSwitch {
+		return false
+	}
+	switch strings.ToLower(state) {
+	case "discarding", "blocking":
+		return true
+	}
+	switch strings.ToLower(role) {
+	case "alternate", "backup", "disabled":
+		return true
+	}
+	return false
+}
+
+// storeLiveStpCheck persists a live-confirmed port state from an on-demand
+// recheck (the dashboard's "Check" action). The stored "since" (last_change)
+// is only rewritten when the confirmed role/state/guard actually differ from
+// what is on file -- a bare reconfirmation of an unresolved block must not
+// make it look like it just started, while a genuine change (recovery, or a
+// new block) is reflected immediately rather than waiting for the next
+// scheduled fetch. stillBlocked re-derives the same inter-switch gate
+// ListBlockedPorts uses (via interSwitchSets) rather than trusting that this
+// port was already gated correctly when it first appeared on the dashboard —
+// a guard clearing while role/state alone still looks "blocking" (e.g. an
+// access port that is simply unplugged) must read as recovered, not blocked.
+func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard, now string) (stillBlocked bool, err error) {
+	var curRole, curState, curGuard, curLastChange, curSerial, curNeighbor string
+	scanErr := e.db.QueryRow(
+		`SELECT role, state, guard, last_change, serial, neighbor FROM stp_ports WHERE fw_id = ? AND switch_name = ? AND port = ?`,
+		fwID, sw, port).Scan(&curRole, &curState, &curGuard, &curLastChange, &curSerial, &curNeighbor)
+	if scanErr != nil && scanErr != sql.ErrNoRows {
+		return false, scanErr
+	}
+
+	interSwitch, knownSwitch, isErr := interSwitchSets(e.db)
+	if isErr != nil {
+		return false, isErr
+	}
+	inter := interSwitch[fmt.Sprintf("%d|%s|%s", fwID, strings.ToLower(sw), port)] ||
+		interSwitch[fmt.Sprintf("%d|%s|%s", fwID, strings.ToLower(curSerial), port)] ||
+		(curNeighbor != "" && knownSwitch[fmt.Sprintf("%d|%s", fwID, strings.ToLower(curNeighbor))])
+
+	lastChange := now
+	if scanErr == nil && role == curRole && state == curState && guard == curGuard {
+		lastChange = curLastChange
+	}
+	stillBlocked = stpBlocked(inter, role, state, guard)
+	_, execErr := e.db.Exec(`INSERT INTO stp_ports
+		(fw_id, switch_name, serial, port, role, state, guard, link, dot1x, last_change, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?)
+		ON CONFLICT(fw_id, switch_name, port) DO UPDATE SET
+			role        = excluded.role,
+			state       = excluded.state,
+			guard       = excluded.guard,
+			last_change = excluded.last_change,
+			updated_at  = excluded.updated_at`,
+		fwID, sw, curSerial, port, role, state, guard, lastChange, now)
+	return stillBlocked, execErr
+}
+
 // storeLinkStates writes the aggregation's latest link up/down per port. Unlike
 // storeStp it touches only the link column: the aggregation observes nothing
 // about STP role/state, guard blocks or 802.1X, so those stored fields must be
@@ -495,62 +568,8 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 
-	// Inter-switch port legs and switch identities from the stored trunk
-	// observations, both scoped per firewall so one fabric's switch names can
-	// never classify another firewall's ports.
-	interSwitch := map[string]bool{} // "fwID|switch(lower)|port"
-	knownSwitch := map[string]bool{} // "fwID|name-or-serial(lower)"
-	eRows, qErr := db.Query(`SELECT fw_id, switch_sn, switch_name, ports FROM switch_edges`)
-	if qErr != nil {
-		// Only the legacy schema without the switch_edges table is tolerated
-		// (guard blocks still surface); any other failure is real.
-		if !strings.Contains(qErr.Error(), "no such table") {
-			return nil, qErr
-		}
-	} else {
-		defer func() { _ = eRows.Close() }()
-		for eRows.Next() {
-			var fwID int
-			var sn, name, ports string
-			if scanErr := eRows.Scan(&fwID, &sn, &name, &ports); scanErr != nil {
-				return nil, scanErr
-			}
-			for _, key := range []string{strings.ToLower(sn), strings.ToLower(name)} {
-				if key == "" {
-					continue
-				}
-				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
-				for _, p := range strings.Split(ports, ",") {
-					if p != "" {
-						interSwitch[fmt.Sprintf("%d|%s|%s", fwID, key, p)] = true
-					}
-				}
-			}
-		}
-		if rErr := eRows.Err(); rErr != nil {
-			return nil, rErr
-		}
-	}
-	// Every switch the STP feed has seen counts as managed, so an LLDP neighbor
-	// naming one marks the local port as inter-switch.
-	sRows, err := db.Query(`SELECT DISTINCT fw_id, switch_name, serial FROM stp_ports`)
+	interSwitch, knownSwitch, err := interSwitchSets(db)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = sRows.Close() }()
-	for sRows.Next() {
-		var fwID int
-		var name, serial string
-		if scanErr := sRows.Scan(&fwID, &name, &serial); scanErr != nil {
-			return nil, scanErr
-		}
-		for _, key := range []string{strings.ToLower(name), strings.ToLower(serial)} {
-			if key != "" {
-				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
-			}
-		}
-	}
-	if err := sRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -566,24 +585,23 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 
 	type candidate struct {
 		BlockedPort
-		serial, neighbor, guard string
+		serial, neighbor, role, state, guard string
 	}
 	var cands []candidate
 	for rows.Next() {
 		var c candidate
-		var role, state string
 		// role/state/guard/neighbor/last_change are NOT NULL DEFAULT '' in the
 		// schema, so scanning into plain strings never hits a NULL.
-		if scanErr := rows.Scan(&c.FwID, &c.Switch, &c.serial, &c.Port, &role, &state, &c.guard, &c.neighbor, &c.Since); scanErr != nil {
+		if scanErr := rows.Scan(&c.FwID, &c.Switch, &c.serial, &c.Port, &c.role, &c.state, &c.guard, &c.neighbor, &c.Since); scanErr != nil {
 			return nil, scanErr
 		}
 		switch {
 		case c.guard != "":
 			c.Reason = c.guard
-		case state != "":
-			c.Reason = state
+		case c.state != "":
+			c.Reason = c.state
 		default:
-			c.Reason = role
+			c.Reason = c.role
 		}
 		cands = append(cands, c)
 	}
@@ -596,11 +614,76 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 		inter := interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.Switch), c.Port)] ||
 			interSwitch[fmt.Sprintf("%d|%s|%s", c.FwID, strings.ToLower(c.serial), c.Port)] ||
 			(c.neighbor != "" && knownSwitch[fmt.Sprintf("%d|%s", c.FwID, strings.ToLower(c.neighbor))])
-		if c.guard != "" || inter {
+		if stpBlocked(inter, c.role, c.state, c.guard) {
 			out = append(out, c.BlockedPort)
 		}
 	}
 	return out, nil
+}
+
+// interSwitchSets returns the "fw_id|switch(lower)|port" and
+// "fw_id|name-or-serial(lower)" sets used to classify a port as inter-switch
+// (trunk) rather than access: known from persisted trunk observations
+// (switch_edges) and every switch identity the STP feed has seen (an LLDP
+// neighbor naming one of those makes the local port inter-switch too). Both
+// scoped per firewall so one fabric's switch names can never classify
+// another firewall's ports. Shared by ListBlockedPorts (bulk) and a live
+// recheck (one port).
+func interSwitchSets(db *sql.DB) (interSwitch, knownSwitch map[string]bool, err error) {
+	interSwitch = map[string]bool{}
+	knownSwitch = map[string]bool{}
+	eRows, qErr := db.Query(`SELECT fw_id, switch_sn, switch_name, ports FROM switch_edges`)
+	if qErr != nil {
+		// Only the legacy schema without the switch_edges table is tolerated
+		// (guard blocks still surface); any other failure is real.
+		if !strings.Contains(qErr.Error(), "no such table") {
+			return nil, nil, qErr
+		}
+	} else {
+		defer func() { _ = eRows.Close() }()
+		for eRows.Next() {
+			var fwID int
+			var sn, name, ports string
+			if scanErr := eRows.Scan(&fwID, &sn, &name, &ports); scanErr != nil {
+				return nil, nil, scanErr
+			}
+			for _, key := range []string{strings.ToLower(sn), strings.ToLower(name)} {
+				if key == "" {
+					continue
+				}
+				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
+				for _, p := range strings.Split(ports, ",") {
+					if p != "" {
+						interSwitch[fmt.Sprintf("%d|%s|%s", fwID, key, p)] = true
+					}
+				}
+			}
+		}
+		if rErr := eRows.Err(); rErr != nil {
+			return nil, nil, rErr
+		}
+	}
+	sRows, err := db.Query(`SELECT DISTINCT fw_id, switch_name, serial FROM stp_ports`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = sRows.Close() }()
+	for sRows.Next() {
+		var fwID int
+		var name, serial string
+		if scanErr := sRows.Scan(&fwID, &name, &serial); scanErr != nil {
+			return nil, nil, scanErr
+		}
+		for _, key := range []string{strings.ToLower(name), strings.ToLower(serial)} {
+			if key != "" {
+				knownSwitch[fmt.Sprintf("%d|%s", fwID, key)] = true
+			}
+		}
+	}
+	if err := sRows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return interSwitch, knownSwitch, nil
 }
 
 // SharedData opens the extension's private database read-only and returns the

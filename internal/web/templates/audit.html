@@ -10,6 +10,29 @@
     <div class="stat-tile"><div class="n" id="statLoaded">0/{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.audited"}}</div></div>
 </div>
 
+<div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 15px; margin-bottom: 20px; font-size: 0.85em;">
+    <div>
+        {{if .CVEStatus.Live}}
+        <strong style="color: #34d399;">{{T .Base.Lang "audit.cve_db_live"}}</strong>
+        {{else}}
+        <strong style="color: #f59e0b;">{{T .Base.Lang "audit.cve_db_fallback"}}</strong>
+        {{end}}
+        <span class="muted">
+            {{if isZero .CVEStatus.LastSuccessAt}}
+            — {{T .Base.Lang "audit.cve_db_never"}}
+            {{else}}
+            — {{T .Base.Lang "audit.cve_db_updated"}} {{fmtTime .CVEStatus.LastSuccessAt}}
+            {{end}}
+            {{if .CVEStatus.LastError}}
+            · <span style="color: #f87171;" title="{{.CVEStatus.LastError}}">{{T .Base.Lang "audit.cve_db_error"}}</span>
+            {{end}}
+        </span>
+    </div>
+    <form method="post" action="/audit/cve_refresh" style="margin: 0;">
+        <button type="submit" class="btn btn-small" style="background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); padding: 3px 10px;">{{T .Base.Lang "audit.cve_db_refresh"}}</button>
+    </form>
+</div>
+
 <div class="grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
     <!-- Custom Rule Builder -->
     <div class="card">
