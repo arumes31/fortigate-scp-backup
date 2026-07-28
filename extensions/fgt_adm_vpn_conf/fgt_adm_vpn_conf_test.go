@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // TestIndexTemplateRenders parses the embedded templates and renders the index
@@ -202,6 +207,79 @@ func TestListGraylogIssuesFiltersByAge(t *testing.T) {
 		if got[c.fw] != c.wantListed {
 			t.Errorf("device %q listed=%v, want %v", c.fw, got[c.fw], c.wantListed)
 		}
+	}
+}
+
+// TestEditSubmit_MultipartFormData reproduces the edit modal's real request: the
+// browser JS submits via fetch() with a FormData body, which Content-Type's as
+// multipart/form-data rather than the urlencoded shape a plain HTML form post
+// would use. editSubmit must actually pick up the posted fields from that body
+// (previously it called ParseForm, which leaves PostForm empty for multipart
+// requests, so every field read back as "" and the update always failed with
+// "Kundenname and Standort are required" no matter what was typed).
+func TestEditSubmit_MultipartFormData(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := openDB(filepath.Join(dataDir, "fgt-adm-vpn-conf-db.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.Exec(`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid)
+		VALUES ('old-kunde', 'old-ort', '10.105.1.110', 'FGT40F_OLD-KUNDE-OLD-ORT', '11111')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler), logActivity: func(string, string, string) {}}
+
+	fields := map[string]string{
+		"kundenname":    "panhoelzl",
+		"standort":      "ried",
+		"firewallname":  "FGT40F_PANHOELZL-RIED",
+		"cid":           "25580",
+		"remoteip_full": "10.105.1.110",
+		"wan_interface": "wan",
+		"lan_interface": "loopback",
+		"ipsec_psk_ro":  "psauto",
+		"ipsec_psk_hci": "psauto",
+		"radiusmgt":     "YES",
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/edit/%d", id), &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+
+	router := chi.NewRouter()
+	router.Post("/edit/{id}", e.editSubmit)
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("editSubmit status = %d, body = %q, want %d", rr.Code, rr.Body.String(), http.StatusSeeOther)
+	}
+
+	updated, err := e.getConfig(id)
+	if err != nil {
+		t.Fatalf("getConfig: %v", err)
+	}
+	if updated.Kundenname != "panhoelzl" || updated.Standort != "ried" {
+		t.Fatalf("update did not apply: kundenname=%q standort=%q", updated.Kundenname, updated.Standort)
 	}
 }
 
