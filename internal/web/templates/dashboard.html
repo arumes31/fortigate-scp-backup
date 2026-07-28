@@ -139,7 +139,20 @@
 {{if .GraylogIssues}}
 <div class="card pad-0" style="border: 1px solid rgba(239,68,68,0.4);">
     <div class="card-header">
-        <h2 class="mt-0 mb-0" style="color: #f87171;">⚠ {{T .Base.Lang "dashboard.graylog_title"}}</h2>
+        <h2 class="mt-0 mb-0" style="color: #f87171;">⚠ {{T .Base.Lang "dashboard.graylog_title"}}
+            <span class="info-hint" tabindex="0" aria-label="{{T .Base.Lang "dashboard.graylog_help_title"}}">
+                i
+                <span class="info-hint-body">
+                    <strong>{{T .Base.Lang "dashboard.graylog_help_title"}}</strong>
+                    <ol>
+                        <li>{{T .Base.Lang "dashboard.graylog_help_1"}}</li>
+                        <li>{{T .Base.Lang "dashboard.graylog_help_2"}}</li>
+                        <li>{{T .Base.Lang "dashboard.graylog_help_3"}}</li>
+                        <li>{{T .Base.Lang "dashboard.graylog_help_4"}}</li>
+                    </ol>
+                </span>
+            </span>
+        </h2>
         <span class="muted" style="font-size: 0.85em;">{{len .GraylogIssues}}</span>
     </div>
     <div class="table-wrap">
