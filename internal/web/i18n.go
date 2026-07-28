@@ -356,13 +356,18 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.check_busy":          {"en": "Busy, try again shortly", "de": "Beschäftigt, bitte gleich erneut versuchen"},
 
 	// Dashboard page (Graylog logging status card, from the FGT ADM VPN config)
-	"dashboard.graylog_title":     {"en": "Graylog logging issues", "de": "Graylog-Logging-Probleme"},
-	"dashboard.col_site":          {"en": "Site", "de": "Standort"},
-	"dashboard.col_status":        {"en": "Status", "de": "Status"},
-	"dashboard.col_checked":       {"en": "Last checked", "de": "Zuletzt geprüft"},
-	"dashboard.gl_offline":        {"en": "offline", "de": "offline"},
-	"dashboard.gl_error":          {"en": "error", "de": "Fehler"},
-	"dashboard.gl_config_missing": {"en": "not configured", "de": "nicht konfiguriert"},
+	"dashboard.graylog_title":      {"en": "Graylog logging issues", "de": "Graylog-Logging-Probleme"},
+	"dashboard.graylog_help_title": {"en": "How to fix", "de": "Fehlerbehebung"},
+	"dashboard.graylog_help_1":     {"en": `Check "Firewallname" in FGT ADM VPN Config — it must match the device's hostname on the FortiGate.`, "de": `"Firewallname" in FGT ADM VPN Config prüfen — muss dem Gerätenamen (Hostname) auf dem FortiGate entsprechen.`},
+	"dashboard.graylog_help_2":     {"en": `For an HA cluster, "Cluster Hostnames" in FGT ADM VPN Config must correctly list both member hostnames.`, "de": `Bei einem HA-Cluster müssen die "Cluster Hostnames" in FGT ADM VPN Config beide Mitglieder-Hostnamen korrekt auflisten.`},
+	"dashboard.graylog_help_3":     {"en": `The ADM IPsec tunnel to RO must be up.`, "de": `Der ADM-IPsec-Tunnel zu RO muss aktiv sein.`},
+	"dashboard.graylog_help_4":     {"en": `Restart syslog on the firewall via FortiManager script "reenable-syslog".`, "de": `Syslog auf der Firewall über das FortiManager-Skript "reenable-syslog" neu starten.`},
+	"dashboard.col_site":           {"en": "Site", "de": "Standort"},
+	"dashboard.col_status":         {"en": "Status", "de": "Status"},
+	"dashboard.col_checked":        {"en": "Last checked", "de": "Zuletzt geprüft"},
+	"dashboard.gl_offline":         {"en": "offline", "de": "offline"},
+	"dashboard.gl_error":           {"en": "error", "de": "Fehler"},
+	"dashboard.gl_config_missing":  {"en": "not configured", "de": "nicht konfiguriert"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by
