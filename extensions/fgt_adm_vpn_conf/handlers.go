@@ -237,7 +237,13 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	// The edit modal submits via fetch() with a FormData body, which the browser
+	// sends as multipart/form-data -- ParseForm alone only reads
+	// application/x-www-form-urlencoded bodies and would silently leave
+	// PostForm empty, making every field below read as "". ParseMultipartForm
+	// handles both (it calls ParseForm internally) and still populates
+	// PostForm, so formGet/formHas need no changes.
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
