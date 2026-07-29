@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"net/netip"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,31 +33,47 @@ type ipamEntry struct {
 	Name   string `json:"name"`   // interface/object name or detail
 }
 
-// ipamOverlap is one cross-firewall collision between two prefixes.
+// ipamOverlap is one cross-firewall collision, GROUPED by prefix. Grouping is
+// essential at fleet scale: a template-deployed prefix shared by 147 firewalls
+// is one row with a count — not the ~10,700 pairwise rows that made the
+// original pair-based report balloon to hundreds of MB.
 type ipamOverlap struct {
-	Kind string    `json:"kind"` // duplicate | containment
-	A    ipamEntry `json:"a"`
-	B    ipamEntry `json:"b"`
+	Kind      string   `json:"kind"`            // duplicate | containment
+	Prefix    string   `json:"prefix"`          // duplicate: the shared prefix; containment: the outer prefix
+	Inner     string   `json:"inner,omitempty"` // containment: the contained prefix
+	Count     int      `json:"count"`           // distinct firewalls involved
+	Firewalls []string `json:"firewalls"`       // capped samples: "fqdn (detail)"
 }
+
+const (
+	// ipamOverlapMaxRows caps how many overlap groups are stored/rendered;
+	// the total is still reported so truncation is visible.
+	ipamOverlapMaxRows = 500
+	// ipamOverlapMaxFws caps the example firewalls listed per overlap group.
+	ipamOverlapMaxFws = 6
+)
 
 // ipamSnapshot is the stored fleet aggregation.
 type ipamSnapshot struct {
-	Firewalls int           `json:"firewalls"`
-	Scanned   int           `json:"scanned"` // firewalls with a parsed config
-	Prefixes  int           `json:"prefixes"`
-	Entries   []ipamEntry   `json:"entries"`
-	Overlaps  []ipamOverlap `json:"overlaps"`
+	Firewalls     int           `json:"firewalls"`
+	Scanned       int           `json:"scanned"` // firewalls with a parsed config
+	Prefixes      int           `json:"prefixes"`
+	Entries       []ipamEntry   `json:"entries"`
+	Overlaps      []ipamOverlap `json:"overlaps"`
+	OverlapsTotal int           `json:"overlaps_total"`
 }
 
 // ipamDataOut is the /ipam/data payload: the stored snapshot (if any) plus
-// the live progress of a running recompute.
+// the live progress of a running recompute. The snapshot is passed through as
+// raw JSON — it was serialized by refreshIPAM, and re-decoding a multi-MB
+// blob on every page load would burn CPU for nothing.
 type ipamDataOut struct {
-	Running    bool          `json:"running"`
-	Done       int           `json:"done"`
-	Total      int           `json:"total"`
-	Current    string        `json:"current,omitempty"`
-	ComputedAt string        `json:"computed_at,omitempty"`
-	Snapshot   *ipamSnapshot `json:"snapshot,omitempty"`
+	Running    bool            `json:"running"`
+	Done       int             `json:"done"`
+	Total      int             `json:"total"`
+	Current    string          `json:"current,omitempty"`
+	ComputedAt string          `json:"computed_at,omitempty"`
+	Snapshot   json.RawMessage `json:"snapshot,omitempty"`
 }
 
 // sweepProgress tracks one background fleet sweep (IPAM aggregation, license
@@ -188,65 +203,120 @@ func ipamEntriesFor(res *auditResult, fwID int, fqdn string) []ipamEntry {
 	return out
 }
 
-// findOverlaps reports collisions between prefixes of DIFFERENT firewalls.
-// 0.0.0.0/0 and /32 hosts are skipped as noise. For each colliding pair one
-// overlap row is emitted: "duplicate" when the prefixes are identical,
-// "containment" when one contains the other (partial overlap is impossible
-// between valid CIDR prefixes — two prefixes either nest or are disjoint).
-func findOverlaps(entries []ipamEntry) []ipamOverlap {
-	type parsed struct {
-		e ipamEntry
-		p netip.Prefix
+// ipamPrefixGroup collects everything using one exact prefix.
+type ipamPrefixGroup struct {
+	p     netip.Prefix
+	fws   map[int]bool
+	names []string // capped samples: "fqdn (detail)"
+}
+
+func (g *ipamPrefixGroup) addSample(e ipamEntry) {
+	if len(g.names) < ipamOverlapMaxFws && !g.fws[e.FwID] {
+		g.names = append(g.names, e.FQDN+" ("+e.Name+")")
 	}
-	var ps []parsed
+	g.fws[e.FwID] = true
+}
+
+// crossFirewall reports whether two prefix groups belong to entirely
+// DIFFERENT firewalls. Any shared firewall means the nesting is explainable
+// as that firewall's own address hierarchy (its LAN under its own aggregate
+// route — which other template-deployed sites may carry too), so it is never
+// counted as an overlap.
+func crossFirewall(a, b *ipamPrefixGroup) bool {
+	for fw := range b.fws {
+		if a.fws[fw] {
+			return false
+		}
+	}
+	return true
+}
+
+// findOverlaps reports collisions between prefixes of DIFFERENT firewalls,
+// grouped per prefix. 0.0.0.0/0 and /32 hosts are skipped as noise.
+//   - duplicate: the same prefix in use on ≥2 firewalls (one row per prefix,
+//     however many devices share it).
+//   - containment: a prefix nested inside its NEAREST enclosing prefix when
+//     different firewalls are involved (partial overlap is impossible between
+//     CIDR prefixes — they either nest or are disjoint). The sweep is a
+//     sorted stack walk, linear in the number of unique prefixes.
+//
+// The row list is capped at ipamOverlapMaxRows; the returned total counts all
+// groups found so the UI can show truncation.
+func findOverlaps(entries []ipamEntry) ([]ipamOverlap, int) {
+	groups := map[netip.Prefix]*ipamPrefixGroup{}
 	for _, e := range entries {
 		p, err := netip.ParsePrefix(e.Prefix)
 		if err != nil || p.Bits() == 0 || p.Bits() >= 32 {
 			continue
 		}
-		ps = append(ps, parsed{e, p})
+		g := groups[p]
+		if g == nil {
+			g = &ipamPrefixGroup{p: p, fws: map[int]bool{}}
+			groups[p] = g
+		}
+		g.addSample(e)
 	}
-	// Deduplicate identical (prefix, firewall, source, name) rows first so the
-	// report never pairs an entry with its own duplicate listing.
-	sort.Slice(ps, func(i, j int) bool {
-		if ps[i].p.Bits() != ps[j].p.Bits() {
-			return ps[i].p.Bits() < ps[j].p.Bits()
-		}
-		return ps[i].p.Addr().Less(ps[j].p.Addr())
-	})
-	var out []ipamOverlap
-	seen := map[string]bool{}
-	for i := 0; i < len(ps); i++ {
-		for j := i + 1; j < len(ps); j++ {
-			a, b := ps[i], ps[j]
-			if a.e.FwID == b.e.FwID {
-				continue
-			}
-			if !a.p.Overlaps(b.p) {
-				continue
-			}
-			kind := "containment"
-			if a.p == b.p {
-				kind = "duplicate"
-			}
-			// One row per (pair of prefixes, pair of firewalls) — source-level
-			// fan-out (interface+dhcp+route on both sides) would explode the list.
-			key := a.p.String() + "|" + b.p.String() + "|" + strconv.Itoa(a.e.FwID) + "|" + strconv.Itoa(b.e.FwID)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, ipamOverlap{Kind: kind, A: a.e, B: b.e})
-		}
+	// Sort by address, then shorter prefix first, so an enclosing prefix is
+	// always visited before everything nested inside it.
+	list := make([]*ipamPrefixGroup, 0, len(groups))
+	for _, g := range groups {
+		list = append(list, g)
 	}
-	// Duplicates first, then by prefix.
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind == "duplicate"
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].p.Addr() != list[j].p.Addr() {
+			return list[i].p.Addr().Less(list[j].p.Addr())
 		}
-		return out[i].A.Prefix < out[j].A.Prefix
+		return list[i].p.Bits() < list[j].p.Bits()
 	})
-	return out
+
+	var dups, contains []ipamOverlap
+	var stack []*ipamPrefixGroup
+	for _, g := range list {
+		if len(g.fws) >= 2 {
+			dups = append(dups, ipamOverlap{
+				Kind: "duplicate", Prefix: g.p.String(), Count: len(g.fws), Firewalls: g.names,
+			})
+		}
+		for len(stack) > 0 && !stack[len(stack)-1].p.Contains(g.p.Addr()) {
+			stack = stack[:len(stack)-1]
+		}
+		if len(stack) > 0 {
+			parent := stack[len(stack)-1]
+			if crossFirewall(parent, g) {
+				union := map[int]bool{}
+				for fw := range parent.fws {
+					union[fw] = true
+				}
+				for fw := range g.fws {
+					union[fw] = true
+				}
+				names := append(append([]string{}, parent.names...), g.names...)
+				if len(names) > ipamOverlapMaxFws {
+					names = names[:ipamOverlapMaxFws]
+				}
+				contains = append(contains, ipamOverlap{
+					Kind: "containment", Prefix: parent.p.String(), Inner: g.p.String(),
+					Count: len(union), Firewalls: names,
+				})
+			}
+		}
+		stack = append(stack, g)
+	}
+
+	// Most widely shared duplicates first, then containments.
+	sort.SliceStable(dups, func(i, j int) bool {
+		if dups[i].Count != dups[j].Count {
+			return dups[i].Count > dups[j].Count
+		}
+		return dups[i].Prefix < dups[j].Prefix
+	})
+	sort.SliceStable(contains, func(i, j int) bool { return contains[i].Prefix < contains[j].Prefix })
+	out := append(dups, contains...)
+	total := len(out)
+	if len(out) > ipamOverlapMaxRows {
+		out = out[:ipamOverlapMaxRows]
+	}
+	return out, total
 }
 
 // ---- snapshot compute & storage ---------------------------------------------
@@ -309,12 +379,14 @@ func (s *Server) refreshIPAM() {
 	for _, e := range entries {
 		unique[e.Prefix] = true
 	}
+	overlaps, overlapsTotal := findOverlaps(entries)
 	snap := ipamSnapshot{
-		Firewalls: len(fws),
-		Scanned:   scanned,
-		Prefixes:  len(unique),
-		Entries:   entries,
-		Overlaps:  findOverlaps(entries),
+		Firewalls:     len(fws),
+		Scanned:       scanned,
+		Prefixes:      len(unique),
+		Entries:       entries,
+		Overlaps:      overlaps,
+		OverlapsTotal: overlapsTotal,
 	}
 	blob, err := json.Marshal(snap)
 	if err != nil {
@@ -328,7 +400,7 @@ func (s *Server) refreshIPAM() {
 		return
 	}
 	s.logger.Info("ipam snapshot refreshed", "firewalls", len(fws), "scanned", scanned,
-		"prefixes", snap.Prefixes, "overlaps", len(snap.Overlaps))
+		"prefixes", snap.Prefixes, "overlaps", overlapsTotal)
 }
 
 // ---- handlers ---------------------------------------------------------------
@@ -358,10 +430,7 @@ func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
 	haveSnap := db.QueryRow(`SELECT computed_at, results_json FROM ipam_cache WHERE id = 1`).
 		Scan(&out.ComputedAt, &blob) == nil
 	if haveSnap {
-		var snap ipamSnapshot
-		if err := json.Unmarshal([]byte(blob), &snap); err == nil {
-			out.Snapshot = &snap
-		}
+		out.Snapshot = json.RawMessage(blob)
 	}
 	out.Running, out.Done, out.Total, out.Current = s.ipamProgress.snapshot()
 	if !haveSnap && !out.Running {

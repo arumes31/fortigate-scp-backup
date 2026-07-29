@@ -178,46 +178,52 @@ func TestSweepProgress(t *testing.T) {
 
 func TestFindOverlaps(t *testing.T) {
 	entries := []ipamEntry{
-		{Prefix: "10.20.0.0/24", FwID: 1, FQDN: "fw-a", Source: "interface", Name: "lan"},
-		{Prefix: "10.20.0.0/24", FwID: 1, FQDN: "fw-a", Source: "dhcp", Name: "lan scope"}, // same fw: never flagged
-		{Prefix: "10.20.0.0/24", FwID: 2, FQDN: "fw-b", Source: "interface", Name: "lan"},  // duplicate vs fw-a
-		{Prefix: "10.20.0.0/16", FwID: 3, FQDN: "fw-c", Source: "route", Name: "agg"},      // contains both
-		{Prefix: "10.99.0.0/24", FwID: 4, FQDN: "fw-d", Source: "interface", Name: "lan"},  // disjoint
-		{Prefix: "0.0.0.0/0", FwID: 5, FQDN: "fw-e", Source: "route", Name: "default"},     // excluded
-		{Prefix: "10.20.0.7/32", FwID: 6, FQDN: "fw-f", Source: "address", Name: "host"},   // /32 excluded
+		// Template prefix shared by three firewalls; fw-a lists it from two
+		// sources, which must count as ONE firewall.
+		{Prefix: "192.168.10.0/24", FwID: 1, FQDN: "fw-a", Source: "interface", Name: "lan"},
+		{Prefix: "192.168.10.0/24", FwID: 1, FQDN: "fw-a", Source: "dhcp", Name: "lan scope"},
+		{Prefix: "192.168.10.0/24", FwID: 2, FQDN: "fw-b", Source: "interface", Name: "lan"},
+		{Prefix: "192.168.10.0/24", FwID: 3, FQDN: "fw-c", Source: "interface", Name: "lan"},
+		// Containment between disjoint firewalls: fw-d's /16 contains fw-e's /24.
+		{Prefix: "10.50.0.0/16", FwID: 4, FQDN: "fw-d", Source: "route", Name: "agg"},
+		{Prefix: "10.50.1.0/24", FwID: 5, FQDN: "fw-e", Source: "interface", Name: "lan"},
+		// Containment sharing a firewall: fw-f's own LAN under an aggregate
+		// fw-f itself carries (fw-g too) — never flagged, per design.
+		{Prefix: "10.60.0.0/16", FwID: 6, FQDN: "fw-f", Source: "route", Name: "agg"},
+		{Prefix: "10.60.0.0/16", FwID: 7, FQDN: "fw-g", Source: "route", Name: "agg"},
+		{Prefix: "10.60.1.0/24", FwID: 6, FQDN: "fw-f", Source: "interface", Name: "lan"},
+		// Excluded noise.
+		{Prefix: "0.0.0.0/0", FwID: 8, FQDN: "fw-h", Source: "route", Name: "default"},
+		{Prefix: "10.60.1.7/32", FwID: 9, FQDN: "fw-i", Source: "address", Name: "host"},
 	}
-	overlaps := findOverlaps(entries)
-
-	var dups, contains int
+	overlaps, total := findOverlaps(entries)
+	if total != len(overlaps) {
+		t.Errorf("total = %d, len = %d (nothing should be truncated here)", total, len(overlaps))
+	}
+	byKey := map[string]ipamOverlap{}
 	for _, o := range overlaps {
-		if o.A.FwID == o.B.FwID {
-			t.Errorf("same-firewall overlap flagged: %+v", o)
-		}
-		switch o.Kind {
-		case "duplicate":
-			dups++
-			isAB := o.A.FwID == 1 && o.B.FwID == 2
-			isBA := o.A.FwID == 2 && o.B.FwID == 1
-			if !isAB && !isBA {
-				t.Errorf("unexpected duplicate pair: %+v", o)
-			}
-		case "containment":
-			contains++
-		}
-		if o.A.Prefix == "0.0.0.0/0" || o.B.Prefix == "0.0.0.0/0" ||
-			o.A.Prefix == "10.20.0.7/32" || o.B.Prefix == "10.20.0.7/32" {
+		byKey[o.Kind+"|"+o.Prefix+"|"+o.Inner] = o
+		if o.Prefix == "0.0.0.0/0" || o.Inner == "10.60.1.7/32" {
 			t.Errorf("excluded prefix in overlap: %+v", o)
 		}
 	}
-	if dups != 1 {
-		t.Errorf("duplicates = %d, want 1", dups)
+	if dup := byKey["duplicate|192.168.10.0/24|"]; dup.Count != 3 {
+		t.Errorf("shared template prefix count = %d, want 3 (distinct firewalls): %+v", dup.Count, dup)
 	}
-	// fw-c's /16 contains fw-a's /24 and fw-b's /24 (one row per fw pair).
-	if contains != 2 {
-		t.Errorf("containments = %d, want 2: %+v", contains, overlaps)
+	if dup := byKey["duplicate|10.60.0.0/16|"]; dup.Count != 2 {
+		t.Errorf("shared aggregate count = %d, want 2: %+v", dup.Count, dup)
 	}
-	// Duplicates sort first.
-	if len(overlaps) > 0 && overlaps[0].Kind != "duplicate" {
-		t.Errorf("first overlap kind = %s, want duplicate", overlaps[0].Kind)
+	if c := byKey["containment|10.50.0.0/16|10.50.1.0/24"]; c.Count != 2 {
+		t.Errorf("disjoint containment missing or wrong count: %+v", c)
+	}
+	if _, flagged := byKey["containment|10.60.0.0/16|10.60.1.0/24"]; flagged {
+		t.Error("containment sharing a firewall must not be flagged")
+	}
+	if len(overlaps) != 3 {
+		t.Errorf("overlaps = %d, want 3: %+v", len(overlaps), overlaps)
+	}
+	// Duplicates sort first, widest sharing first.
+	if overlaps[0].Kind != "duplicate" || overlaps[0].Count != 3 {
+		t.Errorf("first overlap = %+v, want the 3-firewall duplicate", overlaps[0])
 	}
 }
