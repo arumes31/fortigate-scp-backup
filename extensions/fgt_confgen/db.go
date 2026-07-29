@@ -131,8 +131,23 @@ func (e *Extension) renameTemplateInDB(username, oldName, newName, oldURL, newUR
 	return affected, nil
 }
 
+// lastConfigSchema versions the stored ParsedConfig blob. Bump on any
+// incompatible ParsedConfig change: an old-shape blob would otherwise
+// unmarshal partially and silently prefill the UI with wrong data. A
+// mismatch is treated as "no stored config" (the row is derived — the user
+// simply re-parses a config), which every caller already tolerates.
+const lastConfigSchema = 1
+
+// storedLastConfig wraps the parsed config with its storage-shape version.
+// Pre-versioning rows (raw ParsedConfig JSON) decode with Schema 0 and are
+// discarded the same way.
+type storedLastConfig struct {
+	Schema int          `json:"schema"`
+	Config ParsedConfig `json:"config"`
+}
+
 func (e *Extension) saveLastConfigToDB(username string, config ParsedConfig) error {
-	parsedJSON, err := json.Marshal(config)
+	parsedJSON, err := json.Marshal(storedLastConfig{Schema: lastConfigSchema, Config: config})
 	if err != nil {
 		return err
 	}
@@ -142,14 +157,19 @@ func (e *Extension) saveLastConfigToDB(username string, config ParsedConfig) err
 }
 
 func (e *Extension) getLastConfigFromDB(username string) (ParsedConfig, error) {
-	var config ParsedConfig
 	var lastConfJSON string
 	err := e.db.QueryRow("SELECT config_data FROM last_config WHERE username = ?", username).Scan(&lastConfJSON)
 	if err != nil {
-		return config, err
+		return ParsedConfig{}, err
 	}
-	err = json.Unmarshal([]byte(lastConfJSON), &config)
-	return config, err
+	var stored storedLastConfig
+	if err := json.Unmarshal([]byte(lastConfJSON), &stored); err != nil {
+		return ParsedConfig{}, err
+	}
+	if stored.Schema != lastConfigSchema {
+		return ParsedConfig{}, fmt.Errorf("stored config schema %d, want %d", stored.Schema, lastConfigSchema)
+	}
+	return stored.Config, nil
 }
 
 // errShortCodeCollision reports an INSERT that failed only because the random

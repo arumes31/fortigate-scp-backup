@@ -201,9 +201,17 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Migration: version the cve_cache storage shape; rows in an older shape
+	// are wiped by ensureCVEDefsSchema below and re-seeded/refreshed.
+	if _, err := db.Exec(`ALTER TABLE cve_meta ADD COLUMN defs_schema INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, err
+	}
 	// Backfill: map pre-i18n exemption rows (German finding texts, empty
 	// finding_key) to stable keys so upgrades keep existing exemptions active.
 	s.backfillExemptionKeys(db)
+	ensureCVEDefsSchema(db)
 	seedCVECacheIfEmpty(db)
 	return db, nil
 }
