@@ -1,0 +1,128 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "lic.title"}}</h1>
+
+{{if .Error}}<div class="card" style="border: 1px solid rgba(239,68,68,0.4); color: #f87171;">{{.Error}}</div>{{end}}
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">{{T .Base.Lang "lic.summary"}}</h2>
+        <div class="stat"><b>{{len .Rows}}</b><span class="muted">{{T .Base.Lang "lic.devices"}}</span></div>
+        <div class="stat"><b style="color:#fbbf24;">{{.Expiring}}</b><span class="muted">{{T .Base.Lang "lic.expiring"}}</span></div>
+        <div class="stat"><b style="color:#f87171;">{{.Expired}}</b><span class="muted">{{T .Base.Lang "lic.expired"}}</span></div>
+        <div class="stat"><b>{{.Unknown}}</b><span class="muted">{{T .Base.Lang "lic.unknown"}}</span></div>
+    </div>
+    <p class="muted mb-0" style="font-size: 0.85em;">{{T .Base.Lang "lic.note"}}</p>
+</div>
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">{{T .Base.Lang "lic.inventory"}}</h2>
+        <input type="text" id="licSearch" placeholder="{{T .Base.Lang "lic.search"}}" autocomplete="off" style="max-width:280px;">
+        <span class="muted" id="licSearchCount" style="font-size: 0.85em;"></span>
+        <form method="post" action="/licenses/refresh_all" style="margin-left:auto;">
+            <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
+        </form>
+    </div>
+    <div class="table-wrap">
+        <table class="data sticky-first" id="licTable">
+            <thead>
+                <tr>
+                    <th>{{T .Base.Lang "lic.col_firewall"}}</th>
+                    <th>{{T .Base.Lang "lic.col_hostname"}}</th>
+                    <th>{{T .Base.Lang "lic.col_serial"}}</th>
+                    <th>{{T .Base.Lang "lic.col_model"}}</th>
+                    <th>{{T .Base.Lang "lic.col_firmware"}}</th>
+                    <th>{{T .Base.Lang "lic.col_registration"}}</th>
+                    <th>HA</th>
+                    <th>{{T .Base.Lang "lic.col_expiry"}}</th>
+                    <th>{{T .Base.Lang "lic.col_fetched"}}</th>
+                    <th>{{T .Base.Lang "lic.col_actions"}}</th>
+                </tr>
+            </thead>
+            <tbody>
+            {{range .Rows}}
+                <tr data-fw="{{.FwID}}">
+                    <td>{{.FQDN}}</td>
+                    <td>{{if .Hostname}}{{.Hostname}}{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>{{.Model}}</td>
+                    <td>{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{end}}</td>
+                    <td>{{.Registration}}</td>
+                    <td>{{if .HAMode}}{{.HAMode}}{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>
+                        {{if eq .Level "ok"}}<span class="pill pill-success" title="{{.Expiry}}">{{.Expiry}}</span>
+                        {{else if eq .Level "warn"}}<span class="pill pill-new">{{.Expiry}} · {{.DaysLeft}}d</span>
+                        {{else if eq .Level "crit"}}<span class="pill pill-failed">{{.Expiry}} · {{.DaysLeft}}d</span>
+                        {{else if eq .Level "expired"}}<span class="pill pill-failed">{{T $.Base.Lang "lic.pill_expired"}} {{.Expiry}}</span>
+                        {{else}}<span class="pill pill-muted">{{T $.Base.Lang "lic.pill_unknown"}}</span>{{end}}
+                        {{if .FetchError}}<span class="muted" style="font-size:0.85em;" title="{{.FetchError}}"> ⚠</span>{{end}}
+                    </td>
+                    <td class="muted">{{if .FetchedAt}}{{.FetchedAt}}{{else}}—{{end}}</td>
+                    <td class="actions">
+                        {{if .Entitlements}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
+                        <form method="post" action="/licenses/refresh/{{.FwID}}" style="display:inline">
+                            <button type="submit" class="btn btn-sm">{{T $.Base.Lang "lic.refresh"}}</button>
+                        </form>
+                    </td>
+                </tr>
+                {{if .Entitlements}}
+                <tr class="lic-detail" data-detail-for="{{.FwID}}" style="display:none;">
+                    <td colspan="10" style="padding: 0 14px 14px 28px;">
+                        <table class="data">
+                            <thead><tr><th>{{T $.Base.Lang "lic.col_service"}}</th><th>{{T $.Base.Lang "lic.col_version"}}</th><th>{{T $.Base.Lang "lic.col_expiry"}}</th><th>{{T $.Base.Lang "lic.col_last_update"}}</th><th>{{T $.Base.Lang "lic.col_result"}}</th></tr></thead>
+                            <tbody>
+                            {{range .Entitlements}}
+                                <tr>
+                                    <td>{{.Service}}</td>
+                                    <td class="muted">{{.Version}}</td>
+                                    <td>{{if .Expiry}}{{.Expiry}}{{else}}<span class="muted">—</span>{{end}}</td>
+                                    <td class="muted">{{.LastUpdate}}</td>
+                                    <td class="muted">{{.Result}}</td>
+                                </tr>
+                            {{end}}
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+                {{end}}
+            {{else}}
+                <tr><td colspan="10" class="empty">{{T .Base.Lang "lic.none"}}</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+(function () {
+    // Expand/collapse per-service entitlement rows.
+    document.querySelectorAll('.lic-toggle').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var detail = document.querySelector('.lic-detail[data-detail-for="' + btn.dataset.fw + '"]');
+            if (detail) { detail.style.display = detail.style.display === 'none' ? '' : 'none'; }
+        });
+    });
+
+    // Client-side search over the main rows; detail rows collapse on filtering.
+    var input = document.getElementById('licSearch');
+    var count = document.getElementById('licSearchCount');
+    if (!input) { return; }
+    var rows = Array.prototype.slice.call(
+        document.querySelectorAll('#licTable > tbody > tr[data-fw]'));
+    input.addEventListener('input', function () {
+        var terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+        document.querySelectorAll('.lic-detail').forEach(function (d) { d.style.display = 'none'; });
+        var visible = 0;
+        rows.forEach(function (row) {
+            var text = row.textContent.toLowerCase();
+            var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
+            row.style.display = match ? '' : 'none';
+            if (match) { visible++; }
+        });
+        count.textContent = terms.length ? visible + ' / ' + rows.length : '';
+    });
+})();
+</script>
+{{end}}

@@ -18,6 +18,8 @@
                 <a href="/search" class="{{if eq .Base.Active "search"}}active{{end}}">Search</a>
                 <a href="/audit" class="{{if eq .Base.Active "audit"}}active{{end}}">Audit</a>
                 <a href="/topology" class="{{if eq .Base.Active "topology"}}active{{end}}">Topology</a>
+                <a href="/ipam" class="{{if eq .Base.Active "ipam"}}active{{end}}">IPAM</a>
+                <a href="/licenses" class="{{if eq .Base.Active "licenses"}}active{{end}}">Licenses</a>
                 <a href="/activity_log" class="{{if eq .Base.Active "activity"}}active{{end}}">Act_Log</a>
                 {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/" class="{{if eq .Base.Active "admvpn"}}active{{end}}">VPN_Conf</a>{{end}}
                 {{if .Base.ExtFgtConfGenEnabled}}<a href="/fgt-confgen/" class="{{if eq .Base.Active "configgen"}}active{{end}}">Policy_Gen</a>{{end}}

@@ -109,6 +109,30 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			created_at TEXT NOT NULL,
 			expires_at TEXT
 		)`,
+		// License inventory: per-device summary from "get system status" and
+		// one row per FortiGuard service from "diagnose autoupdate versions".
+		// Written by the license collector (license.go); expiry is ISO
+		// yyyy-mm-dd so lexical comparisons are chronological.
+		`CREATE TABLE IF NOT EXISTS license_status (
+			fw_id INTEGER PRIMARY KEY,
+			serial TEXT, hostname TEXT, model TEXT, version TEXT, build TEXT,
+			registration TEXT, ha_mode TEXT, op_mode TEXT,
+			fetched_at TEXT NOT NULL,
+			fetch_error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS license_entitlements (
+			fw_id INTEGER NOT NULL,
+			service TEXT NOT NULL,
+			version TEXT, expiry TEXT, last_update TEXT, result TEXT,
+			PRIMARY KEY (fw_id, service)
+		)`,
+		// Trust-on-first-use SSH host-key pins for the license collector
+		// (authorized_keys format). Delete a row to re-trust a replaced device.
+		`CREATE TABLE IF NOT EXISTS ssh_known_hosts (
+			fw_id INTEGER PRIMARY KEY,
+			host_key TEXT NOT NULL,
+			first_seen TEXT NOT NULL
+		)`,
 		// cve_cache holds the live (NVD + CISA KEV) CVE dataset alongside the
 		// offline fallback seed (source='fallback-seed', see cveFallbackDefs) so
 		// getCVEs always has something to match against. See cve_source.go /
@@ -317,6 +341,15 @@ type Interface struct {
 	SwitchFeature string   `json:"switch_feature,omitempty"` // switch-controller-feature (nac, nac-segment, voice, …)
 	Type          string   `json:"type,omitempty"`           // set type: aggregate | redundant | hard-switch | switch | vlan | tunnel …
 	Fortilink     bool     `json:"fortilink,omitempty"`      // set fortilink enable (FortiLink fabric interface)
+	SecondaryIPs  []string `json:"secondary_ips,omitempty"`  // "ip mask" per config secondaryip entry
+}
+
+// AddressObject is one subnet-type "config firewall address" entry, extracted
+// for the fleet IPAM view (FQDN/geo/range objects are not captured).
+type AddressObject struct {
+	Name string `json:"name"`
+	IP   string `json:"ip"`
+	Mask string `json:"mask"`
 }
 
 type StaticRoute struct {
