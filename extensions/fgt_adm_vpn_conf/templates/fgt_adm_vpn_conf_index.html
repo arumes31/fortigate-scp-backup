@@ -6,6 +6,20 @@
     <title>FGT ADM VPN Config · FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
+    <style>
+        /* Compact variant for this page's wide config table. */
+        table.data.compact thead th { padding: 8px 10px; }
+        table.data.compact tbody td { padding: 6px 10px; }
+        table.data.compact code { font-size: 11px; }
+        /* Secondary line inside a cell (REMOTEIP-1st, next-check countdown). */
+        .sub { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+        /* DNS record check icon beside the DNS-Name-Full link. */
+        .dns-check { font-weight: 700; margin-right: 6px; cursor: help; }
+        .dns-ok { color: var(--success); }
+        .dns-fail { color: var(--danger); }
+        .dns-warn { color: var(--warning); }
+        .dns-unknown { color: var(--text-dim); }
+    </style>
 </head>
 <body>
 <div class="app">
@@ -97,24 +111,26 @@
         </div>
 
         <div class="card pad-0">
+            <div class="card-header">
+                <h2 class="mt-0 mb-0">Entries</h2>
+                <input type="text" id="vpnSearch" placeholder="Search entries&hellip;"
+                       autocomplete="off" style="max-width:280px;">
+                <span class="muted" id="vpnSearchCount" style="font-size: 0.85em;"></span>
+            </div>
             <div class="table-wrap">
-                <table class="data sticky-first">
+                <table class="data sticky-first compact" id="vpnTable">
                     <thead>
                         <tr>
                             <th>Firewallname</th>
                             <th>CID</th>
                             <th>Kundenname</th>
                             <th>Standort</th>
-                            <th>REMOTEIP-FULL</th>
-                            <th>REMOTEIP-FULL-1st</th>
+                            <th>REMOTEIP / -1st</th>
                             <th>ike2-username</th>
-                            <th>WAN-Interface</th>
-                            <th>DNS-Name</th>
-                            <th>RADIUSMGT</th>
-                            <th>Graylog</th>
+                            <th>WAN</th>
+                            <th>RADIUS</th>
                             <th>GL Status</th>
-                            <th>Next Check</th>
-                            <th>Cluster Hostnames</th>
+                            <th>Cluster</th>
                             <th>DNS-Name-Full</th>
                             <th>Actions</th>
                         </tr>
@@ -126,18 +142,15 @@
                             <td>{{.Cid}}</td>
                             <td>{{.Kundenname}}</td>
                             <td>{{.Standort}}</td>
-                            <td><code>{{.RemoteipFull}}</code></td>
-                            <td><code>{{.RemoteipFull1st}}</code></td>
+                            <td><code>{{.RemoteipFull}}</code><span class="sub">{{.RemoteipFull1st}}</span></td>
                             <td>{{.Ike2Username}}</td>
                             <td>{{.WanInterface}}</td>
-                            <td>{{.DnsName}}</td>
                             <td>{{.Radiusmgt}}</td>
-                            <td>{{if .GraylogEnabled}}YES{{else}}NO{{end}}</td>
                             <td>
                                 {{if eq .LastGraylogStatus "config_missing"}}
                                     <span class="pill pill-new" title="Graylog not configured">config</span>
                                 {{else if or (not .GraylogEnabled) (eq .LastGraylogStatus "disabled")}}
-                                    <span class="pill pill-muted" title="Disabled">disabled</span>
+                                    <span class="pill pill-muted" title="Graylog check disabled">disabled</span>
                                 {{else if eq .LastGraylogStatus "online"}}
                                     <span class="pill pill-success" title="Online">online</span>
                                 {{else if eq .LastGraylogStatus "offline"}}
@@ -145,14 +158,26 @@
                                 {{else}}
                                     <span class="pill pill-muted" title="Unknown">unknown</span>
                                 {{end}}
-                            </td>
-                            <td>
                                 {{if and .GraylogEnabled .NextCheckISO}}
-                                    <span class="next-graylog-check muted" data-next="{{.NextCheckISO}}">&hellip;</span>
-                                {{else}}-{{end}}
+                                    <span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>
+                                {{end}}
                             </td>
                             <td>{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}-{{end}}</td>
-                            <td><a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a></td>
+                            <td>
+                                {{if .DnsNameFull}}
+                                    {{if eq .LastDnsStatus "ok"}}
+                                        <span class="dns-check dns-ok" title="DNS OK — resolves to {{.LastDnsResolved}}">&#10003;</span>
+                                    {{else if eq .LastDnsStatus "mismatch"}}
+                                        <span class="dns-check dns-fail" title="Wrong IP — resolves to {{.LastDnsResolved}}, expected {{.RemoteipFull}}">&#10007;</span>
+                                    {{else if eq .LastDnsStatus "unresolved"}}
+                                        <span class="dns-check dns-fail" title="No DNS record — expected {{.RemoteipFull}}">&#10007;</span>
+                                    {{else if eq .LastDnsStatus "error"}}
+                                        <span class="dns-check dns-warn" title="DNS lookup failed (resolver error)">&#9888;</span>
+                                    {{else}}
+                                        <span class="dns-check dns-unknown" title="DNS not checked yet">&middot;</span>
+                                    {{end}}<a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a>
+                                {{else}}-{{end}}
+                            </td>
                             <td class="actions">
                                 <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
                                 <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-id="{{.ID}}" data-name="{{.Firewallname}}">Remove</button>
@@ -160,7 +185,7 @@
                             </td>
                         </tr>
                         {{else}}
-                        <tr><td colspan="16" class="empty">No entries yet.</td></tr>
+                        <tr><td colspan="12" class="empty">No entries yet.</td></tr>
                         {{end}}
                     </tbody>
                 </table>
@@ -350,6 +375,31 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (addBtn) { addBtn.textContent = 'Show'; }
             }
         });
+    }
+
+    // Client-side table search: hides rows not matching every whitespace-
+    // separated term (case-insensitive, against the row's full text).
+    var searchInput = document.getElementById('vpnSearch');
+    var searchCount = document.getElementById('vpnSearchCount');
+    if (searchInput) {
+        var searchRows = Array.prototype.slice.call(
+            document.querySelectorAll('#vpnTable tbody tr')).filter(function (row) {
+                return !row.querySelector('td.empty');
+            });
+        var applySearch = function () {
+            var terms = searchInput.value.toLowerCase().split(/\s+/).filter(Boolean);
+            var visible = 0;
+            searchRows.forEach(function (row) {
+                var text = row.textContent.toLowerCase();
+                var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
+                row.style.display = match ? '' : 'none';
+                if (match) { visible++; }
+            });
+            searchCount.textContent = terms.length
+                ? visible + ' / ' + searchRows.length
+                : '';
+        };
+        searchInput.addEventListener('input', applySearch);
     }
 
     // Live "next check" countdown.

@@ -24,7 +24,13 @@ func TestIndexTemplateRenders(t *testing.T) {
 		t.Fatalf("parseTemplates: %v", err)
 	}
 	data := indexData{
-		Configs:                []configRow{{VpnConfig: &VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}}},
+		Configs: []configRow{
+			{VpnConfig: &VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}},
+			{VpnConfig: &VpnConfig{ID: 2, Firewallname: "acme-ok", DnsNameFull: "fgt-acme-ok.adm.example",
+				RemoteipFull: "10.105.1.2", LastDnsStatus: "ok", LastDnsResolved: "10.105.1.2"}},
+			{VpnConfig: &VpnConfig{ID: 3, Firewallname: "acme-bad", DnsNameFull: "fgt-acme-bad.adm.example",
+				RemoteipFull: "10.105.1.3", LastDnsStatus: "mismatch", LastDnsResolved: "10.105.1.99"}},
+		},
 		AvailableIPsCount:      5,
 		AvailableIPsPercentage: "50.00",
 	}
@@ -33,7 +39,12 @@ func TestIndexTemplateRenders(t *testing.T) {
 		t.Fatalf("execute index: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"open-remove-modal", "removeConfirmCheck", "removal_commands"} {
+	for _, want := range []string{"open-remove-modal", "removeConfirmCheck", "removal_commands",
+		// DNS record check icons: green tick for a matching record, red cross
+		// (with resolved-vs-expected tooltip) for a wrong-IP record.
+		"dns-ok", "dns-fail", "expected 10.105.1.3",
+		// Client-side table search input + its filter hook.
+		"vpnSearch", "vpnTable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered index missing %q", want)
 		}
@@ -313,7 +324,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Newer columns must now be selectable.
-	for _, col := range []string{"cid", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since"} {
+	for _, col := range []string{"cid", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since", "last_dns_status", "last_dns_check", "last_dns_resolved"} {
 		if !columnExists(db, col) {
 			t.Errorf("column %q missing after migration", col)
 		}

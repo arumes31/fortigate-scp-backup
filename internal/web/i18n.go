@@ -368,6 +368,14 @@ var uiMsgs = map[string]map[string]string{
 	"dashboard.gl_offline":         {"en": "offline", "de": "offline"},
 	"dashboard.gl_error":           {"en": "error", "de": "Fehler"},
 	"dashboard.gl_config_missing":  {"en": "not configured", "de": "nicht konfiguriert"},
+
+	// Dashboard page (DNS record issues card, from the FGT ADM VPN config)
+	"dashboard.dns_title":      {"en": "DNS record issues (ADM VPN)", "de": "DNS-Record-Probleme (ADM VPN)"},
+	"dashboard.col_dns_name":   {"en": "DNS name", "de": "DNS-Name"},
+	"dashboard.col_resolved":   {"en": "Resolves to", "de": "Löst auf zu"},
+	"dashboard.col_expected":   {"en": "Expected", "de": "Erwartet"},
+	"dashboard.dns_unresolved": {"en": "no DNS record", "de": "kein DNS-Eintrag"},
+	"dashboard.dns_mismatch":   {"en": "wrong IP", "de": "falsche IP"},
 }
 
 // i18nJSON renders the whole catalog for a language as a JSON object (used by
