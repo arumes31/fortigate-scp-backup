@@ -286,6 +286,10 @@ func (s *Server) Routes() chi.Router {
 	r.Use(middleware.RequestID)
 	r.Use(s.accessLog)
 	r.Use(middleware.Recoverer)
+	// gzip/deflate for HTML/JSON/JS/CSS: the fleet-sized JSON payloads (IPAM
+	// snapshot, topology data) compress ~10×. SSE is unaffected — chi only
+	// compresses its default content types, which exclude text/event-stream.
+	r.Use(middleware.Compress(5))
 	r.Use(securityHeaders(s.cfg.EnableHSTS))
 
 	r.NotFound(s.handleNotFound)
