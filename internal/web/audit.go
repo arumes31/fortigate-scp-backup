@@ -134,11 +134,14 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			first_seen TEXT NOT NULL
 		)`,
 		// Stored fleet IPAM snapshot (single row), recomputed by the background
-		// sweep so /ipam/data never parses configs inside a request.
+		// sweep so /ipam/data never parses configs inside a request. snap_schema
+		// versions the JSON shape: a blob from an older format is never served
+		// (see ipamSnapshotSchema) — the sweep replaces it instead.
 		`CREATE TABLE IF NOT EXISTS ipam_cache (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			computed_at TEXT NOT NULL,
-			results_json TEXT NOT NULL
+			results_json TEXT NOT NULL,
+			snap_schema INTEGER NOT NULL DEFAULT 0
 		)`,
 		// cve_cache holds the live (NVD + CISA KEV) CVE dataset alongside the
 		// offline fallback seed (source='fallback-seed', see cveFallbackDefs) so
@@ -186,6 +189,14 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 	// (client MAC/IP/hostname/802.1X identity). Default 0 = structure only, so
 	// existing shares stay device-free until re-created with the toggle on.
 	if _, err := db.Exec(`ALTER TABLE topology_shares ADD COLUMN include_devices INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		_ = db.Close()
+		return nil, err
+	}
+	// Migration: version the stored IPAM snapshot so a blob written by an
+	// older code shape (e.g. the pairwise-overlap format) is discarded rather
+	// than served. Existing rows default to 0 = unversioned = never served.
+	if _, err := db.Exec(`ALTER TABLE ipam_cache ADD COLUMN snap_schema INTEGER NOT NULL DEFAULT 0`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column") {
 		_ = db.Close()
 		return nil, err

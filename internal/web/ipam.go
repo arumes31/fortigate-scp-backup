@@ -51,6 +51,11 @@ const (
 	ipamOverlapMaxRows = 500
 	// ipamOverlapMaxFws caps the example firewalls listed per overlap group.
 	ipamOverlapMaxFws = 6
+	// ipamSnapshotSchema versions the stored snapshot JSON. A stored blob
+	// with a different (older) schema is never served — the page would choke
+	// on it (the unversioned pairwise format reached hundreds of MB). Bump on
+	// any incompatible change to ipamSnapshot/ipamOverlap.
+	ipamSnapshotSchema = 2
 )
 
 // ipamSnapshot is the stored fleet aggregation.
@@ -393,9 +398,10 @@ func (s *Server) refreshIPAM() {
 		s.logger.Error("ipam refresh: marshal failed", "err", err)
 		return
 	}
-	if _, err := db.Exec(`INSERT INTO ipam_cache (id, computed_at, results_json) VALUES (1, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET computed_at=excluded.computed_at, results_json=excluded.results_json`,
-		time.Now().UTC().Format(time.RFC3339), string(blob)); err != nil {
+	if _, err := db.Exec(`INSERT INTO ipam_cache (id, computed_at, results_json, snap_schema) VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET computed_at=excluded.computed_at,
+			results_json=excluded.results_json, snap_schema=excluded.snap_schema`,
+		time.Now().UTC().Format(time.RFC3339), string(blob), ipamSnapshotSchema); err != nil {
 		s.logger.Error("ipam refresh: store failed", "err", err)
 		return
 	}
@@ -427,8 +433,10 @@ func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
 	}
 	out := ipamDataOut{}
 	var blob string
-	haveSnap := db.QueryRow(`SELECT computed_at, results_json FROM ipam_cache WHERE id = 1`).
-		Scan(&out.ComputedAt, &blob) == nil
+	// Only a current-schema snapshot is served; an old-format blob (or none)
+	// reads as "no snapshot" and triggers a fresh background sweep below.
+	haveSnap := db.QueryRow(`SELECT computed_at, results_json FROM ipam_cache WHERE id = 1 AND snap_schema = ?`,
+		ipamSnapshotSchema).Scan(&out.ComputedAt, &blob) == nil
 	if haveSnap {
 		out.Snapshot = json.RawMessage(blob)
 	}
