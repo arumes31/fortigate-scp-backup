@@ -5,9 +5,11 @@
 package fgtadmvpnconf
 
 import (
+	"context"
 	"database/sql"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,13 +34,17 @@ type Extension struct {
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
 
+	// lookupHost resolves a hostname for the DNS record check; tests replace it
+	// with a stub so no real DNS traffic happens.
+	lookupHost func(ctx context.Context, host string) ([]string, error)
+
 	migrateOnce sync.Once
 	migrateErr  error
 }
 
 // New constructs the extension (not yet enabled/mounted).
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
-	return &Extension{cfg: cfg, logger: logger}
+	return &Extension{cfg: cfg, logger: logger, lookupHost: net.DefaultResolver.LookupHost}
 }
 
 // Name identifies the extension in logs.
@@ -102,6 +108,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	r.Get("/graylog_dsv", e.graylogDSV)
 
 	go e.graylogWorker()
+	go e.dnsWorker()
 	return nil
 }
 

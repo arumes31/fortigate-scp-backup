@@ -82,3 +82,68 @@ func ListGraylogIssues(dataDir string) ([]GraylogIssue, error) {
 	}
 	return out, rows.Err()
 }
+
+// DNSIssue is one VPN device whose dns_name_full does not currently resolve to
+// its remoteip_full, exported for the core dashboard's DNS issue card. The
+// extension's DNS worker keeps vpn_config.last_dns_status current; this is a
+// read-only projection of the actionable rows (wrong IP / no record). Resolver
+// infrastructure errors are excluded by design — see dnsStatusUnhealthy.
+type DNSIssue struct {
+	Firewall  string // firewallname
+	Site      string // standort, or kundenname when standort is blank
+	DNSName   string // dns_name_full
+	Expected  string // remoteip_full the record should point to
+	Resolved  string // what it actually resolves to ("" when unresolved)
+	Status    string // mismatch | unresolved
+	LastCheck string // last_dns_check timestamp text ("" if never checked)
+}
+
+// ListDNSIssues opens the extension's database read-only and returns every
+// device whose DNS record check is failing (wrong IP or no record). Unlike the
+// Graylog card there is no minimum-age filter: a DNS record is static config,
+// so a failure is actionable immediately, and the worker already retests
+// failing records every 10 minutes. A missing database — the extension
+// disabled or not yet initialised — yields (nil, nil), so the dashboard simply
+// renders no card.
+func ListDNSIssues(dataDir string) ([]DNSIssue, error) {
+	dbFile := filepath.Join(dataDir, "fgt-adm-vpn-conf-db.db")
+	if _, err := os.Stat(dbFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // extension disabled or not yet initialised: no card
+		}
+		return nil, err // permission / I/O error: surface it, don't hide as "no issues"
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+
+	rows, err := db.Query(`SELECT COALESCE(firewallname,''), COALESCE(standort,''),
+		COALESCE(kundenname,''), COALESCE(dns_name_full,''), COALESCE(remoteip_full,''),
+		COALESCE(last_dns_resolved,''), COALESCE(last_dns_status,''), COALESCE(last_dns_check,'')
+		FROM vpn_config
+		WHERE last_dns_status IN ('mismatch', 'unresolved')
+		ORDER BY last_dns_status, firewallname`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []DNSIssue
+	for rows.Next() {
+		var d DNSIssue
+		var site, customer string
+		if scanErr := rows.Scan(&d.Firewall, &site, &customer, &d.DNSName, &d.Expected,
+			&d.Resolved, &d.Status, &d.LastCheck); scanErr != nil {
+			return nil, scanErr
+		}
+		d.Site = site
+		if d.Site == "" {
+			d.Site = customer
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

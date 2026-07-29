@@ -48,6 +48,9 @@ type VpnConfig struct {
 	// (nil while healthy). Used to surface only devices failing long enough to
 	// match the alert threshold. See graylogStatusUnhealthy.
 	LastGraylogUnhealthySince *time.Time
+	LastDnsStatus             string
+	LastDnsResolved           string
+	LastDnsCheck              *time.Time
 }
 
 // NextGraylogCheck is the approximate UTC time of this device's next Graylog
@@ -83,7 +86,10 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS vpn_config (
 	cluster_hostnames VARCHAR(255),
 	last_graylog_status VARCHAR(20) DEFAULT 'unknown',
 	last_graylog_check DATETIME,
-	graylog_unhealthy_since DATETIME
+	graylog_unhealthy_since DATETIME,
+	last_dns_status VARCHAR(20) DEFAULT 'unknown',
+	last_dns_check DATETIME,
+	last_dns_resolved VARCHAR(255)
 )`
 
 // migrations is the same idempotent list the Python run_migrations() applied, in
@@ -98,6 +104,9 @@ var migrations = []struct {
 	{"cid", "ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"},
 	{"last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"},
 	{"graylog_unhealthy_since", "ALTER TABLE vpn_config ADD COLUMN graylog_unhealthy_since DATETIME"},
+	{"last_dns_status", "ALTER TABLE vpn_config ADD COLUMN last_dns_status VARCHAR(20) DEFAULT 'unknown'"},
+	{"last_dns_check", "ALTER TABLE vpn_config ADD COLUMN last_dns_check DATETIME"},
+	{"last_dns_resolved", "ALTER TABLE vpn_config ADD COLUMN last_dns_resolved VARCHAR(255)"},
 }
 
 // openDB opens the private SQLite database. A single connection serialises
@@ -178,7 +187,8 @@ const selectCols = `id,
 	COALESCE(cid,''), COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,''),
 	COALESCE(radiusmgt,''), COALESCE(dns_name_full,''), COALESCE(graylog_enabled,1),
 	COALESCE(cluster_hostnames,''), COALESCE(last_graylog_status,'unknown'),
-	last_graylog_check, graylog_unhealthy_since`
+	last_graylog_check, graylog_unhealthy_since,
+	COALESCE(last_dns_status,'unknown'), COALESCE(last_dns_resolved,''), last_dns_check`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -188,12 +198,13 @@ type rowScanner interface {
 func scanConfig(s rowScanner) (*VpnConfig, error) {
 	var c VpnConfig
 	var glEnabled int64
-	var lastCheck, unhealthySince any
+	var lastCheck, unhealthySince, dnsCheck any
 	err := s.Scan(
 		&c.ID, &c.Kundenname, &c.Standort, &c.RemoteipFull, &c.RemoteipFull1st,
 		&c.Ike2Username, &c.WanInterface, &c.LanInterface, &c.DnsName, &c.Firewallname,
 		&c.Cid, &c.IpsecPskRo, &c.IpsecPskHci, &c.Radiusmgt, &c.DnsNameFull,
 		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck, &unhealthySince,
+		&c.LastDnsStatus, &c.LastDnsResolved, &dnsCheck,
 	)
 	if err != nil {
 		return nil, err
@@ -204,6 +215,9 @@ func scanConfig(s rowScanner) (*VpnConfig, error) {
 	}
 	if t, ok := parseDBTime(unhealthySince); ok {
 		c.LastGraylogUnhealthySince = &t
+	}
+	if t, ok := parseDBTime(dnsCheck); ok {
+		c.LastDnsCheck = &t
 	}
 	return &c, nil
 }
@@ -450,6 +464,16 @@ func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status st
 	_, err := e.db.Exec(
 		"UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ?, graylog_unhealthy_since = ? WHERE id = ?",
 		formatDBTime(checkedAt), status, since, id)
+	return err
+}
+
+// updateDNSStatus persists a DNS check result from the background sweep.
+// resolved is the comma-joined address list the name currently resolves to
+// ("" when it does not resolve), kept for the table tooltip and dashboard.
+func (e *Extension) updateDNSStatus(id int64, checkedAt time.Time, status, resolved string) error {
+	_, err := e.db.Exec(
+		"UPDATE vpn_config SET last_dns_check = ?, last_dns_status = ?, last_dns_resolved = ? WHERE id = ?",
+		formatDBTime(checkedAt), status, resolved, id)
 	return err
 }
 

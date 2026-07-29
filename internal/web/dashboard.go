@@ -128,6 +128,7 @@ type dashboardData struct {
 	ClusterAlert  bool
 	BlockedPorts  []blockedPortIssue
 	GraylogIssues []graylogIssue
+	DNSIssues     []dnsIssue
 }
 
 // blockedPortIssue is one switch port currently blocked by STP or a
@@ -223,6 +224,44 @@ func (s *Server) graylogIssues() []graylogIssue {
 			Firewall:  r.Firewall,
 			Site:      r.Site,
 			Cluster:   r.Cluster,
+			Status:    r.Status,
+			LastCheck: r.LastCheck,
+		})
+	}
+	return out
+}
+
+// dnsIssue is one VPN device whose DNS name does not currently resolve to its
+// configured remote IP, surfaced from the fgt_adm_vpn_conf extension's DNS
+// record worker. Empty when that extension is disabled or all records are OK.
+type dnsIssue struct {
+	Firewall  string `json:"firewall"`
+	Site      string `json:"site,omitempty"`
+	DNSName   string `json:"dns_name"`
+	Expected  string `json:"expected"`
+	Resolved  string `json:"resolved,omitempty"`
+	Status    string `json:"status"` // mismatch | unresolved
+	LastCheck string `json:"last_check,omitempty"`
+}
+
+// dnsIssues asks the fgt_adm_vpn_conf extension for devices whose DNS record
+// check is failing (wrong IP or no record). The extension owns the storage and
+// the check worker; the dashboard only renders the result. Any error yields an
+// empty list, so the card simply does not appear.
+func (s *Server) dnsIssues() []dnsIssue {
+	rows, err := fgtadmvpnconf.ListDNSIssues(s.cfg.DataDir)
+	if err != nil {
+		s.logger.Warn("dashboard dns-status lookup failed", "err", err)
+		return nil
+	}
+	out := make([]dnsIssue, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dnsIssue{
+			Firewall:  r.Firewall,
+			Site:      r.Site,
+			DNSName:   r.DNSName,
+			Expected:  r.Expected,
+			Resolved:  r.Resolved,
 			Status:    r.Status,
 			LastCheck: r.LastCheck,
 		})
@@ -446,6 +485,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		ClusterAlert:  clusterAlert,
 		BlockedPorts:  s.blockedPortIssues(fqdnByID),
 		GraylogIssues: s.graylogIssues(),
+		DNSIssues:     s.dnsIssues(),
 	}
 }
 
@@ -482,6 +522,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"stale":         d.Stale,
 		"blockedPorts":  d.BlockedPorts,
 		"graylogIssues": d.GraylogIssues,
+		"dnsIssues":     d.DNSIssues,
 	})
 }
 
