@@ -43,7 +43,7 @@ const topoDebugMax = 25;
 const topoDebugBodyMax = 20000; // per-entry stored body cap (chars); bounds total memory across topoDebugMax entries
 
 // View filters (toolbar checkboxes); toggling re-renders the tree.
-let topoFilters = { devices: true, routes: true, vlans: true, edge: true, hideStale: false };
+let topoFilters = { devices: true, routes: true, vlans: true, edge: true, aps: true, hideStale: false };
 let topoFaceNode = null; // node whose faceplate is currently open (for live re-render)
 function setTopoFilter(key, val) {
     topoFilters[key] = val;
@@ -634,44 +634,72 @@ function buildTree(data) {
     }
     const nacFeature = f => f === "nac" || f === "nac-segment";
 
-    // apGroupNode renders the managed FortiAPs with their SSIDs and the wireless
-    // clients currently associated to each AP. Clients are matched on the AP
-    // identifier the wireless logs carry (device.ap): the AP's configured name
-    // when one is set, otherwise its serial — the wtp entry key. Both forms are
-    // accepted because an unnamed AP logs its serial where a named one logs its
-    // name. APs do not appear in the wired device inventory under their own name,
-    // so this association (not a switch-port pin) is what surfaces their clients.
+    // FortiAP placement. The SSH wtp-status collection (topoApLocations) pins
+    // each AP to the switch port it is wired to; pinned APs render as children
+    // of their switch (the tree link is auto-colored AP-blue by the target
+    // kind), while APs with no known location stay in the flat "APs" group —
+    // so nothing regresses when the device-data extension is off. Wireless
+    // clients are matched on the AP identifier the logs carry (device.ap):
+    // the AP's configured name when one is set, otherwise its serial (the wtp
+    // entry key) — an unnamed AP logs its serial where a named one logs its
+    // name.
+    const apPinBySwitch = {};       // tree switch name → [ap_location…]
+    const apPinnedRefs = new Set(); // serial/name of every AP pinned so far
+    (topoApLocations || []).forEach(a => {
+        const swn = resolveSwitchName(switches, a.switch) || a.switch;
+        if (!swn || !a.port) return;
+        (apPinBySwitch[swn] = apPinBySwitch[swn] || []).push(a);
+    });
+    const clientsOfAp = ap => devices.filter(dv =>
+        dv.ap && (dv.ap === ap.name || dv.ap === ap.wtp_id));
+    // apNode builds one FortiAP node (SSIDs + associated clients as children);
+    // port is set when the AP is pinned to a switch port.
+    function apNode(ap, port) {
+        const clients = clientsOfAp(ap);
+        const ssidKids = (ap.ssids || []).map(name => {
+            const s = ssidByName[name] || { name: name, ssid: name };
+            return {
+                name: s.ssid || s.name, kind: "ssid", data: s,
+                info: `SSID\n${tt("topo.ssid_name")}: ${s.ssid || s.name}` +
+                    (s.vlan_id ? `\nVLAN-ID: ${s.vlan_id}` : "") +
+                    (s.security ? `\n${tt("topo.security")}: ${s.security}` : ""),
+                badge: s.vlan_id ? "VLAN " + s.vlan_id : null
+            };
+        });
+        return {
+            name: ap.name || ap.wtp_id, kind: "ap", data: ap,
+            info: `FortiAP${ap.platform ? " " + ap.platform : ""}\n${tt("topo.serial")}: ${ap.wtp_id}` +
+                (ap.profile ? `\n${tt("topo.profile")}: ${ap.profile}` : "") +
+                (port ? `\n${tt("topo.ap_port")}: ${port}` : "") +
+                (clients.length ? `\n📶 ${clients.length} ${tt("topo.wifi_clients")}` : ""),
+            badge: [port ? "⇧ " + port : null,
+                ap.platform ? "FAP-" + ap.platform : null,
+                clients.length ? "📶 " + clients.length : null].filter(Boolean).join(" · ") || null,
+            children: [...ssidKids, ...clients.map(deviceNode)]
+        };
+    }
+    // apNodesForSwitch returns the AP nodes wired to one switch and records
+    // them, so the flat AP group (built afterwards) lists only the rest.
+    function apNodesForSwitch(swn) {
+        if (!topoFilters.aps) return [];
+        return (apPinBySwitch[swn] || []).map(a => {
+            if (a.serial) apPinnedRefs.add(a.serial);
+            if (a.name) apPinnedRefs.add(a.name);
+            const ap = (data.aps || []).find(x => x.wtp_id === a.serial || (a.name && x.name === a.name))
+                || { wtp_id: a.serial, name: a.name };
+            return apNode(ap, a.port);
+        });
+    }
     function apGroupNode() {
-        const aps = data.aps || [];
+        if (!topoFilters.aps) return null;
+        const aps = (data.aps || []).filter(ap =>
+            !apPinnedRefs.has(ap.wtp_id) && !apPinnedRefs.has(ap.name || ""));
         if (!aps.length) return null;
-        const clientsOfAp = ap => devices.filter(dv =>
-            dv.ap && (dv.ap === ap.name || dv.ap === ap.wtp_id));
         return {
             name: tt("topo.aps"), kind: "apgroup",
             info: `${aps.length} FortiAP`,
             badge: String(aps.length),
-            children: aps.map(ap => {
-                const clients = clientsOfAp(ap);
-                const ssidKids = (ap.ssids || []).map(name => {
-                    const s = ssidByName[name] || { name: name, ssid: name };
-                    return {
-                        name: s.ssid || s.name, kind: "ssid", data: s,
-                        info: `SSID\n${tt("topo.ssid_name")}: ${s.ssid || s.name}` +
-                            (s.vlan_id ? `\nVLAN-ID: ${s.vlan_id}` : "") +
-                            (s.security ? `\n${tt("topo.security")}: ${s.security}` : ""),
-                        badge: s.vlan_id ? "VLAN " + s.vlan_id : null
-                    };
-                });
-                return {
-                    name: ap.name || ap.wtp_id, kind: "ap", data: ap,
-                    info: `FortiAP${ap.platform ? " " + ap.platform : ""}\n${tt("topo.serial")}: ${ap.wtp_id}` +
-                        (ap.profile ? `\n${tt("topo.profile")}: ${ap.profile}` : "") +
-                        (clients.length ? `\n📶 ${clients.length} ${tt("topo.wifi_clients")}` : ""),
-                    badge: [ap.platform ? "FAP-" + ap.platform : null,
-                        clients.length ? "📶 " + clients.length : null].filter(Boolean).join(" · ") || null,
-                    children: [...ssidKids, ...clients.map(deviceNode)]
-                };
-            })
+            children: aps.map(ap => apNode(ap))
         };
     }
 
@@ -923,7 +951,7 @@ function buildTree(data) {
             hasFault: fanFault || errPorts > 0,
             group: group,
             groupColor: groupColor(group),
-            children: [...nested.map(switchNode), ...children]
+            children: [...nested.map(switchNode), ...children, ...apNodesForSwitch(swName(sw))]
         };
     }
 

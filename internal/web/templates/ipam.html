@@ -1,0 +1,121 @@
+{{define "content"}}
+<h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "ipam.title"}}</h1>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">{{T .Base.Lang "ipam.title"}}</h2>
+        <div class="stat"><b id="ipamFwCount">…</b><span class="muted">{{T .Base.Lang "ipam.firewalls"}}</span></div>
+        <div class="stat"><b id="ipamPrefixCount">…</b><span class="muted">{{T .Base.Lang "ipam.prefixes"}}</span></div>
+        <div class="stat"><b id="ipamOverlapCount" style="color:#fbbf24;">…</b><span class="muted">{{T .Base.Lang "ipam.overlaps"}}</span></div>
+    </div>
+    <p class="muted mb-0" style="font-size: 0.85em;">{{T .Base.Lang "ipam.note"}}</p>
+</div>
+
+<div class="card pad-0" id="ipamOverlapCard" style="display:none; border: 1px solid rgba(249,115,22,0.45);">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0" style="color: #fb923c;">⚠ {{T .Base.Lang "ipam.overlaps_title"}}</h2>
+        <span class="muted" style="font-size: 0.85em;" id="ipamOverlapDesc"></span>
+    </div>
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>{{T .Base.Lang "ipam.col_kind"}}</th><th>{{T .Base.Lang "ipam.col_prefix"}}</th><th>{{T .Base.Lang "ipam.col_firewall"}}</th><th>{{T .Base.Lang "ipam.col_source"}}</th><th>{{T .Base.Lang "ipam.col_with"}}</th><th>{{T .Base.Lang "ipam.col_firewall"}}</th><th>{{T .Base.Lang "ipam.col_source"}}</th></tr></thead>
+            <tbody id="ipamOverlapBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card pad-0">
+    <div class="card-header">
+        <h2 class="mt-0 mb-0">{{T .Base.Lang "ipam.table_title"}}</h2>
+        <input type="text" id="ipamSearch" placeholder="{{T .Base.Lang "ipam.search"}}" autocomplete="off" style="max-width:280px;">
+        <span class="muted" id="ipamSearchCount" style="font-size: 0.85em;"></span>
+    </div>
+    <div class="table-wrap">
+        <table class="data" id="ipamTable">
+            <thead><tr><th>{{T .Base.Lang "ipam.col_prefix"}}</th><th>{{T .Base.Lang "ipam.col_firewall"}}</th><th>{{T .Base.Lang "ipam.col_source"}}</th><th>{{T .Base.Lang "ipam.col_name"}}</th></tr></thead>
+            <tbody id="ipamBody">
+                <tr><td colspan="4" class="empty" id="ipamLoading">{{T .Base.Lang "ipam.loading"}}</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>window.I18N = {{i18nJSON .Base.Lang}};</script>
+<script>
+(function () {
+    function tt(key) { return (window.I18N && window.I18N[key]) || key; }
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    var srcLabel = {
+        'interface': tt('ipam.src_interface'),
+        'secondary': tt('ipam.src_secondary'),
+        'route': tt('ipam.src_route'),
+        'dhcp': tt('ipam.src_dhcp'),
+        'address': tt('ipam.src_address')
+    };
+
+    fetch('/ipam/data').then(function (r) {
+        if (!r.ok) { throw new Error('http ' + r.status); }
+        return r.json();
+    }).then(function (data) {
+        document.getElementById('ipamFwCount').textContent = data.scanned + ' / ' + data.firewalls;
+        document.getElementById('ipamPrefixCount').textContent = data.prefixes;
+        document.getElementById('ipamOverlapCount').textContent = (data.overlaps || []).length;
+
+        var body = document.getElementById('ipamBody');
+        var entries = data.entries || [];
+        if (!entries.length) {
+            body.innerHTML = '<tr><td colspan="4" class="empty">—</td></tr>';
+        } else {
+            body.innerHTML = entries.map(function (e) {
+                return '<tr><td><code>' + esc(e.prefix) + '</code></td><td>' + esc(e.fqdn) +
+                    '</td><td class="muted">' + esc(srcLabel[e.source] || e.source) +
+                    '</td><td class="muted">' + esc(e.name) + '</td></tr>';
+            }).join('');
+        }
+
+        var overlaps = data.overlaps || [];
+        if (overlaps.length) {
+            document.getElementById('ipamOverlapCard').style.display = '';
+            document.getElementById('ipamOverlapDesc').textContent = overlaps.length;
+            document.getElementById('ipamOverlapBody').innerHTML = overlaps.map(function (o) {
+                var pill = o.kind === 'duplicate'
+                    ? '<span class="pill pill-failed">' + esc(tt('ipam.kind_duplicate')) + '</span>'
+                    : '<span class="pill pill-new">' + esc(tt('ipam.kind_containment')) + '</span>';
+                return '<tr><td>' + pill + '</td>' +
+                    '<td><code>' + esc(o.a.prefix) + '</code> <span class="muted">' + esc(o.a.name) + '</span></td>' +
+                    '<td>' + esc(o.a.fqdn) + '</td>' +
+                    '<td class="muted">' + esc(srcLabel[o.a.source] || o.a.source) + '</td>' +
+                    '<td><code>' + esc(o.b.prefix) + '</code> <span class="muted">' + esc(o.b.name) + '</span></td>' +
+                    '<td>' + esc(o.b.fqdn) + '</td>' +
+                    '<td class="muted">' + esc(srcLabel[o.b.source] || o.b.source) + '</td></tr>';
+            }).join('');
+        }
+
+        // Client-side search over the loaded rows.
+        var input = document.getElementById('ipamSearch');
+        var count = document.getElementById('ipamSearchCount');
+        var rows = Array.prototype.slice.call(body.querySelectorAll('tr'));
+        input.addEventListener('input', function () {
+            var terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+            var visible = 0;
+            rows.forEach(function (row) {
+                var text = row.textContent.toLowerCase();
+                var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
+                row.style.display = match ? '' : 'none';
+                if (match) { visible++; }
+            });
+            count.textContent = terms.length ? visible + ' / ' + rows.length : '';
+        });
+    }).catch(function (err) {
+        document.getElementById('ipamBody').innerHTML =
+            '<tr><td colspan="4" class="empty">' + esc(tt('ipam.error')) + ' (' + esc(err.message) + ')</td></tr>';
+    });
+})();
+</script>
+{{end}}

@@ -99,6 +99,7 @@ type parsedConfig struct {
 	HA           *HAInfo
 	APs          []FortiAP
 	SSIDs        []WifiSSID
+	AddressObjs  []AddressObject
 }
 
 // parseConfigData extracts structured details for topology mapping. It runs
@@ -143,6 +144,13 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		}
 		if v, _, ok := doc.settingDirect(b, "fortilink"); ok {
 			it.Fortilink = strings.EqualFold(v, "enable")
+		}
+		// Secondary addresses ("config secondaryip" sub-blocks), kept in the
+		// raw "ip mask" form; the IPAM view normalizes them to prefixes.
+		for _, sb := range doc.blocksUnder(b.Path + " > config secondaryip") {
+			if v, _, ok := doc.settingDirect(sb, "ip"); ok && v != "" {
+				it.SecondaryIPs = append(it.SecondaryIPs, v)
+			}
 		}
 		interfaces = append(interfaces, it)
 	}
@@ -408,6 +416,25 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		profiles[b.Name] = pi
 	}
 
+	// Subnet-type address objects (the default type carries "set subnet").
+	// FQDN/geo/range objects have no subnet line and are skipped, as is the
+	// built-in "all". Kept for the fleet IPAM view.
+	var addrObjs []AddressObject
+	for _, b := range doc.blocksUnder("config firewall address") {
+		if strings.EqualFold(b.Name, "all") {
+			continue
+		}
+		if v, _, ok := doc.settingDirect(b, "subnet"); ok {
+			if f := strings.Fields(v); len(f) >= 1 {
+				ao := AddressObject{Name: b.Name, IP: f[0]}
+				if len(f) > 1 {
+					ao.Mask = f[1]
+				}
+				addrObjs = append(addrObjs, ao)
+			}
+		}
+	}
+
 	var aps []FortiAP
 	for _, b := range doc.blocksUnder("config wireless-controller wtp") {
 		ap := FortiAP{WtpID: b.Name}
@@ -438,6 +465,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		HA:           ha,
 		APs:          aps,
 		SSIDs:        ssids,
+		AddressObjs:  addrObjs,
 	}
 }
 

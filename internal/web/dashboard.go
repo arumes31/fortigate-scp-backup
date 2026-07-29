@@ -129,6 +129,7 @@ type dashboardData struct {
 	BlockedPorts  []blockedPortIssue
 	GraylogIssues []graylogIssue
 	DNSIssues     []dnsIssue
+	LicenseIssues []licenseIssue
 }
 
 // blockedPortIssue is one switch port currently blocked by STP or a
@@ -486,6 +487,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		BlockedPorts:  s.blockedPortIssues(fqdnByID),
 		GraylogIssues: s.graylogIssues(),
 		DNSIssues:     s.dnsIssues(),
+		LicenseIssues: s.licenseIssues(fqdnByID),
 	}
 }
 
@@ -523,6 +525,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"blockedPorts":  d.BlockedPorts,
 		"graylogIssues": d.GraylogIssues,
 		"dnsIssues":     d.DNSIssues,
+		"licenseIssues": d.LicenseIssues,
 	})
 }
 

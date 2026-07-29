@@ -22,7 +22,8 @@ import (
 // entry via RulesFingerprint.
 // auditSchemaVersion invalidates cached results whose parse predates a
 // parser/derivation change (bump when parseConfigData output changes).
-const auditSchemaVersion = 6
+// v7: interface secondary IPs + subnet address objects (fleet IPAM).
+const auditSchemaVersion = 7
 
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
@@ -50,19 +51,20 @@ type auditResult struct {
 	CisScore   int `json:"cis_score"`
 	HipaaScore int `json:"hipaa_score"`
 
-	Interfaces   []Interface   `json:"interfaces"`
-	Routes       []StaticRoute `json:"routes"`
-	Policies     []Policy      `json:"policies"`
-	Switches     []FortiSwitch `json:"switches"`
-	SwitchGroups []SwitchGroup `json:"switch_groups,omitempty"`
-	IslCustom    []IslBinding  `json:"isl_custom,omitempty"`
-	Zones        []Zone        `json:"zones,omitempty"`
-	DhcpServers  []DhcpServer  `json:"dhcp_servers,omitempty"`
-	Sdwan        *Sdwan        `json:"sdwan,omitempty"`
-	Vpns         []VpnTunnel   `json:"vpns,omitempty"`
-	HA           *HAInfo       `json:"ha,omitempty"`
-	APs          []FortiAP     `json:"aps,omitempty"`
-	SSIDs        []WifiSSID    `json:"ssids,omitempty"`
+	Interfaces   []Interface     `json:"interfaces"`
+	Routes       []StaticRoute   `json:"routes"`
+	Policies     []Policy        `json:"policies"`
+	Switches     []FortiSwitch   `json:"switches"`
+	SwitchGroups []SwitchGroup   `json:"switch_groups,omitempty"`
+	IslCustom    []IslBinding    `json:"isl_custom,omitempty"`
+	Zones        []Zone          `json:"zones,omitempty"`
+	DhcpServers  []DhcpServer    `json:"dhcp_servers,omitempty"`
+	Sdwan        *Sdwan          `json:"sdwan,omitempty"`
+	Vpns         []VpnTunnel     `json:"vpns,omitempty"`
+	HA           *HAInfo         `json:"ha,omitempty"`
+	APs          []FortiAP       `json:"aps,omitempty"`
+	SSIDs        []WifiSSID      `json:"ssids,omitempty"`
+	AddressObjs  []AddressObject `json:"address_objs,omitempty"`
 }
 
 // rulesFingerprint hashes the custom-rule set so cached results can detect
@@ -94,6 +96,7 @@ func computeAudit(fwID int, filename, plain string, customRules []customRule, cv
 	res.Switches, res.SwitchGroups, res.IslCustom = pc.Switches, pc.SwitchGroups, pc.IslCustom
 	res.Zones, res.DhcpServers, res.Sdwan = pc.Zones, pc.DhcpServers, pc.Sdwan
 	res.Vpns, res.HA, res.APs, res.SSIDs = pc.Vpns, pc.HA, pc.APs, pc.SSIDs
+	res.AddressObjs = pc.AddressObjs
 
 	findings := runStructuralChecks(doc, res.Routes)
 	findings = append(findings, findShadowRules(res.Policies)...)

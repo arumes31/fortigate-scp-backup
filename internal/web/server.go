@@ -91,6 +91,10 @@ type Server struct {
 	// auditRuns tracks in-flight audit recomputations (full config parses)
 	// for the dashboard's "currently running" card.
 	auditRuns runningTracker
+
+	// licenseInFlight coalesces concurrent license fetches per firewall
+	// (daily sweep vs manual refresh), keyed by firewall ID.
+	licenseInFlight sync.Map
 }
 
 type pageTmpl struct {
@@ -123,6 +127,9 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		}
 		sched.Schedule("cve-refresh", interval, 30*time.Second, s.refreshCVECacheJob)
 	}
+	// License/entitlement data changes rarely; one fleet sweep per day keeps
+	// the inventory and the dashboard expiry card fresh without SSH churn.
+	sched.Schedule("license-refresh", 24*time.Hour, 2*time.Minute, s.refreshLicensesJob)
 	return s, nil
 }
 
@@ -306,6 +313,11 @@ func (s *Server) Routes() chi.Router {
 		pr.HandleFunc("/audit/custom_rule", s.handleAuditCustomRule)
 		pr.HandleFunc("/audit/cve_refresh", s.handleAuditCVERefresh)
 		pr.HandleFunc("/audit/ticket", s.handleAuditTicket)
+		pr.Get("/licenses", s.handleLicenses)
+		pr.Post("/licenses/refresh/{fwID}", s.handleLicenseRefresh)
+		pr.Post("/licenses/refresh_all", s.handleLicenseRefreshAll)
+		pr.Get("/ipam", s.handleIPAM)
+		pr.Get("/ipam/data", s.handleIPAMData)
 		pr.Get("/topology", s.handleTopology)
 		pr.Get("/topology/data/{fwID}", s.handleTopologyData)
 		pr.Post("/topology/share", s.handleTopologyShareCreate)
