@@ -167,7 +167,9 @@ func TestFindOverlaps(t *testing.T) {
 		switch o.Kind {
 		case "duplicate":
 			dups++
-			if !(o.A.FwID == 1 && o.B.FwID == 2 || o.A.FwID == 2 && o.B.FwID == 1) {
+			isAB := o.A.FwID == 1 && o.B.FwID == 2
+			isBA := o.A.FwID == 2 && o.B.FwID == 1
+			if !isAB && !isBA {
 				t.Errorf("unexpected duplicate pair: %+v", o)
 			}
 		case "containment":

@@ -126,6 +126,13 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			version TEXT, expiry TEXT, last_update TEXT, result TEXT,
 			PRIMARY KEY (fw_id, service)
 		)`,
+		// Trust-on-first-use SSH host-key pins for the license collector
+		// (authorized_keys format). Delete a row to re-trust a replaced device.
+		`CREATE TABLE IF NOT EXISTS ssh_known_hosts (
+			fw_id INTEGER PRIMARY KEY,
+			host_key TEXT NOT NULL,
+			first_seen TEXT NOT NULL
+		)`,
 		// cve_cache holds the live (NVD + CISA KEV) CVE dataset alongside the
 		// offline fallback seed (source='fallback-seed', see cveFallbackDefs) so
 		// getCVEs always has something to match against. See cve_source.go /
