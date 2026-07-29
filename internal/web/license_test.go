@@ -182,6 +182,44 @@ func TestHostKeyTOFU(t *testing.T) {
 	}
 }
 
+// TestClassifyLicense verifies the device-level rollup: a long-lapsed service
+// among active entitlements must not mark the device expired (real fleets
+// carry stale entries for services outside the current contract bundle).
+func TestClassifyLicense(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	ent := func(svc, expiry string) licenseEntitlement {
+		return licenseEntitlement{Service: svc, Expiry: expiry}
+	}
+	cases := []struct {
+		name       string
+		ents       []licenseEntitlement
+		wantLevel  string
+		wantExpiry string
+		wantLapsed int
+	}{
+		{"all active", []licenseEntitlement{ent("AV", "2027-02-10"), ent("IPS", "2027-04-24")},
+			"ok", "2027-02-10", 0},
+		// The reported bug: one service lapsed 2021 while the bundle runs to 2027.
+		{"one lapsed among active", []licenseEntitlement{ent("Old", "2021-10-02"), ent("AV", "2027-02-10")},
+			"ok", "2027-02-10", 1},
+		{"active expiring soon", []licenseEntitlement{ent("Old", "2021-10-02"), ent("AV", "2026-08-10")},
+			"crit", "2026-08-10", 1},
+		{"all lapsed", []licenseEntitlement{ent("AV", "2021-10-02"), ent("IPS", "2024-01-01")},
+			"expired", "2024-01-01", 2},
+		{"no dated entitlements", []licenseEntitlement{ent("Tz", ""), ent("Modem", "")},
+			"unknown", "", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyLicense(c.ents, now)
+			if got.Level != c.wantLevel || got.Expiry != c.wantExpiry || got.Lapsed != c.wantLapsed {
+				t.Errorf("got level=%s expiry=%s lapsed=%d, want %s/%s/%d",
+					got.Level, got.Expiry, got.Lapsed, c.wantLevel, c.wantExpiry, c.wantLapsed)
+			}
+		})
+	}
+}
+
 func TestDaysUntil(t *testing.T) {
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	if got := daysUntil("2026-08-28", now); got != 30 {

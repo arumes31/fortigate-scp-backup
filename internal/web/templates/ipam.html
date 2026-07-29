@@ -7,6 +7,12 @@
         <div class="stat"><b id="ipamFwCount">…</b><span class="muted">{{T .Base.Lang "ipam.firewalls"}}</span></div>
         <div class="stat"><b id="ipamPrefixCount">…</b><span class="muted">{{T .Base.Lang "ipam.prefixes"}}</span></div>
         <div class="stat"><b id="ipamOverlapCount" style="color:#fbbf24;">…</b><span class="muted">{{T .Base.Lang "ipam.overlaps"}}</span></div>
+        <span class="muted" id="ipamUpdated" style="font-size: 0.85em; margin-left:auto;"></span>
+        <button type="button" class="btn btn-sm" id="ipamRefreshBtn">{{T .Base.Lang "ipam.update_now"}}</button>
+    </div>
+    <div id="ipamProgressWrap" style="display:none; margin-top: 10px;">
+        <div class="meter"><span id="ipamProgressBar" style="width:0%"></span></div>
+        <span class="muted" id="ipamProgressText" style="font-size: 0.85em;"></span>
     </div>
     <p class="muted mb-0" style="font-size: 0.85em;">{{T .Base.Lang "ipam.note"}}</p>
 </div>
@@ -58,17 +64,15 @@
         'dhcp': tt('ipam.src_dhcp'),
         'address': tt('ipam.src_address')
     };
+    var body = document.getElementById('ipamBody');
+    var searchRows = [];
 
-    fetch('/ipam/data').then(function (r) {
-        if (!r.ok) { throw new Error('http ' + r.status); }
-        return r.json();
-    }).then(function (data) {
-        document.getElementById('ipamFwCount').textContent = data.scanned + ' / ' + data.firewalls;
-        document.getElementById('ipamPrefixCount').textContent = data.prefixes;
-        document.getElementById('ipamOverlapCount').textContent = (data.overlaps || []).length;
+    function renderSnapshot(snap) {
+        document.getElementById('ipamFwCount').textContent = snap.scanned + ' / ' + snap.firewalls;
+        document.getElementById('ipamPrefixCount').textContent = snap.prefixes;
+        document.getElementById('ipamOverlapCount').textContent = (snap.overlaps || []).length;
 
-        var body = document.getElementById('ipamBody');
-        var entries = data.entries || [];
+        var entries = snap.entries || [];
         if (!entries.length) {
             body.innerHTML = '<tr><td colspan="4" class="empty">—</td></tr>';
         } else {
@@ -78,10 +82,12 @@
                     '</td><td class="muted">' + esc(e.name) + '</td></tr>';
             }).join('');
         }
+        searchRows = Array.prototype.slice.call(body.querySelectorAll('tr'));
 
-        var overlaps = data.overlaps || [];
+        var overlaps = snap.overlaps || [];
+        var card = document.getElementById('ipamOverlapCard');
+        card.style.display = overlaps.length ? '' : 'none';
         if (overlaps.length) {
-            document.getElementById('ipamOverlapCard').style.display = '';
             document.getElementById('ipamOverlapDesc').textContent = overlaps.length;
             document.getElementById('ipamOverlapBody').innerHTML = overlaps.map(function (o) {
                 var pill = o.kind === 'duplicate'
@@ -96,26 +102,56 @@
                     '<td class="muted">' + esc(srcLabel[o.b.source] || o.b.source) + '</td></tr>';
             }).join('');
         }
+    }
 
-        // Client-side search over the loaded rows.
-        var input = document.getElementById('ipamSearch');
-        var count = document.getElementById('ipamSearchCount');
-        var rows = Array.prototype.slice.call(body.querySelectorAll('tr'));
-        input.addEventListener('input', function () {
-            var terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-            var visible = 0;
-            rows.forEach(function (row) {
-                var text = row.textContent.toLowerCase();
-                var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
-                row.style.display = match ? '' : 'none';
-                if (match) { visible++; }
-            });
-            count.textContent = terms.length ? visible + ' / ' + rows.length : '';
+    var pollTimer = null;
+    function poll() {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        fetch('/ipam/data').then(function (r) {
+            if (!r.ok) { throw new Error('http ' + r.status); }
+            return r.json();
+        }).then(function (d) {
+            if (d.snapshot) { renderSnapshot(d.snapshot); }
+            document.getElementById('ipamUpdated').textContent = d.computed_at
+                ? tt('ipam.last_updated') + ': ' + d.computed_at.replace('T', ' ').replace(/:\d\dZ?$/, '')
+                : tt('ipam.never');
+            var wrap = document.getElementById('ipamProgressWrap');
+            if (d.running) {
+                wrap.style.display = '';
+                var pct = d.total ? Math.round(100 * d.done / d.total) : 0;
+                document.getElementById('ipamProgressBar').style.width = pct + '%';
+                document.getElementById('ipamProgressText').textContent =
+                    tt('ipam.updating') + ' ' + d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
+                pollTimer = setTimeout(poll, 2000);
+            } else {
+                wrap.style.display = 'none';
+                if (!d.snapshot) {
+                    body.innerHTML = '<tr><td colspan="4" class="empty">' + esc(tt('ipam.error')) + '</td></tr>';
+                }
+            }
+        }).catch(function (err) {
+            body.innerHTML = '<tr><td colspan="4" class="empty">' + esc(tt('ipam.error')) + ' (' + esc(err.message) + ')</td></tr>';
         });
-    }).catch(function (err) {
-        document.getElementById('ipamBody').innerHTML =
-            '<tr><td colspan="4" class="empty">' + esc(tt('ipam.error')) + ' (' + esc(err.message) + ')</td></tr>';
+    }
+
+    document.getElementById('ipamRefreshBtn').addEventListener('click', function () {
+        fetch('/ipam/refresh', { method: 'POST' }).then(function () { poll(); }).catch(function () {});
     });
+
+    document.getElementById('ipamSearch').addEventListener('input', function () {
+        var terms = this.value.toLowerCase().split(/\s+/).filter(Boolean);
+        var visible = 0;
+        searchRows.forEach(function (row) {
+            var text = row.textContent.toLowerCase();
+            var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
+            row.style.display = match ? '' : 'none';
+            if (match) { visible++; }
+        });
+        document.getElementById('ipamSearchCount').textContent =
+            terms.length ? visible + ' / ' + searchRows.length : '';
+    });
+
+    poll();
 })();
 </script>
 {{end}}

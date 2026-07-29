@@ -19,7 +19,8 @@
         <h2 class="mt-0 mb-0">{{T .Base.Lang "lic.inventory"}}</h2>
         <input type="text" id="licSearch" placeholder="{{T .Base.Lang "lic.search"}}" autocomplete="off" style="max-width:280px;">
         <span class="muted" id="licSearchCount" style="font-size: 0.85em;"></span>
-        <form method="post" action="/licenses/refresh_all" style="margin-left:auto;">
+        <span class="muted" id="licProgress" style="font-size: 0.85em; margin-left:auto;"></span>
+        <form method="post" action="/licenses/refresh_all">
             <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
         </form>
     </div>
@@ -55,6 +56,7 @@
                         {{else if eq .Level "crit"}}<span class="pill pill-failed">{{.Expiry}} · {{.DaysLeft}}d</span>
                         {{else if eq .Level "expired"}}<span class="pill pill-failed">{{T $.Base.Lang "lic.pill_expired"}} {{.Expiry}}</span>
                         {{else}}<span class="pill pill-muted">{{T $.Base.Lang "lic.pill_unknown"}}</span>{{end}}
+                        {{if and .Lapsed (ne .Level "expired")}}<span class="muted" style="font-size:0.85em;" title="{{T $.Base.Lang "lic.lapsed_hint"}}"> · {{.Lapsed}} {{T $.Base.Lang "lic.lapsed"}}</span>{{end}}
                         {{if .FetchError}}<span class="muted" style="font-size:0.85em;" title="{{.FetchError}}"> ⚠</span>{{end}}
                     </td>
                     <td class="muted">{{if .FetchedAt}}{{.FetchedAt}}{{else}}—{{end}}</td>
@@ -123,6 +125,29 @@
         });
         count.textContent = terms.length ? visible + ' / ' + rows.length : '';
     });
+})();
+</script>
+<script>
+// Sweep progress: while a fleet refresh runs (manual or the daily job), show
+// its progress; when a sweep we observed finishes, reload so the new data
+// appears without a manual refresh.
+(function () {
+    var el = document.getElementById('licProgress');
+    var wasRunning = false;
+    function poll() {
+        fetch('/licenses/status').then(function (r) { return r.json(); }).then(function (d) {
+            if (d.running) {
+                wasRunning = true;
+                el.textContent = '⟳ ' + d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
+                setTimeout(poll, 2000);
+            } else if (wasRunning) {
+                location.reload();
+            } else {
+                el.textContent = '';
+            }
+        }).catch(function () {});
+    }
+    poll();
 })();
 </script>
 {{end}}
