@@ -4,9 +4,17 @@
 // reports prefixes that overlap ACROSS firewalls. Overlaps inside one
 // firewall (an interface, its DHCP scope and its route) are normal and not
 // flagged; 0.0.0.0/0 and /32 hosts are excluded from overlap analysis.
+//
+// The aggregation can be expensive (a cold audit cache means one full config
+// parse per firewall), so it never runs inside a page request: /ipam/data
+// serves a stored snapshot instantly, and the snapshot is recomputed by a
+// background sweep — daily via the scheduler, on demand via POST
+// /ipam/refresh, or automatically on the first visit — with progress the
+// page polls and renders.
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/netip"
@@ -14,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ipamEntry is one prefix in use on one firewall.
@@ -32,12 +41,66 @@ type ipamOverlap struct {
 	B    ipamEntry `json:"b"`
 }
 
-type ipamResponse struct {
+// ipamSnapshot is the stored fleet aggregation.
+type ipamSnapshot struct {
 	Firewalls int           `json:"firewalls"`
 	Scanned   int           `json:"scanned"` // firewalls with a parsed config
 	Prefixes  int           `json:"prefixes"`
 	Entries   []ipamEntry   `json:"entries"`
 	Overlaps  []ipamOverlap `json:"overlaps"`
+}
+
+// ipamDataOut is the /ipam/data payload: the stored snapshot (if any) plus
+// the live progress of a running recompute.
+type ipamDataOut struct {
+	Running    bool          `json:"running"`
+	Done       int           `json:"done"`
+	Total      int           `json:"total"`
+	Current    string        `json:"current,omitempty"`
+	ComputedAt string        `json:"computed_at,omitempty"`
+	Snapshot   *ipamSnapshot `json:"snapshot,omitempty"`
+}
+
+// sweepProgress tracks one background fleet sweep (IPAM aggregation, license
+// collection) for the pages' progress display. begin() also coalesces: only
+// one sweep of a kind runs at a time.
+type sweepProgress struct {
+	mu      sync.Mutex
+	running bool
+	done    int
+	total   int
+	current string
+}
+
+// begin marks the sweep started; it returns false when one is already
+// running, in which case the caller must not proceed.
+func (p *sweepProgress) begin(total int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.running {
+		return false
+	}
+	p.running, p.done, p.total, p.current = true, 0, total, ""
+	return true
+}
+
+func (p *sweepProgress) step(current string) {
+	p.mu.Lock()
+	p.done++
+	p.current = current
+	p.mu.Unlock()
+}
+
+func (p *sweepProgress) end() {
+	p.mu.Lock()
+	p.running = false
+	p.mu.Unlock()
+}
+
+func (p *sweepProgress) snapshot() (running bool, done, total int, current string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.running, p.done, p.total, p.current
 }
 
 // prefixFromIPMask converts "10.1.2.3" + "255.255.255.0" into the canonical
@@ -186,32 +249,27 @@ func findOverlaps(entries []ipamEntry) []ipamOverlap {
 	return out
 }
 
-// ---- handlers ---------------------------------------------------------------
+// ---- snapshot compute & storage ---------------------------------------------
 
-type ipamData struct {
-	Base  BaseData
-	Error string
-}
-
-// handleIPAM renders the page shell; the data loads asynchronously from
-// /ipam/data so a cold audit cache never blocks first paint.
-func (s *Server) handleIPAM(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "ipam.html", ipamData{Base: s.base(r, "IPAM", "ipam")})
-}
-
-// handleIPAMData aggregates the fleet. Cached audit results make this cheap;
-// cold entries are parsed with bounded concurrency.
-func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
-	fws, err := s.store.ListFirewallRefs(r.Context())
+// refreshIPAM recomputes the fleet snapshot in the background and stores it.
+// Coalesced: a call while a sweep is running is a no-op. Registered with the
+// scheduler for a daily run and triggered by POST /ipam/refresh (or the first
+// visit when no snapshot exists yet).
+func (s *Server) refreshIPAM() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	fws, err := s.store.ListFirewallRefs(ctx)
+	cancel()
 	if err != nil {
-		s.logger.Error("ipam: list firewalls failed", "err", err)
-		http.Error(w, "failed to list firewalls", http.StatusInternalServerError)
+		s.logger.Error("ipam refresh: list firewalls failed", "err", err)
 		return
 	}
+	if !s.ipamProgress.begin(len(fws)) {
+		return
+	}
+	defer s.ipamProgress.end()
 	db, err := s.insightsDB()
 	if err != nil {
-		s.logger.Error("ipam: insights DB unavailable", "err", err)
-		http.Error(w, "insights DB unavailable", http.StatusInternalServerError)
+		s.logger.Error("ipam refresh: insights DB unavailable", "err", err)
 		return
 	}
 
@@ -219,7 +277,7 @@ func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
 		mu      sync.Mutex
 		entries []ipamEntry
 		scanned int
-		sem     = make(chan struct{}, 4)
+		sem     = make(chan struct{}, 2) // bound cold-cache config parses
 		wg      sync.WaitGroup
 	)
 	for _, fw := range fws {
@@ -229,14 +287,14 @@ func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			res, ok := s.auditResultFor(db, fw.ID)
-			if !ok || res == nil {
-				return
+			if ok && res != nil {
+				ents := ipamEntriesFor(res, fw.ID, fw.FQDN)
+				mu.Lock()
+				scanned++
+				entries = append(entries, ents...)
+				mu.Unlock()
 			}
-			ents := ipamEntriesFor(res, fw.ID, fw.FQDN)
-			mu.Lock()
-			scanned++
-			entries = append(entries, ents...)
-			mu.Unlock()
+			s.ipamProgress.step(fw.FQDN)
 		}()
 	}
 	wg.Wait()
@@ -251,14 +309,72 @@ func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		unique[e.Prefix] = true
 	}
-
-	resp := ipamResponse{
+	snap := ipamSnapshot{
 		Firewalls: len(fws),
 		Scanned:   scanned,
 		Prefixes:  len(unique),
 		Entries:   entries,
 		Overlaps:  findOverlaps(entries),
 	}
+	blob, err := json.Marshal(snap)
+	if err != nil {
+		s.logger.Error("ipam refresh: marshal failed", "err", err)
+		return
+	}
+	if _, err := db.Exec(`INSERT INTO ipam_cache (id, computed_at, results_json) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET computed_at=excluded.computed_at, results_json=excluded.results_json`,
+		time.Now().UTC().Format(time.RFC3339), string(blob)); err != nil {
+		s.logger.Error("ipam refresh: store failed", "err", err)
+		return
+	}
+	s.logger.Info("ipam snapshot refreshed", "firewalls", len(fws), "scanned", scanned,
+		"prefixes", snap.Prefixes, "overlaps", len(snap.Overlaps))
+}
+
+// ---- handlers ---------------------------------------------------------------
+
+type ipamData struct {
+	Base  BaseData
+	Error string
+}
+
+// handleIPAM renders the page shell; data and progress come from /ipam/data.
+func (s *Server) handleIPAM(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "ipam.html", ipamData{Base: s.base(r, "IPAM", "ipam")})
+}
+
+// handleIPAMData serves the stored snapshot plus live sweep progress. It never
+// computes anything itself; when no snapshot exists yet it kicks off the
+// first background sweep so a fresh install fills in by itself.
+func (s *Server) handleIPAMData(w http.ResponseWriter, r *http.Request) {
+	db, err := s.insightsDB()
+	if err != nil {
+		s.logger.Error("ipam: insights DB unavailable", "err", err)
+		http.Error(w, "insights DB unavailable", http.StatusInternalServerError)
+		return
+	}
+	out := ipamDataOut{}
+	var blob string
+	haveSnap := db.QueryRow(`SELECT computed_at, results_json FROM ipam_cache WHERE id = 1`).
+		Scan(&out.ComputedAt, &blob) == nil
+	if haveSnap {
+		var snap ipamSnapshot
+		if err := json.Unmarshal([]byte(blob), &snap); err == nil {
+			out.Snapshot = &snap
+		}
+	}
+	out.Running, out.Done, out.Total, out.Current = s.ipamProgress.snapshot()
+	if !haveSnap && !out.Running {
+		go s.refreshIPAM()
+		out.Running = true
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleIPAMRefresh starts a background snapshot recompute (POST).
+func (s *Server) handleIPAMRefresh(w http.ResponseWriter, r *http.Request) {
+	s.store.LogActivity(s.sess.User(r).Username, "IPAM Refresh", "Triggered fleet IPAM recompute")
+	go s.refreshIPAM()
+	w.WriteHeader(http.StatusAccepted)
 }

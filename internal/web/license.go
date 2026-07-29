@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -316,7 +317,8 @@ func (s *Server) fetchLicense(fw models.Firewall) {
 
 // refreshLicensesJob is the daily sweep over every firewall, run by the
 // scheduler. Devices are collected sequentially with a small gap so the sweep
-// never bursts SSH connections across the fleet.
+// never bursts SSH connections across the fleet. Progress is published via
+// licenseProgress for the page's poller; concurrent sweeps coalesce.
 func (s *Server) refreshLicensesJob() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	fws, err := s.store.ListFirewalls(ctx)
@@ -325,10 +327,27 @@ func (s *Server) refreshLicensesJob() {
 		s.logger.Error("license sweep: list firewalls failed", "err", err)
 		return
 	}
-	for _, fw := range fws {
-		s.fetchLicense(fw)
-		time.Sleep(2 * time.Second)
+	if !s.licenseProgress.begin(len(fws)) {
+		return
 	}
+	defer s.licenseProgress.end()
+	for i, fw := range fws {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		s.fetchLicense(fw)
+		s.licenseProgress.step(fw.FQDN)
+	}
+}
+
+// handleLicenseStatus reports the running sweep's progress for the page's
+// poller.
+func (s *Server) handleLicenseStatus(w http.ResponseWriter, r *http.Request) {
+	running, done, total, current := s.licenseProgress.snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"running": running, "done": done, "total": total, "current": current,
+	})
 }
 
 // ---- page -------------------------------------------------------------------
@@ -346,9 +365,10 @@ type licenseRow struct {
 	HAMode       string
 	FetchedAt    string
 	FetchError   string
-	Expiry       string // earliest entitlement expiry (ISO), "" unknown
+	Expiry       string // driving entitlement expiry (ISO), "" unknown
 	DaysLeft     int
 	Level        string // ok | warn | crit | expired | unknown
+	Lapsed       int    // long-expired services not driving the status
 	Entitlements []licenseEntitlement
 }
 
@@ -364,6 +384,53 @@ func licenseLevel(daysLeft int) string {
 	default:
 		return "ok"
 	}
+}
+
+// licenseClass is the device-level rollup derived from all entitlements.
+type licenseClass struct {
+	Expiry   string // driving expiry date (ISO), "" when unknown
+	Service  string // the service that drives Expiry
+	DaysLeft int
+	Level    string // ok | warn | crit | expired | unknown
+	Lapsed   int    // already-expired services (informational unless all are)
+}
+
+// classifyLicense rolls per-service entitlements up to one device status.
+// Real fleets carry long-lapsed entries for services that were never part of
+// the current contract bundle (e.g. one item expired years ago while AV/IPS
+// run to next year) — those must not mark the device expired. The device
+// level therefore follows the earliest ACTIVE expiry; already-expired
+// services are only counted, and the device reads "expired" solely when no
+// active dated entitlement remains.
+func classifyLicense(ents []licenseEntitlement, now time.Time) licenseClass {
+	today := now.UTC().Format("2006-01-02")
+	c := licenseClass{Level: "unknown"}
+	var maxLapsed, maxLapsedSvc = "", ""
+	for _, e := range ents {
+		if e.Expiry == "" {
+			continue
+		}
+		if e.Expiry < today { // lapsed
+			c.Lapsed++
+			if e.Expiry > maxLapsed {
+				maxLapsed, maxLapsedSvc = e.Expiry, e.Service
+			}
+			continue
+		}
+		if c.Expiry == "" || e.Expiry < c.Expiry {
+			c.Expiry, c.Service = e.Expiry, e.Service
+		}
+	}
+	switch {
+	case c.Expiry != "": // at least one active entitlement drives the status
+		c.DaysLeft = daysUntil(c.Expiry, now)
+		c.Level = licenseLevel(c.DaysLeft)
+	case c.Lapsed > 0: // nothing active at all → genuinely expired
+		c.Expiry, c.Service = maxLapsed, maxLapsedSvc
+		c.DaysLeft = daysUntil(c.Expiry, now)
+		c.Level = "expired"
+	}
+	return c
 }
 
 // daysUntil returns whole days from today (UTC) to an ISO date; negative when
@@ -412,18 +479,13 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 				return nil, err
 			}
 			row.Entitlements = append(row.Entitlements, e)
-			if e.Expiry != "" && (row.Expiry == "" || e.Expiry < row.Expiry) {
-				row.Expiry = e.Expiry
-			}
 		}
 		_ = ents.Close()
 		if err := ents.Err(); err != nil {
 			return nil, err
 		}
-		if row.Expiry != "" {
-			row.DaysLeft = daysUntil(row.Expiry, now)
-			row.Level = licenseLevel(row.DaysLeft)
-		}
+		cls := classifyLicense(row.Entitlements, now)
+		row.Expiry, row.DaysLeft, row.Level, row.Lapsed = cls.Expiry, cls.DaysLeft, cls.Level, cls.Lapsed
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].FQDN < rows[j].FQDN })
@@ -504,42 +566,61 @@ type licenseIssue struct {
 	Level    string `json:"level"` // warn | crit | expired
 }
 
-// licenseIssues lists the soonest-expiring entitlement per affected device.
-// Any error yields an empty list so the dashboard card simply does not appear.
+// licenseIssues lists devices whose rolled-up license status is expiring or
+// expired, using the same classification as the Licenses page — so a single
+// long-lapsed service among otherwise-active entitlements never raises an
+// alert. Any error yields an empty list so the card simply does not appear.
 func (s *Server) licenseIssues(fqdnByID map[int]string) []licenseIssue {
 	db, err := s.insightsDB()
 	if err != nil {
 		s.logger.Warn("dashboard license lookup failed", "err", err)
 		return nil
 	}
-	now := time.Now()
-	cutoff := now.UTC().AddDate(0, 0, licenseWarnDays).Format("2006-01-02")
-	// Soonest expiring entitlement per device, only when inside the window.
-	rows, err := db.Query(`SELECT e.fw_id, COALESCE(s.serial,''), e.service, MIN(e.expiry)
+	rows, err := db.Query(`SELECT e.fw_id, COALESCE(s.serial,''), e.service, e.expiry
 		FROM license_entitlements e
 		LEFT JOIN license_status s ON s.fw_id = e.fw_id
-		WHERE e.expiry != '' AND e.expiry <= ?
-		GROUP BY e.fw_id
-		ORDER BY MIN(e.expiry)`, cutoff)
+		WHERE e.expiry != ''`)
 	if err != nil {
 		s.logger.Warn("dashboard license lookup failed", "err", err)
 		return nil
 	}
 	defer func() { _ = rows.Close() }()
-	var out []licenseIssue
+	type devEnts struct {
+		serial string
+		ents   []licenseEntitlement
+	}
+	byFw := map[int]*devEnts{}
 	for rows.Next() {
-		var is licenseIssue
-		if err := rows.Scan(&is.FwID, &is.Serial, &is.Service, &is.Expiry); err != nil {
+		var fwID int
+		var serial string
+		var e licenseEntitlement
+		if err := rows.Scan(&fwID, &serial, &e.Service, &e.Expiry); err != nil {
 			s.logger.Warn("dashboard license scan failed", "err", err)
-			return out
+			return nil
 		}
-		is.FQDN = fqdnByID[is.FwID]
-		is.DaysLeft = daysUntil(is.Expiry, now)
-		is.Level = licenseLevel(is.DaysLeft)
-		out = append(out, is)
+		d := byFw[fwID]
+		if d == nil {
+			d = &devEnts{serial: serial}
+			byFw[fwID] = d
+		}
+		d.ents = append(d.ents, e)
 	}
 	if err := rows.Err(); err != nil {
 		s.logger.Warn("dashboard license lookup failed", "err", err)
+		return nil
 	}
+	now := time.Now()
+	var out []licenseIssue
+	for fwID, d := range byFw {
+		cls := classifyLicense(d.ents, now)
+		if cls.Level != "warn" && cls.Level != "crit" && cls.Level != "expired" {
+			continue
+		}
+		out = append(out, licenseIssue{
+			FwID: fwID, FQDN: fqdnByID[fwID], Serial: d.serial,
+			Service: cls.Service, Expiry: cls.Expiry, DaysLeft: cls.DaysLeft, Level: cls.Level,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Expiry < out[j].Expiry })
 	return out
 }

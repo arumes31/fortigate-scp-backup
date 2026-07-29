@@ -95,6 +95,11 @@ type Server struct {
 	// licenseInFlight coalesces concurrent license fetches per firewall
 	// (daily sweep vs manual refresh), keyed by firewall ID.
 	licenseInFlight sync.Map
+
+	// Fleet-sweep progress for the Licenses and IPAM pages (polled by their
+	// JS); begin() on each also coalesces concurrent sweeps.
+	licenseProgress sweepProgress
+	ipamProgress    sweepProgress
 }
 
 type pageTmpl struct {
@@ -130,6 +135,10 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	// License/entitlement data changes rarely; one fleet sweep per day keeps
 	// the inventory and the dashboard expiry card fresh without SSH churn.
 	sched.Schedule("license-refresh", 24*time.Hour, 2*time.Minute, s.refreshLicensesJob)
+	// IPAM aggregates from cached audit parses; the daily recompute (plus the
+	// on-demand button) keeps the stored snapshot at most a day old without
+	// ever parsing configs inside a page request.
+	sched.Schedule("ipam-refresh", 24*time.Hour, 5*time.Minute, s.refreshIPAM)
 	return s, nil
 }
 
@@ -314,10 +323,12 @@ func (s *Server) Routes() chi.Router {
 		pr.HandleFunc("/audit/cve_refresh", s.handleAuditCVERefresh)
 		pr.HandleFunc("/audit/ticket", s.handleAuditTicket)
 		pr.Get("/licenses", s.handleLicenses)
+		pr.Get("/licenses/status", s.handleLicenseStatus)
 		pr.Post("/licenses/refresh/{fwID}", s.handleLicenseRefresh)
 		pr.Post("/licenses/refresh_all", s.handleLicenseRefreshAll)
 		pr.Get("/ipam", s.handleIPAM)
 		pr.Get("/ipam/data", s.handleIPAMData)
+		pr.Post("/ipam/refresh", s.handleIPAMRefresh)
 		pr.Get("/topology", s.handleTopology)
 		pr.Get("/topology/data/{fwID}", s.handleTopologyData)
 		pr.Post("/topology/share", s.handleTopologyShareCreate)

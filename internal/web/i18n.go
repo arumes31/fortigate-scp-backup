@@ -413,11 +413,17 @@ var uiMsgs = map[string]map[string]string{
 	"lic.col_result":       {"en": "Result", "de": "Ergebnis"},
 	"lic.pill_expired":     {"en": "EXPIRED", "de": "ABGELAUFEN"},
 	"lic.pill_unknown":     {"en": "unknown", "de": "unbekannt"},
+	"lic.lapsed":           {"en": "lapsed", "de": "ausgelaufen"},
+	"lic.lapsed_hint":      {"en": "Services whose contract already ended; they do not drive the device status while active entitlements remain. See details.", "de": "Dienste mit bereits beendetem Vertrag; sie bestimmen den Gerätestatus nicht, solange aktive Lizenzen bestehen. Siehe Details."},
 	"lic.none":             {"en": "No firewalls configured.", "de": "Keine Firewalls konfiguriert."},
 
 	// IPAM page
 	"ipam.title":            {"en": "Fleet IPAM", "de": "Flotten-IPAM"},
-	"ipam.loading":          {"en": "Scanning fleet configs…", "de": "Flotten-Konfigurationen werden gescannt…"},
+	"ipam.loading":          {"en": "Loading…", "de": "Lädt…"},
+	"ipam.last_updated":     {"en": "Last updated", "de": "Zuletzt aktualisiert"},
+	"ipam.update_now":       {"en": "Update now", "de": "Jetzt aktualisieren"},
+	"ipam.updating":         {"en": "Updating —", "de": "Aktualisiere —"},
+	"ipam.never":            {"en": "not computed yet", "de": "noch nicht berechnet"},
 	"ipam.firewalls":        {"en": "firewalls", "de": "Firewalls"},
 	"ipam.prefixes":         {"en": "unique prefixes", "de": "eindeutige Präfixe"},
 	"ipam.overlaps":         {"en": "overlaps", "de": "Überschneidungen"},

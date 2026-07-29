@@ -133,6 +133,13 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			host_key TEXT NOT NULL,
 			first_seen TEXT NOT NULL
 		)`,
+		// Stored fleet IPAM snapshot (single row), recomputed by the background
+		// sweep so /ipam/data never parses configs inside a request.
+		`CREATE TABLE IF NOT EXISTS ipam_cache (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			computed_at TEXT NOT NULL,
+			results_json TEXT NOT NULL
+		)`,
 		// cve_cache holds the live (NVD + CISA KEV) CVE dataset alongside the
 		// offline fallback seed (source='fallback-seed', see cveFallbackDefs) so
 		// getCVEs always has something to match against. See cve_source.go /

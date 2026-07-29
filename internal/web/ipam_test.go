@@ -147,6 +147,35 @@ func TestParseConfigDataIPAMSources(t *testing.T) {
 	}
 }
 
+// TestSweepProgress covers the begin-coalescing and progress reporting used
+// by the IPAM and license background sweeps.
+func TestSweepProgress(t *testing.T) {
+	var p sweepProgress
+	if running, _, _, _ := p.snapshot(); running {
+		t.Fatal("fresh progress must not be running")
+	}
+	if !p.begin(3) {
+		t.Fatal("first begin must succeed")
+	}
+	if p.begin(5) {
+		t.Fatal("second begin must coalesce (return false)")
+	}
+	p.step("fw-a")
+	p.step("fw-b")
+	running, done, total, current := p.snapshot()
+	if !running || done != 2 || total != 3 || current != "fw-b" {
+		t.Fatalf("snapshot = (%v, %d, %d, %q), want (true, 2, 3, fw-b)", running, done, total, current)
+	}
+	p.end()
+	if running, _, _, _ := p.snapshot(); running {
+		t.Fatal("ended progress must not be running")
+	}
+	if !p.begin(1) {
+		t.Fatal("begin after end must succeed again")
+	}
+	p.end()
+}
+
 func TestFindOverlaps(t *testing.T) {
 	entries := []ipamEntry{
 		{Prefix: "10.20.0.0/24", FwID: 1, FQDN: "fw-a", Source: "interface", Name: "lan"},
