@@ -30,6 +30,45 @@ func TestShortenURLCollisionClassification(t *testing.T) {
 	}
 }
 
+// TestLastConfigSchemaVersioning verifies the stored ParsedConfig blob
+// round-trips under the current schema and that a pre-versioning (raw
+// ParsedConfig) or otherwise mismatched blob is rejected instead of being
+// partially decoded into wrong UI prefill data.
+func TestLastConfigSchemaVersioning(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if err := InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	e := &Extension{db: db}
+
+	saved := ParsedConfig{Interfaces: []string{"wan1", "lan"}, Addresses: []string{"net-office"}}
+	if err := e.saveLastConfigToDB("alice", saved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := e.getLastConfigFromDB("alice")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got.Interfaces) != 2 || got.Interfaces[0] != "wan1" || len(got.Addresses) != 1 {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+
+	// A legacy row (raw ParsedConfig JSON, no schema wrapper) decodes with
+	// Schema 0 and must be discarded.
+	if _, err := db.Exec(`INSERT INTO last_config (username, config_data) VALUES ('bob', ?)`,
+		`{"interfaces":["wan1"],"addresses":[]}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.getLastConfigFromDB("bob"); err == nil {
+		t.Error("legacy unversioned blob must be rejected")
+	}
+}
+
 // TestShortURLOwnerScoping: deleting or renaming one owner's template must
 // not touch another owner's short URLs for a same-named template. A legacy
 // row without an owner (owner = ”) is keyed only by URL and cannot be

@@ -196,10 +196,7 @@ func TestFindOverlaps(t *testing.T) {
 		{Prefix: "0.0.0.0/0", FwID: 8, FQDN: "fw-h", Source: "route", Name: "default"},
 		{Prefix: "10.60.1.7/32", FwID: 9, FQDN: "fw-i", Source: "address", Name: "host"},
 	}
-	overlaps, total := findOverlaps(entries)
-	if total != len(overlaps) {
-		t.Errorf("total = %d, len = %d (nothing should be truncated here)", total, len(overlaps))
-	}
+	overlaps := findOverlaps(entries)
 	byKey := map[string]ipamOverlap{}
 	for _, o := range overlaps {
 		byKey[o.Kind+"|"+o.Prefix+"|"+o.Inner] = o

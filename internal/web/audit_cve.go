@@ -17,6 +17,29 @@ import (
 // cveFallbackDefs (audit_checks.go) for the offline-only safety net this
 // backs onto when a live fetch has never succeeded.
 
+// cveDefsSchema versions the cve_cache storage shape (most importantly
+// ranges_json / cveRangeJSON). Bump on any incompatible change: stored rows
+// in an older shape would otherwise decode to zero values and CVE matching
+// would silently stop finding anything — permanently on offline installs,
+// whose fallback-seed rows are only ever written when the table is empty.
+const cveDefsSchema = 1
+
+// ensureCVEDefsSchema wipes every stored CVE row (live and seed) when the
+// storage shape changed, so seedCVECacheIfEmpty re-seeds the fallback set in
+// the current shape and the next scheduled/manual refresh restores the live
+// rows. Matching keeps working off the fresh seed in the meantime, and the
+// changed dataset flips cveFingerprint, which recomputes cached audits.
+func ensureCVEDefsSchema(db *sql.DB) {
+	var stored int
+	_ = db.QueryRow("SELECT COALESCE(defs_schema, 0) FROM cve_meta WHERE id = 1").Scan(&stored)
+	if stored == cveDefsSchema {
+		return
+	}
+	_, _ = db.Exec("DELETE FROM cve_cache")
+	_, _ = db.Exec(`INSERT INTO cve_meta (id, defs_schema) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET defs_schema = excluded.defs_schema`, cveDefsSchema)
+}
+
 // cveRangeJSON is cveRange's storage form: cveRange's fields are unexported
 // (internal to the matching logic), so this small mirror is what actually
 // gets marshaled into the ranges_json column.

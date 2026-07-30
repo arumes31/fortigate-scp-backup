@@ -148,6 +148,7 @@ func (e *Extension) switchCapableIDs() (map[int]bool, error) {
 	defer func() { _ = rows.Close() }()
 
 	out := map[int]bool{}
+	maxSchema := 0
 	for rows.Next() {
 		var fwID int
 		var blob string
@@ -155,14 +156,34 @@ func (e *Extension) switchCapableIDs() (map[int]bool, error) {
 			continue
 		}
 		var res struct {
-			Switches []json.RawMessage `json:"switches"`
+			SchemaVersion int               `json:"schema_version"`
+			Switches      []json.RawMessage `json:"switches"`
 		}
-		if jsonErr := json.Unmarshal([]byte(blob), &res); jsonErr == nil && len(res.Switches) > 0 {
-			out[fwID] = true
+		if jsonErr := json.Unmarshal([]byte(blob), &res); jsonErr == nil {
+			if res.SchemaVersion > maxSchema {
+				maxSchema = res.SchemaVersion
+			}
+			if len(res.Switches) > 0 {
+				out[fwID] = true
+			}
 		}
+	}
+	// Cross-component contract guard: this blob is owned by internal/web
+	// (auditSchemaVersion). If a future schema renamed/moved the "switches"
+	// key, this probe would silently report "no switches anywhere" and switch
+	// data collection would quietly stop — surface that instead of hiding it.
+	if maxSchema > auditCacheMaxKnownSchema {
+		e.logger.Warn("audit cache schema is newer than this reader was verified against; switch detection may be incomplete",
+			"seen_schema", maxSchema, "verified_schema", auditCacheMaxKnownSchema, "switch_capable", len(out))
 	}
 	return out, rows.Err()
 }
+
+// auditCacheMaxKnownSchema is the newest core audit_cache schema_version this
+// package's results_json probe (switchCapableIDs) has been verified against.
+// When bumping auditSchemaVersion in internal/web/audit_cache.go, confirm the
+// "switches" key still decodes here and raise this constant.
+const auditCacheMaxKnownSchema = 7
 
 // deviceRetention bounds how long a device row survives without being seen
 // again. Retaining rows across refreshes (instead of wiping them) preserves
