@@ -126,6 +126,15 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			version TEXT, expiry TEXT, last_update TEXT, result TEXT,
 			PRIMARY KEY (fw_id, service)
 		)`,
+		// Managed child devices (FortiSwitches and FortiAPs) per firewall,
+		// collected in the same license sweep. Rows are replaced wholesale on
+		// each successful fetch; kind is 'switch' or 'ap'.
+		`CREATE TABLE IF NOT EXISTS license_devices (
+			fw_id INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			name TEXT NOT NULL,
+			serial TEXT, model TEXT, version TEXT, build TEXT, status TEXT
+		)`,
 		// Trust-on-first-use SSH host-key pins for the license collector
 		// (authorized_keys format). Delete a row to re-trust a replaced device.
 		`CREATE TABLE IF NOT EXISTS ssh_known_hosts (
