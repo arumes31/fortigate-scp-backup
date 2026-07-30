@@ -46,26 +46,28 @@ type ipamOverlap struct {
 }
 
 const (
-	// ipamOverlapMaxRows caps how many overlap groups are stored/rendered;
-	// the total is still reported so truncation is visible.
-	ipamOverlapMaxRows = 500
 	// ipamOverlapMaxFws caps the example firewalls listed per overlap group.
 	ipamOverlapMaxFws = 6
 	// ipamSnapshotSchema versions the stored snapshot JSON. A stored blob
 	// with a different (older) schema is never served — the page would choke
 	// on it (the unversioned pairwise format reached hundreds of MB). Bump on
 	// any incompatible change to ipamSnapshot/ipamOverlap.
-	ipamSnapshotSchema = 2
+	// v3: overlaps are stored in full (client caps the render); v2 blobs were
+	// truncated to 500 rows, which client-side search must not silently miss.
+	ipamSnapshotSchema = 3
 )
 
-// ipamSnapshot is the stored fleet aggregation.
+// ipamSnapshot is the stored fleet aggregation. Entries and overlaps are
+// complete — the page keeps them in memory for searching and caps only what
+// it puts in the DOM. Overlap groups stay small at fleet scale (at most ~2
+// per unique prefix, each with capped example firewalls), so storing all of
+// them cannot re-create the pairwise blowup.
 type ipamSnapshot struct {
-	Firewalls     int           `json:"firewalls"`
-	Scanned       int           `json:"scanned"` // firewalls with a parsed config
-	Prefixes      int           `json:"prefixes"`
-	Entries       []ipamEntry   `json:"entries"`
-	Overlaps      []ipamOverlap `json:"overlaps"`
-	OverlapsTotal int           `json:"overlaps_total"`
+	Firewalls int           `json:"firewalls"`
+	Scanned   int           `json:"scanned"` // firewalls with a parsed config
+	Prefixes  int           `json:"prefixes"`
+	Entries   []ipamEntry   `json:"entries"`
+	Overlaps  []ipamOverlap `json:"overlaps"`
 }
 
 // ipamDataOut is the /ipam/data payload: the stored snapshot (if any) plus
@@ -244,10 +246,7 @@ func crossFirewall(a, b *ipamPrefixGroup) bool {
 //     different firewalls are involved (partial overlap is impossible between
 //     CIDR prefixes — they either nest or are disjoint). The sweep is a
 //     sorted stack walk, linear in the number of unique prefixes.
-//
-// The row list is capped at ipamOverlapMaxRows; the returned total counts all
-// groups found so the UI can show truncation.
-func findOverlaps(entries []ipamEntry) ([]ipamOverlap, int) {
+func findOverlaps(entries []ipamEntry) []ipamOverlap {
 	groups := map[netip.Prefix]*ipamPrefixGroup{}
 	for _, e := range entries {
 		p, err := netip.ParsePrefix(e.Prefix)
@@ -316,12 +315,7 @@ func findOverlaps(entries []ipamEntry) ([]ipamOverlap, int) {
 		return dups[i].Prefix < dups[j].Prefix
 	})
 	sort.SliceStable(contains, func(i, j int) bool { return contains[i].Prefix < contains[j].Prefix })
-	out := append(dups, contains...)
-	total := len(out)
-	if len(out) > ipamOverlapMaxRows {
-		out = out[:ipamOverlapMaxRows]
-	}
-	return out, total
+	return append(dups, contains...)
 }
 
 // ---- snapshot compute & storage ---------------------------------------------
@@ -384,14 +378,13 @@ func (s *Server) refreshIPAM() {
 	for _, e := range entries {
 		unique[e.Prefix] = true
 	}
-	overlaps, overlapsTotal := findOverlaps(entries)
+	overlaps := findOverlaps(entries)
 	snap := ipamSnapshot{
-		Firewalls:     len(fws),
-		Scanned:       scanned,
-		Prefixes:      len(unique),
-		Entries:       entries,
-		Overlaps:      overlaps,
-		OverlapsTotal: overlapsTotal,
+		Firewalls: len(fws),
+		Scanned:   scanned,
+		Prefixes:  len(unique),
+		Entries:   entries,
+		Overlaps:  overlaps,
 	}
 	blob, err := json.Marshal(snap)
 	if err != nil {
@@ -406,7 +399,7 @@ func (s *Server) refreshIPAM() {
 		return
 	}
 	s.logger.Info("ipam snapshot refreshed", "firewalls", len(fws), "scanned", scanned,
-		"prefixes", snap.Prefixes, "overlaps", overlapsTotal)
+		"prefixes", snap.Prefixes, "overlaps", len(overlaps))
 }
 
 // ---- handlers ---------------------------------------------------------------

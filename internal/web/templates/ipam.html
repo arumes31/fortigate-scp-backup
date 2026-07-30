@@ -21,6 +21,8 @@
     <div class="card-header">
         <h2 class="mt-0 mb-0" style="color: #fb923c;">⚠ {{T .Base.Lang "ipam.overlaps_title"}}</h2>
         <span class="muted" style="font-size: 0.85em;" id="ipamOverlapDesc"></span>
+        <input type="text" id="ipamOverlapSearch" placeholder="{{T .Base.Lang "ipam.search"}}" autocomplete="off" style="max-width:280px; margin-left:auto;">
+        <span class="muted" id="ipamOverlapSearchCount" style="font-size: 0.85em;"></span>
     </div>
     <div class="table-wrap">
         <table class="data">
@@ -93,6 +95,12 @@
         if (bits === 0) { return true; }
         return ((ip ^ base) >>> (32 - bits)) === 0;
     }
+    function prefixParts(s) {
+        var pm = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(s || '');
+        if (!pm) { return null; }
+        var base = ip4ToInt(pm[1]);
+        return base === null ? null : { base: base, bits: Number(pm[2]) };
+    }
 
     function renderEntries() {
         var terms = document.getElementById('ipamSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
@@ -100,7 +108,7 @@
         var matched = !terms.length ? allEntries : allEntries.filter(function (e) {
             return termObjs.every(function (o) {
                 if (e._t.indexOf(o.t) !== -1) { return true; }
-                return o.ip !== null && e._bits !== null && ipInPrefix(o.ip, e._base, e._bits);
+                return o.ip !== null && e._p !== null && ipInPrefix(o.ip, e._p.base, e._p.bits);
             });
         });
         var shown = matched.slice(0, RENDER_CAP);
@@ -122,45 +130,72 @@
             (terms.length || matched.length > shown.length) ? shown.length + ' / ' + matched.length : '';
     }
 
+    // Overlap groups mirror the entries pattern: the full list stays in
+    // memory for searching; only the first OVERLAP_RENDER_CAP matches reach
+    // the DOM.
+    var OVERLAP_RENDER_CAP = 500;
+    var allOverlaps = [];
+
+    function overlapRowHtml(o) {
+        var pill = o.kind === 'duplicate'
+            ? '<span class="pill pill-failed">' + esc(tt('ipam.kind_duplicate')) + '</span>'
+            : '<span class="pill pill-new">' + esc(tt('ipam.kind_containment')) + '</span>';
+        var fws = (o.firewalls || []).map(esc).join(', ');
+        if (o.count > (o.firewalls || []).length) {
+            fws += ' <span class="muted">+' + (o.count - o.firewalls.length) + '</span>';
+        }
+        return '<tr><td>' + pill + '</td>' +
+            '<td><code>' + esc(o.prefix) + '</code></td>' +
+            '<td>' + (o.inner ? '<code>' + esc(o.inner) + '</code>' : '<span class="muted">—</span>') + '</td>' +
+            '<td class="muted">' + o.count + ' — ' + fws + '</td></tr>';
+    }
+
+    function renderOverlaps() {
+        var terms = document.getElementById('ipamOverlapSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
+        var termObjs = terms.map(function (t) { return { t: t, ip: ip4ToInt(t) }; });
+        var matched = !terms.length ? allOverlaps : allOverlaps.filter(function (o) {
+            return termObjs.every(function (obj) {
+                if (o._t.indexOf(obj.t) !== -1) { return true; }
+                if (obj.ip === null) { return false; }
+                return (o._p !== null && ipInPrefix(obj.ip, o._p.base, o._p.bits)) ||
+                    (o._ip !== null && ipInPrefix(obj.ip, o._ip.base, o._ip.bits));
+            });
+        });
+        var shown = matched.slice(0, OVERLAP_RENDER_CAP);
+        var html = shown.map(overlapRowHtml).join('');
+        if (!shown.length) {
+            html = '<tr><td colspan="4" class="empty">—</td></tr>';
+        } else if (matched.length > shown.length) {
+            html += '<tr><td colspan="4" class="empty">… ' + (matched.length - shown.length) +
+                ' ' + esc(tt('ipam.more_rows')) + '</td></tr>';
+        }
+        document.getElementById('ipamOverlapBody').innerHTML = html;
+        document.getElementById('ipamOverlapSearchCount').textContent =
+            (terms.length || matched.length > shown.length) ? shown.length + ' / ' + matched.length : '';
+    }
+
     function renderSnapshot(snap) {
         document.getElementById('ipamFwCount').textContent = snap.scanned + ' / ' + snap.firewalls;
         document.getElementById('ipamPrefixCount').textContent = snap.prefixes;
-        document.getElementById('ipamOverlapCount').textContent = snap.overlaps_total || 0;
+        document.getElementById('ipamOverlapCount').textContent = (snap.overlaps || []).length;
 
         allEntries = snap.entries || [];
         allEntries.forEach(function (e) {
             e._t = entryText(e);
-            e._bits = null;
-            var pm = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(e.prefix);
-            if (pm) {
-                var base = ip4ToInt(pm[1]);
-                if (base !== null) { e._base = base; e._bits = Number(pm[2]); }
-            }
+            e._p = prefixParts(e.prefix);
         });
         renderEntries();
 
-        var overlaps = snap.overlaps || [];
-        var card = document.getElementById('ipamOverlapCard');
-        card.style.display = overlaps.length ? '' : 'none';
-        if (overlaps.length) {
-            document.getElementById('ipamOverlapDesc').textContent =
-                (snap.overlaps_total > overlaps.length)
-                    ? overlaps.length + ' / ' + snap.overlaps_total
-                    : String(overlaps.length);
-            document.getElementById('ipamOverlapBody').innerHTML = overlaps.map(function (o) {
-                var pill = o.kind === 'duplicate'
-                    ? '<span class="pill pill-failed">' + esc(tt('ipam.kind_duplicate')) + '</span>'
-                    : '<span class="pill pill-new">' + esc(tt('ipam.kind_containment')) + '</span>';
-                var fws = (o.firewalls || []).map(esc).join(', ');
-                if (o.count > (o.firewalls || []).length) {
-                    fws += ' <span class="muted">+' + (o.count - o.firewalls.length) + '</span>';
-                }
-                return '<tr><td>' + pill + '</td>' +
-                    '<td><code>' + esc(o.prefix) + '</code></td>' +
-                    '<td>' + (o.inner ? '<code>' + esc(o.inner) + '</code>' : '<span class="muted">—</span>') + '</td>' +
-                    '<td class="muted">' + o.count + ' — ' + fws + '</td></tr>';
-            }).join('');
-        }
+        allOverlaps = snap.overlaps || [];
+        allOverlaps.forEach(function (o) {
+            o._t = (o.kind + ' ' + tt('ipam.kind_' + o.kind) + ' ' + o.prefix + ' ' +
+                (o.inner || '') + ' ' + (o.firewalls || []).join(' ')).toLowerCase();
+            o._p = prefixParts(o.prefix);
+            o._ip = prefixParts(o.inner);
+        });
+        document.getElementById('ipamOverlapCard').style.display = allOverlaps.length ? '' : 'none';
+        document.getElementById('ipamOverlapDesc').textContent = allOverlaps.length ? String(allOverlaps.length) : '';
+        renderOverlaps();
     }
 
     var pollTimer = null;
@@ -200,6 +235,7 @@
     });
 
     document.getElementById('ipamSearch').addEventListener('input', renderEntries);
+    document.getElementById('ipamOverlapSearch').addEventListener('input', renderOverlaps);
 
     poll();
 })();
