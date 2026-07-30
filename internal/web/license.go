@@ -5,6 +5,16 @@
 // expiring-licenses card. The FortiCare hardware/support contract is not
 // exposed by these commands, so the inventory covers FortiGuard service
 // entitlements; on HA clusters the primary answers, so its serial is recorded.
+//
+// The same sweep also inventories each firewall's managed FortiSwitches
+// (diagnose switch-controller switch-info status + get switch-controller
+// managed-switch, the latter to flag configured-but-disconnected switches)
+// and FortiAPs (show wireless-controller wtp). Their FortiCare contracts are
+// not visible from the FortiGate at all — the child rows carry serial, model
+// and firmware so the contract can be looked up in FortiCloud by serial.
+// `execute …` commands (e.g. get-conn-status) are unavailable over the SSH
+// exec channel, and failed commands still exit 0 with the error text as
+// output — parsers must simply find nothing in such output.
 package web
 
 import (
@@ -58,6 +68,20 @@ type licenseEntitlement struct {
 	Expiry     string `json:"expiry"` // ISO yyyy-mm-dd, "" when unknown
 	LastUpdate string `json:"last_update"`
 	Result     string `json:"result"`
+}
+
+// licenseDevice is one managed child device (FortiSwitch or FortiAP) of a
+// firewall. Version/Build are only known for connected switches; APs expose
+// no firmware over the available commands. Status is online/offline for
+// switches and "" (unknown) for APs, whose per-device state is not visible.
+type licenseDevice struct {
+	Kind    string // switch | ap
+	Name    string
+	Serial  string
+	Model   string
+	Version string
+	Build   string
+	Status  string // online | offline | ""
 }
 
 // ---- SSH collection ---------------------------------------------------------
@@ -239,12 +263,169 @@ func parseAutoupdateVersions(out string) []licenseEntitlement {
 	return kept
 }
 
+// parseSwitchInfoStatus extracts connected managed switches from
+// `diagnose switch-controller switch-info status`. Sections look like:
+//
+//	Managed Switch : EX-CORE01     0
+//	Version: FortiSwitch-524D v7.6.6,build1137,251212 (GA)
+//	Serial-Number: S524DN5020000043
+//	Hostname: EX-CORE01
+//
+// The Version value has the same shape as `get system status`, so
+// reStatusVersion splits model/version/build. Only switches currently talking
+// to the controller appear here.
+func parseSwitchInfoStatus(out string) []licenseDevice {
+	var devs []licenseDevice
+	var cur *licenseDevice
+	for _, raw := range strings.Split(out, "\n") {
+		line := stripPrompt(strings.TrimRight(raw, "\r"))
+		if name, ok := strings.CutPrefix(line, "Managed Switch : "); ok {
+			f := strings.Fields(name)
+			if len(f) == 0 {
+				cur = nil
+				continue
+			}
+			devs = append(devs, licenseDevice{Kind: "switch", Name: f[0], Status: "online"})
+			cur = &devs[len(devs)-1]
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		key, val, ok := strings.Cut(line, ": ")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch strings.TrimSpace(key) {
+		case "Version":
+			if m := reStatusVersion.FindStringSubmatch(val); m != nil {
+				cur.Model, cur.Version, cur.Build = m[1], m[2], m[3]
+			} else {
+				cur.Version = val
+			}
+		case "Serial-Number":
+			cur.Serial = val
+		case "Hostname":
+			cur.Name = val
+		}
+	}
+	return devs
+}
+
+// parseManagedSwitchList extracts the CONFIGURED switch ids from
+// `get switch-controller managed-switch` ("switch-id: EX-CORE01" lines; the
+// id is the serial unless renamed). Together with parseSwitchInfoStatus this
+// flags switches that are configured but not connected.
+func parseManagedSwitchList(out string) []string {
+	var ids []string
+	for _, raw := range strings.Split(out, "\n") {
+		line := stripPrompt(strings.TrimRight(raw, "\r"))
+		if id, ok := strings.CutPrefix(line, "switch-id: "); ok {
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+// mergeSwitchDevices returns one row per configured switch id, enriched from
+// the connected-switch details when present; a configured id with no
+// connected section reads offline. Connected switches missing from the
+// configured list (multi-vdom boxes where the global `get` fails) are kept.
+func mergeSwitchDevices(configured []string, connected []licenseDevice) []licenseDevice {
+	byName := map[string]int{}
+	for i, d := range connected {
+		byName[d.Name] = i
+	}
+	var out []licenseDevice
+	seen := map[string]bool{}
+	for _, id := range configured {
+		if i, ok := byName[id]; ok {
+			out = append(out, connected[i])
+		} else {
+			out = append(out, licenseDevice{Kind: "switch", Name: id, Status: "offline"})
+		}
+		seen[id] = true
+	}
+	for _, d := range connected {
+		if !seen[d.Name] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// reWTPEdit / reWTPSet pick AP entries out of `show wireless-controller wtp`.
+var (
+	reWTPEdit   = regexp.MustCompile(`^\s*edit "([^"]+)"`)
+	reWTPSet    = regexp.MustCompile(`^\s*set (name|wtp-profile) "([^"]+)"`)
+	reAPSerial  = regexp.MustCompile(`^FP([0-9A-Z]{4})`)
+	reAPProfile = regexp.MustCompile(`^FAP([0-9A-Z]+)-`)
+)
+
+// apModel derives the FortiAP model from its serial prefix (FP231G… →
+// FortiAP-231G), falling back to the profile name (FAP231G-default). The
+// FortiGate exposes no other model or firmware detail for APs over the exec
+// channel.
+func apModel(serial, profile string) string {
+	if m := reAPSerial.FindStringSubmatch(serial); m != nil {
+		return "FortiAP-" + m[1]
+	}
+	if m := reAPProfile.FindStringSubmatch(profile); m != nil {
+		return "FortiAP-" + m[1]
+	}
+	return ""
+}
+
+// parseWTPConfig extracts the configured FortiAPs from
+// `show wireless-controller wtp`: the edit key is the AP serial, `set name`
+// its display name and `set wtp-profile` hints the model when the serial
+// prefix does not.
+func parseWTPConfig(out string) []licenseDevice {
+	var devs []licenseDevice
+	var cur *licenseDevice
+	var profile string
+	flush := func() {
+		if cur != nil {
+			cur.Model = apModel(cur.Serial, profile)
+			if cur.Name == "" {
+				cur.Name = cur.Serial
+			}
+		}
+		cur, profile = nil, ""
+	}
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if m := reWTPEdit.FindStringSubmatch(line); m != nil {
+			flush()
+			devs = append(devs, licenseDevice{Kind: "ap", Serial: m[1]})
+			cur = &devs[len(devs)-1]
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		if m := reWTPSet.FindStringSubmatch(line); m != nil {
+			if m[1] == "name" {
+				cur.Name = m[2]
+			} else {
+				profile = m[2]
+			}
+		}
+	}
+	flush()
+	return devs
+}
+
 // ---- storage ----------------------------------------------------------------
 
 // storeLicenseResult upserts one device's collection outcome. On success the
-// entitlement rows are replaced atomically; on failure only the error and
-// attempt time are recorded, so the last good data stays visible.
-func storeLicenseResult(db *sql.DB, fwID int, st *licenseStatus, ents []licenseEntitlement, fetchErr string) error {
+// entitlement and child-device rows are replaced atomically; on failure only
+// the error and attempt time are recorded, so the last good data stays
+// visible.
+func storeLicenseResult(db *sql.DB, fwID int, st *licenseStatus, ents []licenseEntitlement, devs []licenseDevice, fetchErr string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if fetchErr != "" {
 		_, err := db.Exec(`INSERT INTO license_status (fw_id, fetched_at, fetch_error)
@@ -280,6 +461,16 @@ func storeLicenseResult(db *sql.DB, fwID int, st *licenseStatus, ents []licenseE
 			return err
 		}
 	}
+	if _, err := tx.Exec(`DELETE FROM license_devices WHERE fw_id = ?`, fwID); err != nil {
+		return err
+	}
+	for _, d := range devs {
+		if _, err := tx.Exec(`INSERT INTO license_devices
+			(fw_id, kind, name, serial, model, version, build, status) VALUES (?,?,?,?,?,?,?,?)`,
+			fwID, d.Kind, d.Name, d.Serial, d.Model, d.Version, d.Build, d.Status); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -298,21 +489,32 @@ func (s *Server) fetchLicense(fw models.Firewall) {
 		s.logger.Error("license fetch: insights DB unavailable", "err", err)
 		return
 	}
-	out, err := sshRunCommands(fw, s.hostKeyTOFU(db, fw.ID), []string{"get system status", "diagnose autoupdate versions"})
+	out, err := sshRunCommands(fw, s.hostKeyTOFU(db, fw.ID), []string{
+		"get system status",
+		"diagnose autoupdate versions",
+		"diagnose switch-controller switch-info status",
+		"get switch-controller managed-switch",
+		"show wireless-controller wtp",
+	})
 	if err != nil {
 		s.logger.Warn("license fetch failed", "fqdn", fw.FQDN, "err", err)
-		if serr := storeLicenseResult(db, fw.ID, nil, nil, err.Error()); serr != nil {
+		if serr := storeLicenseResult(db, fw.ID, nil, nil, nil, err.Error()); serr != nil {
 			s.logger.Error("license store failed", "fqdn", fw.FQDN, "err", serr)
 		}
 		return
 	}
 	st := parseSystemStatus(out["get system status"])
 	ents := parseAutoupdateVersions(out["diagnose autoupdate versions"])
-	if err := storeLicenseResult(db, fw.ID, &st, ents, ""); err != nil {
+	devs := mergeSwitchDevices(
+		parseManagedSwitchList(out["get switch-controller managed-switch"]),
+		parseSwitchInfoStatus(out["diagnose switch-controller switch-info status"]))
+	devs = append(devs, parseWTPConfig(out["show wireless-controller wtp"])...)
+	if err := storeLicenseResult(db, fw.ID, &st, ents, devs, ""); err != nil {
 		s.logger.Error("license store failed", "fqdn", fw.FQDN, "err", err)
 		return
 	}
-	s.logger.Info("license data refreshed", "fqdn", fw.FQDN, "serial", st.Serial, "entitlements", len(ents))
+	s.logger.Info("license data refreshed", "fqdn", fw.FQDN, "serial", st.Serial,
+		"entitlements", len(ents), "children", len(devs))
 }
 
 // refreshLicensesJob is the daily sweep over every firewall, run by the
@@ -370,6 +572,9 @@ type licenseRow struct {
 	Level        string // ok | warn | crit | expired | unknown
 	Lapsed       int    // long-expired services not driving the status
 	Entitlements []licenseEntitlement
+	Devices      []licenseDevice // managed switches, then APs
+	Switches     int
+	APs          int
 }
 
 // licenseLevel classifies days-until-expiry into a display level.
@@ -482,6 +687,30 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 		}
 		_ = ents.Close()
 		if err := ents.Err(); err != nil {
+			return nil, err
+		}
+		devs, err := db.Query(`SELECT kind, name, COALESCE(serial,''), COALESCE(model,''),
+			COALESCE(version,''), COALESCE(build,''), COALESCE(status,'')
+			FROM license_devices WHERE fw_id = ?
+			ORDER BY CASE kind WHEN 'switch' THEN 0 ELSE 1 END, name`, fw.ID)
+		if err != nil {
+			return nil, err
+		}
+		for devs.Next() {
+			var d licenseDevice
+			if err := devs.Scan(&d.Kind, &d.Name, &d.Serial, &d.Model, &d.Version, &d.Build, &d.Status); err != nil {
+				_ = devs.Close()
+				return nil, err
+			}
+			row.Devices = append(row.Devices, d)
+			if d.Kind == "switch" {
+				row.Switches++
+			} else {
+				row.APs++
+			}
+		}
+		_ = devs.Close()
+		if err := devs.Err(); err != nil {
 			return nil, err
 		}
 		cls := classifyLicense(row.Entitlements, now)

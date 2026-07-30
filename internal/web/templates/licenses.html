@@ -43,7 +43,7 @@
             <tbody>
             {{range .Rows}}
                 <tr data-fw="{{.FwID}}">
-                    <td>{{.FQDN}}</td>
+                    <td>{{.FQDN}}{{if or .Switches .APs}}<div class="muted" style="font-size:0.8em;">{{if .Switches}}{{.Switches}} SW{{end}}{{if and .Switches .APs}} · {{end}}{{if .APs}}{{.APs}} AP{{end}}</div>{{end}}</td>
                     <td>{{if .Hostname}}{{.Hostname}}{{else}}<span class="muted">—</span>{{end}}</td>
                     <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
                     <td>{{.Model}}</td>
@@ -61,15 +61,16 @@
                     </td>
                     <td class="muted">{{if .FetchedAt}}{{.FetchedAt}}{{else}}—{{end}}</td>
                     <td class="actions">
-                        {{if .Entitlements}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
+                        {{if or .Entitlements .Devices}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
                         <form method="post" action="/licenses/refresh/{{.FwID}}" style="display:inline">
                             <button type="submit" class="btn btn-sm">{{T $.Base.Lang "lic.refresh"}}</button>
                         </form>
                     </td>
                 </tr>
-                {{if .Entitlements}}
+                {{if or .Entitlements .Devices}}
                 <tr class="lic-detail" data-detail-for="{{.FwID}}" style="display:none;">
                     <td colspan="10" style="padding: 0 14px 14px 28px;">
+                        {{if .Entitlements}}
                         <table class="data">
                             <thead><tr><th>{{T $.Base.Lang "lic.col_service"}}</th><th>{{T $.Base.Lang "lic.col_version"}}</th><th>{{T $.Base.Lang "lic.col_expiry"}}</th><th>{{T $.Base.Lang "lic.col_last_update"}}</th><th>{{T $.Base.Lang "lic.col_result"}}</th></tr></thead>
                             <tbody>
@@ -84,6 +85,29 @@
                             {{end}}
                             </tbody>
                         </table>
+                        {{end}}
+                        {{if .Devices}}
+                        <div style="margin: 12px 0 4px; font-weight: 600;">{{T $.Base.Lang "lic.managed_devices"}}
+                            <span class="muted" style="font-weight: 400; font-size: 0.85em;"> — {{T $.Base.Lang "lic.devices_note"}}</span>
+                        </div>
+                        <table class="data">
+                            <thead><tr><th>{{T $.Base.Lang "lic.col_type"}}</th><th>{{T $.Base.Lang "lic.col_name"}}</th><th>{{T $.Base.Lang "lic.col_serial"}}</th><th>{{T $.Base.Lang "lic.col_model"}}</th><th>{{T $.Base.Lang "lic.col_firmware"}}</th><th>{{T $.Base.Lang "lic.col_status"}}</th></tr></thead>
+                            <tbody>
+                            {{range .Devices}}
+                                <tr>
+                                    <td>{{if eq .Kind "switch"}}<span class="pill pill-new">{{T $.Base.Lang "lic.kind_switch"}}</span>{{else}}<span class="pill pill-muted">{{T $.Base.Lang "lic.kind_ap"}}</span>{{end}}</td>
+                                    <td>{{.Name}}</td>
+                                    <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+                                    <td class="muted">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+                                    <td class="muted">{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{else}}—{{end}}</td>
+                                    <td>{{if eq .Status "online"}}<span class="pill pill-success">{{T $.Base.Lang "lic.online"}}</span>
+                                        {{else if eq .Status "offline"}}<span class="pill pill-failed">{{T $.Base.Lang "lic.offline"}}</span>
+                                        {{else}}<span class="muted">—</span>{{end}}</td>
+                                </tr>
+                            {{end}}
+                            </tbody>
+                        </table>
+                        {{end}}
                     </td>
                 </tr>
                 {{end}}
@@ -107,10 +131,16 @@
         });
     });
 
-    // Client-side search over the main rows; detail rows collapse on filtering.
+    // Client-side search over the main rows; detail rows collapse on
+    // filtering. Each row's search text includes its detail row, so a child
+    // switch/AP serial or name finds its parent firewall.
     var input = document.getElementById('licSearch');
     var count = document.getElementById('licSearchCount');
     if (!input) { return; }
+    var detailText = {};
+    document.querySelectorAll('.lic-detail').forEach(function (d) {
+        detailText[d.dataset.detailFor] = d.textContent.toLowerCase();
+    });
     var rows = Array.prototype.slice.call(
         document.querySelectorAll('#licTable > tbody > tr[data-fw]'));
     input.addEventListener('input', function () {
@@ -118,7 +148,7 @@
         document.querySelectorAll('.lic-detail').forEach(function (d) { d.style.display = 'none'; });
         var visible = 0;
         rows.forEach(function (row) {
-            var text = row.textContent.toLowerCase();
+            var text = row.textContent.toLowerCase() + ' ' + (detailText[row.dataset.fw] || '');
             var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
             row.style.display = match ? '' : 'none';
             if (match) { visible++; }

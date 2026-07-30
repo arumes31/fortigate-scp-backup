@@ -232,3 +232,128 @@ func TestDaysUntil(t *testing.T) {
 		t.Errorf("daysUntil invalid = %d, want 0", got)
 	}
 }
+
+// Switch/AP fixtures are modeled on real FortiOS 7.6 output (captured
+// 2026-07-30) with serials, hostnames and AP names replaced by placeholders.
+
+const switchInfoStatusFixture = "FGT90G-TEST-N1(Primary) $ Vdom: root\r\n" +
+	"Managed Switch : TEST-CORE01     0\r\n" +
+	"Version: FortiSwitch-524D v7.6.6,build1137,251212 (GA)\r\n" +
+	"Serial-Number: S524DNTEST000001\r\n" +
+	"Boot: Warmboot\r\n" +
+	"BIOS version: 04000019\r\n" +
+	"System Part-Number: P18053-07\r\n" +
+	"Burn in MAC: 00:11:22:33:44:55\r\n" +
+	"Hostname: TEST-CORE01\r\n" +
+	"Security level: high (force)\r\n" +
+	"Branch point: 1137 \r\n" +
+	"System time: Thu Jul 30 09:55:37 2026\r\n" +
+	"\r\n" +
+	"Managed Switch : TEST-EDGE01     0\r\n" +
+	"Version: FortiSwitch-108E v7.4.9,build0946,260122 (GA)\r\n" +
+	"Serial-Number: S108ENTEST000001\r\n" +
+	"Firmware Signature: valid\r\n" +
+	"Boot: Coldboot \r\n" +
+	"Hostname: TEST-EDGE01\r\n" +
+	"System time: Thu Jul 30 09:55:38 2026\r\n"
+
+func TestParseSwitchInfoStatus(t *testing.T) {
+	devs := parseSwitchInfoStatus(switchInfoStatusFixture)
+	if len(devs) != 2 {
+		t.Fatalf("parsed %d switches, want 2: %+v", len(devs), devs)
+	}
+	want := licenseDevice{Kind: "switch", Name: "TEST-CORE01", Serial: "S524DNTEST000001",
+		Model: "FortiSwitch-524D", Version: "7.6.6", Build: "1137", Status: "online"}
+	if devs[0] != want {
+		t.Errorf("first switch = %+v, want %+v", devs[0], want)
+	}
+	if devs[1].Serial != "S108ENTEST000001" || devs[1].Model != "FortiSwitch-108E" || devs[1].Version != "7.4.9" {
+		t.Errorf("second switch = %+v", devs[1])
+	}
+	if got := parseSwitchInfoStatus("FGT90G-TEST-N1 $ \r\ncommand parse error before 'switch-controller'\r\nCommand fail. Return code -61\r\n"); len(got) != 0 {
+		t.Errorf("error output must parse to no switches: %+v", got)
+	}
+}
+
+const managedSwitchListFixture = "FGT90G-TEST-N1(Primary) $ == [ TEST-CORE01 ]\r\n" +
+	"switch-id: TEST-CORE01   \r\n" +
+	"== [ TEST-EDGE01 ]\r\n" +
+	"switch-id: TEST-EDGE01   \r\n" +
+	"== [ TEST-STOCK01 ]\r\n" +
+	"switch-id: TEST-STOCK01   \r\n"
+
+func TestParseManagedSwitchList(t *testing.T) {
+	ids := parseManagedSwitchList(managedSwitchListFixture)
+	if len(ids) != 3 || ids[0] != "TEST-CORE01" || ids[2] != "TEST-STOCK01" {
+		t.Errorf("ids = %v", ids)
+	}
+}
+
+// TestMergeSwitchDevices: a configured switch with no connected section reads
+// offline; a connected switch missing from the configured list (global `get`
+// unavailable on multi-vdom boxes) is kept.
+func TestMergeSwitchDevices(t *testing.T) {
+	connected := []licenseDevice{
+		{Kind: "switch", Name: "TEST-CORE01", Serial: "S524DNTEST000001", Status: "online"},
+		{Kind: "switch", Name: "TEST-VDOM01", Serial: "S524DNTEST000009", Status: "online"},
+	}
+	got := mergeSwitchDevices([]string{"TEST-CORE01", "TEST-STOCK01"}, connected)
+	if len(got) != 3 {
+		t.Fatalf("merged %d rows, want 3: %+v", len(got), got)
+	}
+	if got[0].Serial != "S524DNTEST000001" || got[0].Status != "online" {
+		t.Errorf("connected switch not enriched: %+v", got[0])
+	}
+	if got[1].Name != "TEST-STOCK01" || got[1].Status != "offline" || got[1].Serial != "" {
+		t.Errorf("configured-only switch must read offline: %+v", got[1])
+	}
+	if got[2].Name != "TEST-VDOM01" || got[2].Status != "online" {
+		t.Errorf("connected-only switch must be kept: %+v", got[2])
+	}
+}
+
+const wtpConfigFixture = "FGT90G-TEST-N1(Primary) $ config wireless-controller wtp\r\n" +
+	"    edit \"FP231FTEST0000A1\"\r\n" +
+	"        set uuid 00000000-0000-0000-0000-000000000001\r\n" +
+	"        set admin enable\r\n" +
+	"        set name \"AP Test Basement\"\r\n" +
+	"        set wtp-profile \"FAP231F-default\"\r\n" +
+	"        config radio-1\r\n" +
+	"        end\r\n" +
+	"    next\r\n" +
+	"    edit \"FP231GTEST0000B2\"\r\n" +
+	"        set uuid 00000000-0000-0000-0000-000000000002\r\n" +
+	"        set admin enable\r\n" +
+	"        set wtp-profile \"FAP231G-default\"\r\n" +
+	"    next\r\n" +
+	"end\r\n"
+
+func TestParseWTPConfig(t *testing.T) {
+	devs := parseWTPConfig(wtpConfigFixture)
+	if len(devs) != 2 {
+		t.Fatalf("parsed %d APs, want 2: %+v", len(devs), devs)
+	}
+	want := licenseDevice{Kind: "ap", Name: "AP Test Basement", Serial: "FP231FTEST0000A1", Model: "FortiAP-231F"}
+	if devs[0] != want {
+		t.Errorf("first AP = %+v, want %+v", devs[0], want)
+	}
+	// An AP without `set name` falls back to its serial; the model still
+	// derives from the serial prefix.
+	if devs[1].Name != "FP231GTEST0000B2" || devs[1].Model != "FortiAP-231G" {
+		t.Errorf("second AP = %+v", devs[1])
+	}
+}
+
+func TestAPModel(t *testing.T) {
+	cases := []struct{ serial, profile, want string }{
+		{"FP231FTEST0000A1", "", "FortiAP-231F"},
+		{"FP23JFTEST0000A1", "", "FortiAP-23JF"},
+		{"PU431FTEST000001", "FAP431F-default", "FortiAP-431F"}, // odd serial → profile fallback
+		{"PU431FTEST000001", "custom-profile", ""},
+	}
+	for _, c := range cases {
+		if got := apModel(c.serial, c.profile); got != c.want {
+			t.Errorf("apModel(%q, %q) = %q, want %q", c.serial, c.profile, got, c.want)
+		}
+	}
+}

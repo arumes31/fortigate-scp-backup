@@ -416,6 +416,15 @@ var uiMsgs = map[string]map[string]string{
 	"lic.lapsed":           {"en": "lapsed", "de": "ausgelaufen"},
 	"lic.lapsed_hint":      {"en": "Services whose contract already ended; they do not drive the device status while active entitlements remain. See details.", "de": "Dienste mit bereits beendetem Vertrag; sie bestimmen den Gerätestatus nicht, solange aktive Lizenzen bestehen. Siehe Details."},
 	"lic.none":             {"en": "No firewalls configured.", "de": "Keine Firewalls konfiguriert."},
+	"lic.managed_devices":  {"en": "Managed switches & access points", "de": "Verwaltete Switches & Access Points"},
+	"lic.devices_note":     {"en": "The FortiGate does not expose FortiCare contracts of managed switches/APs — look the serial up in FortiCloud asset management.", "de": "Die FortiGate zeigt keine FortiCare-Verträge verwalteter Switches/APs — Seriennummer im FortiCloud-Asset-Management nachschlagen."},
+	"lic.col_type":         {"en": "Type", "de": "Typ"},
+	"lic.col_name":         {"en": "Name", "de": "Name"},
+	"lic.col_status":       {"en": "Status", "de": "Status"},
+	"lic.kind_switch":      {"en": "Switch", "de": "Switch"},
+	"lic.kind_ap":          {"en": "AP", "de": "AP"},
+	"lic.online":           {"en": "online", "de": "online"},
+	"lic.offline":          {"en": "offline", "de": "offline"},
 
 	// IPAM page
 	"ipam.title":            {"en": "Fleet IPAM", "de": "Flotten-IPAM"},
