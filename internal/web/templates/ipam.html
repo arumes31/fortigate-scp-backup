@@ -199,18 +199,7 @@
         fetch('/ipam/refresh', { method: 'POST' }).then(function () { poll(); }).catch(function () {});
     });
 
-    document.getElementById('ipamSearch').addEventListener('input', function () {
-        var terms = this.value.toLowerCase().split(/\s+/).filter(Boolean);
-        var visible = 0;
-        searchRows.forEach(function (row) {
-            var text = row.textContent.toLowerCase();
-            var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
-            row.style.display = match ? '' : 'none';
-            if (match) { visible++; }
-        });
-        document.getElementById('ipamSearchCount').textContent =
-            terms.length ? visible + ' / ' + searchRows.length : '';
-    });
+    document.getElementById('ipamSearch').addEventListener('input', renderEntries);
 
     poll();
 })();
