@@ -34,6 +34,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/ssh"
 
+	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
@@ -74,6 +75,9 @@ type licenseEntitlement struct {
 // firewall. Version/Build are only known for connected switches; APs expose
 // no firmware over the available commands. Status is online/offline for
 // switches and "" (unknown) for APs, whose per-device state is not visible.
+// Origin and IP are read-time only (never persisted): Origin "logs" marks data
+// contributed by the graylog_device_data extension's observed inventory — a
+// backfilled serial on an SSH row, or a whole row the SSH sweep never saw.
 type licenseDevice struct {
 	Kind    string // switch | ap
 	Name    string
@@ -82,6 +86,8 @@ type licenseDevice struct {
 	Version string
 	Build   string
 	Status  string // online | offline | ""
+	Origin  string // "" (SSH) | "logs"
+	IP      string // APs discovered from logs only
 }
 
 // ---- SSH collection ---------------------------------------------------------
@@ -355,6 +361,89 @@ func mergeSwitchDevices(configured []string, connected []licenseDevice) []licens
 		}
 	}
 	return out
+}
+
+// mergeObservedDevices folds the graylog_device_data extension's observed
+// switch/AP inventory into one firewall's SSH-collected child devices:
+//   - serial backfill: an SSH switch row without a serial (the CLI reports no
+//     serial for an offline switch) takes the observed serial matched by name
+//     (case-insensitive). An ambiguous name — two observed serials claiming
+//     it — stays empty rather than guessing.
+//   - discovery: observed devices the SSH sweep did not report at all are
+//     appended as extra rows with Origin "logs" and no fabricated status or
+//     firmware. SSH stays authoritative when both sources know a device.
+//
+// The result keeps switches before APs, discovered rows after the SSH rows of
+// their kind, sorted by name.
+func mergeObservedDevices(devs []licenseDevice, obs []graylogdevicedata.ObservedDevice) []licenseDevice {
+	if len(obs) == 0 {
+		return devs
+	}
+	serialsByName := map[string]map[string]bool{} // lower(switch name) → observed serials
+	for _, o := range obs {
+		if o.Kind != "switch" || o.Name == "" || o.Serial == "" {
+			continue
+		}
+		k := strings.ToLower(o.Name)
+		if serialsByName[k] == nil {
+			serialsByName[k] = map[string]bool{}
+		}
+		serialsByName[k][o.Serial] = true
+	}
+	out := make([]licenseDevice, len(devs))
+	copy(out, devs)
+	knownSerial := map[string]bool{} // kind + "|" + serial after SSH + backfill
+	knownSwitchName := map[string]bool{}
+	for i := range out {
+		d := &out[i]
+		if d.Kind == "switch" && d.Name != "" {
+			if d.Serial == "" {
+				if set := serialsByName[strings.ToLower(d.Name)]; len(set) == 1 {
+					for s := range set {
+						d.Serial = s
+					}
+					d.Origin = "logs"
+				}
+			}
+			knownSwitchName[strings.ToLower(d.Name)] = true
+		}
+		if d.Serial != "" {
+			knownSerial[d.Kind+"|"+d.Serial] = true
+		}
+	}
+	var discovered []licenseDevice
+	for _, o := range obs {
+		if o.Serial == "" || knownSerial[o.Kind+"|"+o.Serial] {
+			continue
+		}
+		// A name match on a serial-less (or ambiguous) SSH switch row means
+		// this is the same configured switch, not an extra device.
+		if o.Kind == "switch" && o.Name != "" && knownSwitchName[strings.ToLower(o.Name)] {
+			continue
+		}
+		name := o.Name
+		if name == "" {
+			name = o.Serial
+		}
+		discovered = append(discovered, licenseDevice{
+			Kind: o.Kind, Name: name, Serial: o.Serial, IP: o.IP, Origin: "logs",
+		})
+	}
+	if len(discovered) == 0 {
+		return out
+	}
+	sort.SliceStable(discovered, func(i, j int) bool { return discovered[i].Name < discovered[j].Name })
+	var switches, aps []licenseDevice
+	for _, list := range [][]licenseDevice{out, discovered} {
+		for _, d := range list {
+			if d.Kind == "switch" {
+				switches = append(switches, d)
+			} else {
+				aps = append(aps, d)
+			}
+		}
+	}
+	return append(switches, aps...)
 }
 
 // reWTPEdit / reWTPSet pick AP entries out of `show wireless-controller wtp`.
@@ -658,6 +747,12 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Observed switch/AP inventory from the graylog_device_data extension —
+	// read-time enrichment only; any error just means "no observations".
+	observed, obsErr := graylogdevicedata.ListObservedDevices(s.cfg.DataDir)
+	if obsErr != nil {
+		s.logger.Warn("licenses: observed-device lookup failed", "err", obsErr)
+	}
 	now := time.Now()
 	rows := make([]licenseRow, 0, len(fws))
 	for _, fw := range fws {
@@ -703,15 +798,18 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 				return nil, err
 			}
 			row.Devices = append(row.Devices, d)
+		}
+		_ = devs.Close()
+		if err := devs.Err(); err != nil {
+			return nil, err
+		}
+		row.Devices = mergeObservedDevices(row.Devices, observed[fw.ID])
+		for _, d := range row.Devices {
 			if d.Kind == "switch" {
 				row.Switches++
 			} else {
 				row.APs++
 			}
-		}
-		_ = devs.Close()
-		if err := devs.Err(); err != nil {
-			return nil, err
 		}
 		cls := classifyLicense(row.Entitlements, now)
 		row.Expiry, row.DaysLeft, row.Level, row.Lapsed = cls.Expiry, cls.DaysLeft, cls.Level, cls.Lapsed

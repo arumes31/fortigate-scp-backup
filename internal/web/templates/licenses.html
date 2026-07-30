@@ -96,8 +96,8 @@
                             {{range .Devices}}
                                 <tr>
                                     <td>{{if eq .Kind "switch"}}<span class="pill pill-new">{{T $.Base.Lang "lic.kind_switch"}}</span>{{else}}<span class="pill pill-muted">{{T $.Base.Lang "lic.kind_ap"}}</span>{{end}}</td>
-                                    <td>{{.Name}}</td>
-                                    <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+                                    <td>{{.Name}}{{if and (eq .Origin "logs") (not .Status)}} <span class="pill pill-muted" title="{{T $.Base.Lang "lic.origin_logs_hint"}}{{if .IP}} · {{.IP}}{{end}}">{{T $.Base.Lang "lic.origin_logs"}}</span>{{end}}</td>
+                                    <td>{{if .Serial}}<code{{if and (eq .Origin "logs") .Status}} style="border-bottom:1px dotted #888;" title="{{T $.Base.Lang "lic.serial_from_logs_hint"}}"{{end}}>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
                                     <td class="muted">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
                                     <td class="muted">{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{else}}—{{end}}</td>
                                     <td>{{if eq .Status "online"}}<span class="pill pill-success">{{T $.Base.Lang "lic.online"}}</span>

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
 
 // Fixtures are modeled on real FortiOS 7.6 output (captured 2026-07-29) with
@@ -355,5 +357,70 @@ func TestAPModel(t *testing.T) {
 		if got := apModel(c.serial, c.profile); got != c.want {
 			t.Errorf("apModel(%q, %q) = %q, want %q", c.serial, c.profile, got, c.want)
 		}
+	}
+}
+
+// TestMergeObservedDevices covers the read-time enrichment from the
+// graylog_device_data observed inventory: serial backfill for offline
+// switches (with ambiguity refusal), discovery of log-only devices, and the
+// no-duplicate guarantee when both sources know a device.
+func TestMergeObservedDevices(t *testing.T) {
+	ssh := []licenseDevice{
+		{Kind: "switch", Name: "TEST-CORE01", Serial: "S524DNTEST000001", Status: "online"},
+		{Kind: "switch", Name: "TEST-STOCK01", Status: "offline"}, // serial unknown to CLI
+		{Kind: "switch", Name: "TEST-AMBIG01", Status: "offline"},
+		{Kind: "ap", Name: "AP Test Basement", Serial: "FP231FTEST0000A1"},
+	}
+	obs := []graylogdevicedata.ObservedDevice{
+		{Kind: "switch", Serial: "S524DNTEST000001", Name: "TEST-CORE01"},               // duplicate → no new row
+		{Kind: "switch", Serial: "S108ENTEST000001", Name: "test-stock01"},              // backfill (case-insensitive)
+		{Kind: "switch", Serial: "S108ENTEST000002", Name: "TEST-AMBIG01"},              // two serials claim
+		{Kind: "switch", Serial: "S108ENTEST000003", Name: "TEST-AMBIG01"},              //   the same name → refuse
+		{Kind: "switch", Serial: "S148FNTEST000001", Name: "TEST-GHOST01"},              // discovery
+		{Kind: "ap", Serial: "FP231GTEST0000B2", Name: "AP Test Attic", IP: "10.0.0.9"}, // discovery
+	}
+	got := mergeObservedDevices(ssh, obs)
+
+	byName := map[string]licenseDevice{}
+	for _, d := range got {
+		byName[d.Name] = d
+	}
+	if d := byName["TEST-STOCK01"]; d.Serial != "S108ENTEST000001" || d.Origin != "logs" || d.Status != "offline" {
+		t.Errorf("backfill failed: %+v", d)
+	}
+	if d := byName["TEST-AMBIG01"]; d.Serial != "" {
+		t.Errorf("ambiguous name must not be backfilled: %+v", d)
+	}
+	if d := byName["TEST-GHOST01"]; d.Serial != "S148FNTEST000001" || d.Origin != "logs" || d.Status != "" {
+		t.Errorf("switch discovery failed: %+v", d)
+	}
+	if d := byName["AP Test Attic"]; d.Kind != "ap" || d.IP != "10.0.0.9" || d.Origin != "logs" {
+		t.Errorf("ap discovery failed: %+v", d)
+	}
+	if d := byName["TEST-CORE01"]; d.Origin != "" {
+		t.Errorf("SSH-known device must stay SSH-authoritative: %+v", d)
+	}
+	if len(got) != 6 {
+		t.Fatalf("merged %d rows, want 6: %+v", len(got), got)
+	}
+	// Ordering: all switches before all APs; discovered rows after SSH rows.
+	kinds := ""
+	for _, d := range got {
+		if d.Kind == "switch" {
+			kinds += "s"
+		} else {
+			kinds += "a"
+		}
+	}
+	if kinds != "ssssaa" {
+		t.Errorf("kind ordering = %q, want ssssaa (%+v)", kinds, got)
+	}
+	if got[3].Name != "TEST-GHOST01" || got[5].Name != "AP Test Attic" {
+		t.Errorf("discovered rows must follow SSH rows of their kind: %+v", got)
+	}
+
+	// No observations: input passes through untouched.
+	if same := mergeObservedDevices(ssh, nil); len(same) != len(ssh) {
+		t.Errorf("nil observations changed the list: %+v", same)
 	}
 }

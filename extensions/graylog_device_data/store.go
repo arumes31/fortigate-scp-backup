@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1971,4 +1972,105 @@ func (e *Extension) listDevices(fwID int) ([]Device, string, error) {
 		}
 	}
 	return devices, updatedAt, nil
+}
+
+// ObservedDevice is one managed switch or AP observed in a firewall's Graylog
+// events / SSH diagnostics — the extension's published inventory view for the
+// core /licenses page, which uses it to backfill serials the CLI cannot report
+// (an offline switch's) and to list devices the license sweep missed entirely.
+type ObservedDevice struct {
+	Kind     string // "switch" | "ap"
+	Serial   string
+	Name     string
+	IP       string // APs only (from the AP's own LLDP/status report)
+	LastSeen string // newest updated_at among contributing rows
+}
+
+// reSwitchSerial validates a FortiSwitch serial (e.g. S524DN5020000043,
+// S448ENTF20001491). switch_edges.switch_sn falls back to the switch NAME when
+// an event carries no sn field, so only values that look like real serials may
+// be published as one.
+var reSwitchSerial = regexp.MustCompile(`^S\d{3,4}[A-Z]{1,2}[0-9A-Z]{8,}$`)
+
+// ListObservedDevices opens the extension's private database read-only and
+// returns every switch/AP observed per firewall, deduplicated by serial —
+// switches from the Graylog-derived stp_ports ∪ switch_edges tables, APs from
+// ap_location. The newest contributing row wins the name and LastSeen. A
+// missing database (extension disabled or never fetched) is not an error: it
+// yields (nil, nil).
+func ListObservedDevices(dataDir string) (map[int][]ObservedDevice, error) {
+	dbFile := filepath.Join(dataDir, "graylog-device-data.db")
+	if _, err := os.Stat(dbFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+
+	out := map[int][]ObservedDevice{}
+	type key struct {
+		fw     int
+		serial string
+	}
+	seen := map[key]bool{}
+
+	// Newest-first across both switch tables, so the first row per serial
+	// supplies the freshest name and LastSeen.
+	rows, err := db.Query(`
+		SELECT fw_id, serial, switch_name, updated_at FROM stp_ports WHERE serial != ''
+		UNION ALL
+		SELECT fw_id, switch_sn, switch_name, updated_at FROM switch_edges WHERE switch_sn != ''
+		ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var fw int
+		var serial, name, seenAt string
+		if err := rows.Scan(&fw, &serial, &name, &seenAt); err != nil {
+			return nil, err
+		}
+		if !reSwitchSerial.MatchString(serial) || seen[key{fw, serial}] {
+			continue
+		}
+		seen[key{fw, serial}] = true
+		out[fw] = append(out[fw], ObservedDevice{
+			Kind: "switch", Serial: serial, Name: name, LastSeen: seenAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	aps, err := db.Query(`SELECT fw_id, ap_serial, ap_name, ip, updated_at
+		FROM ap_location WHERE ap_serial != '' ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = aps.Close() }()
+	for aps.Next() {
+		var fw int
+		var serial, name, ip, seenAt string
+		if err := aps.Scan(&fw, &serial, &name, &ip, &seenAt); err != nil {
+			return nil, err
+		}
+		if seen[key{fw, serial}] {
+			continue
+		}
+		seen[key{fw, serial}] = true
+		out[fw] = append(out[fw], ObservedDevice{
+			Kind: "ap", Serial: serial, Name: name, IP: ip, LastSeen: seenAt,
+		})
+	}
+	if err := aps.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
