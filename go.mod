@@ -1,6 +1,6 @@
 module github.com/arumes31/fortigate-scp-backup
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/bramvdbogaerde/go-scp v1.6.1

@@ -14,7 +14,15 @@ func TestJoinWithin(t *testing.T) {
 	if want := filepath.Join(root, "12", "backup.conf"); path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
-	for _, unsafe := range []string{"../secret", "12/../../secret", "/etc/passwd", `C:\\Windows\\win.ini`} {
+	for _, unsafe := range []string{
+		"../secret",
+		"12/../../secret",
+		"/etc/passwd",
+		`C:\\Windows\\win.ini`,
+		`C:/Windows/win.ini`,
+		`C:Windows\\win.ini`,
+		`\\\\server\\share\\backup.conf`,
+	} {
 		if _, err := JoinWithin(root, unsafe); err == nil {
 			t.Errorf("unsafe path %q accepted", unsafe)
 		}

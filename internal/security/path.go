@@ -16,7 +16,8 @@ func JoinWithin(root, relative string) (string, error) {
 	}
 	native := filepath.FromSlash(relative)
 	if filepath.IsAbs(native) || filepath.VolumeName(native) != "" ||
-		strings.HasPrefix(relative, "/") || strings.HasPrefix(relative, `\`) {
+		strings.HasPrefix(relative, "/") || strings.HasPrefix(relative, `\`) ||
+		hasWindowsVolumePrefix(relative) {
 		return "", errors.New("absolute path is not allowed")
 	}
 	rootAbs, err := filepath.Abs(root)
@@ -40,6 +41,16 @@ func JoinWithin(root, relative string) (string, error) {
 		return "", fmt.Errorf("resolve symlink path: %w", candidateErr)
 	}
 	return candidate, nil
+}
+
+// hasWindowsVolumePrefix rejects drive-relative and drive-absolute paths even
+// when validation runs on a non-Windows host.
+func hasWindowsVolumePrefix(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	letter := path[0]
+	return (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z')
 }
 
 func isWithin(root, candidate string) bool {
