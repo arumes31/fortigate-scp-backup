@@ -16,34 +16,34 @@ services:
       - "PG_HOST=fortisafe-db"
       - "PG_PORT=5432"
       - "PG_USER=postgre"
-      - "PG_PASSWORD=XXXXXXTDB"
+      - "PG_PASSWORD_FILE=/run/secrets/postgres_password"
       - "PG_DATABASE=firewall_backups"
-      - "PGSSLMODE=prefer"
+      # Traffic stays on Compose's private network; use verify-full with a CA
+      # when connecting to an external PostgreSQL service.
+      - "PGSSLMODE=disable"
       - "PG_MAX_CONNS=50"
       - "PG_CONNECT_RETRIES=10"
       - "PG_CONNECT_BACKOFF_SECONDS=3"
 
       # --- Authentication & Session Security ---
-      - "TOTP_ENABLED=true"
-      - "TOTP_SECRET=XXXXXX"
-      - "RADIUS_ENABLED=true"
-      - "RADIUS_SERVER=192.168.0.100"
+      - "TOTP_ENABLED=${TOTP_ENABLED:-false}"
+      - "RADIUS_ENABLED=${RADIUS_ENABLED:-false}"
+      - "RADIUS_SERVER=${RADIUS_SERVER:-localhost}"
       - "RADIUS_PORT=1812"
-      - "RADIUS_SECRET=fortisafe-XXXXXX"
       - "LOGIN_MAX_ATTEMPTS=5"
       - "LOGIN_LOCKOUT_MINUTES=15"
-      - "SESSION_KEY=your-session-key-at-least-32-bytes"
-      - "COOKIE_SECURE=false"
-      - "ENABLE_HSTS=false"
+      - "SESSION_KEY_FILE=/run/secrets/session_key"
+      - "BOOTSTRAP_ADMIN_PASSWORD_FILE=/run/secrets/bootstrap_admin_password"
+      - "COOKIE_SECURE=${COOKIE_SECURE:-true}"
+      - "ENABLE_HSTS=${ENABLE_HSTS:-true}"
       - "TRUST_PROXY_HEADERS=false"
 
       # --- Encryption at Rest ---
-      # Optional: Provide a 32-byte hex or base64 key to enable AES-256-GCM encryption for backups and SSH passwords
-      # - "ENCRYPTION_KEY="
+      - "ENCRYPTION_KEY_FILE=/run/secrets/encryption_key"
+      - "SSH_KNOWN_HOSTS_FILE=/run/config/ssh_known_hosts"
 
       # --- SCP & Backup Engine Defaults ---
       - "DEFAULT_SCP_USER=fortisafe"
-      - "DEFAULT_SCP_PASSWORD=XXXXXX"
       - "FORTIGATE_CONFIG_PATH=sys_config"
       - "SCP_TIMEOUT=60"
       - "MAX_CONCURRENT_BACKUPS=10"
@@ -53,22 +53,22 @@ services:
       - "MAIL_SERVER=smtp.test.com"
       - "MAIL_PORT=25"
       - "MAIL_USER=fortisafe@test.com"
-      - "MAIL_PASSWORD=XXXXXX"
+      - "MAIL_PASSWORD=${MAIL_PASSWORD:-}"
       - "MAIL_RECIPIENT=user1@test.com"
 
       # --- Extension: FGT ADM VPN Config (Optional) ---
-      - "EXT_ADM_VPN_CONF=true"
-      - "EXT_FGT_CONF_GEN=true"
-      - "GRAYLOG_URL=https://graylog.example.com"
-      - "GRAYLOG_TOKEN=XXXXXX"
+      - "EXT_ADM_VPN_CONF=${EXT_ADM_VPN_CONF:-false}"
+      - "EXT_FGT_CONF_GEN=${EXT_FGT_CONF_GEN:-false}"
+      - "GRAYLOG_URL=${GRAYLOG_URL:-}"
+      - "GRAYLOG_TOKEN=${GRAYLOG_TOKEN:-}"
       - "GRAYLOG_SEARCH_TIMEFRAME=86400"
-      - "HOOKWISE_URL=https://hookwise.example.com/webhook/xxxxxxxx"
-      - "HOOKWISE_TOKEN=XXXXXX"
+      - "HOOKWISE_URL=${HOOKWISE_URL:-}"
+      - "HOOKWISE_TOKEN=${HOOKWISE_TOKEN:-}"
 
       # --- Extension: Graylog Device Data (Optional) ---
       # Enables the device inventory for the topology page (switch client MAC/IP/VLAN).
       # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
-      - "EXT_GRAYLOG_DEVICE_DATA=true"
+      - "EXT_GRAYLOG_DEVICE_DATA=${EXT_GRAYLOG_DEVICE_DATA:-false}"
       # Graylog query template (%s = firewall hostname); must match logs with MAC fields.
       # - "GRAYLOG_DEVICE_QUERY=source:\"%s\" AND (mac:* OR srcmac:* OR macaddr:*)"
       # Seconds of log history to scan per fetch (default: 86400 = 24h).
@@ -80,7 +80,7 @@ services:
       # Analyzes a policy's real traffic (Graylog) and recommends how to split
       # open policies into tightly-scoped ones, with ready-to-paste CLI.
       # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
-      - "EXT_FGT_POLSPLIT=true"
+      - "EXT_FGT_POLSPLIT=${EXT_FGT_POLSPLIT:-false}"
       # Traffic-log query template (source:"%s" = firewall hostname, policyid:%s = policy ID).
       # - "GRAYLOG_POLSPLIT_QUERY=source:\"%s\" AND policyid:%s AND _exists_:srcip AND _exists_:dstip"
       # Extra internet-facing interface names (comma-separated), merged with the
@@ -90,7 +90,7 @@ services:
       # --- Extension: Configuration Conversions (Optional) ---
       # Structural migration recipes (interfaces->FortiLink, WAN->SD-WAN, etc.)
       # run against the latest config backup, producing a reviewable CLI script.
-      - "EXT_FGT_CONFCONV=true"
+      - "EXT_FGT_CONFCONV=${EXT_FGT_CONFCONV:-false}"
 
       # --- Live SSH Diagnostics (Optional, part of Graylog Device Data) ---
       # Queries the FortiGate CLI over SSH (reusing each firewall's stored SSH
@@ -117,10 +117,23 @@ services:
       # Mount host directories to persist backups and configuration/SQLite db files:
       - "./backups:/app/backups"
       - "./data:/app/data"
+      - "./secrets/known_hosts:/run/config/ssh_known_hosts:ro"
       # Or specify host absolute paths if required:
       # - "/mnt/backups:/app/backups"
       # - "/mnt/data_fgt-adm-vpn-conf:/app/data"
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - postgres_password
+      - session_key
+      - encryption_key
+      - bootstrap_admin_password
     depends_on:
       fortisafe-db:
         condition: service_healthy
@@ -152,12 +165,14 @@ services:
     # earlier revisions of this file), dump from there the same way — with an
     # image matching that volume's PG_VERSION — before switching to the
     # ./pgdata bind mount, or restore the old volume mapping instead.
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       - "POSTGRES_USER=postgre"
-      - "POSTGRES_PASSWORD=XXXXXXTDB"
+      - "POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password"
       - "POSTGRES_DB=firewall_backups"
     restart: unless-stopped
+    secrets:
+      - postgres_password
     volumes:
       - "./pgdata:/var/lib/postgresql/data"
       # Or specify host absolute path:
@@ -167,5 +182,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  session_key:
+    file: ./secrets/session_key
+  encryption_key:
+    file: ./secrets/encryption_key
+  bootstrap_admin_password:
+    file: ./secrets/bootstrap_admin_password
 
 

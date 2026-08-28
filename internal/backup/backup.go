@@ -1,13 +1,15 @@
 // Package backup implements the SSH/SCP backup engine: it pulls a FortiGate
 // configuration file, stores it under BACKUP_DIR/<fw_id>/<timestamp>.conf
-// (optionally encrypted at rest), enforces retention, updates firewall status
+// (encrypted at rest), enforces retention, updates firewall status
 // and emails on failure. A bounded worker pool caps how many firewalls are
 // backed up concurrently.
 package backup
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
+	"golang.org/x/crypto/ssh"
 )
 
 // StatusHook is notified whenever a firewall's backup status changes, so the UI
@@ -24,11 +27,12 @@ type StatusHook func(fwID int, status string)
 
 // Service performs firewall backups.
 type Service struct {
-	store  *database.Store
-	mailer *mailer.Mailer
-	cfg    *config.Config
-	cipher *crypto.Cipher
-	logger *slog.Logger
+	store           *database.Store
+	mailer          *mailer.Mailer
+	cfg             *config.Config
+	cipher          *crypto.Cipher
+	logger          *slog.Logger
+	hostKeyCallback ssh.HostKeyCallback
 
 	sem  chan struct{}              // bounds concurrent backups (#28)
 	hook atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
@@ -110,7 +114,18 @@ func New(store *database.Store, m *mailer.Mailer, cfg *config.Config, cipher *cr
 		cfg:    cfg,
 		cipher: cipher,
 		logger: logger,
-		sem:    make(chan struct{}, n),
+		hostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			return fmt.Errorf("SSH host key verification is not configured for %s", hostname)
+		},
+		sem: make(chan struct{}, n),
+	}
+}
+
+// SetHostKeyCallback configures the verified host-key policy used by all
+// backup and connection-test SSH clients. It must be called before use.
+func (s *Service) SetHostKeyCallback(callback ssh.HostKeyCallback) {
+	if callback != nil {
+		s.hostKeyCallback = callback
 	}
 }
 

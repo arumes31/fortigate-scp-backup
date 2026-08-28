@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // magic marks a ciphertext blob: 6-byte header followed by nonce + ciphertext.
@@ -27,6 +28,7 @@ const stringPrefix = "enc:"
 type Cipher struct {
 	gcm     cipher.AEAD
 	enabled bool
+	strict  atomic.Bool
 }
 
 // New builds a Cipher. A nil/short key disables encryption (pass-through).
@@ -51,8 +53,16 @@ func New(key []byte) (*Cipher, error) {
 // Enabled reports whether encryption is active.
 func (c *Cipher) Enabled() bool { return c.enabled }
 
+// RequireEncrypted rejects legacy plaintext during decryption. Call it only
+// after startup migrations have encrypted and verified all existing data.
+func (c *Cipher) RequireEncrypted() { c.strict.Store(true) }
+
 // HasHeader reports whether data was written by Encrypt (i.e. is ciphertext).
 func HasHeader(data []byte) bool { return bytes.HasPrefix(data, magic) }
+
+// IsEncryptedString reports whether a database secret uses the encrypted
+// envelope format.
+func IsEncryptedString(value string) bool { return strings.HasPrefix(value, stringPrefix) }
 
 // Encrypt returns ciphertext (magic|nonce|sealed) when enabled, otherwise the
 // plaintext unchanged so callers need no branching.
@@ -74,6 +84,9 @@ func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
 // (legacy plaintext). Encrypted data requires an enabled cipher.
 func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 	if !HasHeader(data) {
+		if c.strict.Load() {
+			return nil, errors.New("crypto: plaintext data rejected after encryption migration")
+		}
 		return data, nil
 	}
 	if !c.enabled {
@@ -105,6 +118,9 @@ func (c *Cipher) EncryptString(s string) (string, error) {
 // treated as legacy plaintext and returned unchanged.
 func (c *Cipher) DecryptString(s string) (string, error) {
 	if !strings.HasPrefix(s, stringPrefix) {
+		if c.strict.Load() {
+			return "", errors.New("crypto: plaintext secret rejected after encryption migration")
+		}
 		return s, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, stringPrefix))

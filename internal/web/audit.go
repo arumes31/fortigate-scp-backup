@@ -135,13 +135,6 @@ func (s *Server) openInsightsDB() (*sql.DB, error) {
 			name TEXT NOT NULL,
 			serial TEXT, model TEXT, version TEXT, build TEXT, status TEXT
 		)`,
-		// Trust-on-first-use SSH host-key pins for the license collector
-		// (authorized_keys format). Delete a row to re-trust a replaced device.
-		`CREATE TABLE IF NOT EXISTS ssh_known_hosts (
-			fw_id INTEGER PRIMARY KEY,
-			host_key TEXT NOT NULL,
-			first_seen TEXT NOT NULL
-		)`,
 		// Stored fleet IPAM snapshot (single row), recomputed by the background
 		// sweep so /ipam/data never parses configs inside a request. snap_schema
 		// versions the JSON shape: a blob from an older format is never served

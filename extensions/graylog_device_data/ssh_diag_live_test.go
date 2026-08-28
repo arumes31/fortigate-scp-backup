@@ -1,3 +1,5 @@
+//go:build integration
+
 package graylogdevicedata
 
 import (
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // TestLiveDiag exercises the real production path (dial → shell → parse) against
@@ -30,7 +33,11 @@ func TestLiveDiag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invalid port %q: %v", p[1], err)
 	}
-	client, err := dialSSHDiag(p[0], p[2], p[3], port, 90*time.Second)
+	hostKeyCallback, err := knownhosts.New(os.Getenv("SSH_KNOWN_HOSTS_FILE"))
+	if err != nil {
+		t.Fatalf("load SSH_KNOWN_HOSTS_FILE: %v", err)
+	}
+	client, err := dialSSHDiag(p[0], p[2], p[3], port, 90*time.Second, hostKeyCallback)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // ---- page data structs (each embeds Base for the shared layout) ----
@@ -433,11 +434,11 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 // when encryption at rest is enabled so the user always downloads plaintext.
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := chi.URLParam(r, "*")
-	if filename == "" || strings.Contains(filename, "..") {
+	diskPath, err := appsecurity.JoinWithin(s.cfg.BackupDir, filename)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	diskPath := filepath.Join(s.cfg.BackupDir, filepath.FromSlash(filename))
 	raw, err := os.ReadFile(diskPath)
 	if err != nil {
 		http.NotFound(w, r)

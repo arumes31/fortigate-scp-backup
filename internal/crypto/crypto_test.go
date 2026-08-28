@@ -117,3 +117,17 @@ func TestBadKeyLength(t *testing.T) {
 		t.Fatal("expected error for non-32-byte key")
 	}
 }
+
+func TestStrictModeRejectsPlaintext(t *testing.T) {
+	c, err := New(newKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.RequireEncrypted()
+	if _, err := c.Decrypt([]byte("legacy")); err == nil {
+		t.Fatal("expected strict file decryption to reject plaintext")
+	}
+	if _, err := c.DecryptString("legacy"); err == nil {
+		t.Fatal("expected strict secret decryption to reject plaintext")
+	}
+}

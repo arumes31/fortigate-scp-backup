@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/base64"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -70,5 +72,32 @@ func TestEncryptionKeyRejectsWrongLength(t *testing.T) {
 func TestRandomBase32Length(t *testing.T) {
 	if got := randomBase32(16); len(got) != 16 {
 		t.Fatalf("len = %d", len(got))
+	}
+}
+
+func TestSecretFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session_key")
+	if err := os.WriteFile(path, []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SESSION_KEY", "")
+	t.Setenv("SESSION_KEY_FILE", path)
+	if got := string(Load(discard()).SessionKey); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("session key from file = %q", got)
+	}
+}
+
+func TestValidateRuntime(t *testing.T) {
+	c := &Config{
+		PGPassword: "database-password",
+		SessionKey: make([]byte, 32), EncryptionKey: make([]byte, 32),
+		SSHKnownHostsFile: "known_hosts", FortigateConfigPath: "sys_config", SCPTimeout: 60,
+	}
+	if err := c.ValidateRuntime(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	c.FortigateConfigPath = "sys_config; reboot"
+	if err := c.ValidateRuntime(); err == nil {
+		t.Fatal("unsafe remote path accepted")
 	}
 }

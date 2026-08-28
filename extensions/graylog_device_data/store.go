@@ -390,7 +390,11 @@ func (e *Extension) storeStp(fwID int, stp []StpPort, now string) error {
 	// updated_at is bumped above for every port in this fetch; the timestamp
 	// format is lexicographically sortable, so a string comparison prunes the
 	// ports that have been absent past the retention window.
-	cutoff := time.Now().Add(-stpRetention).Format("2006-01-02 15:04:05")
+	cutoffBase, parseErr := time.Parse("2006-01-02 15:04:05", now)
+	if parseErr != nil {
+		cutoffBase = time.Now()
+	}
+	cutoff := cutoffBase.Add(-stpRetention).Format("2006-01-02 15:04:05")
 	if _, err := tx.Exec("DELETE FROM stp_ports WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}

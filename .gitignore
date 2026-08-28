@@ -26,5 +26,7 @@ temp/
 .claudeignore
 .agents/
 pgdata/
+/secrets/*
+!/secrets/README.md
 
 

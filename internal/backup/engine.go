@@ -13,7 +13,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // dbOpTimeout bounds each individual store operation.
@@ -33,7 +35,7 @@ func backoff(attempt int) time.Duration {
 }
 
 // backup performs a single backup cycle for the given firewall id: it pulls the
-// configuration over SCP, optionally encrypts it at rest, enforces retention,
+// configuration over SCP, encrypts it at rest, enforces retention,
 // prunes stale rows/files, updates firewall status, and emails on failure
 // (subject to a 24h "recent success" suppression window).
 func (s *Service) backup(fwID int) {
@@ -190,7 +192,7 @@ func (s *Service) backup(fwID int) {
 }
 
 // finalizeFile computes the size and SHA-256 checksum of the plaintext backup,
-// then, if encryption is enabled, replaces the file on disk with ciphertext.
+// then atomically replaces the file on disk with ciphertext.
 // The returned size/checksum always describe the plaintext config.
 func (s *Service) finalizeFile(localPath string) (int64, string, error) {
 	plain, err := os.ReadFile(localPath)
@@ -201,14 +203,15 @@ func (s *Service) finalizeFile(localPath string) (int64, string, error) {
 	checksum := hex.EncodeToString(sum[:])
 	size := int64(len(plain))
 
-	if s.cipher.Enabled() {
-		enc, err := s.cipher.Encrypt(plain)
-		if err != nil {
-			return 0, "", fmt.Errorf("encrypt backup: %w", err)
-		}
-		if err := os.WriteFile(localPath, enc, 0o600); err != nil {
-			return 0, "", fmt.Errorf("write encrypted backup: %w", err)
-		}
+	enc, err := s.cipher.Encrypt(plain)
+	if err != nil {
+		return 0, "", fmt.Errorf("encrypt backup: %w", err)
+	}
+	if !crypto.HasHeader(enc) {
+		return 0, "", errors.New("backup encryption requires an enabled cipher")
+	}
+	if err := replaceFileAtomic(localPath, enc); err != nil {
+		return 0, "", fmt.Errorf("write encrypted backup: %w", err)
 	}
 	return size, checksum, nil
 }
@@ -239,7 +242,10 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 
 	if len(all) > retentionCount {
 		for _, dbName := range all[retentionCount:] {
-			diskPath := filepath.FromSlash(filepath.Join(s.cfg.BackupDir, dbName))
+			diskPath, pathErr := appsecurity.JoinWithin(s.cfg.BackupDir, dbName)
+			if pathErr != nil {
+				return fmt.Errorf("invalid backup path %q: %w", dbName, pathErr)
+			}
 			if _, statErr := os.Stat(diskPath); statErr == nil {
 				if rmErr := os.Remove(diskPath); rmErr != nil {
 					s.logger.Warn("Failed to delete retention file", "path", diskPath, "err", rmErr)
@@ -278,7 +284,11 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir s
 	}
 
 	for _, b := range backups {
-		diskPath := filepath.FromSlash(filepath.Join(s.cfg.BackupDir, b.Filename))
+		diskPath, pathErr := appsecurity.JoinWithin(s.cfg.BackupDir, b.Filename)
+		if pathErr != nil {
+			s.logger.Error("Invalid backup path in database", "filename", b.Filename, "err", pathErr)
+			continue
+		}
 		if _, statErr := os.Stat(diskPath); errors.Is(statErr, os.ErrNotExist) {
 			s.logger.Warn("Removing non-existent backup entry", "filename", b.Filename)
 			if delErr := s.store.DeleteBackupByID(ctx, b.ID); delErr != nil {

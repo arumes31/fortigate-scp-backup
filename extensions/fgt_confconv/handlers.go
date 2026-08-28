@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // ErrNotFound is returned by loadBackup when the firewall or backup does not
@@ -99,15 +99,21 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (content string, t
 		}
 		return "", ts, err
 	}
-	diskPath := filepath.Join(e.cfg.BackupDir, filepath.FromSlash(filename))
+	diskPath, err := appsecurity.JoinWithin(e.cfg.BackupDir, filename)
+	if err != nil {
+		return "", ts, fmt.Errorf("invalid backup path: %w", err)
+	}
 	encData, err := os.ReadFile(diskPath)
 	if err != nil {
 		e.logger.Error("confconv: failed to read backup file", "path", diskPath, "err", err)
 		return "", ts, errors.New("failed to read backup file from disk")
 	}
-	cipher, err := crypto.New(e.cfg.EncryptionKey)
-	if err != nil {
-		return "", ts, errors.New("failed to init cipher")
+	cipher := e.cipher
+	if cipher == nil { // unit-test compatibility; production always injects the strict shared cipher
+		cipher, err = crypto.New(e.cfg.EncryptionKey)
+		if err != nil {
+			return "", ts, errors.New("failed to init cipher")
+		}
 	}
 	plain, err := cipher.Decrypt(encData)
 	if err != nil {

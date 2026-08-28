@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 )
 
@@ -31,6 +32,7 @@ type Extension struct {
 	tmpl    *template.Template
 	tz      *time.Location
 	dataDir string
+	cipher  *crypto.Cipher
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
@@ -66,6 +68,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.dataDir = d.DataDir
+	e.cipher = d.Cipher
 	if e.tz == nil {
 		e.tz = time.UTC
 	}

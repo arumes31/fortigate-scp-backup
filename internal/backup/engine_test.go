@@ -1,8 +1,6 @@
 package backup
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -36,29 +34,16 @@ func TestBackoffGrows(t *testing.T) {
 	}
 }
 
-func TestFinalizeFilePlaintext(t *testing.T) {
-	s := testService(t, nil) // encryption disabled
+func TestFinalizeFileRejectsDisabledEncryption(t *testing.T) {
+	s := testService(t, nil)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.conf")
 	content := []byte("config text")
 	if err := os.WriteFile(p, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	size, sum, err := s.finalizeFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size != int64(len(content)) {
-		t.Errorf("size = %d", size)
-	}
-	want := sha256.Sum256(content)
-	if sum != hex.EncodeToString(want[:]) {
-		t.Errorf("checksum mismatch")
-	}
-	// File must remain plaintext when encryption is off.
-	got, _ := os.ReadFile(p)
-	if string(got) != string(content) {
-		t.Errorf("file should be unchanged")
+	if _, _, err := s.finalizeFile(p); err == nil {
+		t.Fatal("expected disabled encryption to be rejected")
 	}
 }
 
@@ -90,5 +75,35 @@ func TestFinalizeFileEncrypts(t *testing.T) {
 	}
 	if string(dec) != string(content) {
 		t.Fatal("decrypt mismatch")
+	}
+}
+
+func TestMigrateEncryptionAtRest(t *testing.T) {
+	key := make([]byte, 32)
+	s := testService(t, key)
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "1", "legacy.conf")
+	if err := os.MkdirAll(filepath.Dir(plainPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plainPath, []byte("legacy config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := MigrateEncryptionAtRest(dir, s.cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated != 1 {
+		t.Fatalf("migrated = %d, want 1", migrated)
+	}
+	raw, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crypto.HasHeader(raw) {
+		t.Fatal("migrated backup is not encrypted")
+	}
+	if second, err := MigrateEncryptionAtRest(dir, s.cipher); err != nil || second != 0 {
+		t.Fatalf("idempotent migration = (%d, %v), want (0, nil)", second, err)
 	}
 }

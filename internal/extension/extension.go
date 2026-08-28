@@ -13,6 +13,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
 // Deps is the set of shared services an extension may use. Extensions get the
@@ -30,6 +33,12 @@ type Deps struct {
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.
 	FirewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
+	// HostKeyCallback verifies FortiGate SSH host keys against the operator's
+	// independently maintained OpenSSH known_hosts file.
+	HostKeyCallback ssh.HostKeyCallback
+	// Cipher is the shared strict-mode encryption service. Extensions must use
+	// it instead of creating a permissive cipher from configuration.
+	Cipher *crypto.Cipher
 	// BroadcastOp publishes an operation lifecycle event to the core's SSE
 	// stream (kind e.g. "analysis"/"devicedata"/"sshdiag"/"live", status
 	// "started"/"finished") so dashboards log and refresh live. nil when the

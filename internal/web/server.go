@@ -25,6 +25,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"golang.org/x/crypto/ssh"
 )
 
 //go:embed templates/*.html
@@ -73,9 +74,10 @@ type Server struct {
 	// ipLimiter is a per-source-IP aggregate guard so a password-spray across
 	// many usernames from one host is throttled even though each (IP,username)
 	// bucket in limiter never reaches its own threshold.
-	ipLimiter *loginLimiter
-	hub       *sseHub
-	logger    *slog.Logger
+	ipLimiter       *loginLimiter
+	hub             *sseHub
+	logger          *slog.Logger
+	hostKeyCallback ssh.HostKeyCallback
 
 	pages map[string]pageTmpl
 
@@ -100,6 +102,12 @@ type Server struct {
 	// JS); begin() on each also coalesces concurrent sweeps.
 	licenseProgress sweepProgress
 	ipamProgress    sweepProgress
+}
+
+// SetHostKeyCallback configures the verified host-key policy used by live SSH
+// collectors. It must be called before a collection is started.
+func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
+	s.hostKeyCallback = callback
 }
 
 type pageTmpl struct {
@@ -166,6 +174,8 @@ func (s *Server) BroadcastOp(kind string, fwID int, status string) {
 // (which does not cancel their request contexts) can complete promptly.
 func (s *Server) Shutdown() {
 	s.hub.shutdown()
+	s.limiter.Close()
+	s.ipLimiter.Close()
 }
 
 var funcMap = template.FuncMap{

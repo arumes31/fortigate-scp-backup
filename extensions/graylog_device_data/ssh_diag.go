@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -219,7 +220,7 @@ func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail 
 	if overall <= 0 {
 		overall = 90 * time.Second
 	}
-	client, err := dialSSHDiag(host, user, pass, port, overall)
+	client, err := dialSSHDiag(host, user, pass, port, overall, e.hostKeyCallback)
 	if err != nil {
 		return fmt.Errorf("ssh dial: %w", err)
 	}
@@ -405,7 +406,10 @@ func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail 
 // method (plus keyboard-interactive on some builds); offer both. Host keys are
 // ignored, matching the backup transport, since the device fingerprint is not
 // pinned in this tool.
-func dialSSHDiag(host, user, pass string, port int, timeout time.Duration) (*ssh.Client, error) {
+func dialSSHDiag(host, user, pass string, port int, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (*ssh.Client, error) {
+	if hostKeyCallback == nil {
+		return nil, errors.New("SSH host key verification is not configured")
+	}
 	ki := ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
 		ans := make([]string, len(questions))
 		for i := range ans {
@@ -416,7 +420,7 @@ func dialSSHDiag(host, user, pass string, port int, timeout time.Duration) (*ssh
 	cfg := &ssh.ClientConfig{
 		User:            user,
 		Auth:            []ssh.AuthMethod{ssh.Password(pass), ki},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         timeout,
 	}
 	return ssh.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)), cfg)
@@ -433,7 +437,6 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 	if err != nil {
 		return err
 	}
-	defer func() { _ = sess.Close() }()
 	modes := ssh.TerminalModes{ssh.ECHO: 0, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}
 	if err := sess.RequestPty("xterm", 10000, 511, modes); err != nil {
 		return err
@@ -448,24 +451,38 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 	}
 	sess.Stderr = io.Discard
 	if err := sess.Shell(); err != nil {
+		_ = sess.Close()
 		return err
 	}
 
+	readerCtx, cancelReader := context.WithCancel(context.Background())
+	var readerWG sync.WaitGroup
 	chunks := make(chan []byte, 64)
+	readerWG.Add(1)
 	go func() {
+		defer readerWG.Done()
+		defer close(chunks)
 		b := make([]byte, 4096)
 		for {
 			n, rerr := stdout.Read(b)
 			if n > 0 {
 				cp := make([]byte, n)
 				copy(cp, b[:n])
-				chunks <- cp
+				select {
+				case chunks <- cp:
+				case <-readerCtx.Done():
+					return
+				}
 			}
 			if rerr != nil {
-				close(chunks)
 				return
 			}
 		}
+	}()
+	defer func() {
+		cancelReader()
+		_ = sess.Close() // unblocks a reader waiting in stdout.Read
+		readerWG.Wait()
 	}()
 
 	deadline := time.Now().Add(overall)
@@ -477,6 +494,7 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 	// timeout that is NOT the overall deadline stays soft (partial output, no
 	// latch): one slow command must not abort an otherwise-healthy sweep.
 	var shellErr error
+	const maxCommandOutput = 4 << 20
 	readUntilPrompt := func() string {
 		var buf bytes.Buffer
 		cmdDeadline := time.Now().Add(20 * time.Second)
@@ -492,7 +510,11 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 					shellErr = errors.New("ssh session stream closed mid-command")
 					return buf.String()
 				}
-				buf.Write(c)
+				if buf.Len()+len(c) > maxCommandOutput {
+					shellErr = fmt.Errorf("ssh command output exceeds %d bytes", maxCommandOutput)
+					return buf.String()
+				}
+				_, _ = buf.Write(c)
 				if isFortiPrompt(buf.String()) {
 					return buf.String()
 				}
@@ -604,7 +626,7 @@ func (e *Extension) collectPortDiag(fwID int, sw, port string) (*PortDiag, error
 	if overall <= 0 {
 		overall = 90 * time.Second
 	}
-	client, err := dialSSHDiag(host, user, pass, prt, overall)
+	client, err := dialSSHDiag(host, user, pass, prt, overall, e.hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial: %w", err)
 	}
@@ -684,7 +706,7 @@ func (e *Extension) recheckBlockedPort(fwID int, sw, port string) (*BlockedPortC
 	if overall <= 0 {
 		overall = 90 * time.Second
 	}
-	client, err := dialSSHDiag(host, user, pass, prt, overall)
+	client, err := dialSSHDiag(host, user, pass, prt, overall, e.hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial: %w", err)
 	}

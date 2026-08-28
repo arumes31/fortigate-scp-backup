@@ -21,7 +21,7 @@
 
 **FortiSafe** is a web-based management tool and automation engine that backs up FortiGate firewall configurations securely over SSH/SCP. It compiles into a **single, fully static binary** that runs the web interface, the backup scheduler, and every extension's background worker as concurrent goroutines in one process — no external task queue, application server, or sidecar required.
 
-Point it at your firewalls, set a schedule, and FortiSafe pulls each configuration on a cron/interval basis, stores it (optionally encrypted at rest), keeps a configurable number of copies, and emails you when a run fails.
+Point it at your firewalls, set a schedule, and FortiSafe pulls each configuration on a cron/interval basis, stores it encrypted at rest, keeps a configurable number of copies, and emails you when a run fails.
 
 ### Highlights
 * **Single-process model** — the web server, cron scheduler, and extension workers all run as lightweight goroutines inside one binary.
@@ -68,7 +68,8 @@ graph TD
 - 🛡️ **Firewall Management**: Register and monitor multiple firewalls, each with its own credentials, SSH port, retention count, and backup schedule. Add them individually or in bulk via CSV.
 - ⏰ **Automated Scheduling**: Cron or interval-based backups, with staggered runs on startup to avoid traffic spikes. Trigger any backup on demand and test connectivity from the UI.
 - 🔐 **Hardened Security**:
-  - **AES-256-GCM at rest**: Optional encryption for every stored backup and firewall SSH password.
+  - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup and firewall SSH password, including startup migration of legacy plaintext data.
+  - **Pinned SSH identities**: Every SCP and live-SSH connection is verified against an operator-maintained OpenSSH `known_hosts` file.
   - **Local passwords hashed with bcrypt**, plus a forced password change on first login.
   - **Session guard**: Signed sessions, idle timeouts, and X-Forwarded-For pinning.
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
@@ -211,78 +212,23 @@ FortiSafe is distributed as a container image on the GitHub Container Registry (
 
 ### Option 1 — Run the pre-built image from GHCR (recommended)
 
-Pull the latest published image:
+Use a release image by immutable digest (shown on the package/release page):
 ```bash
-docker pull ghcr.io/arumes31/fortigate-scp-backup:latest
+docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-The quickest start is the bundled Compose file, which brings up FortiSafe together with a PostgreSQL database:
+Create the four files documented in [`secrets/README.md`](secrets/README.md), add independently verified FortiGate keys to `secrets/known_hosts`, then start the bundled stack:
 ```bash
+export FORTISAFE_IMAGE='ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-Or run the container directly against an existing PostgreSQL instance:
-```bash
-docker run -d \
-  --name fortisafe \
-  -p 8521:8521 \
-  -e TZ=Europe/Vienna \
-  -e PG_HOST=db.internal -e PG_PORT=5432 \
-  -e PG_USER=fortisafe -e PG_PASSWORD=change-me \
-  -e PG_DATABASE=firewall_backups \
-  -e SESSION_KEY=please-change-me-to-a-long-random-string \
-  -v "$(pwd)/backups:/app/backups" \
-  -v "$(pwd)/data:/app/data" \
-  --restart unless-stopped \
-  ghcr.io/arumes31/fortigate-scp-backup:latest
-```
-
-Or drop this minimal `compose.yml` next to your project and run `docker compose up -d`:
-```yaml
-services:
-  fortisafe:
-    image: ghcr.io/arumes31/fortigate-scp-backup:latest
-    container_name: fortisafe
-    ports:
-      - "8521:8521"
-    environment:
-      TZ: Europe/Vienna
-      PG_HOST: db
-      PG_USER: fortisafe
-      PG_PASSWORD: change-me
-      PG_DATABASE: firewall_backups
-      SESSION_KEY: please-change-me-to-a-long-random-string
-      # Optional: 32-byte hex/base64 key to enable AES-256-GCM encryption at rest
-      # ENCRYPTION_KEY: ""
-    volumes:
-      - ./backups:/app/backups
-      - ./data:/app/data
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    container_name: fortisafe-db
-    environment:
-      POSTGRES_USER: fortisafe
-      POSTGRES_PASSWORD: change-me
-      POSTGRES_DB: firewall_backups
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fortisafe -d firewall_backups"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-```
+The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Terminate HTTPS at a trusted reverse proxy; only enable `TRUST_PROXY_HEADERS` when direct access to the application port is blocked.
 
 > [!WARNING]
 > The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dump` of the `firewall_backups` database with the matching old version into a `backup.sql`, then restore it into a freshly initialized data directory).
 
-**Available tags:** `latest`, a date tag (`DDMMYYYY`), the commit SHA, and release tags (`vX.Y.Z`). See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for a fully annotated example covering every setting.
+Published tags remain convenient discovery aliases, but deployments should record and use the corresponding immutable digest. See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for the hardened example.
 
 ### Option 2 — Build and run locally
 
@@ -296,11 +242,7 @@ docker compose up -d
 
 ### First login
 
-Open <http://localhost:8521> and sign in with the seeded administrator account:
-
-| Username | Password   |
-| :------- | :--------- |
-| `admin`  | `changeme` |
+On a new database, FortiSafe creates the `admin` account with the value from `BOOTSTRAP_ADMIN_PASSWORD` or `BOOTSTRAP_ADMIN_PASSWORD_FILE`. There is no shared default password. The bootstrap value is ignored once the account exists and can then be cleared (the Compose secret file must still exist) after recording a tested recovery procedure.
 
 You are required to change the password on first login. Enable `TOTP_ENABLED` and/or `RADIUS_ENABLED` to add multi-factor authentication.
 
@@ -326,7 +268,7 @@ FortiSafe is configured entirely via environment variables.
 | `PG_HOST` | `localhost` | PostgreSQL host. |
 | `PG_PORT` | `5432` | PostgreSQL port. |
 | `PG_USER` | `your_user` | PostgreSQL user. |
-| `PG_PASSWORD` | `your_password` | PostgreSQL password. |
+| `PG_PASSWORD` / `PG_PASSWORD_FILE` | *(Required)* | PostgreSQL password (prefer a mounted secret file). |
 | `PG_DATABASE` | `firewall_backups` | PostgreSQL database name. |
 | `PGSSLMODE` | `prefer` | SSL connection mode. |
 | `PG_MAX_CONNS` | `50` | Maximum connections allowed in the database pool. |
@@ -337,14 +279,15 @@ FortiSafe is configured entirely via environment variables.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `TOTP_ENABLED` | `false` | Enable TOTP 2FA for the local admin account. |
-| `TOTP_SECRET` | *(Auto-generated)* | 16-character Base32 TOTP secret. |
+| `TOTP_SECRET` / `TOTP_SECRET_FILE` | *(Required when enabled)* | Stable Base32 TOTP secret. |
 | `RADIUS_ENABLED` | `false` | Enable RADIUS (PAP) authentication. |
 | `RADIUS_SERVER` | `localhost` | RADIUS server address. |
 | `RADIUS_PORT` | `1812` | RADIUS service port. |
-| `RADIUS_SECRET` | `secret` | RADIUS shared secret key. |
+| `RADIUS_SECRET` / `RADIUS_SECRET_FILE` | *(Required when enabled)* | RADIUS shared secret (minimum 16 bytes). |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Maximum login failures allowed before lockout. |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Minutes a user is locked out after the limit is exceeded. |
-| `SESSION_KEY` | *(Auto-generated)* | Session signing key (forces re-login on restart if empty). |
+| `SESSION_KEY` / `SESSION_KEY_FILE` | *(Required)* | Stable session signing secret, minimum 32 bytes. |
+| `BOOTSTRAP_ADMIN_PASSWORD` / `BOOTSTRAP_ADMIN_PASSWORD_FILE` | *(Required for a new DB)* | Initial `admin` password, minimum 16 bytes; never has a built-in default. |
 | `COOKIE_SECURE` | `false` | Set the `Secure` flag on session cookies (requires HTTPS). |
 | `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP (enable only behind a trusted proxy). |
@@ -352,8 +295,9 @@ FortiSafe is configured entirely via environment variables.
 ### Backup Engine & SCP Defaults
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| `ENCRYPTION_KEY` | *(Unset)* | 32-byte (hex/base64) key to enable AES-256-GCM encryption at rest. |
-| `DEFAULT_SCP_USER` | `admin` | Default SSH username when none is specified. |
+| `ENCRYPTION_KEY` / `ENCRYPTION_KEY_FILE` | *(Required)* | Exactly 32 bytes encoded as hex/base64. Startup migrates legacy plaintext and aborts on a wrong key. Keep a protected offline recovery copy. |
+| `SSH_KNOWN_HOSTS_FILE` | *(Required)* | OpenSSH `known_hosts` file covering every FortiGate host and non-default port. Verify fingerprints independently. |
+| `DEFAULT_SCP_USER` | `fortisafe` | Default dedicated SSH username when none is specified. |
 | `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
 | `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |
 | `SCP_TIMEOUT` | `60` | SSH connection and transfer timeout in seconds. |
@@ -366,7 +310,7 @@ FortiSafe is configured entirely via environment variables.
 | `MAIL_SERVER` | `smtp.example.com` | SMTP host for backup failure notifications. |
 | `MAIL_PORT` | `587` | SMTP port (STARTTLS is enforced). |
 | `MAIL_USER` | `user@example.com` | SMTP authentication user. |
-| `MAIL_PASSWORD` | `password` | SMTP authentication password. |
+| `MAIL_PASSWORD` / `MAIL_PASSWORD_FILE` | *(Unset)* | SMTP authentication password. |
 | `MAIL_RECIPIENT` | *(Same as user)* | Destination email address for error logs. |
 
 ### Extension: FGT ADM VPN Configuration
