@@ -60,6 +60,22 @@ func (c *Cipher) RequireEncrypted() { c.strict.Store(true) }
 // HasHeader reports whether data was written by Encrypt (i.e. is ciphertext).
 func HasHeader(data []byte) bool { return bytes.HasPrefix(data, magic) }
 
+// ValidateHeader verifies that data has a structurally complete encrypted
+// envelope without decrypting its payload.
+func (c *Cipher) ValidateHeader(data []byte) error {
+	if !HasHeader(data) {
+		return errors.New("crypto: encrypted header is missing")
+	}
+	if !c.enabled {
+		return errors.New("crypto: encrypted data found but no key configured")
+	}
+	minimumSize := len(magic) + c.gcm.NonceSize() + c.gcm.Overhead()
+	if len(data) < minimumSize {
+		return errors.New("crypto: encrypted envelope is too short")
+	}
+	return nil
+}
+
 // IsEncryptedString reports whether a database secret uses the encrypted
 // envelope format.
 func IsEncryptedString(value string) bool { return strings.HasPrefix(value, stringPrefix) }
@@ -92,11 +108,11 @@ func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 	if !c.enabled {
 		return nil, errors.New("crypto: encrypted data found but no key configured")
 	}
+	if err := c.ValidateHeader(data); err != nil {
+		return nil, err
+	}
 	body := data[len(magic):]
 	ns := c.gcm.NonceSize()
-	if len(body) < ns {
-		return nil, errors.New("crypto: ciphertext too short")
-	}
 	nonce, ct := body[:ns], body[ns:]
 	return c.gcm.Open(nil, nonce, ct, nil)
 }

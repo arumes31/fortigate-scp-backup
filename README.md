@@ -69,7 +69,7 @@ graph TD
 - ⏰ **Automated Scheduling**: Cron or interval-based backups, with staggered runs on startup to avoid traffic spikes. Trigger any backup on demand and test connectivity from the UI.
 - 🔐 **Hardened Security**:
   - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup and firewall SSH password, including startup migration of legacy plaintext data.
-  - **Pinned SSH identities**: Every SCP and live-SSH connection is verified against an operator-maintained OpenSSH `known_hosts` file.
+  - **Persistent SSH identities**: Unknown FortiGate keys are learned on first use and stored in an application-managed OpenSSH `known_hosts` file. Changed keys stay blocked until their detected fingerprint is explicitly accepted in the firewall UI.
   - **Local passwords hashed with bcrypt**, plus a forced password change on first login.
   - **Session guard**: Signed sessions, idle timeouts, and X-Forwarded-For pinning.
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
@@ -217,7 +217,7 @@ Use a release image by immutable digest (shown on the package/release page):
 docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-Create the four files documented in [`secrets/README.md`](secrets/README.md), add independently verified FortiGate keys to `secrets/known_hosts`, then start the bundled stack:
+Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md), then start the bundled stack:
 ```bash
 export FORTISAFE_IMAGE='ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
@@ -233,6 +233,7 @@ Published tags remain convenient discovery aliases, but deployments should recor
 ### Option 2 — Build and run locally
 
 [`docker-compose.yml`](docker-compose.yml) compiles the static binary inside a multi-stage Docker build and starts it alongside PostgreSQL:
+Create the same six secret files described in Option 1 before starting it.
 ```bash
 docker compose up -d
 ```
@@ -295,8 +296,8 @@ FortiSafe is configured entirely via environment variables.
 ### Backup Engine & SCP Defaults
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| `ENCRYPTION_KEY` / `ENCRYPTION_KEY_FILE` | *(Required)* | Exactly 32 bytes encoded as hex/base64. Startup migrates legacy plaintext and aborts on a wrong key. Keep a protected offline recovery copy. |
-| `SSH_KNOWN_HOSTS_FILE` | *(Required)* | OpenSSH `known_hosts` file covering every FortiGate host and non-default port. Verify fingerprints independently. |
+| `ENCRYPTION_KEY` / `ENCRYPTION_KEY_FILE` | *(Required)* | Exactly 32 bytes encoded as hex/base64. Startup migrates legacy plaintext; a wrong key makes encrypted credentials and backups unreadable. Keep a protected offline recovery copy. |
+| `SSH_KNOWN_HOSTS_FILE` | `DATA_DIR/ssh_known_hosts` | Writable, application-managed OpenSSH host-key store. Unknown hosts are learned on first use; changed keys require explicit acceptance in the firewall UI. |
 | `DEFAULT_SCP_USER` | `fortisafe` | Default dedicated SSH username when none is specified. |
 | `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
 | `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |

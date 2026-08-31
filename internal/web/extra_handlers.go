@@ -47,3 +47,47 @@ func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// handleAcceptHostKey replaces a firewall's stored key with the exact
+// replacement captured during the most recent failed SSH handshake.
+func (s *Server) handleAcceptHostKey(w http.ResponseWriter, r *http.Request) {
+	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if s.hostKeyManager == nil {
+		http.Error(w, "SSH host-key manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	firewalls, err := s.store.ListFirewalls(r.Context())
+	if err != nil {
+		s.logger.Error("failed to load firewall for SSH key acceptance", "fw_id", fwID, "err", err)
+		http.Error(w, "failed to load firewall", http.StatusInternalServerError)
+		return
+	}
+	var firewallFound bool
+	var host string
+	var port int
+	for _, firewall := range firewalls {
+		if firewall.ID == fwID {
+			firewallFound = true
+			host = firewall.FQDN
+			port = firewall.SSHPort
+			break
+		}
+	}
+	if !firewallFound {
+		http.Error(w, "firewall not found", http.StatusNotFound)
+		return
+	}
+	accepted, err := s.hostKeyManager.Accept(host, port)
+	if err != nil {
+		s.logger.Warn("SSH host-key acceptance rejected", "fw_id", fwID, "err", err)
+		http.Error(w, "no detected SSH key is awaiting acceptance", http.StatusConflict)
+		return
+	}
+	s.store.LogActivity(s.sess.User(r).Username, "Accept SSH Host Key",
+		"fw_id "+strconv.Itoa(fwID)+" accepted "+accepted.Fingerprint)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}

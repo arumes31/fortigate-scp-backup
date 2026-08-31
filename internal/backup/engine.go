@@ -244,7 +244,8 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 		for _, dbName := range all[retentionCount:] {
 			diskPath, pathErr := appsecurity.JoinWithin(s.cfg.BackupDir, dbName)
 			if pathErr != nil {
-				return fmt.Errorf("invalid backup path %q: %w", dbName, pathErr)
+				s.logger.Error("Skipping retention row with invalid backup path", "filename", dbName, "err", pathErr)
+				continue
 			}
 			if _, statErr := os.Stat(diskPath); statErr == nil {
 				if rmErr := os.Remove(diskPath); rmErr != nil {

@@ -25,6 +25,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -78,6 +79,7 @@ type Server struct {
 	hub             *sseHub
 	logger          *slog.Logger
 	hostKeyCallback ssh.HostKeyCallback
+	hostKeyManager  *sshhostkey.Manager
 
 	pages map[string]pageTmpl
 
@@ -108,6 +110,15 @@ type Server struct {
 // collectors. It must be called before a collection is started.
 func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
 	s.hostKeyCallback = callback
+}
+
+// SetHostKeyManager wires the application-managed persistent TOFU policy and
+// makes pending key rotations available to the firewall UI.
+func (s *Server) SetHostKeyManager(manager *sshhostkey.Manager) {
+	s.hostKeyManager = manager
+	if manager != nil {
+		s.hostKeyCallback = manager.Callback()
+	}
 }
 
 type pageTmpl struct {
@@ -354,7 +365,8 @@ func (s *Server) Routes() chi.Router {
 		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)
 		pr.Post("/backup_now/{fwID}", s.handleBackupNow)
-		pr.Get("/test_connection/{fwID}", s.handleTestConnection)
+		pr.Post("/test_connection/{fwID}", s.handleTestConnection)
+		pr.Post("/ssh_host_key/accept/{fwID}", s.handleAcceptHostKey)
 		pr.HandleFunc("/change_password", s.handleChangePassword)
 		pr.HandleFunc("/search", s.handleSearch)
 		pr.Get("/activity_log", s.handleActivityLog)

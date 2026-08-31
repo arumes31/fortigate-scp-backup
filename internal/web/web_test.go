@@ -2,9 +2,12 @@ package web
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,14 +24,24 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/ssh"
 )
 
 // ---- fakes ----
 
-type fakeStore struct{}
+type fakeStore struct {
+	firewalls []models.Firewall
+	activity  *[]string
+}
 
-func (fakeStore) Ping(context.Context) error         { return nil }
-func (fakeStore) LogActivity(string, string, string) {}
+func (fakeStore) Ping(context.Context) error { return nil }
+func (s fakeStore) LogActivity(_ string, action, details string) {
+	if s.activity != nil {
+		*s.activity = append(*s.activity, action+": "+details)
+	}
+}
 func (fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
 	if u == "admin" {
 		return &models.User{Username: "admin", Password: "changeme", FirstLogin: 0}, nil
@@ -46,7 +59,9 @@ func (fakeStore) GetFirstLogin(context.Context, string) (int, bool, error) { ret
 func (fakeStore) ChangePassword(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }
-func (fakeStore) ListFirewalls(context.Context) ([]models.Firewall, error)  { return nil, nil }
+func (s fakeStore) ListFirewalls(context.Context) ([]models.Firewall, error) {
+	return s.firewalls, nil
+}
 func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error) { return 1, nil }
 func (fakeStore) DeleteFirewall(context.Context, int) (string, error)       { return "", nil }
 func (fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return nil, nil }
@@ -85,6 +100,111 @@ func testServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	return srv
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	readDeadline  time.Time
+	writeDeadline time.Time
+}
+
+func (r *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.readDeadline = deadline
+	return nil
+}
+
+func (r *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.writeDeadline = deadline
+	return nil
+}
+
+func TestHandleEventsClearsGlobalWriteDeadline(t *testing.T) {
+	srv := testServer(t)
+	srv.hub.shutdown()
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder(), writeDeadline: time.Now()}
+
+	srv.handleEvents(recorder, httptest.NewRequest(http.MethodGet, "/events", nil))
+
+	if !recorder.writeDeadline.IsZero() {
+		t.Fatalf("SSE write deadline = %v, want disabled", recorder.writeDeadline)
+	}
+}
+
+func TestHandleIndexUsesCSVRequestBodyDeadline(t *testing.T) {
+	srv := testServer(t)
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("fqdn=fw.example.com&interval_minutes=60&retention_count=3"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	started := time.Now()
+
+	srv.handleIndex(recorder, req)
+
+	if recorder.readDeadline.Before(started.Add(csvRequestBodyTimeout-time.Second)) ||
+		recorder.readDeadline.After(started.Add(csvRequestBodyTimeout+time.Second)) {
+		t.Fatalf("CSV read deadline = %v, want about %v", recorder.readDeadline, started.Add(csvRequestBodyTimeout))
+	}
+}
+
+type webTestAddr string
+
+func (webTestAddr) Network() string  { return "tcp" }
+func (a webTestAddr) String() string { return string(a) }
+
+var _ net.Addr = webTestAddr("")
+
+func webTestPublicKey(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestHandleAcceptHostKeyApprovesOnlyDetectedReplacement(t *testing.T) {
+	manager, err := sshhostkey.New(filepath.Join(t.TempDir(), "known_hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := webTestPublicKey(t)
+	newKey := webTestPublicKey(t)
+	address := "fw.example.com:22"
+	remote := webTestAddr("192.0.2.1:22")
+	if err := manager.Callback()(address, remote, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Callback()(address, remote, newKey); err == nil {
+		t.Fatal("changed key unexpectedly accepted")
+	}
+
+	srv := testServer(t)
+	var activity []string
+	srv.store = fakeStore{
+		firewalls: []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}},
+		activity:  &activity,
+	}
+	srv.SetHostKeyManager(manager)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("fwID", "7")
+	req := httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	recorder := httptest.NewRecorder()
+
+	srv.handleAcceptHostKey(recorder, req)
+
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusSeeOther)
+	}
+	if err := manager.Callback()(address, remote, newKey); err != nil {
+		t.Fatalf("accepted key rejected: %v", err)
+	}
+	if len(activity) != 1 || !strings.Contains(activity[0], ssh.FingerprintSHA256(newKey)) {
+		t.Fatalf("activity = %v, want accepted fingerprint", activity)
+	}
 }
 
 func TestUnauthenticatedRedirect(t *testing.T) {

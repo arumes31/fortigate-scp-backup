@@ -28,7 +28,6 @@ PG_HOST=localhost PG_PORT=15432 PG_USER=postgre PG_PASSWORD=pass \
   SESSION_KEY='<at-least-32-random-bytes>' \
   ENCRYPTION_KEY='<32-byte-base64-or-hex-key>' \
   BOOTSTRAP_ADMIN_PASSWORD='<at-least-16-random-bytes>' \
-  SSH_KNOWN_HOSTS_FILE=./secrets/known_hosts \
   go run ./cmd/fortisafe
 # sign in as admin with BOOTSTRAP_ADMIN_PASSWORD on a new database
 ```

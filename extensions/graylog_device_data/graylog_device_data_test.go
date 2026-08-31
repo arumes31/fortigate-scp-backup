@@ -588,6 +588,68 @@ func TestBestMacPins(t *testing.T) {
 	}
 }
 
+func TestRetentionTimestampsUseOneUTCInstantAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localNow := time.Date(2026, time.October, 25, 3, 30, 0, 0, loc)
+	stamp, cutoff := retentionTimestamps(localNow, deviceRetention)
+
+	wantStamp := localNow.UTC().Format(storageTimeLayout)
+	wantCutoff := localNow.UTC().Add(-deviceRetention).Format(storageTimeLayout)
+	if stamp != wantStamp || cutoff != wantCutoff {
+		t.Fatalf("retention timestamps = (%q, %q), want (%q, %q)", stamp, cutoff, wantStamp, wantCutoff)
+	}
+}
+
+func TestStoreStpRetentionKeepsExactBoundary(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "graylog-device-data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createStpTableSQL); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, time.October, 25, 2, 30, 0, 0, time.UTC)
+	nowText, cutoff := retentionTimestamps(now, stpRetention)
+	before := now.Add(-stpRetention - time.Second).Format(storageTimeLayout)
+	for _, row := range []struct {
+		port, updated string
+	}{
+		{port: "port1", updated: cutoff},
+		{port: "port2", updated: before},
+	} {
+		if _, err := db.Exec(`INSERT INTO stp_ports (fw_id, switch_name, port, updated_at) VALUES (1, 'SW1', ?, ?)`, row.port, row.updated); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
+	if err := e.storeStp(1, nil, nowText); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT port FROM stp_ports ORDER BY port`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ports []string
+	for rows.Next() {
+		var port string
+		if err := rows.Scan(&port); err != nil {
+			t.Fatal(err)
+		}
+		ports = append(ports, port)
+	}
+	if len(ports) != 1 || ports[0] != "port1" {
+		t.Fatalf("ports after retention = %v, want exact-boundary port1 only", ports)
+	}
+}
+
 // TestStoreStpKeepsAgedOutBlock guards the retention contract: once an STP
 // block is stored, a later fetch that only re-sees the port via a different
 // event kind (e.g. a link flap, after the blocking event has aged out of the

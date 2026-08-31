@@ -3,9 +3,21 @@ package fgt_polsplit
 import (
 	"bytes"
 	"html/template"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/go-chi/chi/v5"
 )
+
+func TestMountRejectsNilSharedCipher(t *testing.T) {
+	e := New(&config.Config{}, slog.New(slog.DiscardHandler))
+	if err := e.Mount(chi.NewRouter(), extension.Deps{}); err == nil {
+		t.Fatal("Mount accepted a nil shared cipher")
+	}
+}
 
 // TestTemplateRenders parses the embedded page template and executes it with
 // representative data, so template syntax errors fail in CI instead of at

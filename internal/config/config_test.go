@@ -87,6 +87,17 @@ func TestSecretFile(t *testing.T) {
 	}
 }
 
+func TestSSHKnownHostsDefaultsToDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("SSH_KNOWN_HOSTS_FILE", "")
+	got := Load(discard()).SSHKnownHostsFile
+	want := filepath.Join(dataDir, "ssh_known_hosts")
+	if got != want {
+		t.Fatalf("SSHKnownHostsFile = %q, want %q", got, want)
+	}
+}
+
 func TestValidateRuntime(t *testing.T) {
 	c := &Config{
 		PGPassword: "database-password",

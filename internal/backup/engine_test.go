@@ -107,3 +107,18 @@ func TestMigrateEncryptionAtRest(t *testing.T) {
 		t.Fatalf("idempotent migration = (%d, %v), want (0, nil)", second, err)
 	}
 }
+
+func TestMigrateEncryptionAtRestRejectsTruncatedEncryptedHeader(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "1", "truncated.conf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("FSENC1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MigrateEncryptionAtRest(dir, s.cipher); err == nil {
+		t.Fatal("truncated encrypted header was accepted")
+	}
+}

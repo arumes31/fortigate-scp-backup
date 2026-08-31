@@ -27,7 +27,9 @@ services:
 
       # --- Authentication & Session Security ---
       - "TOTP_ENABLED=${TOTP_ENABLED:-false}"
+      - "TOTP_SECRET_FILE=/run/secrets/totp_secret"
       - "RADIUS_ENABLED=${RADIUS_ENABLED:-false}"
+      - "RADIUS_SECRET_FILE=/run/secrets/radius_secret"
       - "RADIUS_SERVER=${RADIUS_SERVER:-localhost}"
       - "RADIUS_PORT=1812"
       - "LOGIN_MAX_ATTEMPTS=5"
@@ -40,7 +42,7 @@ services:
 
       # --- Encryption at Rest ---
       - "ENCRYPTION_KEY_FILE=/run/secrets/encryption_key"
-      - "SSH_KNOWN_HOSTS_FILE=/run/config/ssh_known_hosts"
+      - "SSH_KNOWN_HOSTS_FILE=/app/data/ssh_known_hosts"
 
       # --- SCP & Backup Engine Defaults ---
       - "DEFAULT_SCP_USER=fortisafe"
@@ -117,7 +119,6 @@ services:
       # Mount host directories to persist backups and configuration/SQLite db files:
       - "./backups:/app/backups"
       - "./data:/app/data"
-      - "./secrets/known_hosts:/run/config/ssh_known_hosts:ro"
       # Or specify host absolute paths if required:
       # - "/mnt/backups:/app/backups"
       # - "/mnt/data_fgt-adm-vpn-conf:/app/data"
@@ -134,6 +135,8 @@ services:
       - session_key
       - encryption_key
       - bootstrap_admin_password
+      - totp_secret
+      - radius_secret
     depends_on:
       fortisafe-db:
         condition: service_healthy
@@ -192,5 +195,9 @@ secrets:
     file: ./secrets/encryption_key
   bootstrap_admin_password:
     file: ./secrets/bootstrap_admin_password
+  totp_secret:
+    file: ./secrets/totp_secret
+  radius_secret:
+    file: ./secrets/radius_secret
 
 

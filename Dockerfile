@@ -30,8 +30,9 @@ RUN go mod download
 
 # Build the fully static, stripped binary.
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=true -ldflags="-s -w" -o /out/fortisafe ./cmd/fortisafe \
-    && mkdir -p /out/backups /out/data
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fortisafe ./cmd/fortisafe \
+    && install -d -m 0750 /out/backups \
+    && install -d -m 0700 /out/data
 
 # --- Stage 2: runtime -------------------------------------------------------
 # The nonroot distroless variant includes CA certificates and has no shell or
@@ -41,8 +42,8 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c
 WORKDIR /app
 
 COPY --chown=65532:65532 --from=build /out/fortisafe /app/fortisafe
-COPY --chown=65532:65532 --from=build /out/backups /app/backups
-COPY --chown=65532:65532 --from=build /out/data /app/data
+COPY --chown=65532:65532 --chmod=0750 --from=build /out/backups /app/backups
+COPY --chown=65532:65532 --chmod=0700 --from=build /out/data /app/data
 
 # Persistent data lives here. The binary creates these directories at startup
 # via os.MkdirAll if they are missing (distroless has no shell, so we cannot

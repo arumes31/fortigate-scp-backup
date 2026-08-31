@@ -6,6 +6,7 @@ package fgt_confconv
 
 import (
 	"embed"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -50,6 +51,9 @@ func (e *Extension) Prefix() string { return "/fgt-confconv" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtConfConv }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.Cipher == nil {
+		return errors.New("shared cipher is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.tz = d.TZ

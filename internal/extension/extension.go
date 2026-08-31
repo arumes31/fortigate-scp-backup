@@ -33,8 +33,8 @@ type Deps struct {
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.
 	FirewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
-	// HostKeyCallback verifies FortiGate SSH host keys against the operator's
-	// independently maintained OpenSSH known_hosts file.
+	// HostKeyCallback applies the application's persistent trust-on-first-use
+	// policy to every live FortiGate SSH connection.
 	HostKeyCallback ssh.HostKeyCallback
 	// Cipher is the shared strict-mode encryption service. Extensions must use
 	// it instead of creating a permissive cipher from configuration.

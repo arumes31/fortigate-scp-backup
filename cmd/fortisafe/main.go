@@ -27,8 +27,8 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 	"github.com/arumes31/fortigate-scp-backup/internal/web"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confconv"
@@ -44,11 +44,12 @@ func main() {
 		bootstrap.Error("invalid runtime configuration", "err", err)
 		os.Exit(1)
 	}
-	hostKeyCallback, err := knownhosts.New(cfg.SSHKnownHostsFile)
+	hostKeys, err := sshhostkey.New(cfg.SSHKnownHostsFile)
 	if err != nil {
-		bootstrap.Error("failed to load SSH known_hosts", "err", err)
+		bootstrap.Error("failed to initialize SSH host-key trust", "err", err)
 		os.Exit(1)
 	}
+	hostKeyCallback := hostKeys.Callback()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
@@ -156,7 +157,7 @@ func main() {
 		logger.Error("failed to build web server", "err", err)
 		os.Exit(1)
 	}
-	srv.SetHostKeyCallback(hostKeyCallback)
+	srv.SetHostKeyManager(hostKeys)
 	// Live status updates: the engine notifies the web SSE hub on every change.
 	backupSvc.SetStatusHook(srv.BroadcastStatus)
 	router := srv.Routes()

@@ -2,6 +2,7 @@ package fgt_polsplit
 
 import (
 	"embed"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -62,6 +63,9 @@ func (e *Extension) Prefix() string { return "/fgt-polsplit" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtPolSplit }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.Cipher == nil {
+		return errors.New("shared cipher is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.broadcastOp = d.BroadcastOp

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -53,8 +54,8 @@ type Config struct {
 
 	// Encryption at rest (firewall credentials + backup files).
 	EncryptionKey []byte
-	// SSHKnownHostsFile is an OpenSSH known_hosts file whose fingerprints are
-	// verified for every FortiGate SSH/SCP connection.
+	// SSHKnownHostsFile is the application-managed OpenSSH known_hosts file used
+	// for persistent trust-on-first-use verification.
 	SSHKnownHostsFile string
 
 	// SCP / backup defaults
@@ -256,6 +257,9 @@ func Load(logger *slog.Logger) *Config {
 	}
 	if c.PGMaxConns < 1 {
 		c.PGMaxConns = 1
+	}
+	if c.SSHKnownHostsFile == "" {
+		c.SSHKnownHostsFile = filepath.Join(c.DataDir, "ssh_known_hosts")
 	}
 	return c
 }

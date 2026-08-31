@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // sseHub fans out firewall status changes to connected Server-Sent-Events
@@ -74,6 +76,13 @@ func (h *sseHub) broadcast(kind string, fwID int, status string) {
 
 // handleEvents streams status changes to the browser as SSE.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	// The server-wide WriteTimeout is appropriate for finite responses but
+	// would terminate an otherwise healthy idle SSE stream. A zero deadline
+	// disables it for this route only.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		s.logger.Debug("failed to clear SSE write deadline", "err", err)
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)

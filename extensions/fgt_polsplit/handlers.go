@@ -16,7 +16,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
@@ -113,14 +112,7 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content str
 		e.logger.Error("polsplit: failed to read backup file", "path", diskPath, "err", err)
 		return "", "", ts, errors.New("failed to read backup file from disk")
 	}
-	cipher := e.cipher
-	if cipher == nil { // unit-test compatibility; production always injects the strict shared cipher
-		cipher, err = crypto.New(e.cfg.EncryptionKey)
-		if err != nil {
-			return "", "", ts, errors.New("failed to init cipher")
-		}
-	}
-	plain, err := cipher.Decrypt(encData)
+	plain, err := e.cipher.Decrypt(encData)
 	if err != nil {
 		e.logger.Error("polsplit: failed to decrypt backup", "path", diskPath, "err", err)
 		return "", "", ts, errors.New("failed to decrypt backup")

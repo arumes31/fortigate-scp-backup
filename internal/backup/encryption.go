@@ -27,7 +27,7 @@ func MigrateEncryptionAtRest(root string, cipher *crypto.Cipher) (int, error) {
 			return fmt.Errorf("read backup %q: %w", path, err)
 		}
 		if crypto.HasHeader(data) {
-			if _, err := cipher.Decrypt(data); err != nil {
+			if err := cipher.ValidateHeader(data); err != nil {
 				return fmt.Errorf("verify encrypted backup %q: %w", path, err)
 			}
 			return nil
