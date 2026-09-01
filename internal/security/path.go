@@ -15,7 +15,7 @@ func JoinWithin(root, relative string) (string, error) {
 		return "", errors.New("path is empty")
 	}
 	native := filepath.FromSlash(relative)
-	if filepath.IsAbs(native) || filepath.VolumeName(native) != "" ||
+	if !filepath.IsLocal(native) || filepath.IsAbs(native) || filepath.VolumeName(native) != "" ||
 		strings.HasPrefix(relative, "/") || strings.HasPrefix(relative, `\`) ||
 		hasWindowsVolumePrefix(relative) {
 		return "", errors.New("absolute path is not allowed")
