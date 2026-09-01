@@ -32,6 +32,7 @@ type Service struct {
 	cfg             *config.Config
 	cipher          *crypto.Cipher
 	encrypt         func([]byte) ([]byte, error)
+	replaceFile     func(string, []byte) error
 	logger          *slog.Logger
 	hostKeyCallback ssh.HostKeyCallback
 
@@ -110,12 +111,13 @@ func New(store *database.Store, m *mailer.Mailer, cfg *config.Config, cipher *cr
 		n = 1
 	}
 	return &Service{
-		store:   store,
-		mailer:  m,
-		cfg:     cfg,
-		cipher:  cipher,
-		encrypt: cipher.Encrypt,
-		logger:  logger,
+		store:       store,
+		mailer:      m,
+		cfg:         cfg,
+		cipher:      cipher,
+		encrypt:     cipher.Encrypt,
+		replaceFile: replaceFileAtomic,
+		logger:      logger,
 		hostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return fmt.Errorf("SSH host key verification is not configured for %s", hostname)
 		},

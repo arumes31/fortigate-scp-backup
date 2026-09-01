@@ -212,7 +212,8 @@ func (s *Service) finalizeFile(localPath string) (int64, string, error) {
 		s.removePlaintext(localPath)
 		return 0, "", errors.New("backup encryption requires an enabled cipher")
 	}
-	if err := replaceFileAtomic(localPath, enc); err != nil {
+	if err := s.replaceFile(localPath, enc); err != nil {
+		s.removePlaintext(localPath)
 		return 0, "", fmt.Errorf("write encrypted backup: %w", err)
 	}
 	return size, checksum, nil

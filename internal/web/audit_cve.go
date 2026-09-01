@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -88,19 +89,29 @@ func seedCVECacheIfEmpty(db *sql.DB) {
 	}
 }
 
-// loadCVEDefs returns the best available CVE dataset: live (NVD+KEV) rows
-// when a refresh has ever succeeded, otherwise the offline fallback seed.
+// loadCVEDefs combines live (NVD+KEV) rows with the offline fallback seed,
+// preferring live definitions when the same CVE exists in both datasets.
 func loadCVEDefs(db *sql.DB) []cveDef {
 	if db == nil {
 		return cveFallbackDefs
 	}
-	if defs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'live' ORDER BY id"); len(defs) > 0 {
-		return defs
+	liveDefs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'live' ORDER BY id")
+	byID := make(map[string]cveDef, len(cveFallbackDefs)+len(liveDefs))
+	// A live refresh promotes overlapping seed rows because cve_cache is keyed
+	// by ID. Keep the compiled seed as the canonical fallback so a later refresh
+	// that omits that ID cannot remove its offline definition.
+	for _, def := range cveFallbackDefs {
+		byID[def.id] = def
 	}
-	if defs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'fallback-seed' ORDER BY id"); len(defs) > 0 {
-		return defs
+	for _, def := range liveDefs {
+		byID[def.id] = def
 	}
-	return cveFallbackDefs
+	defs := make([]cveDef, 0, len(byID))
+	for _, def := range byID {
+		defs = append(defs, def)
+	}
+	sort.Slice(defs, func(i, j int) bool { return defs[i].id < defs[j].id })
+	return defs
 }
 
 func queryCVEDefs(db *sql.DB, query string) []cveDef {

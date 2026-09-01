@@ -140,6 +140,52 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	}
 }
 
+func TestDashboardVDOMsReportsAllDistinctOmittedVDOMs(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	events := make([]Event, 0, dashboardVDOMLimit+4)
+	for index := 0; index < dashboardVDOMLimit+3; index++ {
+		event := testEvent(
+			1,
+			"fw-a",
+			"alice",
+			fmt.Sprintf("message-%02d", index),
+			base.Add(time.Duration(index)*time.Second),
+		)
+		event.VDOM = fmt.Sprintf("vdom-%02d", index)
+		event.SemanticHash = semanticHash(event)
+		events = append(events, event)
+	}
+	duplicate := testEvent(
+		1,
+		"fw-a",
+		"alice",
+		"duplicate-vdom",
+		base.Add(time.Duration(dashboardVDOMLimit+3)*time.Second),
+	)
+	duplicate.VDOM = "vdom-00"
+	duplicate.SemanticHash = semanticHash(duplicate)
+	events = append(events, duplicate)
+
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(time.Minute),
+		Events:  events,
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	vdoms, omitted, err := s.dashboardVDOMs(context.Background(), chainIDForUser(t, s, "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vdoms) != dashboardVDOMLimit {
+		t.Fatalf("visible VDOM count = %d, want %d", len(vdoms), dashboardVDOMLimit)
+	}
+	if omitted != 3 {
+		t.Fatalf("omitted distinct VDOM count = %d, want 3", omitted)
+	}
+}
+
 func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	s := newTestStore(t, base)

@@ -554,7 +554,7 @@ func (s *Server) fetchLicense(fw models.Firewall) {
 		s.logger.Error("license fetch: insights DB unavailable", "err", err)
 		return
 	}
-	out, err := sshRunCommands(fw, s.hostKeyCallback, []string{
+	out, err := sshRunCommands(fw, s.hostKeyCallbackForSSH(), []string{
 		"get system status",
 		"diagnose autoupdate versions",
 		"diagnose switch-controller switch-info status",

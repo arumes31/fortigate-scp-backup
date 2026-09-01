@@ -481,7 +481,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 }
 
 func (s *store) dashboardVDOMs(ctx context.Context, chainID string) ([]string, int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT vdom FROM events
+	rows, err := s.db.QueryContext(ctx, `SELECT vdom, COUNT(*) OVER () FROM events
 		WHERE chain_id = ? AND vdom != '' GROUP BY vdom ORDER BY vdom LIMIT ?`,
 		chainID, dashboardVDOMLimit+1)
 	if err != nil {
@@ -489,9 +489,10 @@ func (s *store) dashboardVDOMs(ctx context.Context, chainID string) ([]string, i
 	}
 	defer func() { _ = rows.Close() }()
 	vdoms := make([]string, 0, dashboardVDOMLimit)
+	distinctCount := 0
 	for rows.Next() {
 		var vdom string
-		if err := rows.Scan(&vdom); err != nil {
+		if err := rows.Scan(&vdom, &distinctCount); err != nil {
 			return nil, 0, fmt.Errorf("scan conftail dashboard VDOM: %w", err)
 		}
 		vdoms = append(vdoms, vdom)
@@ -502,7 +503,7 @@ func (s *store) dashboardVDOMs(ctx context.Context, chainID string) ([]string, i
 	omitted := 0
 	if len(vdoms) > dashboardVDOMLimit {
 		vdoms = vdoms[:dashboardVDOMLimit]
-		omitted = 1
+		omitted = distinctCount - len(vdoms)
 	}
 	return vdoms, omitted, nil
 }

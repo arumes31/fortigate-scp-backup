@@ -80,6 +80,7 @@ type Server struct {
 	ipLimiter       *loginLimiter
 	hub             *sseHub
 	logger          *slog.Logger
+	hostKeyMu       sync.RWMutex
 	hostKeyCallback ssh.HostKeyCallback
 	hostKeyManager  *sshhostkey.Manager
 
@@ -121,6 +122,8 @@ type Server struct {
 // SetHostKeyCallback configures the verified host-key policy used by live SSH
 // collectors. It must be called before a collection is started.
 func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
+	s.hostKeyMu.Lock()
+	defer s.hostKeyMu.Unlock()
 	s.hostKeyCallback = callback
 }
 
@@ -129,8 +132,14 @@ func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
 func (s *Server) SetHostKeyManager(manager *sshhostkey.Manager) {
 	s.hostKeyManager = manager
 	if manager != nil {
-		s.hostKeyCallback = manager.Callback()
+		s.SetHostKeyCallback(manager.Callback())
 	}
+}
+
+func (s *Server) hostKeyCallbackForSSH() ssh.HostKeyCallback {
+	s.hostKeyMu.RLock()
+	defer s.hostKeyMu.RUnlock()
+	return s.hostKeyCallback
 }
 
 type pageTmpl struct {

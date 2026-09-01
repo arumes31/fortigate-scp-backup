@@ -43,9 +43,47 @@ func TestLoadCVEDefsUsesDeterministicIDOrder(t *testing.T) {
 	}
 
 	defs := loadCVEDefs(db)
-	if len(defs) != 2 || defs[0].id != "CVE-2099-0001" || defs[1].id != "CVE-2099-0002" {
-		t.Fatalf("CVE order = %+v, want ascending stable IDs", defs)
+	for index := 1; index < len(defs); index++ {
+		if defs[index-1].id >= defs[index].id {
+			t.Fatalf("CVE order = %+v, want ascending stable IDs", defs)
+		}
 	}
+}
+
+func TestLoadCVEDefsRetainsFallbackAcrossLiveRefreshes(t *testing.T) {
+	db := openCVETestDB(t)
+	seedCVECacheIfEmpty(db)
+	fallback := cveFallbackDefs[0]
+	live := fallback
+	live.summaryEN = "live definition"
+	if err := refreshCVECacheWithFetcher(t.Context(), db, "", func(context.Context, string) ([]cveDef, error) {
+		return []cveDef{live}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCVEDef(t, loadCVEDefs(db), fallback.id); got.summaryEN != live.summaryEN {
+		t.Fatalf("loaded summary = %q, want live summary %q", got.summaryEN, live.summaryEN)
+	}
+
+	if err := refreshCVECacheWithFetcher(t.Context(), db, "", func(context.Context, string) ([]cveDef, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCVEDef(t, loadCVEDefs(db), fallback.id); got.summaryEN != fallback.summaryEN {
+		t.Fatalf("loaded summary = %q, want restored fallback summary %q", got.summaryEN, fallback.summaryEN)
+	}
+}
+
+func findCVEDef(t *testing.T, defs []cveDef, id string) cveDef {
+	t.Helper()
+	for _, def := range defs {
+		if def.id == id {
+			return def
+		}
+	}
+	t.Fatalf("CVE %q not found in %+v", id, defs)
+	return cveDef{}
 }
 
 func TestRefreshCVECachePromotesExistingFallbackIDToLive(t *testing.T) {

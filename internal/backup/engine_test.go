@@ -70,6 +70,25 @@ func TestFinalizeFileRemovesPlaintextWhenEncryptionFails(t *testing.T) {
 	}
 }
 
+func TestFinalizeFileRemovesPlaintextWhenAtomicReplaceFails(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	p := filepath.Join(t.TempDir(), "c.conf")
+	if err := os.WriteFile(p, []byte("secret config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("atomic replacement failed")
+	s.replaceFile = func(string, []byte) error { return wantErr }
+
+	_, _, err := s.finalizeFile(p)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("finalizeFile() error = %v, want original replacement error", err)
+	}
+	if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plaintext backup still exists after replacement failure: %v", statErr)
+	}
+}
+
 func TestFinalizeFileEncrypts(t *testing.T) {
 	key := make([]byte, 32)
 	s := testService(t, key)
