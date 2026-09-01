@@ -75,6 +75,7 @@ graph TD
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
   - **Brute-force lockout**: Per-IP + username rate limiting with a configurable lockout window.
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
+- 🧾 **Configuration Change Sessions**: The optional `fgt_conftail` extension groups Graylog configuration events by registered firewall and exact administrator, then opens one Hookwise ticket after that administrator has stopped editing the firewall.
 - 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, a **Graylog logging-issues** card (VPN devices whose logging is offline / errored / unconfigured, surfaced from the FGT ADM VPN Config module), a **blocked switch-ports** card (today's STP/BPDU/loop-/root-guard blocks across all firewalls, narrowed to the current calendar day and cleared automatically once a port recovers), with per-port **Check** / **Check All** buttons to re-verify live over SSH on demand (requires `FGT_DIAG_SSH_ENABLED`), and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
 - 🔍 **Security Auditing & Insights**:
@@ -217,7 +218,11 @@ Use a release image by immutable digest (shown on the package/release page):
 docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md). Before starting the stack, configure a trusted HTTPS reverse proxy on the same host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately bound to loopback and is not intended for direct client access.
+Create the six Compose secret files and apply the Linux `0:65532` / `0440`
+ownership and mode documented in [`secrets/README.md`](secrets/README.md).
+Before starting the stack, configure a trusted HTTPS reverse proxy on the same
+host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately
+bound to loopback and is not intended for direct client access.
 
 On Linux, prepare the application bind mounts for the container's non-root UID/GID `65532:65532`. The recursive `chown` also repairs files from an existing installation:
 
@@ -248,7 +253,7 @@ Published tags remain convenient discovery aliases, but deployments should recor
 ### Option 2 — Build and run locally
 
 [`docker-compose.yml`](docker-compose.yml) compiles the static binary inside a multi-stage Docker build and starts it alongside PostgreSQL:
-Create the same six secret files and configure the same-host HTTPS reverse proxy described in Option 1 before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
+Create the same six secret files, prepare `./backups` and `./data` for UID/GID `65532:65532` with the commands in Option 1, and configure the same-host HTTPS reverse proxy before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
 ```bash
 docker compose up -d
 ```
@@ -339,6 +344,26 @@ FortiSafe is configured entirely via environment variables.
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
 
+### Extension: FortiGate Configuration Change Tail (ConfTail)
+
+When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
+
+By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated, read-only operations page is available at `/fgt-conftail`.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_FGT_CONFTAIL` | `false` | Enable configuration-change collection, session tracking, and Hookwise ticket creation. |
+| `GRAYLOG_URL` | *(Required when enabled)* | Existing shared Graylog API endpoint. |
+| `GRAYLOG_TOKEN` / `GRAYLOG_TOKEN_FILE` | *(Required when enabled)* | Existing shared Graylog API access token. A non-empty direct value takes precedence over the file. |
+| `FGT_CONFTAIL_HOOKWISE_URL` | *(Required when enabled)* | Dedicated Hookwise webhook endpoint for creating configuration-change tickets. |
+| `FGT_CONFTAIL_HOOKWISE_TOKEN` / `FGT_CONFTAIL_HOOKWISE_TOKEN_FILE` | *(Required when enabled)* | Dedicated bearer token. A non-empty direct environment value wins over the `_FILE` fallback. |
+| `FGT_CONFTAIL_POLL_SECONDS` | `900` | Graylog polling cadence in seconds (15 minutes). |
+| `FGT_CONFTAIL_IDLE_SECONDS` | `1800` | Quiet period in seconds before sealing the current administrator + firewall session (30 minutes). |
+| `FGT_CONFTAIL_OVERLAP_SECONDS` | `3600` | Look-back overlap in seconds for late Graylog indexing; overlapping events are deduplicated. |
+| `FGT_CONFTAIL_RETENTION_DAYS` | `365` | Days to retain sealed, Hookwise-accepted history. `0` disables pruning; active or unaccepted work is never pruned. |
+| `FGT_CONFTAIL_TICKET_MAX_BYTES` | `60000` | Maximum UTF-8 byte length of the generated Hookwise ticket description. |
+| `FGT_CONFTAIL_GRAYLOG_QUERY` | `type:event AND subtype:system AND (logid:0100044544 OR logid:0100044545 OR logid:0100044546 OR logid:0100044547)` | Base Graylog query override. FortiSafe adds bounded source filters for registered firewall/HA aliases. |
+
 ### Security Auditing (Live CVE Database)
 
 The audit page's CVE correlation is backed by a live dataset (NVD CPE search + CISA Known Exploited Vulnerabilities), cached in SQLite and refreshed on a schedule and/or on demand via the audit page's "Refresh now" button (which always works regardless of `CVE_AUTOUPDATE`). Until the first live refresh succeeds, a small bundled offline list is used instead.
@@ -416,6 +441,15 @@ An optional module (`EXT_ADM_VPN_CONF=true`) for managing customer-specific VPN 
 * **Public status DSV endpoint** — `/fgt-adm-vpn-conf/graylog_dsv` serves raw, unauthenticated status data (`Firewallname;Remote_IP;Status`) for external metrics collectors.
 * **Graylog integration** — checks the Graylog API to assert status. A firewall is `online` when logs are found within `GRAYLOG_SEARCH_TIMEFRAME` (default 24 h).
 * **HookWise alerting** — sends HTTP webhooks on transition states (`online` ↔ `offline`).
+
+### FortiGate Configuration Change Tail (ConfTail)
+
+An optional module (`EXT_FGT_CONFTAIL=true`) that turns FortiGate configuration logs into reviewable, create-only Hookwise tickets.
+
+* **Per-administrator sessions** — orders changes into independent timelines per registered firewall and exact administrator, including HA member normalization.
+* **No silent loss** — safely correlates missing users when possible and otherwise creates a visible `[unattributed]` session.
+* **Durable handoff** — seals a session after its configured quiet period, redacts sensitive values, and retries the same immutable payload until Hookwise accepts it.
+* **Read-only visibility** — `/fgt-conftail` shows poll, source coverage, active/history, and delivery state to authenticated users; ticket lifecycle actions remain in Hookwise/ConnectWise.
 
 ### FortiGate Policy Generator (ConfGen)
 

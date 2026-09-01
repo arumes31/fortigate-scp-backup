@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -81,6 +82,17 @@ type Config struct {
 	GraylogSearchTimeframe string
 	HookwiseURL            string
 	HookwiseToken          string
+
+	// Extension: fgt_conftail (Graylog configuration-change sessions to Hookwise)
+	ExtFgtConfTail            bool
+	FgtConfTailHookwiseURL    string
+	FgtConfTailHookwiseToken  string
+	FgtConfTailPollSeconds    int
+	FgtConfTailIdleSeconds    int
+	FgtConfTailOverlapSeconds int
+	FgtConfTailRetentionDays  int
+	FgtConfTailTicketMaxBytes int
+	FgtConfTailGraylogQuery   string
 
 	// Extension: graylog_device_data (switch client inventory for the topology)
 	ExtGraylogDeviceData  bool
@@ -204,6 +216,17 @@ func Load(logger *slog.Logger) *Config {
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
 		HookwiseToken:          secretEnv("HOOKWISE_TOKEN", logger),
 
+		ExtFgtConfTail:            boolenv("EXT_FGT_CONFTAIL", false),
+		FgtConfTailHookwiseURL:    os.Getenv("FGT_CONFTAIL_HOOKWISE_URL"),
+		FgtConfTailHookwiseToken:  secretEnv("FGT_CONFTAIL_HOOKWISE_TOKEN", logger),
+		FgtConfTailPollSeconds:    intenv("FGT_CONFTAIL_POLL_SECONDS", 900),
+		FgtConfTailIdleSeconds:    intenv("FGT_CONFTAIL_IDLE_SECONDS", 1800),
+		FgtConfTailOverlapSeconds: intenv("FGT_CONFTAIL_OVERLAP_SECONDS", 3600),
+		FgtConfTailRetentionDays:  intenv("FGT_CONFTAIL_RETENTION_DAYS", 365),
+		FgtConfTailTicketMaxBytes: intenv("FGT_CONFTAIL_TICKET_MAX_BYTES", 60000),
+		FgtConfTailGraylogQuery: getenv("FGT_CONFTAIL_GRAYLOG_QUERY", `type:event AND subtype:system AND (`+
+			`logid:0100044544 OR logid:0100044545 OR logid:0100044546 OR logid:0100044547)`),
+
 		ExtGraylogDeviceData: boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
 		GraylogDeviceQuery:   getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
 		GraylogStpQuery:      getenv("GRAYLOG_STP_QUERY", `source:"%s" AND subtype:"switch-controller" AND (logdesc:"FortiSwitch spanning Tree" OR logdesc:"FortiSwitch port status" OR logdesc:"FortiSwitch link" OR logdesc:"FortiSwitch switch" OR msg:bpdu OR msg:"loop guard" OR msg:"loop-guard" OR msg:"root guard" OR msg:"root-guard" OR msg:"status up" OR msg:"status down")`),
@@ -292,7 +315,47 @@ func (c *Config) ValidateRuntime() error {
 	if c.SCPTimeout < 5 || c.SCPTimeout > 3600 {
 		errs = append(errs, errors.New("SCP_TIMEOUT must be between 5 and 3600 seconds"))
 	}
+	if c.ExtFgtConfTail {
+		if !validHTTPURL(c.GraylogURL) {
+			errs = append(errs, errors.New("GRAYLOG_URL must be an absolute HTTP(S) URL when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.GraylogToken == "" {
+			errs = append(errs, errors.New("GRAYLOG_TOKEN or GRAYLOG_TOKEN_FILE is required when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if !validHTTPURL(c.FgtConfTailHookwiseURL) {
+			errs = append(errs, errors.New("FGT_CONFTAIL_HOOKWISE_URL must be an absolute HTTP(S) URL when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.FgtConfTailHookwiseToken == "" {
+			errs = append(errs, errors.New("FGT_CONFTAIL_HOOKWISE_TOKEN or FGT_CONFTAIL_HOOKWISE_TOKEN_FILE is required when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.FgtConfTailPollSeconds < 60 || c.FgtConfTailPollSeconds > 86400 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_POLL_SECONDS must be between 60 and 86400"))
+		}
+		if c.FgtConfTailIdleSeconds < 60 || c.FgtConfTailIdleSeconds > 604800 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_IDLE_SECONDS must be between 60 and 604800"))
+		}
+		if c.FgtConfTailOverlapSeconds < 60 || c.FgtConfTailOverlapSeconds > 2592000 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_OVERLAP_SECONDS must be between 60 and 2592000"))
+		}
+		if c.FgtConfTailRetentionDays < 0 || c.FgtConfTailRetentionDays > 36500 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_RETENTION_DAYS must be between 0 and 36500"))
+		}
+		if c.FgtConfTailTicketMaxBytes < 1024 || c.FgtConfTailTicketMaxBytes > 1<<20 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_TICKET_MAX_BYTES must be between 1024 and 1048576"))
+		}
+		if strings.TrimSpace(c.FgtConfTailGraylogQuery) == "" {
+			errs = append(errs, errors.New("FGT_CONFTAIL_GRAYLOG_QUERY must not be empty"))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+func validHTTPURL(value string) bool {
+	u, err := url.ParseRequestURI(value)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
 }
 
 func validRemotePath(value string) bool {

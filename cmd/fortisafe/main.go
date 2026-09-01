@@ -33,6 +33,7 @@ import (
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confconv"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
+	fgtconftail "github.com/arumes31/fortigate-scp-backup/extensions/fgt_conftail"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_polsplit"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
@@ -60,7 +61,8 @@ func main() {
 		"scp_timeout", cfg.SCPTimeout,
 		"port", cfg.Port)
 
-	ctx := context.Background()
+	ctx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	// Bound all startup database work (connect+retry, schema init, migrations,
 	// schedule load) so a slow or unreachable database cannot block boot forever.
@@ -169,12 +171,15 @@ func main() {
 	registry.Register(fgt_confgen.New(cfg, logger))
 	registry.Register(fgt_polsplit.New(cfg, logger))
 	registry.Register(fgt_confconv.New(cfg, logger))
+	registry.Register(fgtconftail.New(cfg, logger))
 	if err := registry.MountEnabled(router, extension.Deps{
+		Context:       ctx,
 		DB:            store.Pool(),
 		LogActivity:   store.LogActivity,
 		LoginRequired: sess.LoginRequired,
 		CurrentUser:   func(r *http.Request) string { return sess.User(r).Username },
 		BroadcastOp:   srv.BroadcastOp,
+		Schedule:      sched.Schedule,
 		Logger:        logger,
 		TZ:            cfg.TZ,
 		DataDir:       cfg.DataDir,
@@ -215,6 +220,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	logger.Info("shutting down")
+	cancelApp()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

@@ -58,6 +58,7 @@ type BaseData struct {
 	ExtFgtConfGenEnabled  bool
 	ExtFgtPolSplitEnabled bool
 	ExtFgtConfConvEnabled bool
+	ExtFgtConfTailEnabled bool
 	IsRadius              bool   // RADIUS users cannot change their password locally
 	Lang                  string // UI language: "en" (default) or "de"
 	Active                string // nav key: firewalls|search|activity|admvpn|password
@@ -318,6 +319,7 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 		ExtFgtConfGenEnabled:  s.cfg.ExtFgtConfGen,
 		ExtFgtPolSplitEnabled: s.cfg.ExtFgtPolSplit,
 		ExtFgtConfConvEnabled: s.cfg.ExtFgtConfConv,
+		ExtFgtConfTailEnabled: s.cfg.ExtFgtConfTail,
 		IsRadius:              d.IsRadiusUser,
 		Lang:                  langFromRequest(r),
 		Active:                active,

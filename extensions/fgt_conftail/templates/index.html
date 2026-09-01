@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration Change Tail · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav" aria-label="Primary navigation">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/search">Search</a>
+            <a href="/audit">Audit</a>
+            <a href="/topology">Topology</a>
+            <a href="/ipam">IPAM</a>
+            <a href="/licenses">Licenses</a>
+            <a href="/activity_log">Act_Log</a>
+            {{if .Base.ExtAdmVPNEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
+            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
+            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
+            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
+            <a href="/fgt-conftail/" class="active" aria-current="page">Conf_Tail</a>
+        </nav>
+        <div class="sysinfo"><span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span></div>
+    </header>
+
+    <main>
+        <h1 class="page-title"><span class="accent-bar"></span>Configuration Change Tail</h1>
+        <p class="ct-intro">Read-only configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window.</p>
+
+        <section class="ct-metrics" aria-label="Configuration change health">
+            <article class="card ct-metric ct-health-{{.Health.State}}">
+                <span class="ct-label">Poll health</span>
+                <strong>{{.Health.Label}}</strong>
+                {{if .Health.Detail}}<span class="ct-detail no-caps">{{.Health.Detail}}</span>{{end}}
+            </article>
+            <article class="card ct-metric">
+                <span class="ct-label">Last poll start</span>
+                <strong>{{fmtTime .Dashboard.Poll.LastStartedAt}}</strong>
+                <span class="ct-detail">{{fmtDuration .Dashboard.Poll.LastDuration}} duration</span>
+            </article>
+            <article class="card ct-metric">
+                <span class="ct-label">Last success / failure</span>
+                <strong>{{fmtTime .Dashboard.Poll.LastSuccessAt}}</strong>
+                <span class="ct-detail">failure: {{fmtTime .Dashboard.Poll.LastFailureAt}}</span>
+            </article>
+            <article class="card ct-metric">
+                <span class="ct-label">Watermark</span>
+                <strong>{{fmtTime .Dashboard.Poll.Watermark}}</strong>
+                <span class="ct-detail">{{.Dashboard.Poll.LastPages}} page(s) · {{.Dashboard.Poll.LastFetched}} fetched · {{.Dashboard.Poll.LastInserted}} inserted</span>
+            </article>
+            <article class="card ct-metric">
+                <span class="ct-label">Next poll run</span>
+                <strong>{{fmtTime .NextPollRun}}</strong>
+                <span class="ct-detail">{{fmtDuration .Dashboard.Poll.LastDuration}} last duration</span>
+            </article>
+            <article class="card ct-metric">
+                <span class="ct-label">Sessions</span>
+                <strong>{{.Dashboard.Counts.Active}} active / {{.Dashboard.Counts.Sealed}} sealed</strong>
+                <span class="ct-detail">{{.Dashboard.Counts.Pending}} pending · {{.Dashboard.Counts.Retry}} retry · {{.Dashboard.Counts.Failed}} failed · {{.Dashboard.Counts.Accepted}} accepted</span>
+            </article>
+        </section>
+
+        <section class="card" aria-labelledby="ct-coverage-title">
+            <div class="card-header">
+                <h2 id="ct-coverage-title">Graylog source coverage</h2>
+                <span class="ct-count">{{len .Coverage}} registered firewall(s)</span>
+            </div>
+            {{if .Warnings}}
+            <div class="ct-warning" role="status">
+                <strong>Coverage warnings</strong>
+                <ul>{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>
+            </div>
+            {{end}}
+            {{if .Coverage}}
+            <div class="ct-table-wrap">
+                <table>
+                    <thead><tr><th>Firewall</th><th>Accepted source aliases</th><th>Coverage state</th></tr></thead>
+                    <tbody>
+                    {{range .Coverage}}
+                    <tr>
+                        <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
+                        <td class="no-caps">{{if .Aliases}}{{range $index, $alias := .Aliases}}{{if $index}}, {{end}}{{$alias}}{{end}}{{else}}—{{end}}</td>
+                        <td>{{if .Warnings}}<span class="pill ct-state-failed">warning</span><ul class="ct-inline-warnings">{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>{{else}}<span class="pill ct-state-accepted">covered</span>{{end}}</td>
+                    </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <p class="empty">Source catalog has not completed its first refresh.</p>
+            {{end}}
+        </section>
+
+        <section class="card" aria-labelledby="ct-filter-title">
+            <h2 id="ct-filter-title">Timeline filters</h2>
+            <form method="get" action="/fgt-conftail/" class="ct-filter" role="search">
+                <div class="field">
+                    <label for="ct-firewall">Firewall ID</label>
+                    <input id="ct-firewall" type="number" min="1" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls">
+                </div>
+                <div class="field">
+                    <label for="ct-user">Administrator contains</label>
+                    <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="All administrators">
+                </div>
+                <div class="field">
+                    <label for="ct-state">Session / delivery state</label>
+                    <select id="ct-state" name="state">
+                        <option value="all" {{if eq .Filters.State "all"}}selected{{end}}>All</option>
+                        <option value="active" {{if eq .Filters.State "active"}}selected{{end}}>Active sessions</option>
+                        <option value="sealed" {{if eq .Filters.State "sealed"}}selected{{end}}>Sealed sessions</option>
+                        <option value="pending" {{if eq .Filters.State "pending"}}selected{{end}}>Delivery pending</option>
+                        <option value="retry" {{if eq .Filters.State "retry"}}selected{{end}}>Delivery retry</option>
+                        <option value="failed" {{if eq .Filters.State "failed"}}selected{{end}}>Delivery failed</option>
+                        <option value="accepted" {{if eq .Filters.State "accepted"}}selected{{end}}>Delivery accepted</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="ct-from">Changed from (UTC)</label>
+                    <input id="ct-from" type="datetime-local" name="from" value="{{.Filters.From}}">
+                </div>
+                <div class="field">
+                    <label for="ct-to">Changed through (UTC)</label>
+                    <input id="ct-to" type="datetime-local" name="to" value="{{.Filters.To}}">
+                </div>
+                <div class="ct-filter-actions">
+                    <button class="btn btn-primary" type="submit">Apply filters</button>
+                    <a class="btn" href="/fgt-conftail/">Clear</a>
+                </div>
+            </form>
+        </section>
+
+        {{if or (eq .Filters.State "all") (eq .Filters.State "active")}}
+        <section class="card pad-0" aria-labelledby="ct-active-title">
+            <div class="card-header">
+                <h2 id="ct-active-title">Active change sessions</h2>
+                <span class="ct-count">{{.Dashboard.ActiveTotal}} matching</span>
+            </div>
+            {{if .Dashboard.Active}}
+            <div class="ct-table-wrap">
+                <table class="ct-chain-table">
+                    <thead><tr><th>Firewall</th><th>Administrator</th><th>VDOMs</th><th>First change</th><th>Last change</th><th>Seal eligible at</th><th>Changes</th><th>Flags</th></tr></thead>
+                    <tbody>{{range .Dashboard.Active}}{{template "chainRow" .}}{{end}}</tbody>
+                </table>
+            </div>
+            {{if .ActiveOmitted}}<p class="ct-omitted">{{.ActiveOmitted}} additional active session(s) are omitted by the safety limit. Narrow the filters to inspect them.</p>{{end}}
+            {{else}}<p class="empty">No active change sessions match these filters.</p>{{end}}
+        </section>
+        {{end}}
+
+        {{if ne .Filters.State "active"}}
+        <section class="card pad-0" aria-labelledby="ct-history-title">
+            <div class="card-header">
+                <h2 id="ct-history-title">Sealed session history</h2>
+                <span class="ct-count">{{.Dashboard.HistoryTotal}} matching · page {{.Filters.Page}} / {{.Dashboard.TotalPages}}</span>
+            </div>
+            {{if .Dashboard.History}}
+            <div class="ct-table-wrap">
+                <table class="ct-chain-table ct-history-table">
+                    <thead><tr><th>Firewall</th><th>Administrator</th><th>First change</th><th>Last change</th><th>Changes</th><th>Delivery</th><th>Attempts</th><th>Next / accepted</th><th>Request ID / error</th></tr></thead>
+                    <tbody>{{range .Dashboard.History}}{{template "historyRow" .}}{{end}}</tbody>
+                </table>
+            </div>
+            {{else}}<p class="empty">No sealed change sessions match these filters.</p>{{end}}
+            <nav class="ct-pagination" aria-label="History pagination">
+                {{if .PrevURL}}<a class="btn" rel="prev" href="{{.PrevURL}}">Previous</a>{{end}}
+                {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
+            </nav>
+        </section>
+        {{end}}
+    </main>
+
+    <footer class="sysfooter"><div>EOF // FGT_CONFTAIL // READ_ONLY</div></footer>
+</div>
+</body>
+</html>
+
+{{define "chainRow"}}
+<tr>
+    <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
+    <td class="no-caps">{{.User}}</td>
+    <td class="no-caps">{{if .VDOMs}}{{range $index, $vdom := .VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .VDOMsOmitted}}, …{{end}}{{else}}—{{end}}</td>
+    <td>{{fmtTime .FirstEventAt}}</td>
+    <td>{{fmtTime .LastEventAt}}</td>
+    <td>{{fmtTime .QuietEligibleAt}}</td>
+    <td>{{.EventCount}}</td>
+    <td>{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+</tr>
+<tr class="ct-timeline-row"><td colspan="8">{{template "timelineLink" .}}</td></tr>
+{{end}}
+
+{{define "historyRow"}}
+<tr>
+    <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
+    <td class="no-caps">{{.User}}{{if .Late}} <span class="pill ct-state-retry">late</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+    <td>{{fmtTime .FirstEventAt}}</td>
+    <td>{{fmtTime .LastEventAt}}</td>
+    <td>{{.EventCount}}</td>
+    <td><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{.DeliveryState}}{{else}}unknown{{end}}</span></td>
+    <td>{{.DeliveryAttempts}}</td>
+    <td>{{if eq .DeliveryState "accepted"}}{{fmtTime .AcceptedAt}}{{else}}{{fmtTime .NextAttemptAt}}{{end}}</td>
+    <td class="no-caps">{{if .RequestID}}{{.RequestID}}{{else if .LastError}}{{.LastError}}{{else}}—{{end}}</td>
+</tr>
+<tr class="ct-timeline-row"><td colspan="9">{{template "timelineLink" .}}</td></tr>
+{{end}}
+
+{{define "timelineLink"}}
+<p class="ct-complete-link"><a href="/fgt-conftail/chain/{{.ID}}">Open complete redacted timeline ({{.EventCount}} change{{if ne .EventCount 1}}s{{end}})</a></p>
+{{end}}

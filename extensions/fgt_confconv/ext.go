@@ -107,6 +107,7 @@ type baseData struct {
 	ExtConfigGenEnabled bool
 	ExtPolSplitEnabled  bool
 	ExtConfConvEnabled  bool
+	ExtConfTailEnabled  bool
 	Active              string
 }
 
@@ -122,6 +123,7 @@ func (e *Extension) baseData(r *http.Request, title, active string) baseData {
 		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
 		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
 		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
+		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
 		Active:              active,
 	}
 }

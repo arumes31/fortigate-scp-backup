@@ -67,6 +67,22 @@ services:
       - "HOOKWISE_URL=${HOOKWISE_URL:-}"
       - "HOOKWISE_TOKEN=${HOOKWISE_TOKEN:-}"
 
+      # --- Extension: FortiGate Configuration Change Tail (Optional) ---
+      # Uses the shared GRAYLOG_URL/GRAYLOG_TOKEN above and a dedicated,
+      # create-only Hookwise endpoint that returns 202 + queued/request_id.
+      - "EXT_FGT_CONFTAIL=${EXT_FGT_CONFTAIL:-false}"
+      - "FGT_CONFTAIL_HOOKWISE_URL=${FGT_CONFTAIL_HOOKWISE_URL:-}"
+      - "FGT_CONFTAIL_HOOKWISE_TOKEN=${FGT_CONFTAIL_HOOKWISE_TOKEN:-}"
+      # Optional _FILE fallback; a non-empty direct token above wins.
+      # - "FGT_CONFTAIL_HOOKWISE_TOKEN_FILE=/run/secrets/fgt_conftail_hookwise_token"
+      - "FGT_CONFTAIL_POLL_SECONDS=${FGT_CONFTAIL_POLL_SECONDS:-900}"
+      - "FGT_CONFTAIL_IDLE_SECONDS=${FGT_CONFTAIL_IDLE_SECONDS:-1800}"
+      - "FGT_CONFTAIL_OVERLAP_SECONDS=${FGT_CONFTAIL_OVERLAP_SECONDS:-3600}"
+      - "FGT_CONFTAIL_RETENTION_DAYS=${FGT_CONFTAIL_RETENTION_DAYS:-365}"
+      - "FGT_CONFTAIL_TICKET_MAX_BYTES=${FGT_CONFTAIL_TICKET_MAX_BYTES:-60000}"
+      # Leave empty for the built-in FortiGate configuration-change query.
+      - "FGT_CONFTAIL_GRAYLOG_QUERY=${FGT_CONFTAIL_GRAYLOG_QUERY:-}"
+
       # --- Extension: Graylog Device Data (Optional) ---
       # Enables the device inventory for the topology page (switch client MAC/IP/VLAN).
       # Requires GRAYLOG_URL and GRAYLOG_TOKEN to be configured above.
@@ -138,6 +154,8 @@ services:
       - bootstrap_admin_password
       - totp_secret
       - radius_secret
+      # Uncomment with FGT_CONFTAIL_HOOKWISE_TOKEN_FILE above.
+      # - fgt_conftail_hookwise_token
     depends_on:
       fortisafe-db:
         condition: service_healthy
@@ -200,5 +218,8 @@ secrets:
     file: ./secrets/totp_secret
   radius_secret:
     file: ./secrets/radius_secret
+  # Optional fgt_conftail Hookwise token-file fallback.
+  # fgt_conftail_hookwise_token:
+  #   file: ./secrets/fgt_conftail_hookwise_token
 
 
