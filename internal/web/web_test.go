@@ -207,6 +207,66 @@ func TestHandleAcceptHostKeyApprovesOnlyDetectedReplacement(t *testing.T) {
 	}
 }
 
+func TestHandleAcceptHostKeyMapsNoPendingKeyToConflict(t *testing.T) {
+	manager, err := sshhostkey.New(filepath.Join(t.TempDir(), "known_hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t)
+	srv.store = fakeStore{firewalls: []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}}}
+	srv.SetHostKeyManager(manager)
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7", nil), "fwID", "7")
+	recorder := httptest.NewRecorder()
+
+	srv.handleAcceptHostKey(recorder, req)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+	if !strings.Contains(recorder.Body.String(), "no detected SSH key is awaiting acceptance") {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+}
+
+func TestHandleAcceptHostKeyMapsPersistenceFailureToServerError(t *testing.T) {
+	root := t.TempDir()
+	keyDir := filepath.Join(root, "keys")
+	knownHostsPath := filepath.Join(keyDir, "known_hosts")
+	manager, err := sshhostkey.New(knownHostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := "fw.example.com:22"
+	remote := webTestAddr("192.0.2.1:22")
+	if err := manager.Callback()(address, remote, webTestPublicKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Callback()(address, remote, webTestPublicKey(t)); err == nil {
+		t.Fatal("changed key unexpectedly accepted")
+	}
+	if err := os.Remove(knownHostsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := testServer(t)
+	srv.store = fakeStore{firewalls: []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}}}
+	srv.SetHostKeyManager(manager)
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7", nil), "fwID", "7")
+	recorder := httptest.NewRecorder()
+
+	srv.handleAcceptHostKey(recorder, req)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestUnauthenticatedRedirect(t *testing.T) {
 	srv := testServer(t)
 	rr := httptest.NewRecorder()

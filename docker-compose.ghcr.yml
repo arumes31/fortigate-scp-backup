@@ -1,9 +1,8 @@
 services:
   fortisafe-app:
     container_name: "fortisafe-app"
-    # Set FORTISAFE_IMAGE to a release digest, for example
-    # ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>.
-    image: "${FORTISAFE_IMAGE:?Set FORTISAFE_IMAGE to an immutable GHCR digest}"
+    # Set only the immutable release digest, for example sha256:<digest>.
+    image: "ghcr.io/arumes31/fortigate-scp-backup@${FORTISAFE_IMAGE_DIGEST:?Set FORTISAFE_IMAGE_DIGEST to an immutable sha256 digest}"
     environment:
       # --- General / Timezone Settings ---
       - "TZ=Europe/Vienna"
@@ -78,7 +77,8 @@ services:
       # --- Housekeeping ---
       - "ACTIVITY_LOG_RETENTION_DAYS=0" # 0 means keep logs indefinitely
     ports:
-      - "8521:8521/tcp"
+      # Loopback-only: place a trusted same-host HTTPS reverse proxy in front.
+      - "127.0.0.1:8521:8521/tcp"
     volumes:
       # Mount host directories to persist backups and configuration/SQLite db files:
       - "./backups:/app/backups"

@@ -185,9 +185,10 @@ func nvdSeverity(sets ...[]nvdCvssMetric) string {
 }
 
 // nvdCpeRange converts one cpeMatch's version bounds into the fixedPatch
-// representation getCVEs already understands. Only proper ranges (a start AND
-// an end bound within the same train) are converted; single exact-version
-// matches without range fields are skipped rather than approximated.
+// representation getCVEs already understands. End-only ranges derive their
+// train from the fixed-version bound; start-only ranges have no fixed version
+// and therefore mark that train as neverFixed. Exact-version matches without
+// range fields are skipped rather than approximated.
 func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 	startStr := m.VersionStartIncluding
 	if startStr == "" {
@@ -199,12 +200,19 @@ func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 		endStr = m.VersionEndIncluding
 		endIncluding = true
 	}
-	if startStr == "" || endStr == "" {
+	if startStr == "" && endStr == "" {
 		return cveRange{}, false
 	}
-	major, minor, _, ok := splitVersion(startStr)
+	trainVersion := startStr
+	if trainVersion == "" {
+		trainVersion = endStr
+	}
+	major, minor, _, ok := splitVersion(trainVersion)
 	if !ok {
 		return cveRange{}, false
+	}
+	if endStr == "" {
+		return cveRange{major: major, minor: minor, fixedPatch: neverFixed}, true
 	}
 	endMajor, endMinor, endPatch, ok2 := splitVersion(endStr)
 	if !ok2 || endMajor != major || endMinor != minor {

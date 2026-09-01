@@ -203,17 +203,25 @@ func (s *Service) finalizeFile(localPath string) (int64, string, error) {
 	checksum := hex.EncodeToString(sum[:])
 	size := int64(len(plain))
 
-	enc, err := s.cipher.Encrypt(plain)
+	enc, err := s.encrypt(plain)
 	if err != nil {
+		s.removePlaintext(localPath)
 		return 0, "", fmt.Errorf("encrypt backup: %w", err)
 	}
 	if !crypto.HasHeader(enc) {
+		s.removePlaintext(localPath)
 		return 0, "", errors.New("backup encryption requires an enabled cipher")
 	}
 	if err := replaceFileAtomic(localPath, enc); err != nil {
 		return 0, "", fmt.Errorf("write encrypted backup: %w", err)
 	}
 	return size, checksum, nil
+}
+
+func (s *Service) removePlaintext(path string) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logger.Warn("Failed to remove plaintext backup", "path", path, "err", err)
+	}
 }
 
 // recordSuccess inserts the backup row, prunes retention overflow, runs cleanup

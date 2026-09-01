@@ -3,11 +3,14 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
 
 // handleHealthz is a liveness probe.
@@ -84,7 +87,11 @@ func (s *Server) handleAcceptHostKey(w http.ResponseWriter, r *http.Request) {
 	accepted, err := s.hostKeyManager.Accept(host, port)
 	if err != nil {
 		s.logger.Warn("SSH host-key acceptance rejected", "fw_id", fwID, "err", err)
-		http.Error(w, "no detected SSH key is awaiting acceptance", http.StatusConflict)
+		if errors.Is(err, sshhostkey.ErrNoPendingKey) {
+			http.Error(w, "no detected SSH key is awaiting acceptance", http.StatusConflict)
+			return
+		}
+		http.Error(w, "failed to accept detected SSH key", http.StatusInternalServerError)
 		return
 	}
 	s.store.LogActivity(s.sess.User(r).Username, "Accept SSH Host Key",

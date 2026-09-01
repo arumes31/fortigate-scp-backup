@@ -652,6 +652,18 @@ function buildTree(data) {
     });
     const clientsOfAp = ap => devices.filter(dv =>
         dv.ap && (dv.ap === ap.name || dv.ap === ap.wtp_id));
+    const sameAPValue = (a, b) => a && b && String(a).toLowerCase() === String(b).toLowerCase();
+    function apMatchesDevice(dv, location, ap) {
+        // Wireless clients remain children of the AP. This only suppresses a
+        // wired inventory row that represents the AP itself.
+        if (dv.ap) return false;
+        return sameAPValue(dv.mac, location.board_mac) ||
+            sameAPValue(dv.ip, location.ip) ||
+            sameAPValue(dv.hostname, location.name) ||
+            sameAPValue(dv.hostname, location.serial) ||
+            sameAPValue(dv.hostname, ap.name) ||
+            sameAPValue(dv.hostname, ap.wtp_id);
+    }
     // apNode builds one FortiAP node (SSIDs + associated clients as children);
     // port is set when the AP is pinned to a switch port.
     function apNode(ap, port) {
@@ -668,6 +680,7 @@ function buildTree(data) {
         });
         return {
             name: ap.name || ap.wtp_id, kind: "ap", data: ap,
+            wiredPort: port || "",
             info: `FortiAP${ap.platform ? " " + ap.platform : ""}\n${tt("topo.serial")}: ${ap.wtp_id}` +
                 (ap.profile ? `\n${tt("topo.profile")}: ${ap.profile}` : "") +
                 (port ? `\n${tt("topo.ap_port")}: ${port}` : "") +
@@ -687,6 +700,9 @@ function buildTree(data) {
             if (a.name) apPinnedRefs.add(a.name);
             const ap = (data.aps || []).find(x => x.wtp_id === a.serial || (a.name && x.name === a.name))
                 || { wtp_id: a.serial, name: a.name };
+            devices.forEach(dv => {
+                if (apMatchesDevice(dv, a, ap)) assigned.add(dv);
+            });
             return apNode(ap, a.port);
         });
     }
@@ -841,6 +857,7 @@ function buildTree(data) {
 
     function switchNode(sw) {
         const ports = sw.ports || [];
+        const pinnedAPs = apNodesForSwitch(swName(sw));
         // Downstream switches detected via uplink interlinks nest first.
         const nested = sortSwitches(swKidsOf[swName(sw)] || [])
             .filter(k => topoFilters.edge || !isEdgeSwitch(k));
@@ -867,12 +884,18 @@ function buildTree(data) {
             if (dv.port) (byPort[dv.port] = byPort[dv.port] || []).push(dv);
             else rest.push(dv);
         });
+        const apsByPort = {};
+        pinnedAPs.forEach(ap => {
+            (apsByPort[ap.wiredPort] = apsByPort[ap.wiredPort] || []).push(ap);
+        });
         const portNum = name => { const m = /(\d+)/.exec(name || ""); return m ? Number(m[1]) : 1e9; };
-        const portEntries = Object.entries(byPort);
+        const portEntries = [...new Set([...Object.keys(byPort), ...Object.keys(apsByPort)])]
+            .map(port => [port, byPort[port] || []]);
         const portChildren = portEntries
             .sort((a, b) => portNum(a[0]) - portNum(b[0]) || (a[0] < b[0] ? -1 : 1))
             .map(([port, devs]) => {
                 const p = portCfg[port];
+                const portAPs = apsByPort[port] || [];
                 const nativeVlan = p && p.vlan ? String(p.vlan) : "";
                 // An 802.1x port holds clients on its native (onboarding) VLAN
                 // until they authenticate, then dynamically moves them to their
@@ -883,6 +906,10 @@ function buildTree(data) {
                 const col = vlan ? vlanColor(vlan) : null;
                 const mm = topoMultiMacIdx[swName(sw) + "|" + port];
                 const st = topoStpIdx[swName(sw) + "|" + port];
+                const endpointLabels = [];
+                if (devs.length) endpointLabels.push(`${devs.length} ${tt("topo.devices")}`);
+                if (portAPs.length) endpointLabels.push(`${portAPs.length} FortiAP`);
+                const endpointLabel = endpointLabels.join(" + ");
                 return {
                     name: port, kind: "port", data: { port, vlan, nativeVlan, ports: p ? [p] : [] },
                     info: `Port ${port}` +
@@ -891,11 +918,11 @@ function buildTree(data) {
                         (p && taggedVlans(p) ? `\n${tt("topo.tagged")}: ${taggedVlans(p)}` : "") +
                         (mm ? `\n⚠ ${mm} MACs — ${tt("topo.multi_mac")}` : "") +
                         (st && st.blocked ? `\n⃠ ${tt("topo.stp_blocked")}` : "") +
-                        `\n${devs.length} ${tt("topo.devices")}`,
-                    badge: (vlan ? "VLAN " + vlan + " · " : "") + devs.length + " " + tt("topo.devices"),
+                        `\n${endpointLabel}`,
+                    badge: (vlan ? "VLAN " + vlan + " · " : "") + endpointLabel,
                     strokeColor: col,
                     linkColor: col,
-                    children: devs.map(dv => { const n = deviceNode(dv); n.linkColor = col; return n; })
+                    children: [...devs.map(dv => { const n = deviceNode(dv); n.linkColor = col; return n; }), ...portAPs]
                 };
             });
         // Devices matched to the switch but with no port association.
@@ -951,7 +978,7 @@ function buildTree(data) {
             hasFault: fanFault || errPorts > 0,
             group: group,
             groupColor: groupColor(group),
-            children: [...nested.map(switchNode), ...children, ...apNodesForSwitch(swName(sw))]
+            children: [...nested.map(switchNode), ...children]
         };
     }
 

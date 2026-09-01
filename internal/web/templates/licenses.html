@@ -164,8 +164,14 @@
 (function () {
     var el = document.getElementById('licProgress');
     var wasRunning = false;
+    var retryDelay = 2000;
+    var POLL_RETRY_MAX_MS = 30000;
     function poll() {
-        fetch('/licenses/status').then(function (r) { return r.json(); }).then(function (d) {
+        fetch('/licenses/status').then(function (r) {
+            if (!r.ok) { throw new Error('http ' + r.status); }
+            return r.json();
+        }).then(function (d) {
+            retryDelay = 2000;
             if (d.running) {
                 wasRunning = true;
                 el.textContent = '⟳ ' + d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
@@ -175,7 +181,12 @@
             } else {
                 el.textContent = '';
             }
-        }).catch(function () {});
+        }).catch(function () {
+            if (wasRunning) {
+                setTimeout(poll, retryDelay);
+                retryDelay = Math.min(POLL_RETRY_MAX_MS, retryDelay * 2);
+            }
+        });
     }
     poll();
 })();

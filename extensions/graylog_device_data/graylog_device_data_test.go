@@ -850,7 +850,7 @@ func TestStoreLiveStpCheck_PreservesSinceOnReconfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t2 := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 7, 27, 11, 0, 0, 0, time.FixedZone("CEST", 2*60*60))
 	stillBlocked, err := e.storeLiveStpCheck(1, "SW1", "port16", "disabled", "discarding", "bpdu-guard", t2)
 	if err != nil {
 		t.Fatal(err)
@@ -868,6 +868,13 @@ func TestStoreLiveStpCheck_PreservesSinceOnReconfirm(t *testing.T) {
 	}
 	if got[0].LastChange != t1 {
 		t.Errorf("last_change = %q, want unchanged %q (a reconfirmation must not rewrite history)", got[0].LastChange, t1)
+	}
+	var updatedAt string
+	if err := db.QueryRow(`SELECT updated_at FROM stp_ports WHERE fw_id = 1 AND switch_name = 'SW1' AND port = 'port16'`).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if want := t2.UTC().Format(storageTimeLayout); updatedAt != want {
+		t.Errorf("updated_at = %q, want UTC %q", updatedAt, want)
 	}
 }
 

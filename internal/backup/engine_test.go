@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -44,6 +45,28 @@ func TestFinalizeFileRejectsDisabledEncryption(t *testing.T) {
 	}
 	if _, _, err := s.finalizeFile(p); err == nil {
 		t.Fatal("expected disabled encryption to be rejected")
+	}
+	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plaintext backup still exists after encryption rejection: %v", err)
+	}
+}
+
+func TestFinalizeFileRemovesPlaintextWhenEncryptionFails(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	p := filepath.Join(t.TempDir(), "c.conf")
+	if err := os.WriteFile(p, []byte("secret config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("random source failed")
+	s.encrypt = func([]byte) ([]byte, error) { return nil, wantErr }
+
+	_, _, err := s.finalizeFile(p)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("finalizeFile() error = %v, want original encryption error", err)
+	}
+	if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plaintext backup still exists after encryption failure: %v", statErr)
 	}
 }
 

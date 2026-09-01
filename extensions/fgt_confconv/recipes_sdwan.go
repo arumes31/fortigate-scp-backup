@@ -147,14 +147,12 @@ func (r sdwanRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []
 		cli = append(cli, CLIBlock{Recipe: r.Key(), Label: "Consolidate default routes onto the SD-WAN zone", Lines: routeCLI})
 	}
 
-	// Repoint policies from the individual interfaces to the zone. Unlike a
-	// FortiLink member port, an SD-WAN member keeps its own name/IP/role --
-	// SD-WAN membership is just a grouping on top of an unchanged interface --
-	// so VIPs/IPsec/DHCP/HA/etc. referencing it by name stay exactly as valid
-	// as before. Deliberately not running ScanReferences here: there is
-	// nothing for the operator to review.
+	// Repoint policies from the individual interfaces to the zone. References
+	// to the unchanged member interface remain valid, except that a VIP's
+	// physical extintf may no longer match an inbound policy moved to the zone.
 	touched := map[int]bool{}
 	for _, m := range opts.Members {
+		warnings = append(warnings, vipPolicyInterfaceWarnings(cfg, r.Key(), m, zoneName)...)
 		for _, id := range replaceInterfaceInPolicies(cfg, m, zoneName) {
 			touched[id] = true
 		}

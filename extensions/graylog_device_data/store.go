@@ -466,7 +466,7 @@ func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard str
 	// contract and every Graylog-sourced row); updated_at keeps the
 	// space-separated local layout the retention prune's lexicographic
 	// comparison against other rows relies on.
-	nowUpdatedAt := now.Format("2006-01-02 15:04:05")
+	nowUpdatedAt := now.UTC().Format(storageTimeLayout)
 	lastChange := now.UTC().Format(time.RFC3339)
 	if scanErr == nil && role == curRole && state == curState && guard == curGuard {
 		lastChange = curLastChange

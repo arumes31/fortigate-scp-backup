@@ -48,3 +48,63 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 		}
 	}
 }
+
+func TestProgressPollingRetriesTransientFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		wants []string
+	}{
+		{
+			name: "ipam.html",
+			wants: []string{
+				"var pollFailures = 0;",
+				"Math.min(POLL_RETRY_MAX_MS",
+				"pollTimer = setTimeout(poll, retryDelay);",
+			},
+		},
+		{
+			name: "licenses.html",
+			wants: []string{
+				"if (!r.ok) { throw new Error('http ' + r.status); }",
+				"if (wasRunning)",
+				"Math.min(POLL_RETRY_MAX_MS",
+				"setTimeout(poll, retryDelay);",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			blob, err := templatesFS.ReadFile("templates/" + test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(blob)
+			for _, want := range test.wants {
+				if !strings.Contains(body, want) {
+					t.Errorf("template missing polling safeguard %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestTopologyNestsPinnedAPsUnderWiredPorts(t *testing.T) {
+	blob, err := staticFS.ReadFile("static/topology.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(blob)
+	for _, want := range []string{
+		"function apMatchesDevice",
+		"wiredPort: port || \"\"",
+		"const pinnedAPs = apNodesForSwitch(swName(sw));",
+		"children: [...devs.map",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("topology script missing pinned-AP behavior %q", want)
+		}
+	}
+	if strings.Contains(body, "...apNodesForSwitch(swName(sw))") {
+		t.Error("pinned APs are still switch-level siblings instead of port children")
+	}
+}

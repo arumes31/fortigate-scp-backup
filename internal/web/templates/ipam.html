@@ -199,12 +199,15 @@
     }
 
     var pollTimer = null;
+    var pollFailures = 0;
+    var POLL_RETRY_MAX_MS = 30000;
     function poll() {
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         fetch('/ipam/data').then(function (r) {
             if (!r.ok) { throw new Error('http ' + r.status); }
             return r.json();
         }).then(function (d) {
+            pollFailures = 0;
             if (d.snapshot) { renderSnapshot(d.snapshot); }
             document.getElementById('ipamUpdated').textContent = d.computed_at
                 ? tt('ipam.last_updated') + ': ' + d.computed_at.replace('T', ' ').replace(/:\d\dZ?$/, '')
@@ -227,6 +230,9 @@
             }
         }).catch(function (err) {
             body.innerHTML = '<tr><td colspan="4" class="empty">' + esc(tt('ipam.error')) + ' (' + esc(err.message) + ')</td></tr>';
+            pollFailures++;
+            var retryDelay = Math.min(POLL_RETRY_MAX_MS, 2000 * Math.pow(2, pollFailures - 1));
+            pollTimer = setTimeout(poll, retryDelay);
         });
     }
 

@@ -5,6 +5,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -104,6 +105,16 @@ type Server struct {
 	// JS); begin() on each also coalesces concurrent sweeps.
 	licenseProgress sweepProgress
 	ipamProgress    sweepProgress
+
+	// CVE refreshes are coalesced across scheduled and manual triggers. The
+	// server-owned context lets Shutdown cancel and join a running refresh.
+	cveRefresh         func(context.Context, *sql.DB, string) error
+	cveRefreshMu       sync.Mutex
+	cveRefreshActive   bool
+	cveRefreshStopping bool
+	cveRefreshWG       sync.WaitGroup
+	cveRefreshCtx      context.Context
+	cveRefreshCancel   context.CancelFunc
 }
 
 // SetHostKeyCallback configures the verified host-key policy used by live SSH
@@ -133,15 +144,20 @@ func BackupJobID(fwID int) string { return fmt.Sprintf("backup_firewall_%d", fwI
 // New builds the Server and parses all templates.
 func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	backupSvc *backup.Service, sess *session.Manager, auth Authenticator, cipher *crypto.Cipher, logger *slog.Logger) (*Server, error) {
+	cveCtx, cveCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, store: store, sched: sched, backup: backupSvc,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
-		limiter:   newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		ipLimiter: newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		hub:       newSSEHub(),
-		warmSem:   make(chan struct{}, 2),
+		limiter:          newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		ipLimiter:        newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		hub:              newSSEHub(),
+		warmSem:          make(chan struct{}, 2),
+		cveRefresh:       refreshCVECache,
+		cveRefreshCtx:    cveCtx,
+		cveRefreshCancel: cveCancel,
 	}
 	if err := s.parseTemplates(); err != nil {
+		cveCancel()
 		return nil, err
 	}
 	if cfg.CVEAutoUpdate {
@@ -187,6 +203,13 @@ func (s *Server) Shutdown() {
 	s.hub.shutdown()
 	s.limiter.Close()
 	s.ipLimiter.Close()
+	s.cveRefreshMu.Lock()
+	s.cveRefreshStopping = true
+	if s.cveRefreshCancel != nil {
+		s.cveRefreshCancel()
+	}
+	s.cveRefreshMu.Unlock()
+	s.cveRefreshWG.Wait()
 }
 
 var funcMap = template.FuncMap{

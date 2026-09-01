@@ -114,7 +114,8 @@ services:
       # --- Housekeeping ---
       - "ACTIVITY_LOG_RETENTION_DAYS=0" # 0 means keep logs indefinitely
     ports:
-      - "8521:8521/tcp"
+      # Loopback-only: place a trusted same-host HTTPS reverse proxy in front.
+      - "127.0.0.1:8521:8521/tcp"
     volumes:
       # Mount host directories to persist backups and configuration/SQLite db files:
       - "./backups:/app/backups"

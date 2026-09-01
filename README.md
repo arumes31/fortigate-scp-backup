@@ -217,13 +217,13 @@ Use a release image by immutable digest (shown on the package/release page):
 docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md), then start the bundled stack:
+Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md). Before starting the stack, configure a trusted HTTPS reverse proxy on the same host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately bound to loopback and is not intended for direct client access. Then start the stack:
 ```bash
-export FORTISAFE_IMAGE='ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>'
+export FORTISAFE_IMAGE_DIGEST='sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Terminate HTTPS at a trusted reverse proxy; only enable `TRUST_PROXY_HEADERS` when direct access to the application port is blocked.
+The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Keep the application port private behind the HTTPS proxy; only enable `TRUST_PROXY_HEADERS` when direct access to that port remains blocked.
 
 > [!WARNING]
 > The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dump` of the `firewall_backups` database with the matching old version into a `backup.sql`, then restore it into a freshly initialized data directory).
@@ -233,7 +233,7 @@ Published tags remain convenient discovery aliases, but deployments should recor
 ### Option 2 — Build and run locally
 
 [`docker-compose.yml`](docker-compose.yml) compiles the static binary inside a multi-stage Docker build and starts it alongside PostgreSQL:
-Create the same six secret files described in Option 1 before starting it.
+Create the same six secret files and configure the same-host HTTPS reverse proxy described in Option 1 before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
 ```bash
 docker compose up -d
 ```
