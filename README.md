@@ -217,7 +217,22 @@ Use a release image by immutable digest (shown on the package/release page):
 docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md). Before starting the stack, configure a trusted HTTPS reverse proxy on the same host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately bound to loopback and is not intended for direct client access. Then start the stack:
+Create the six Compose secret files documented in [`secrets/README.md`](secrets/README.md). Before starting the stack, configure a trusted HTTPS reverse proxy on the same host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately bound to loopback and is not intended for direct client access.
+
+On Linux, prepare the application bind mounts for the container's non-root UID/GID `65532:65532`. The recursive `chown` also repairs files from an existing installation:
+
+```bash
+mkdir -p ./backups ./data
+sudo chown -R 65532:65532 ./backups ./data
+sudo chmod 0750 ./backups
+sudo chmod 0700 ./data
+stat -c '%u:%g %a %n' ./backups ./data
+```
+
+The final command should report `65532:65532 750` for `backups` and `65532:65532 700` for `data`. When using absolute bind-mount paths, substitute those host paths in the commands above. Do not apply this ownership change to `pgdata`; the PostgreSQL container manages that directory with its own account.
+
+Then start the stack:
+
 ```bash
 export FORTISAFE_IMAGE_DIGEST='sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
