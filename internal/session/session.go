@@ -110,10 +110,20 @@ func (m *Manager) Current(r *http.Request) Data {
 
 // User returns the authenticated session placed in context by LoginRequired.
 func (m *Manager) User(r *http.Request) Data {
-	if d, ok := r.Context().Value(ctxKey{}).(Data); ok {
+	if d, ok := m.AuthenticatedUser(r); ok {
 		return d
 	}
 	return m.Current(r)
+}
+
+// AuthenticatedUser returns only session data established by LoginRequired for
+// this request. Unlike User, it deliberately does not fall back to reading a
+// cookie. Presentation code uses this stricter boundary so a public route can
+// never acquire authenticated shell data merely because the browser happens
+// to carry a valid FortiSafe session cookie.
+func (m *Manager) AuthenticatedUser(r *http.Request) (Data, bool) {
+	d, ok := r.Context().Value(ctxKey{}).(Data)
+	return d, ok && d.LoggedIn
 }
 
 // WithTestUser returns a context carrying the given session snapshot exactly

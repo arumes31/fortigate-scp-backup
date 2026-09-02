@@ -27,6 +27,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -348,6 +349,31 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 		Lang:                  langFromRequest(r),
 		Active:                active,
 	}
+}
+
+// PageBase builds the shared presentation-only context for an authenticated
+// Core or extension page. Identity and navigation are exposed only when the
+// request has passed through LoginRequired; a valid cookie on a public route
+// is intentionally insufficient.
+func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData {
+	base := webui.BaseData{Title: title, Lang: langFromRequest(r)}
+	d, ok := s.sess.AuthenticatedUser(r)
+	if !ok {
+		return base
+	}
+
+	base.Username = d.Username
+	base.IsRadius = d.IsRadiusUser
+	base.Navigation = webui.Navigation(webui.NavigationOptions{
+		Active:   active,
+		IsRadius: d.IsRadiusUser,
+		AdmVPN:   s.cfg.ExtAdmVpnConf,
+		ConfGen:  s.cfg.ExtFgtConfGen,
+		PolSplit: s.cfg.ExtFgtPolSplit,
+		ConfConv: s.cfg.ExtFgtConfConv,
+		ConfTail: s.cfg.ExtFgtConfTail,
+	})
+	return base
 }
 
 // Routes builds the main router. Extensions are mounted by the caller.

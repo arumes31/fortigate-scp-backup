@@ -178,6 +178,7 @@ func main() {
 		LogActivity:    store.LogActivity,
 		LoginRequired:  sess.LoginRequired,
 		CurrentUser:    func(r *http.Request) string { return sess.User(r).Username },
+		PageBase:       srv.PageBase,
 		BroadcastOp:    srv.BroadcastOp,
 		Schedule:       sched.Schedule,
 		ScheduleCron:   sched.ScheduleCron,

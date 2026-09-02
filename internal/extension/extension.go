@@ -16,7 +16,13 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
+
+// PageBaseProvider returns the host-owned presentation context for one
+// authenticated extension page. The request must already have passed through
+// LoginRequired; the host returns no identity or navigation data otherwise.
+type PageBaseProvider func(r *http.Request, title, active string) webui.BaseData
 
 // Deps is the set of shared services an extension may use. Extensions get the
 // shared activity logger and auth middleware but own any private storage.
@@ -32,6 +38,10 @@ type Deps struct {
 	LoginRequired func(http.Handler) http.Handler
 	// CurrentUser returns the logged-in username for a request (empty if none).
 	CurrentUser func(*http.Request) string
+	// PageBase builds the shared authenticated shell data from the host's
+	// session, locale, configuration, and active navigation route. Extensions
+	// provide only their page title and stable navigation key.
+	PageBase PageBaseProvider
 	// FirewallCreds returns a firewall's SSH connection details with the password
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.
