@@ -51,6 +51,14 @@ func startUXFixture(ctx context.Context, options uxFixtureOptions) (*uxFixtureSe
 	if options.Address == "" {
 		options.Address = "127.0.0.1:0"
 	}
+	listenHost, _, err := net.SplitHostPort(options.Address)
+	if err != nil {
+		return nil, errors.New("invalid fixture listen address")
+	}
+	listenIP := net.ParseIP(listenHost)
+	if listenIP == nil || !listenIP.IsLoopback() {
+		return nil, errors.New("fixture listen address must be a literal loopback IP")
+	}
 	if options.DefaultScenario == "" {
 		options.DefaultScenario = uxScenarioFull
 	}
@@ -652,6 +660,17 @@ func TestUXFixtureRejectsUnknownScenario(t *testing.T) {
 	}
 }
 
+func TestUXFixtureRejectsNonLoopbackAddress(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture, err := startUXFixture(ctx, uxFixtureOptions{Address: "0.0.0.0:0"})
+	if err == nil {
+		cancel()
+		<-fixture.Done()
+		t.Fatal("startUXFixture accepted a non-loopback listen address")
+	}
+}
+
 func TestUXFixtureScenarios(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	fixture, err := startUXFixture(ctx, uxFixtureOptions{Address: "127.0.0.1:0"})
@@ -677,6 +696,7 @@ func TestUXFixtureScenarios(t *testing.T) {
 		{name: "ConfTail warning", path: "/fgt-conftail/?scenario=warning", contains: "Synthetic delayed poll"},
 		{name: "ConfTail error", path: "/fgt-conftail/?scenario=error", contains: "Synthetic Graylog failure"},
 		{name: "ConfTail loading", path: "/fgt-conftail/?scenario=loading", contains: `data-poll-running="true"`},
+		{name: "fixed clock", path: "/fgt-conftail/?scenario=full", contains: "2026-09-02T10:30:00Z"},
 	}
 
 	for _, test := range tests {
