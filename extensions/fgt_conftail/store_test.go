@@ -931,6 +931,7 @@ func TestStorePragmasSurviveConnectionTurnoverAndCascade(t *testing.T) {
 		{name: "busy_timeout", want: 5000},
 		{name: "synchronous", want: 1},
 		{name: "journal_mode", want: "wal"},
+		{name: "auto_vacuum", want: 2},
 	}
 	for _, pragma := range pragmas {
 		var got any
@@ -951,6 +952,13 @@ func TestStorePragmasSurviveConnectionTurnoverAndCascade(t *testing.T) {
 	if got := countRowsWhere(t, s, "outbox", "chain_id = '"+chainID+"'"); got != 0 {
 		t.Fatalf("outbox rows remaining after cascade = %d", got)
 	}
+	var searchMatches int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'Edit'`).Scan(&searchMatches); err != nil {
+		t.Fatal(err)
+	}
+	if searchMatches != 0 {
+		t.Fatalf("full-text rows remaining after cascade = %d", searchMatches)
+	}
 }
 
 func newTestStore(t *testing.T, activation time.Time) *store {
@@ -961,6 +969,45 @@ func newTestStore(t *testing.T, activation time.Time) *store {
 	}
 	t.Cleanup(func() { _ = s.close() })
 	return s
+}
+
+func TestStoreMigratesVersionOneAndRebuildsRedactedSearchIndex(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	event := testEvent(1, "fw-search", "alice", "search-migration", base.Add(time.Minute))
+	event.Message = "urgent vpn migration"
+	event.SemanticHash = semanticHash(event)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(time.Hour),
+		Events:  []Event{event},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE event_search`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = 1 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.initSchema(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, conftailSchemaVersion)
+	}
+	var matches int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_search WHERE event_search MATCH ?`, `"urgent" AND "vpn"`).Scan(&matches); err != nil {
+		t.Fatal(err)
+	}
+	if matches != 1 {
+		t.Fatalf("rebuilt search matches = %d, want 1", matches)
+	}
 }
 
 func testEvent(firewallID int, firewallName, user, graylogID string, eventAt time.Time) Event {

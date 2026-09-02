@@ -180,6 +180,7 @@ func main() {
 		CurrentUser:    func(r *http.Request) string { return sess.User(r).Username },
 		BroadcastOp:    srv.BroadcastOp,
 		Schedule:       sched.Schedule,
+		ScheduleCron:   sched.ScheduleCron,
 		RegisterHealth: srv.RegisterHealth,
 		Logger:         logger,
 		TZ:             cfg.TZ,

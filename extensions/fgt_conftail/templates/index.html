@@ -39,18 +39,21 @@
             <article class="card ct-metric ct-health-{{.Health.State}}">
                 <span class="ct-label">Graylog collector</span>
                 <strong>{{.Health.Label}}</strong>
+                {{if .Health.Code}}<span class="ct-code no-caps">{{.Health.Code}}</span>{{end}}
                 {{if .Health.Detail}}<span class="ct-detail no-caps">{{.Health.Detail}}</span>{{end}}
                 {{if .Health.Action}}<span class="ct-action no-caps">Next: {{.Health.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.SessionHealth.State}}">
                 <span class="ct-label">Session pipeline</span>
                 <strong>{{.SessionHealth.Label}}</strong>
+                {{if .SessionHealth.Code}}<span class="ct-code no-caps">{{.SessionHealth.Code}}</span>{{end}}
                 {{if .SessionHealth.Detail}}<span class="ct-detail no-caps">{{.SessionHealth.Detail}}</span>{{end}}
                 {{if .SessionHealth.Action}}<span class="ct-action no-caps">Next: {{.SessionHealth.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}">
                 <span class="ct-label">Hookwise delivery</span>
                 <strong>{{.DeliveryHealth.Label}}</strong>
+                {{if .DeliveryHealth.Code}}<span class="ct-code no-caps">{{.DeliveryHealth.Code}}</span>{{end}}
                 {{if .DeliveryHealth.Detail}}<span class="ct-detail no-caps">{{.DeliveryHealth.Detail}}</span>{{end}}
                 {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">Next: {{.DeliveryHealth.Action}}</span>{{end}}
             </article>
@@ -95,7 +98,7 @@
                     <thead><tr><th>Firewall</th><th>Accepted source aliases</th><th>Coverage state</th></tr></thead>
                     <tbody>
                     {{range .Coverage}}
-                    <tr>
+                    <tr class="ct-virtual-row">
                         <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
                         <td class="no-caps">{{if .Aliases}}{{range $index, $alias := .Aliases}}{{if $index}}, {{end}}{{$alias}}{{end}}{{else}}-{{end}}</td>
                         <td>{{if .Warnings}}<span class="pill ct-state-failed">warning</span><ul class="ct-inline-warnings">{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>{{else}}<span class="pill ct-state-accepted">covered</span>{{end}}</td>
@@ -114,6 +117,10 @@
         <section class="card" aria-labelledby="ct-filter-title">
             <h2 id="ct-filter-title">Timeline filters</h2>
             <form method="get" action="/fgt-conftail/" class="ct-filter" role="search">
+                <div class="field ct-filter-search">
+                    <label for="ct-search">Search redacted event text</label>
+                    <input id="ct-search" type="search" maxlength="256" name="q" value="{{.Filters.Search}}" placeholder="All indexed event fields" autocomplete="off">
+                </div>
                 <div class="field">
                     <label for="ct-firewall">Firewall name or ID</label>
                     <input id="ct-firewall" type="search" inputmode="numeric" list="ct-firewall-options" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls" autocomplete="off">
@@ -164,6 +171,32 @@
             </form>
         </section>
 
+        <details class="card ct-column-settings">
+            <summary>Visible dashboard columns</summary>
+            <p class="ct-help">Saved only in this browser. With JavaScript disabled, all columns remain visible.</p>
+            <div class="ct-column-options">
+                <fieldset data-ct-column-group="active"><legend>Active sessions</legend>
+                    <label><input type="checkbox" data-ct-column-toggle="active:administrator" checked> Administrator</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:vdoms" checked> VDOMs</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:first" checked> First change</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:last" checked> Last change</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:eligible" checked> Seal eligible at</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:changes" checked> Changes</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:flags" checked> Flags</label>
+                </fieldset>
+                <fieldset data-ct-column-group="history"><legend>History</legend>
+                    <label><input type="checkbox" data-ct-column-toggle="history:administrator" checked> Administrator</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:first" checked> First change</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:last" checked> Last change</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:changes" checked> Changes</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:delivery" checked> Delivery</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:attempts" checked> Attempts</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:next" checked> Next / accepted</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:result" checked> Request ID / error</label>
+                </fieldset>
+            </div>
+        </details>
+
         {{if or (eq .Filters.State "all") (eq .Filters.State "active")}}
         <section class="card pad-0" aria-labelledby="ct-active-title">
             <div class="card-header">
@@ -172,8 +205,8 @@
             </div>
             {{if .Dashboard.Active}}
             <div class="ct-table-wrap">
-                <table class="data ct-chain-table">
-                    <thead><tr><th>Firewall</th><th>Administrator</th><th>VDOMs</th><th>First change</th><th>Last change</th><th>Seal eligible at</th><th>Changes</th><th>Flags</th></tr></thead>
+                <table class="data ct-chain-table" data-ct-table="active">
+                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">Administrator</th><th data-ct-column="vdoms">VDOMs</th><th data-ct-column="first">First change</th><th data-ct-column="last">Last change</th><th data-ct-column="eligible">Seal eligible at</th><th data-ct-column="changes">Changes</th><th data-ct-column="flags">Flags</th></tr></thead>
                     <tbody>{{range .Dashboard.Active}}{{template "chainRow" .}}{{end}}</tbody>
                 </table>
             </div>
@@ -190,8 +223,8 @@
             </div>
             {{if .Dashboard.History}}
             <div class="ct-table-wrap">
-                <table class="data ct-chain-table ct-history-table">
-                    <thead><tr><th>Firewall</th><th>Administrator</th><th>First change</th><th>Last change</th><th>Changes</th><th>Delivery</th><th>Attempts</th><th>Next / accepted</th><th>Request ID / error</th></tr></thead>
+                <table class="data ct-chain-table ct-history-table" data-ct-table="history">
+                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">Administrator</th><th data-ct-column="first">First change</th><th data-ct-column="last">Last change</th><th data-ct-column="changes">Changes</th><th data-ct-column="delivery">Delivery</th><th data-ct-column="attempts">Attempts</th><th data-ct-column="next">Next / accepted</th><th data-ct-column="result">Request ID / error</th></tr></thead>
                     <tbody>{{range .Dashboard.History}}{{template "historyRow" .}}{{end}}</tbody>
                 </table>
             </div>
@@ -210,30 +243,30 @@
 </html>
 
 {{define "chainRow"}}
-<tr>
+<tr class="ct-virtual-row">
     <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
-    <td class="no-caps">{{.User}}</td>
-    <td class="no-caps">{{if .VDOMs}}{{range $index, $vdom := .VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</td>
-    <td>{{fmtTime .FirstEventAt}}</td>
-    <td>{{fmtTime .LastEventAt}}</td>
-    <td>{{fmtTime .QuietEligibleAt}}</td>
-    <td>{{.EventCount}}</td>
-    <td>{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+    <td class="no-caps" data-ct-column="administrator">{{.User}}</td>
+    <td class="no-caps" data-ct-column="vdoms">{{if .VDOMs}}{{range $index, $vdom := .VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</td>
+    <td data-ct-column="first">{{fmtTime .FirstEventAt}}</td>
+    <td data-ct-column="last">{{fmtTime .LastEventAt}}</td>
+    <td data-ct-column="eligible">{{fmtTime .QuietEligibleAt}}</td>
+    <td data-ct-column="changes">{{.EventCount}}</td>
+    <td data-ct-column="flags">{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">unattributed</span>{{end}}</td>
 </tr>
 <tr class="ct-timeline-row"><td colspan="8">{{template "timelineLink" .}}</td></tr>
 {{end}}
 
 {{define "historyRow"}}
-<tr>
+<tr class="ct-virtual-row">
     <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
-    <td class="no-caps">{{.User}}{{if .Late}} <span class="pill ct-state-retry">late</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">unattributed</span>{{end}}</td>
-    <td>{{fmtTime .FirstEventAt}}</td>
-    <td>{{fmtTime .LastEventAt}}</td>
-    <td>{{.EventCount}}</td>
-    <td><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{.DeliveryState}}{{else}}unknown{{end}}</span></td>
-    <td>{{.DeliveryAttempts}}</td>
-    <td>{{if eq .DeliveryState "accepted"}}{{fmtTime .AcceptedAt}}{{else}}{{fmtTime .NextAttemptAt}}{{end}}</td>
-    <td class="no-caps">{{if .RequestID}}{{.RequestID}}{{else if .LastError}}{{.LastError}}{{else}}-{{end}}</td>
+    <td class="no-caps" data-ct-column="administrator">{{.User}}{{if .Late}} <span class="pill ct-state-retry">late</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+    <td data-ct-column="first">{{fmtTime .FirstEventAt}}</td>
+    <td data-ct-column="last">{{fmtTime .LastEventAt}}</td>
+    <td data-ct-column="changes">{{.EventCount}}</td>
+    <td data-ct-column="delivery"><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{.DeliveryState}}{{else}}unknown{{end}}</span></td>
+    <td data-ct-column="attempts">{{.DeliveryAttempts}}</td>
+    <td data-ct-column="next">{{if eq .DeliveryState "accepted"}}{{fmtTime .AcceptedAt}}{{else}}{{fmtTime .NextAttemptAt}}{{end}}</td>
+    <td class="no-caps" data-ct-column="result">{{if .RequestID}}{{.RequestID}}{{else if .LastError}}{{.LastError}}{{else}}-{{end}}</td>
 </tr>
 <tr class="ct-timeline-row"><td colspan="9">{{template "timelineLink" .}}</td></tr>
 {{end}}

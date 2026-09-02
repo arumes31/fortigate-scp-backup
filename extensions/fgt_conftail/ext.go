@@ -23,18 +23,22 @@ import (
 )
 
 const (
-	conftailPollJobID       = "fgt_conftail.poll"
-	conftailDeliveryJobID   = "fgt_conftail.delivery"
-	conftailCatalogJobID    = "fgt_conftail.catalog"
-	conftailDatabaseName    = "fgt-conftail.db"
-	conftailPollFirstDelay  = 10 * time.Second
-	conftailSendFirstDelay  = 20 * time.Second
-	conftailDeliveryCadence = time.Minute
-	conftailCatalogCadence  = 30 * time.Second
-	conftailCatalogDelay    = 5 * time.Second
-	conftailPollTimeout     = 5 * time.Minute
-	conftailDeliveryTimeout = 2 * time.Minute
-	missingUserWindow       = 5 * time.Minute
+	conftailPollJobID          = "fgt_conftail.poll"
+	conftailDeliveryJobID      = "fgt_conftail.delivery"
+	conftailCatalogJobID       = "fgt_conftail.catalog"
+	conftailMaintenanceJobID   = "fgt_conftail.maintenance"
+	conftailDatabaseName       = "fgt-conftail.db"
+	conftailPollFirstDelay     = 10 * time.Second
+	conftailSendFirstDelay     = 20 * time.Second
+	conftailDeliveryCadence    = time.Minute
+	conftailCatalogCadence     = 30 * time.Second
+	conftailCatalogDelay       = 5 * time.Second
+	conftailMaintenanceCadence = 24 * time.Hour
+	conftailMaintenanceDelay   = time.Hour
+	conftailMaintenanceCron    = "30 3 * * *"
+	conftailPollTimeout        = 5 * time.Minute
+	conftailDeliveryTimeout    = 2 * time.Minute
+	missingUserWindow          = 5 * time.Minute
 )
 
 // Extension owns the private ConfTail ledger, polling worker and dashboard.
@@ -61,6 +65,8 @@ type Extension struct {
 	catalogRefreshMu     sync.Mutex
 	pollMu               sync.Mutex
 	deliveryMu           sync.Mutex
+	operationMu          sync.RWMutex
+	tz                   *time.Location
 }
 
 // New creates an unmounted ConfTail extension.
@@ -138,6 +144,10 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	e.hookwise = hookwise
 	e.tmpl = tmpl
 	e.currentUser = deps.CurrentUser
+	e.tz = deps.TZ
+	if e.tz == nil {
+		e.tz = time.UTC
+	}
 	e.catalogLoader = func(ctx context.Context) (sourceCatalog, error) {
 		return loadSourceCatalog(ctx, deps.DB, deps.DataDir)
 	}
@@ -166,7 +176,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 
 	deps.Schedule(
 		conftailPollJobID,
-		time.Duration(e.cfg.FgtConfTailPollSeconds)*time.Second,
+		adaptivePollActiveInterval,
 		conftailPollFirstDelay,
 		e.runPoll,
 	)
@@ -182,6 +192,18 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 			conftailCatalogCadence,
 			conftailCatalogDelay,
 			e.runCatalogRefresh,
+		)
+	}
+	if deps.ScheduleCron != nil {
+		if err := deps.ScheduleCron(conftailMaintenanceJobID, conftailMaintenanceCron, e.runMaintenance); err != nil {
+			return fmt.Errorf("schedule conftail maintenance: %w", err)
+		}
+	} else {
+		deps.Schedule(
+			conftailMaintenanceJobID,
+			conftailMaintenanceCadence,
+			conftailMaintenanceDelay,
+			e.runMaintenance,
 		)
 	}
 	if deps.RegisterHealth != nil {
@@ -201,11 +223,8 @@ func (e *Extension) graylogHealth(ctx context.Context) string {
 	if err != nil {
 		return "failed"
 	}
-	return dashboardPollHealth(
-		state,
-		time.Now().UTC(),
-		e.dashboardPollInterval(),
-	).State
+	now := time.Now().UTC()
+	return dashboardPollHealth(state, now, adaptivePollInterval(state, state.LastIngestedAt, now)).State
 }
 
 func (e *Extension) catalogHealth(context.Context) string {
@@ -252,6 +271,11 @@ func (e *Extension) publishCatalog(catalog sourceCatalog) {
 }
 
 func (e *Extension) runCatalogRefresh() {
+	if !e.operationMu.TryRLock() {
+		e.logger.Debug("conftail catalog refresh deferred for maintenance", "code", codeMaintenanceSkipped)
+		return
+	}
+	defer e.operationMu.RUnlock()
 	e.catalogRefreshMu.Lock()
 	defer e.catalogRefreshMu.Unlock()
 	if e.catalogLoader == nil {
@@ -266,7 +290,7 @@ func (e *Extension) runCatalogRefresh() {
 		e.catalogLastFailureAt = now
 		e.catalogLastError = sanitizeDeliveryError(err)
 		e.catalogMu.Unlock()
-		e.logger.Warn("conftail source catalog refresh failed", "err", sanitizeDeliveryError(err))
+		e.logger.Warn("conftail source catalog refresh failed", "code", codeCatalogRefreshFailed, "err", sanitizeDeliveryError(err))
 		return
 	}
 	newFingerprint := catalog.fingerprint()
@@ -285,17 +309,45 @@ func (e *Extension) runCatalogRefresh() {
 }
 
 func (e *Extension) runPoll() {
+	if !e.operationMu.TryRLock() {
+		e.logger.Debug("conftail poll deferred for maintenance", "code", codeMaintenanceSkipped)
+		return
+	}
+	defer e.operationMu.RUnlock()
 	e.pollMu.Lock()
 	defer e.pollMu.Unlock()
+	now := time.Now().UTC()
+	state, lastIngestedAt, err := e.store.pollScheduleState(e.ctx)
+	if err != nil {
+		e.logger.Error(
+			"conftail adaptive poll state failed",
+			"code", codeAdaptivePollStateFailed,
+			"err", sanitizeDeliveryError(err),
+		)
+		return
+	}
+	if !adaptivePollDue(state, lastIngestedAt, now) {
+		e.logger.Debug(
+			"conftail poll deferred",
+			"code", codeGraylogPollDeferred,
+			"next_poll_at", state.LastStartedAt.Add(adaptivePollInterval(state, lastIngestedAt, now)),
+		)
+		return
+	}
 	ctx, cancel := context.WithTimeout(e.ctx, conftailPollTimeout)
 	defer cancel()
-	stats, err := e.poller.poll(ctx, time.Now().UTC())
+	stats, err := e.poller.poll(ctx, now)
 	if err != nil {
-		e.logger.Error("conftail poll failed", "err", sanitizeDeliveryError(err))
+		e.logger.Error(
+			"conftail poll failed",
+			"code", codeGraylogPollFailed,
+			"err", sanitizeDeliveryError(err),
+		)
 		return
 	}
 	e.logger.Info(
 		"conftail poll completed",
+		"code", codeGraylogPollCompleted,
 		"pages", stats.Pages,
 		"fetched", stats.Fetched,
 		"quarantined", stats.Quarantined,
@@ -313,7 +365,7 @@ func (e *Extension) runPoll() {
 		time.Now().UTC(),
 		e.cfg.FgtConfTailRetentionDays,
 	); pruneErr != nil {
-		e.logger.Error("conftail history prune failed", "err", pruneErr)
+		e.logger.Error("conftail history prune failed", "code", codeMaintenanceFailed, "err", pruneErr)
 	} else if deleted > 0 {
 		e.logger.Info("conftail history pruned", "deleted", deleted)
 	}
@@ -321,13 +373,18 @@ func (e *Extension) runPoll() {
 }
 
 func (e *Extension) runDeliveries() {
+	if !e.operationMu.TryRLock() {
+		e.logger.Debug("conftail delivery deferred for maintenance", "code", codeMaintenanceSkipped)
+		return
+	}
+	defer e.operationMu.RUnlock()
 	e.deliveryMu.Lock()
 	defer e.deliveryMu.Unlock()
 	ctx, cancel := context.WithTimeout(e.ctx, conftailDeliveryTimeout)
 	defer cancel()
 	stats, err := dispatchDeliveries(ctx, e.store, e.hookwise, nil, nil)
 	if err != nil {
-		e.logger.Error("conftail delivery failed", "err", sanitizeDeliveryError(err))
+		e.logger.Error("conftail delivery failed", "code", codeHookwiseDeliveryFailed, "err", sanitizeDeliveryError(err))
 		return
 	}
 	if stats.Accepted > 0 || stats.Failed > 0 {
@@ -337,6 +394,57 @@ func (e *Extension) runDeliveries() {
 			"failed", stats.Failed,
 		)
 	}
+}
+
+func (e *Extension) runMaintenance() {
+	if e.store == nil || !e.operationMu.TryLock() {
+		e.logger.Debug("conftail database maintenance skipped while work is active", "code", codeMaintenanceSkipped)
+		return
+	}
+	defer e.operationMu.Unlock()
+	baseContext := e.ctx
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseContext, conftailPollTimeout)
+	defer cancel()
+	tz := e.tz
+	if tz == nil {
+		tz = time.UTC
+	}
+	now := time.Now().In(tz)
+	stats, err := e.store.maintenanceStats(ctx)
+	if err != nil {
+		e.logger.Error("conftail database maintenance stats failed", "code", codeMaintenanceFailed, "err", err)
+		return
+	}
+	retired, err := e.store.retireManagedIndexes(ctx, now)
+	if err != nil {
+		e.logger.Error("conftail managed index retirement failed", "code", codeIndexMaintenanceFailed, "err", err)
+		return
+	}
+	mode := "none"
+	if shouldRunFullVacuum(now, stats) {
+		if err := e.store.fullVacuum(ctx); err != nil {
+			e.logger.Error("conftail full vacuum failed", "code", codeMaintenanceFailed, "err", err)
+			return
+		}
+		mode = "full"
+	} else if stats.AutoVacuum == 2 && stats.FreelistCount > 0 {
+		if err := e.store.incrementalVacuum(ctx); err != nil {
+			e.logger.Error("conftail incremental vacuum failed", "code", codeMaintenanceFailed, "err", err)
+			return
+		}
+		mode = "incremental"
+	}
+	e.logger.Info(
+		"conftail database maintenance completed",
+		"code", codeMaintenanceCompleted,
+		"vacuum", mode,
+		"managed_indexes_retired", retired,
+		"page_count", stats.PageCount,
+		"freelist_count", stats.FreelistCount,
+	)
 }
 
 var _ extension.Extension = (*Extension)(nil)

@@ -26,7 +26,7 @@ const (
 	deliveryStateFailed       = "failed"
 	deliveryStateAccepted     = "accepted"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 1
+	conftailSchemaVersion     = 2
 )
 
 type store struct {
@@ -34,16 +34,17 @@ type store struct {
 }
 
 type PollState struct {
-	ActivationAt  time.Time
-	Watermark     time.Time
-	LastStartedAt time.Time
-	LastSuccessAt time.Time
-	LastFailureAt time.Time
-	LastDuration  time.Duration
-	LastPages     int
-	LastFetched   int
-	LastInserted  int
-	LastError     string
+	ActivationAt   time.Time
+	Watermark      time.Time
+	LastStartedAt  time.Time
+	LastSuccessAt  time.Time
+	LastFailureAt  time.Time
+	LastDuration   time.Duration
+	LastPages      int
+	LastFetched    int
+	LastInserted   int
+	LastError      string
+	LastIngestedAt time.Time
 }
 
 type pollBatch struct {
@@ -133,6 +134,53 @@ var conftailSchema = []string{
 		ON events(correlation_hash) WHERE user_was_missing = 1`,
 	`CREATE INDEX IF NOT EXISTS events_chain_timeline
 		ON events(chain_id, event_at_ns, semantic_hash)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS event_search USING fts5(
+		firewall_name, user, source, device_name, device_id, vdom, action,
+		config_path, config_object, config_attribute, log_description, message,
+		content='events', content_rowid='id', tokenize='unicode61'
+	)`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_insert AFTER INSERT ON events BEGIN
+		INSERT INTO event_search(
+			rowid, firewall_name, user, source, device_name, device_id, vdom,
+			action, config_path, config_object, config_attribute,
+			log_description, message
+		) VALUES (
+			new.id, new.firewall_name, new.user, new.source, new.device_name,
+			new.device_id, new.vdom, new.action, new.config_path,
+			new.config_object, new.config_attribute, new.log_description, new.message
+		);
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_delete AFTER DELETE ON events BEGIN
+		INSERT INTO event_search(
+			event_search, rowid, firewall_name, user, source, device_name,
+			device_id, vdom, action, config_path, config_object,
+			config_attribute, log_description, message
+		) VALUES (
+			'delete', old.id, old.firewall_name, old.user, old.source,
+			old.device_name, old.device_id, old.vdom, old.action, old.config_path,
+			old.config_object, old.config_attribute, old.log_description, old.message
+		);
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_update AFTER UPDATE ON events BEGIN
+		INSERT INTO event_search(
+			event_search, rowid, firewall_name, user, source, device_name,
+			device_id, vdom, action, config_path, config_object,
+			config_attribute, log_description, message
+		) VALUES (
+			'delete', old.id, old.firewall_name, old.user, old.source,
+			old.device_name, old.device_id, old.vdom, old.action, old.config_path,
+			old.config_object, old.config_attribute, old.log_description, old.message
+		);
+		INSERT INTO event_search(
+			rowid, firewall_name, user, source, device_name, device_id, vdom,
+			action, config_path, config_object, config_attribute,
+			log_description, message
+		) VALUES (
+			new.id, new.firewall_name, new.user, new.source, new.device_name,
+			new.device_id, new.vdom, new.action, new.config_path,
+			new.config_object, new.config_attribute, new.log_description, new.message
+		);
+	END`,
 	`CREATE TABLE IF NOT EXISTS outbox (
 		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
 		payload_json BLOB NOT NULL,
@@ -159,6 +207,11 @@ var conftailSchema = []string{
 		last_inserted INTEGER NOT NULL DEFAULT 0,
 		last_error TEXT NOT NULL DEFAULT '',
 		updated_at_ns INTEGER NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS managed_indexes (
+		name TEXT PRIMARY KEY,
+		created_at_ns INTEGER NOT NULL,
+		last_needed_at_ns INTEGER NOT NULL
 	)`,
 }
 
@@ -201,6 +254,7 @@ func openStore(ctx context.Context, path string, activation time.Time) (*store, 
 		return nil, err
 	}
 	for _, statement := range []string{
+		"PRAGMA auto_vacuum=INCREMENTAL",
 		"PRAGMA journal_mode=WAL",
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -265,6 +319,15 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
 		return fmt.Errorf("read conftail schema version: %w", err)
 	}
+	if version == 1 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO event_search(event_search) VALUES('rebuild')`); err != nil {
+			return fmt.Errorf("rebuild conftail event search index: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = conftailSchemaVersion
+	}
 	if version != conftailSchemaVersion {
 		return fmt.Errorf("unsupported conftail schema version %d", version)
 	}
@@ -282,12 +345,13 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 }
 
 func (s *store) pollState(ctx context.Context) (PollState, error) {
-	var activation, watermark, started, success, failure, duration int64
+	var activation, watermark, started, success, failure, duration, lastIngested int64
 	var state PollState
 	err := s.db.QueryRowContext(ctx, `SELECT
 		activation_at_ns, watermark_ns, last_started_at_ns, last_success_at_ns,
 		last_failure_at_ns, last_duration_ns, last_pages, last_fetched,
-		last_inserted, last_error
+		last_inserted, last_error,
+		(SELECT COALESCE(MAX(ingested_at_ns), 0) FROM events)
 		FROM poll_state WHERE id = 1`).Scan(
 		&activation,
 		&watermark,
@@ -299,6 +363,7 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 		&state.LastFetched,
 		&state.LastInserted,
 		&state.LastError,
+		&lastIngested,
 	)
 	if err != nil {
 		return PollState{}, fmt.Errorf("read conftail poll state: %w", err)
@@ -309,7 +374,16 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 	state.LastSuccessAt = timeFromNanos(success)
 	state.LastFailureAt = timeFromNanos(failure)
 	state.LastDuration = time.Duration(duration) * time.Nanosecond
+	state.LastIngestedAt = timeFromNanos(lastIngested)
 	return state, nil
+}
+
+func (s *store) pollScheduleState(ctx context.Context) (PollState, time.Time, error) {
+	state, err := s.pollState(ctx)
+	if err != nil {
+		return PollState{}, time.Time{}, err
+	}
+	return state, state.LastIngestedAt, nil
 }
 
 func (s *store) markPollStarted(ctx context.Context, startedAt time.Time) error {

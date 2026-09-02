@@ -123,6 +123,7 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"msg":"conftail session queried"`,
+		`"code":"CT-UI-004"`,
 		`"actor":"reviewer"`,
 		`"chain_id":"` + chainID + `"`,
 		`"page":2`,
@@ -329,17 +330,51 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 		"Last poll start",
 		"2026-09-01 10:01:00 UTC",
 		"failure: 2026-09-01 10:03:00 UTC",
+		"CT-GL-001",
 		"Next poll run",
-		"2026-09-01 10:16:00 UTC",
+		"2026-09-01 10:02:00 UTC",
 		`id="ct-next-poll-countdown"`,
 		`src="/fgt-conftail/static/conftail.js"`,
 		"Firewall name or ID",
+		"Search redacted event text",
 		"Graylog source contains",
 		"Device name contains",
 		"Serial contains",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard body does not contain %q", want)
+		}
+	}
+}
+
+func TestDashboardRendersLocalColumnControlsAndProgressiveRows(t *testing.T) {
+	t.Parallel()
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := dashboardPageData{
+		Dashboard: dashboardData{
+			Active:     []dashboardChain{{ID: "chain-1", FirewallID: 1, FirewallName: "fw-a"}},
+			History:    []dashboardChain{{ID: "chain-2", FirewallID: 2, FirewallName: "fw-b"}},
+			TotalPages: 1,
+		},
+		Filters: dashboardFilterView{State: dashboardStateAll, Page: 1},
+	}
+	var output bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		`data-ct-column-toggle="active:administrator"`,
+		`data-ct-column-toggle="history:delivery"`,
+		`data-ct-table="active"`,
+		`data-ct-table="history"`,
+		`class="ct-virtual-row"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard does not contain %q", want)
 		}
 	}
 }
@@ -372,7 +407,7 @@ func TestDashboardPollHealthIncludesActionableRemediation(t *testing.T) {
 				LastFailureAt: now,
 				LastError:     test.lastError,
 			}, now, 15*time.Minute)
-			if health.State != "failed" || !strings.Contains(health.Action, test.wantAction) {
+			if health.State != "failed" || health.Code != codeGraylogPollFailed || !strings.Contains(health.Action, test.wantAction) {
 				t.Fatalf("health = %+v, want action containing %q", health, test.wantAction)
 			}
 		})
@@ -383,7 +418,7 @@ func TestDashboardDeliveryHealthIsIndependentFromCollector(t *testing.T) {
 	t.Parallel()
 
 	health := dashboardDeliveryHealth(dashboardCounts{Failed: 2, Retry: 3})
-	if health.State != "failed" || !strings.Contains(health.Detail, "2 failed") ||
+	if health.State != "failed" || health.Code != codeHookwiseDeliveryFailed || !strings.Contains(health.Detail, "2 failed") ||
 		!strings.Contains(health.Action, "Hookwise") {
 		t.Fatalf("delivery health = %+v", health)
 	}
@@ -419,6 +454,7 @@ func TestParseConfigAttributeDiff(t *testing.T) {
 func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	values := url.Values{
 		"firewall": {"7"},
+		"q":        {" urgent vpn "},
 		"user":     {" team%_ops "},
 		"source":   {" branch-east "},
 		"device":   {" FGT-EDGE "},
@@ -433,7 +469,7 @@ func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FirewallID != 7 || got.User != "team%_ops" || got.Source != "branch-east" ||
+	if got.FirewallID != 7 || got.Search != "urgent vpn" || got.User != "team%_ops" || got.Source != "branch-east" ||
 		got.Device != "FGT-EDGE" || got.Serial != "FG100F123" ||
 		got.State != deliveryStateRetry || got.Page != 3 {
 		t.Fatalf("filters = %+v", got)
@@ -464,6 +500,9 @@ func TestParseDashboardFiltersRejectsInvalidOrUnboundedValues(t *testing.T) {
 			},
 		},
 		{name: "user too long", values: url.Values{"user": {strings.Repeat("x", maxIdentityRunes+1)}}},
+		{name: "search too long", values: url.Values{"q": {strings.Repeat("x", maxSearchRunes+1)}}},
+		{name: "too many search terms", values: url.Values{"q": {"1 2 3 4 5 6 7 8 9 10 11"}}},
+		{name: "search control character", values: url.Values{"q": {"urgent\nchange"}}},
 		{name: "source too long", values: url.Values{"source": {strings.Repeat("x", maxIdentityRunes+1)}}},
 		{name: "device control character", values: url.Values{"device": {"fw\nname"}}},
 		{name: "serial control character", values: url.Values{"serial": {"serial\x00value"}}},
@@ -475,6 +514,51 @@ func TestParseDashboardFiltersRejectsInvalidOrUnboundedValues(t *testing.T) {
 				t.Fatal("invalid filters unexpectedly accepted")
 			}
 		})
+	}
+}
+
+func TestQueryDashboardFullTextSearchMatchesAllLiteralTerms(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	urgent := testEvent(1, "fw-east", "alice", "graylog-search-1", base.Add(time.Minute))
+	urgent.Message = `urgent vpn "phase2" change`
+	urgent.SemanticHash = semanticHash(urgent)
+	other := testEvent(2, "fw-west", "bob", "graylog-search-2", base.Add(2*time.Minute))
+	other.Message = "urgent routing change"
+	other.SemanticHash = semanticHash(other)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(time.Hour),
+		Events:  []Event{urgent, other},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.queryDashboard(context.Background(), dashboardFilters{
+		Search: `urgent vpn "phase2"`,
+		State:  dashboardStateAll,
+		Page:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HistoryTotal != 1 || len(result.History) != 1 || result.History[0].FirewallID != 1 {
+		t.Fatalf("full-text result = %+v, want only fw-east", result.History)
+	}
+}
+
+func TestDashboardPageURLPreservesFullTextSearch(t *testing.T) {
+	t.Parallel()
+	got := dashboardPageURL(dashboardFilters{
+		Search: "urgent vpn",
+		State:  deliveryStateRetry,
+	}, 3)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Get("q") != "urgent vpn" || parsed.Query().Get("state") != deliveryStateRetry || parsed.Query().Get("page") != "3" {
+		t.Fatalf("pagination URL = %q", got)
 	}
 }
 
@@ -688,7 +772,7 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 	}
 	request := httptest.NewRequest(
 		http.MethodGet,
-		"/?firewall=7&user=alice&source=branch&device=FGT&serial=FG100&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+		"/?firewall=7&q=urgent+vpn&user=alice&source=branch&device=FGT&serial=FG100&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
 		nil,
 	)
 	response := httptest.NewRecorder()
@@ -700,8 +784,10 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 	logs := output.String()
 	for _, want := range []string{
 		`"msg":"conftail dashboard queried"`,
+		`"code":"CT-UI-003"`,
 		`"actor":"operator"`,
 		`"firewall_id":7`,
+		`"search_filter_set":true`,
 		`"user_filter_set":true`,
 		`"source_filter_set":true`,
 		`"device_filter_set":true`,
@@ -714,6 +800,9 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Errorf("ConfTail dashboard log does not contain %q:\n%s", want, logs)
 		}
+	}
+	if strings.Contains(logs, "urgent") || strings.Contains(logs, "vpn") {
+		t.Fatalf("dashboard log contains full-text search terms: %s", logs)
 	}
 }
 

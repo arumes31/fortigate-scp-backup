@@ -28,7 +28,12 @@ const (
 	dashboardEventPageSize = 100
 	dashboardVDOMLimit     = 20
 	dashboardMaxPage       = 10_000
+	maxSearchRunes         = 256
+	maxSearchTerms         = 10
 	dashboardWhereSQL      = `c.state = ?
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events es
+			JOIN event_search ON event_search.rowid = es.id
+			WHERE es.chain_id = c.id AND event_search MATCH ?))
 		AND (? = 0 OR c.firewall_id = ?)
 		AND (? = 0 OR LOWER(c.user) LIKE LOWER(?) ESCAPE '\')
 		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
@@ -54,6 +59,7 @@ var dashboardFS embed.FS
 
 type dashboardFilters struct {
 	FirewallID int
+	Search     string
 	User       string
 	Source     string
 	Device     string
@@ -130,6 +136,7 @@ type dashboardData struct {
 
 type dashboardFilterView struct {
 	Firewall string
+	Search   string
 	User     string
 	Source   string
 	Device   string
@@ -145,6 +152,7 @@ type dashboardHealth struct {
 	Label  string
 	Detail string
 	Action string
+	Code   diagnosticCode
 }
 
 type conftailBaseData struct {
@@ -194,6 +202,7 @@ func dashboardStaticFS() (fs.FS, error) {
 
 func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 	filters := dashboardFilters{
+		Search: strings.TrimSpace(values.Get("q")),
 		User:   strings.TrimSpace(values.Get("user")),
 		Source: strings.TrimSpace(values.Get("source")),
 		Device: strings.TrimSpace(values.Get("device")),
@@ -203,6 +212,9 @@ func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 	}
 	if filters.State == "" {
 		filters.State = dashboardStateAll
+	}
+	if _, err := compileDashboardSearch(filters.Search); err != nil {
+		return dashboardFilters{}, fmt.Errorf("invalid dashboard search: %w", err)
 	}
 	for _, filter := range []struct {
 		name  string
@@ -261,6 +273,30 @@ func validateDashboardTextFilter(value string) error {
 	return nil
 }
 
+func compileDashboardSearch(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(value) > maxSearchRunes {
+		return "", errors.New("value is too long")
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return "", errors.New("value contains a control character")
+		}
+	}
+	terms := strings.Fields(value)
+	if len(terms) > maxSearchTerms {
+		return "", fmt.Errorf("search exceeds the %d-term limit", maxSearchTerms)
+	}
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+	}
+	return strings.Join(quoted, " AND "), nil
+}
+
 func parseDashboardTime(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -304,6 +340,9 @@ func (s *store) queryDashboard(
 	}
 	if !validDashboardState(filters.State) || filters.Page < 1 || filters.Page > dashboardMaxPage {
 		return dashboardData{}, errors.New("invalid conftail dashboard filters")
+	}
+	if _, err := compileDashboardSearch(filters.Search); err != nil {
+		return dashboardData{}, fmt.Errorf("invalid conftail dashboard search: %w", err)
 	}
 
 	poll, err := s.pollState(ctx)
@@ -381,8 +420,10 @@ func dashboardQueryArgs(filters dashboardFilters, chainState string) []any {
 	if chainState == chainStateSealed && isDashboardDeliveryState(filters.State) {
 		deliveryState = filters.State
 	}
+	searchQuery, _ := compileDashboardSearch(filters.Search)
 	return []any{
 		chainState,
+		boolInt(searchQuery != ""), searchQuery,
 		boolInt(filters.FirewallID > 0), filters.FirewallID,
 		boolInt(filters.User != ""), "%" + escapeDashboardLike(filters.User) + "%",
 		boolInt(filters.Source != ""), "%" + escapeDashboardLike(filters.Source) + "%",
@@ -656,10 +697,13 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	data, err := e.store.queryDashboard(r.Context(), filters)
 	if err != nil {
 		if e.logger != nil {
-			e.logger.Error("conftail: dashboard query failed", "err", err)
+			e.logger.Error("conftail: dashboard query failed", "code", codeDashboardQueryFailed, "err", err)
 		}
 		http.Error(w, "Unable to load configuration change dashboard", http.StatusInternalServerError)
 		return
+	}
+	if err := e.store.observeDashboardQuery(r.Context(), filters, time.Now().UTC()); err != nil && e.logger != nil {
+		e.logger.Warn("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
 	}
 	for index := range data.Active {
 		data.Active[index].QuietEligibleAt = data.Active[index].LastEventAt.Add(e.dashboardIdleDuration())
@@ -674,14 +718,16 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	if e.currentUser != nil {
 		username = e.currentUser(r)
 	}
+	now := time.Now().UTC()
+	pollInterval := adaptivePollInterval(data.Poll, data.Poll.LastIngestedAt, now)
 	page := dashboardPageData{
 		Base:           e.conftailBaseData(username),
 		Dashboard:      data,
 		Filters:        dashboardFiltersView(filters),
-		Health:         dashboardPollHealth(data.Poll, time.Now().UTC(), e.dashboardPollInterval()),
+		Health:         dashboardPollHealth(data.Poll, now, pollInterval),
 		SessionHealth:  dashboardSessionHealth(data.Counts),
 		DeliveryHealth: dashboardDeliveryHealth(data.Counts),
-		NextPollRun:    dashboardNextPollRun(data.Poll, e.dashboardPollInterval()),
+		NextPollRun:    dashboardNextPollRun(data.Poll, pollInterval),
 		Coverage:       coverage,
 		Firewalls:      coverage,
 		Warnings:       warnings,
@@ -697,7 +743,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	var output bytes.Buffer
 	if err := e.tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
 		if e.logger != nil {
-			e.logger.Error("conftail: dashboard template failed", "err", err)
+			e.logger.Error("conftail: dashboard template failed", "code", codeDashboardRenderFailed, "err", err)
 		}
 		http.Error(w, "Unable to render configuration change dashboard", http.StatusInternalServerError)
 		return
@@ -706,8 +752,10 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		e.logger.InfoContext(
 			r.Context(),
 			"conftail dashboard queried",
+			"code", codeDashboardQueried,
 			"actor", sanitizeExternalString(username, maxIdentityRunes),
 			"firewall_id", filters.FirewallID,
+			"search_filter_set", filters.Search != "",
 			"user_filter_set", filters.User != "",
 			"source_filter_set", filters.Source != "",
 			"device_filter_set", filters.Device != "",
@@ -751,7 +799,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if e.logger != nil {
-			e.logger.Error("conftail: chain dashboard query failed", "err", sanitizeDeliveryError(err))
+			e.logger.Error("conftail: chain dashboard query failed", "code", codeSessionQueryFailed, "err", sanitizeDeliveryError(err))
 		}
 		http.Error(w, "Unable to load configuration change session", http.StatusInternalServerError)
 		return
@@ -778,7 +826,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	var output bytes.Buffer
 	if err := e.tmpl.ExecuteTemplate(&output, "chain.html", view); err != nil {
 		if e.logger != nil {
-			e.logger.Error("conftail: chain dashboard template failed", "err", err)
+			e.logger.Error("conftail: chain dashboard template failed", "code", codeDashboardRenderFailed, "err", err)
 		}
 		http.Error(w, "Unable to render configuration change session", http.StatusInternalServerError)
 		return
@@ -787,6 +835,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		e.logger.InfoContext(
 			r.Context(),
 			"conftail session queried",
+			"code", codeSessionQueried,
 			"actor", sanitizeExternalString(username, maxIdentityRunes),
 			"chain_id", chainID,
 			"state", chain.State,
@@ -835,13 +884,6 @@ func (e *Extension) conftailBaseData(username string) conftailBaseData {
 	return base
 }
 
-func (e *Extension) dashboardPollInterval() time.Duration {
-	if e.cfg == nil || e.cfg.FgtConfTailPollSeconds <= 0 {
-		return 15 * time.Minute
-	}
-	return time.Duration(e.cfg.FgtConfTailPollSeconds) * time.Second
-}
-
 func (e *Extension) dashboardIdleDuration() time.Duration {
 	if e.cfg == nil || e.cfg.FgtConfTailIdleSeconds <= 0 {
 		return 30 * time.Minute
@@ -864,6 +906,7 @@ func dashboardNextPollRun(state PollState, interval time.Duration) time.Time {
 
 func dashboardFiltersView(filters dashboardFilters) dashboardFilterView {
 	view := dashboardFilterView{
+		Search: filters.Search,
 		User:   filters.User,
 		Source: filters.Source,
 		Device: filters.Device,
@@ -891,6 +934,7 @@ func dashboardPollHealth(state PollState, now time.Time, interval time.Duration)
 			Label:  "Collector failed",
 			Detail: state.LastError,
 			Action: dashboardPollRemediation(state.LastError),
+			Code:   codeGraylogPollFailed,
 		}
 	}
 	if state.LastSuccessAt.IsZero() {
@@ -948,6 +992,7 @@ func dashboardDeliveryHealth(counts dashboardCounts) dashboardHealth {
 			Label:  "Hookwise delivery failed",
 			Detail: fmt.Sprintf("%d failed / %d retry", counts.Failed, counts.Retry),
 			Action: "Check the Hookwise endpoint, token, and failed delivery details.",
+			Code:   codeHookwiseDeliveryFailed,
 		}
 	case counts.Retry > 0:
 		return dashboardHealth{
@@ -978,6 +1023,9 @@ func dashboardPageURL(filters dashboardFilters, page int) string {
 	}
 	if filters.User != "" {
 		values.Set("user", filters.User)
+	}
+	if filters.Search != "" {
+		values.Set("q", filters.Search)
 	}
 	if filters.Source != "" {
 		values.Set("source", filters.Source)

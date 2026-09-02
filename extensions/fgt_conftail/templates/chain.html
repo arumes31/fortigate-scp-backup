@@ -7,6 +7,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
     <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
+    <script defer src="/fgt-conftail/static/conftail.js"></script>
 </head>
 <body>
 <div class="app">
@@ -60,7 +61,7 @@
             </div>
             <ol class="ct-timeline ct-complete-timeline">
                 {{range .Chain.Events}}
-                <li>
+                <li class="ct-virtual-item">
                     <div class="ct-event-head"><time>{{fmtTime .EventAt}}</time><span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}</div>
                     <div class="ct-event-body no-caps">
                         {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}

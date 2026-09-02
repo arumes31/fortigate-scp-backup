@@ -152,8 +152,8 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 			chainResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
-	if len(jobs) != 3 {
-		t.Fatalf("scheduled jobs = %d, want poll, delivery, and ADM catalog refresh", len(jobs))
+	if len(jobs) != 4 {
+		t.Fatalf("scheduled jobs = %d, want poll, delivery, ADM catalog refresh, and maintenance", len(jobs))
 	}
 	for _, name := range []string{
 		"conftail.graylog", "conftail.catalog", "conftail.store", "conftail.hookwise",
@@ -162,7 +162,7 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 			t.Errorf("health component %q was not registered", name)
 		}
 	}
-	if jobs[0].id != conftailPollJobID || jobs[0].interval != 15*time.Minute || jobs[0].fn == nil {
+	if jobs[0].id != conftailPollJobID || jobs[0].interval != time.Minute || jobs[0].fn == nil {
 		t.Fatalf("poll job = %+v", jobs[0])
 	}
 	if jobs[2].id != conftailCatalogJobID || jobs[2].interval != 30*time.Second || jobs[2].fn == nil {
@@ -170,6 +170,9 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	}
 	if jobs[1].id != conftailDeliveryJobID || jobs[1].interval != time.Minute || jobs[1].fn == nil {
 		t.Fatalf("delivery job = %+v", jobs[1])
+	}
+	if jobs[3].id != conftailMaintenanceJobID || jobs[3].interval != 24*time.Hour || jobs[3].fn == nil {
+		t.Fatalf("maintenance job = %+v", jobs[3])
 	}
 }
 
@@ -190,8 +193,8 @@ func TestExtensionMountSkipsCatalogRefreshWhenADMVPNIsDisabled(t *testing.T) {
 	if err := e.Mount(chi.NewRouter(), deps); err != nil {
 		t.Fatalf("Mount() error = %v", err)
 	}
-	if len(jobIDs) != 2 || jobIDs[0] != conftailPollJobID || jobIDs[1] != conftailDeliveryJobID {
-		t.Fatalf("scheduled jobs = %v, want only poll and delivery", jobIDs)
+	if len(jobIDs) != 3 || jobIDs[0] != conftailPollJobID || jobIDs[1] != conftailDeliveryJobID || jobIDs[2] != conftailMaintenanceJobID {
+		t.Fatalf("scheduled jobs = %v, want poll, delivery, and maintenance", jobIDs)
 	}
 }
 
@@ -278,6 +281,7 @@ func TestRunPollLogsSkippedGraylogRows(t *testing.T) {
 	e.runPoll()
 	for _, want := range []string{
 		`"msg":"conftail poll completed"`,
+		`"code":"CT-GL-002"`,
 		`"skipped":1`,
 	} {
 		if !strings.Contains(output.String(), want) {

@@ -51,6 +51,9 @@ type Deps struct {
 	// process scheduler. The scheduler owns cancellation and waits for in-flight
 	// jobs during graceful shutdown.
 	Schedule func(id string, interval, firstDelay time.Duration, fn func())
+	// ScheduleCron registers a non-overlapping cron job. It is optional so older
+	// hosts and tests can fall back to interval scheduling.
+	ScheduleCron func(id, spec string, fn func()) error
 	// RegisterHealth adds one bounded component status to the public liveness
 	// response. Probes must return only a stable state, never error details.
 	RegisterHealth func(name string, probe func(context.Context) string)

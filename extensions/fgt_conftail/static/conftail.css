@@ -293,3 +293,60 @@
     .ct-coverage-summary { flex-wrap: wrap; }
     .ct-coverage-summary .ct-count { flex-basis: 100%; margin-left: 34px; }
 }
+.ct-virtual-row,
+.ct-virtual-item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 4.5rem;
+}
+
+.ct-virtual-item {
+    contain-intrinsic-size: auto 12rem;
+}
+
+.ct-filter-search {
+    grid-column: span 2;
+}
+
+.ct-column-settings > summary {
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.ct-help {
+    color: var(--text-muted, #667085);
+    margin: .75rem 0;
+}
+
+.ct-column-options {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+}
+
+.ct-column-options fieldset {
+    border: 1px solid var(--border, #d0d5dd);
+    display: grid;
+    gap: .5rem;
+    padding: .75rem;
+}
+
+.ct-column-options label {
+    align-items: center;
+    display: flex;
+    gap: .5rem;
+}
+
+[data-ct-column][hidden] {
+    display: none;
+}
+
+.ct-code {
+    color: var(--text-dim);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .08em;
+}
+
+@media (max-width: 640px) {
+    .ct-filter-search { grid-column: auto; }
+}
