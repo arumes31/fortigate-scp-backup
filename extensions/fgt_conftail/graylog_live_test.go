@@ -127,6 +127,9 @@ func TestGraylogLiveConfTailQueries(t *testing.T) {
 	totalRows := 0
 	missingEventTimes := 0
 	for _, event := range baseEvents {
+		if _, ok := allowedConfigLogIDs[event.LogID]; !ok {
+			t.Fatalf("ConfTail base query returned unsupported log ID %q", event.LogID)
+		}
 		if event.EventTime.String() == "" {
 			missingEventTimes++
 		}
@@ -143,6 +146,9 @@ func TestGraylogLiveConfTailQueries(t *testing.T) {
 		for _, event := range events {
 			if _, allowed := allowedSources[event.Source]; !allowed {
 				t.Fatalf("source group %d returned a row outside its requested aliases", groupIndex+1)
+			}
+			if _, ok := allowedConfigLogIDs[event.LogID]; !ok {
+				t.Fatalf("source group %d returned unsupported log ID %q", groupIndex+1, event.LogID)
 			}
 			if event.EventTime.String() == "" {
 				missingEventTimes++

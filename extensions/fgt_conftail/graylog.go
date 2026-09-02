@@ -27,6 +27,7 @@ const (
 	graylogMaxSourceAliasSize = 512
 	graylogMaxQuerySize       = 32 << 10
 	graylogMaxEventTimeDigits = 128
+	graylogCanonicalLogIDSize = 10
 )
 
 var graylogSelectedFields = []string{
@@ -423,8 +424,16 @@ func rawEventFromRow(row []any, indexes map[string]int) (RawEvent, error) {
 		return RawEvent{}, err
 	}
 
+	logID, err := graylogLogID(row[indexes["logid"]])
+	if err != nil {
+		return RawEvent{}, fmt.Errorf("field logid: %w", err)
+	}
+
 	values := make(map[string]string, len(graylogSelectedFields))
 	for _, field := range graylogSelectedFields[3:] {
+		if field == "logid" {
+			continue
+		}
 		value, err := graylogScalarString(row[indexes[field]])
 		if err != nil {
 			return RawEvent{}, fmt.Errorf("field %s: %w", field, err)
@@ -448,7 +457,7 @@ func rawEventFromRow(row []any, indexes map[string]int) (RawEvent, error) {
 		ConfigPath:          values["cfgpath"],
 		ConfigObject:        values["cfgobj"],
 		ConfigAttribute:     values["cfgattr"],
-		LogID:               values["logid"],
+		LogID:               logID,
 		LogDescription:      values["logdesc"],
 		Message:             values["msg"],
 		UUID:                values["uuid"],
@@ -484,6 +493,37 @@ func graylogEventTime(value any) (json.Number, error) {
 		return "", fmt.Errorf("field eventtime must be a non-negative integer: %w", err)
 	}
 	return json.Number(integer), nil
+}
+
+func graylogLogID(value any) (string, error) {
+	if value == nil {
+		return "", nil
+	}
+	var text string
+	switch value := value.(type) {
+	case json.Number:
+		text = value.String()
+	case string:
+		text = strings.TrimSpace(value)
+	default:
+		return "", fmt.Errorf("must be an integer, got %T", value)
+	}
+	if text == "" {
+		return "", nil
+	}
+
+	integer, err := normalizeDecimalInteger(text)
+	if err != nil {
+		return "", fmt.Errorf("must be a non-negative integer: %w", err)
+	}
+	switch len(integer) {
+	case graylogCanonicalLogIDSize - 1:
+		return "0" + integer, nil
+	case graylogCanonicalLogIDSize:
+		return integer, nil
+	default:
+		return "", fmt.Errorf("must contain %d decimal digits", graylogCanonicalLogIDSize)
+	}
 }
 
 func normalizeDecimalInteger(text string) (string, error) {

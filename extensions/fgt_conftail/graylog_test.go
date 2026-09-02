@@ -351,6 +351,49 @@ func TestGraylogEventTimeRejectsNonIntegerRepresentations(t *testing.T) {
 	}
 }
 
+func TestGraylogLogIDCanonicalizesNumericRepresentations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "missing value", value: nil, want: ""},
+		{name: "blank string", value: " ", want: ""},
+		{name: "canonical string", value: "0100044546", want: "0100044546"},
+		{name: "JSON number without leading zero", value: json.Number("100044546"), want: "0100044546"},
+		{name: "scientific JSON number", value: json.Number("1.00044546E+8"), want: "0100044546"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := graylogLogID(test.value)
+			if err != nil {
+				t.Fatalf("graylogLogID(%q) error = %v", test.value, err)
+			}
+			if got != test.want {
+				t.Fatalf("graylogLogID(%q) = %q, want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestGraylogLogIDRejectsInvalidRepresentations(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []any{
+		json.Number("1.5"),
+		json.Number("-100044546"),
+		"10004454",
+		"10004454600",
+	} {
+		if got, err := graylogLogID(value); err == nil {
+			t.Errorf("graylogLogID(%q) = %q, want an error", value, got)
+		}
+	}
+}
+
 func TestGraylogFetchRejectsUntrustedResponses(t *testing.T) {
 	t.Parallel()
 
