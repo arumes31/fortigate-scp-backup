@@ -49,7 +49,7 @@ type indexData struct {
 	Error           string
 	Firewalls       []models.Firewall
 	NextRuns        map[int]time.Time
-	PendingHostKeys map[int]sshhostkey.PendingKey
+	PendingHostKeys map[int]*sshhostkey.PendingKey
 }
 
 type backupsData struct {
@@ -277,14 +277,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nextRuns := make(map[int]time.Time, len(fws))
-	pendingHostKeys := make(map[int]sshhostkey.PendingKey)
+	pendingHostKeys := make(map[int]*sshhostkey.PendingKey)
 	for _, fw := range fws {
 		if info, ok := s.sched.Info(BackupJobID(fw.ID)); ok {
 			nextRuns[fw.ID] = info.NextRun
 		}
 		if s.hostKeyManager != nil {
 			if pending, ok := s.hostKeyManager.Pending(fw.FQDN, fw.SSHPort); ok {
-				pendingHostKeys[fw.ID] = pending
+				pendingHostKeys[fw.ID] = &pending
 			}
 		}
 	}

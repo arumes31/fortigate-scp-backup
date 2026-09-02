@@ -36,7 +36,7 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 	s.render(recorder, "index.html", indexData{
 		Base:      BaseData{Title: "Firewalls"},
 		Firewalls: []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}},
-		PendingHostKeys: map[int]sshhostkey.PendingKey{
+		PendingHostKeys: map[int]*sshhostkey.PendingKey{
 			7: {Algorithm: "ssh-ed25519", Fingerprint: "SHA256:detected"},
 		},
 	})
@@ -46,6 +46,49 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rendered firewall page missing %q", want)
 		}
+	}
+}
+
+func TestIndexOmitsSSHHostKeyAcceptanceWithoutPendingKey(t *testing.T) {
+	tests := []struct {
+		name            string
+		pendingHostKeys map[int]*sshhostkey.PendingKey
+	}{
+		{
+			name: "nil map",
+		},
+		{
+			name:            "empty map",
+			pendingHostKeys: map[int]*sshhostkey.PendingKey{},
+		},
+		{
+			name: "different firewall",
+			pendingHostKeys: map[int]*sshhostkey.PendingKey{
+				8: {Algorithm: "ssh-ed25519", Fingerprint: "SHA256:other"},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := &Server{logger: slog.New(slog.DiscardHandler)}
+			if err := s.parseTemplates(); err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			s.render(recorder, "index.html", indexData{
+				Base:            BaseData{Title: "Firewalls"},
+				Firewalls:       []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}},
+				PendingHostKeys: test.pendingHostKeys,
+			})
+
+			body := recorder.Body.String()
+			for _, unwanted := range []string{"SSH host key changed", "Accept new SSH key", `/ssh_host_key/accept/7`} {
+				if strings.Contains(body, unwanted) {
+					t.Errorf("rendered firewall page unexpectedly contains %q", unwanted)
+				}
+			}
+		})
 	}
 }
 
