@@ -19,6 +19,7 @@ func TestNewHookwiseClientRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{name: "empty endpoint", endpoint: "", token: "token"},
 		{name: "relative endpoint", endpoint: "/w/endpoint", token: "token"},
+		{name: "plain HTTP endpoint", endpoint: "http://hookwise.example/w/endpoint", token: "token"},
 		{name: "unsupported endpoint scheme", endpoint: "ftp://hookwise.example/w/endpoint", token: "token"},
 		{name: "endpoint without host", endpoint: "https:///w/endpoint", token: "token"},
 		{name: "endpoint with credentials", endpoint: "https://unsafe:secret@hookwise.example/w/endpoint", token: "token"},
@@ -64,7 +65,7 @@ func TestHookwiseClientSendPostsFrozenPayload(t *testing.T) {
 	}
 
 	requests := make(chan capturedRequest, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		requests <- capturedRequest{
 			method:        r.Method,
@@ -442,7 +443,7 @@ func requireHookwiseError(t *testing.T, err error) *hookwiseError {
 }
 
 func hookwiseResponseServer(status int, retryAfter string, body string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if retryAfter != "" {
 			w.Header().Set("Retry-After", retryAfter)
 		}

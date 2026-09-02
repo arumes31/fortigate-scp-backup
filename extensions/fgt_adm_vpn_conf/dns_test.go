@@ -92,6 +92,83 @@ func TestDnsCheckDue(t *testing.T) {
 	}
 }
 
+func TestUpdateDNSStatusDiscardsStaleEndpointResult(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "fgt-adm-vpn-conf-db.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := db.Exec(
+		`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+		 dns_name_full, last_dns_status, last_dns_resolved)
+		 VALUES ('cust', 'site', '10.105.1.1', 'fw-a', '123', 'old.adm.example', 'unknown', '')`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`UPDATE vpn_config
+		 SET dns_name_full = 'new.adm.example', remoteip_full = '10.105.1.2'
+		 WHERE id = ?`,
+		id,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Extension{db: db}
+	checkedAt := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
+	if err := e.updateDNSStatus(
+		id,
+		"old.adm.example",
+		"10.105.1.1",
+		checkedAt,
+		dnsStatusMismatch,
+		"10.105.1.99",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var status, resolved string
+	var lastCheck any
+	if err := db.QueryRow(
+		`SELECT last_dns_status, last_dns_resolved, last_dns_check FROM vpn_config WHERE id = ?`,
+		id,
+	).Scan(&status, &resolved, &lastCheck); err != nil {
+		t.Fatal(err)
+	}
+	if status != dnsStatusUnknown || resolved != "" || lastCheck != nil {
+		t.Fatalf("stale result was persisted: status=%q resolved=%q checked=%v", status, resolved, lastCheck)
+	}
+
+	if err := e.updateDNSStatus(
+		id,
+		"new.adm.example",
+		"10.105.1.2",
+		checkedAt,
+		dnsStatusOK,
+		"10.105.1.2",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(
+		`SELECT last_dns_status, last_dns_resolved FROM vpn_config WHERE id = ?`,
+		id,
+	).Scan(&status, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	if status != dnsStatusOK || resolved != "10.105.1.2" {
+		t.Fatalf("matching result was not persisted: status=%q resolved=%q", status, resolved)
+	}
+}
+
 // TestDNSSweep verifies one pass over the table: due devices are re-checked
 // per their status cadence (24h for ok, 10min otherwise), fresh ones are
 // skipped without a lookup, and rows with nothing to validate are reset to

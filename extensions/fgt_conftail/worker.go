@@ -28,6 +28,7 @@ type graylogFetcher interface {
 type pollCycleStats struct {
 	Pages      int
 	Fetched    int
+	Skipped    int
 	Inserted   int
 	Duplicates int
 	Sealed     int
@@ -69,6 +70,14 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	if w.publishCatalog != nil {
 		w.publishCatalog(catalog)
 	}
+	sourceGroups := catalog.sourceGroups()
+	if len(sourceGroups) == 0 {
+		return pollCycleStats{}, w.recordFailure(
+			ctx,
+			startedAt,
+			errors.New("conftail source catalog has no queryable aliases"),
+		)
+	}
 	state, err := w.store.pollState(ctx)
 	if err != nil {
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
@@ -97,7 +106,7 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	var normalizedBytes int64
 	stats := pollCycleStats{}
 	queryFingerprint := graylogQueryFingerprint(w.query)
-	for _, sources := range catalog.sourceGroups() {
+	for _, sources := range sourceGroups {
 		if w.logger != nil {
 			w.logger.Info(
 				"conftail Graylog query started",
@@ -141,8 +150,8 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 			}
 			firewall, ok := catalog.resolve(rawEvents[index].Source)
 			if !ok {
-				err := fmt.Errorf("graylog row %d has an unregistered or ambiguous source", index+1)
-				return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+				stats.Skipped++
+				continue
 			}
 			event, normalizeErr := normalizeRawEvent(rawEvents[index], firewall, pollEnd)
 			if normalizeErr != nil {

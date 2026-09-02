@@ -215,7 +215,7 @@ func validHookwiseEndpoint(endpoint *url.URL) bool {
 		endpoint.RawQuery != "" || endpoint.RawPath != "" || endpoint.Opaque != "" {
 		return false
 	}
-	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+	if endpoint.Scheme != "https" {
 		return false
 	}
 	const prefix = "/w/"

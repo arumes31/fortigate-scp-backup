@@ -189,6 +189,7 @@ func (e *Extension) runPoll() {
 		"conftail poll completed",
 		"pages", stats.Pages,
 		"fetched", stats.Fetched,
+		"skipped", stats.Skipped,
 		"inserted", stats.Inserted,
 		"duplicates", stats.Duplicates,
 		"sealed", stats.Sealed,

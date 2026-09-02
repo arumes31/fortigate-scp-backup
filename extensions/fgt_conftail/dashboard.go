@@ -696,7 +696,9 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		e.logger.Error("conftail: chain dashboard query failed", "err", sanitizeDeliveryError(err))
+		if e.logger != nil {
+			e.logger.Error("conftail: chain dashboard query failed", "err", sanitizeDeliveryError(err))
+		}
 		http.Error(w, "Unable to load configuration change session", http.StatusInternalServerError)
 		return
 	}
@@ -721,7 +723,9 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	}
 	var output bytes.Buffer
 	if err := e.tmpl.ExecuteTemplate(&output, "chain.html", view); err != nil {
-		e.logger.Error("conftail: chain dashboard template failed", "err", err)
+		if e.logger != nil {
+			e.logger.Error("conftail: chain dashboard template failed", "err", err)
+		}
 		http.Error(w, "Unable to render configuration change session", http.StatusInternalServerError)
 		return
 	}
@@ -876,14 +880,14 @@ func dashboardChainPageURL(chainID string, page int) string {
 
 func formatDashboardTime(value time.Time) string {
 	if value.IsZero() {
-		return "—"
+		return "-"
 	}
 	return value.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
 func formatDashboardDuration(value time.Duration) string {
 	if value <= 0 {
-		return "—"
+		return "-"
 	}
 	return value.Round(time.Nanosecond).String()
 }

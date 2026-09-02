@@ -112,15 +112,19 @@ func TestNvdEntryToDef(t *testing.T) {
 	}
 }
 
-func TestNvdEntryToDefKeepsEndOnlyAndNeverFixedRanges(t *testing.T) {
+func TestNvdEntryToDefCollapsesRangesByTrain(t *testing.T) {
 	const sample = `{
 		"vulnerabilities": [{
 			"cve": {
 				"id": "CVE-2099-9998",
 				"descriptions": [{"lang": "en", "value": "range edge cases"}],
 				"configurations": [{"nodes": [{"cpeMatch": [
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "7.4.0"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "6.0.0"},
 					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "7.4.3"},
-					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "6.0.0"}
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "7.4.5"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "6.0.2"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "7.2.0"}
 				]}]}]
 			}
 		}]
@@ -133,7 +137,11 @@ func TestNvdEntryToDefKeepsEndOnlyAndNeverFixedRanges(t *testing.T) {
 	if !ok {
 		t.Fatal("entry with valid end-only and never-fixed ranges was discarded")
 	}
-	want := []cveRange{{major: 7, minor: 4, fixedPatch: 3}, {major: 6, minor: 0, fixedPatch: neverFixed}}
+	want := []cveRange{
+		{major: 7, minor: 4, fixedPatch: 5},
+		{major: 6, minor: 0, fixedPatch: 2},
+		{major: 7, minor: 2, fixedPatch: neverFixed},
+	}
 	if len(def.ranges) != len(want) {
 		t.Fatalf("ranges = %+v, want %+v", def.ranges, want)
 	}

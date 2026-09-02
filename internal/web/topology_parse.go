@@ -426,6 +426,10 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 		}
 		if v, _, ok := doc.settingDirect(b, "subnet"); ok {
 			if f := strings.Fields(v); len(f) >= 1 {
+				if f[0] == "0.0.0.0/0" ||
+					(f[0] == "0.0.0.0" && len(f) > 1 && f[1] == "0.0.0.0") {
+					continue
+				}
 				ao := AddressObject{Name: b.Name, IP: f[0]}
 				if len(f) > 1 {
 					ao.Mask = f[1]

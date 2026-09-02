@@ -739,11 +739,13 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	if err := e.storeSwitchEdges(1, []SwitchEdge{{
-		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port29"},
+		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port28", "port29"},
 	}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.storeStp(1, []StpPort{
+		// Role alone can block a forwarding trunk leg; report the triggering role.
+		{SwitchName: "SW1", Port: "port28", Role: "alternate", State: "forwarding", LastChange: "T1"},
 		// Trunk leg out of forwarding: a real broken loop → listed.
 		{SwitchName: "SW1", Port: "port29", Role: "alternate", State: "discarding", LastChange: "T1"},
 		// Access port whose client went away: role disabled/discarding → NOT listed.
@@ -779,17 +781,22 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotPorts := map[string]bool{}
+	gotPorts := map[string]string{}
 	for _, b := range blocked {
-		gotPorts[b.Switch+"|"+b.Port] = true
+		gotPorts[b.Switch+"|"+b.Port] = b.Reason
 	}
-	if len(blocked) != 3 || !gotPorts["SW1|port29"] || !gotPorts["SW1|port6"] || !gotPorts["SW2|port1"] {
+	if len(blocked) != 4 || gotPorts["SW1|port28"] == "" || gotPorts["SW1|port29"] == "" ||
+		gotPorts["SW1|port6"] == "" || gotPorts["SW2|port1"] == "" {
 		t.Fatalf("edge gate wrong, got %+v", blocked)
 	}
-	if gotPorts["SW1|port5"] {
+	if gotPorts["SW1|port28"] != "alternate" || gotPorts["SW1|port29"] != "discarding" ||
+		gotPorts["SW1|port6"] != "bpdu-guard" {
+		t.Fatalf("blocked reasons do not identify the triggering condition: %+v", blocked)
+	}
+	if gotPorts["SW1|port5"] != "" {
 		t.Fatalf("edge port in discarding must not be listed: %+v", blocked)
 	}
-	if gotPorts["SW9|port2"] {
+	if gotPorts["SW9|port2"] != "" {
 		t.Fatalf("another firewall's switch name must not classify fw 2's port: %+v", blocked)
 	}
 }

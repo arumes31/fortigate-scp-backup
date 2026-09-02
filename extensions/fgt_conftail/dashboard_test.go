@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -151,6 +152,97 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid chain status = %d, want 400", invalid.Code)
 	}
+}
+
+func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
+	t.Run("query failure", func(t *testing.T) {
+		s := newTestStore(t, time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
+		if err := s.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		tmpl, err := parseDashboardTemplate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		extension := &Extension{store: s, tmpl: tmpl}
+		response := serveDashboardChain(
+			t,
+			extension,
+			"11111111-2222-3333-4444-555555555555",
+		)
+		if response.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", response.Code)
+		}
+	})
+
+	t.Run("template failure", func(t *testing.T) {
+		base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+		s := newTestStore(t, base)
+		if _, err := s.applyPoll(context.Background(), pollBatch{
+			EndedAt: base.Add(time.Minute),
+			Events:  []Event{testEvent(1, "fw-a", "alice", "m-1", base.Add(time.Second))},
+		}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+			t.Fatal(err)
+		}
+		extension := &Extension{
+			cfg:   &config.Config{ExtFgtConfTail: true},
+			store: s,
+			tmpl:  template.New("root"),
+		}
+		response := serveDashboardChain(t, extension, chainIDForUser(t, s, "alice"))
+		if response.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", response.Code)
+		}
+	})
+}
+
+func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := dashboardPageData{
+		Base:      conftailBaseData{ExtAdmVPNEnabled: true},
+		Dashboard: dashboardData{TotalPages: 1},
+		Filters:   dashboardFilterView{State: dashboardStateAll, Page: 1},
+		Coverage: []sourceCoverage{{
+			FirewallID:   1,
+			FirewallName: "fw-a.example.com",
+			Aliases:      []string{"fw-a"},
+		}},
+	}
+	var output bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	if !strings.Contains(body, `<details class="card ct-coverage">`) {
+		t.Fatalf("coverage is not rendered as a disclosure: %q", body)
+	}
+	if strings.Contains(body, `<details class="card ct-coverage" open`) {
+		t.Fatal("coverage disclosure is open by default")
+	}
+
+	page.Base.ExtAdmVPNEnabled = false
+	output.Reset()
+	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "Graylog source coverage") {
+		t.Fatal("coverage is shown while ADM VPN Config is disabled")
+	}
+}
+
+func serveDashboardChain(t *testing.T, extension *Extension, chainID string) *httptest.ResponseRecorder {
+	t.Helper()
+	router := chi.NewRouter()
+	router.Get("/chain/{chainID}", extension.dashboardChain)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/chain/"+chainID, nil),
+	)
+	return response
 }
 
 func TestDashboardVDOMsReportsAllDistinctOmittedVDOMs(t *testing.T) {

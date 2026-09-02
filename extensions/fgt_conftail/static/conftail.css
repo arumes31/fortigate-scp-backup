@@ -7,9 +7,50 @@
 
 .ct-metrics {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 14px;
     margin-bottom: 20px;
+}
+
+.ct-coverage {
+    padding: 0;
+}
+
+.ct-coverage-summary {
+    align-items: center;
+    cursor: pointer;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 18px 22px;
+}
+
+.ct-coverage-summary::before {
+    color: var(--accent);
+    content: "[+]";
+    font-weight: 700;
+}
+
+.ct-coverage[open] > .ct-coverage-summary::before {
+    content: "[-]";
+}
+
+.ct-coverage-summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+}
+
+.ct-coverage-title {
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    margin-right: auto;
+}
+
+.ct-coverage-body {
+    border-top: 1px solid var(--border-soft);
+    padding: 18px 22px 20px;
 }
 
 .ct-metric {
@@ -218,4 +259,6 @@
     .ct-filter-actions { align-items: stretch; flex-direction: column; }
     .ct-filter-actions .btn { justify-content: center; }
     .ct-session-summary { grid-template-columns: 1fr; }
+    .ct-coverage-summary { flex-wrap: wrap; }
+    .ct-coverage-summary .ct-count { flex-basis: 100%; margin-left: 34px; }
 }
