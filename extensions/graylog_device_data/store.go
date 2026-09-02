@@ -575,7 +575,7 @@ type BlockedPort struct {
 	FwID   int
 	Switch string
 	Port   string
-	Reason string // guard kind, else STP state, else role
+	Reason string // guard kind, else blocking STP state, else blocked role
 	Since  string
 }
 
@@ -635,7 +635,7 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 		switch {
 		case c.guard != "":
 			c.Reason = c.guard
-		case c.state != "":
+		case strings.EqualFold(c.state, "discarding") || strings.EqualFold(c.state, "blocking"):
 			c.Reason = c.state
 		default:
 			c.Reason = c.role

@@ -571,7 +571,6 @@ end
 config vpn ssl settings
 set status enable
 set source-interface "wan1"
-next
 end
 config firewall policy
 edit 1

@@ -1,6 +1,7 @@
 package fgtconftail
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -87,6 +88,9 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	if err := e.Mount(router, deps); err != nil {
 		t.Fatalf("Mount() error = %v", err)
 	}
+	if e.poller == nil || e.poller.logger == nil {
+		t.Fatal("mounted poll worker does not use the application logger")
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
@@ -152,6 +156,51 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	}
 	if jobs[1].id != conftailDeliveryJobID || jobs[1].interval != time.Minute || jobs[1].fn == nil {
 		t.Fatalf("delivery job = %+v", jobs[1])
+	}
+}
+
+func TestRunPollLogsSkippedGraylogRows(t *testing.T) {
+	activation := time.Now().UTC().Add(-time.Hour)
+	s := newTestStore(t, activation)
+	catalog, err := buildSourceCatalog(
+		context.Background(),
+		[]firewallRef{{ID: 1, Name: "fw-a.example.com"}},
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &pollWorker{
+		store: s,
+		graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
+			return []RawEvent{
+				rawConfigEvent("unknown", "not-registered", "admin-a", "tx-1", activation.Add(time.Minute)),
+			}, FetchStats{Pages: 1, Rows: 1}, nil
+		}},
+		loadCatalog:         func(context.Context) (sourceCatalog, error) { return catalog, nil },
+		query:               "type:event",
+		overlap:             time.Hour,
+		idle:                30 * time.Minute,
+		maxDescriptionBytes: 60_000,
+		missingUserWindow:   5 * time.Minute,
+	}
+	var output bytes.Buffer
+	e := &Extension{
+		cfg:      &config.Config{FgtConfTailRetentionDays: 365},
+		logger:   slog.New(slog.NewJSONHandler(&output, nil)),
+		ctx:      context.Background(),
+		store:    s,
+		hookwise: &hookwiseClient{},
+		poller:   worker,
+	}
+	e.runPoll()
+	for _, want := range []string{
+		`"msg":"conftail poll completed"`,
+		`"skipped":1`,
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("poll completion log does not contain %q:\n%s", want, output.String())
+		}
 	}
 }
 

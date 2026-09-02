@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -650,6 +651,22 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to render configuration change dashboard", http.StatusInternalServerError)
 		return
 	}
+	if e.logger != nil {
+		e.logger.InfoContext(
+			r.Context(),
+			"conftail dashboard queried",
+			"actor", sanitizeExternalString(username, maxIdentityRunes),
+			"firewall_id", filters.FirewallID,
+			"user_filter_set", filters.User != "",
+			"state", filters.State,
+			"from", dashboardLogTime(filters.From),
+			"to", dashboardLogTime(filters.To),
+			"page", filters.Page,
+			"active_rows", len(data.Active),
+			"history_rows", len(data.History),
+			"reqid", middleware.GetReqID(r.Context()),
+		)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
 }
@@ -679,7 +696,9 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		e.logger.Error("conftail: chain dashboard query failed", "err", sanitizeDeliveryError(err))
+		if e.logger != nil {
+			e.logger.Error("conftail: chain dashboard query failed", "err", sanitizeDeliveryError(err))
+		}
 		http.Error(w, "Unable to load configuration change session", http.StatusInternalServerError)
 		return
 	}
@@ -704,9 +723,24 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	}
 	var output bytes.Buffer
 	if err := e.tmpl.ExecuteTemplate(&output, "chain.html", view); err != nil {
-		e.logger.Error("conftail: chain dashboard template failed", "err", err)
+		if e.logger != nil {
+			e.logger.Error("conftail: chain dashboard template failed", "err", err)
+		}
 		http.Error(w, "Unable to render configuration change session", http.StatusInternalServerError)
 		return
+	}
+	if e.logger != nil {
+		e.logger.InfoContext(
+			r.Context(),
+			"conftail session queried",
+			"actor", sanitizeExternalString(username, maxIdentityRunes),
+			"chain_id", chainID,
+			"state", chain.State,
+			"page", pageNumber,
+			"total_pages", totalPages,
+			"event_rows", len(chain.Events),
+			"reqid", middleware.GetReqID(r.Context()),
+		)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
@@ -726,6 +760,13 @@ func parseDashboardChainRequest(r *http.Request) (string, int, error) {
 		}
 	}
 	return parsedID.String(), page, nil
+}
+
+func dashboardLogTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (e *Extension) conftailBaseData(username string) conftailBaseData {
@@ -839,14 +880,14 @@ func dashboardChainPageURL(chainID string, page int) string {
 
 func formatDashboardTime(value time.Time) string {
 	if value.IsZero() {
-		return "—"
+		return "-"
 	}
 	return value.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
 func formatDashboardDuration(value time.Duration) string {
 	if value <= 0 {
-		return "—"
+		return "-"
 	}
 	return value.Round(time.Nanosecond).String()
 }

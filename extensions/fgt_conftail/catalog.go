@@ -40,6 +40,7 @@ type sourceCatalog struct {
 type catalogFirewall struct {
 	ref      firewallRef
 	warnings map[string]struct{}
+	enabled  bool
 }
 
 type aliasCandidate struct {
@@ -52,6 +53,7 @@ type admAliasRow struct {
 	dnsName          string
 	dnsNameFull      string
 	clusterHostnames string
+	graylogEnabled   bool
 }
 
 type catalogBuilder struct {
@@ -113,8 +115,11 @@ func buildSourceCatalog(
 		return firewalls[i].ID < firewalls[j].ID
 	})
 
-	builder := newCatalogBuilder(firewalls)
 	rows, isMissing, err := readADMAliasRows(ctx, dataDir)
+	// Once the ADM VPN database exists, its per-firewall graylog_enabled flag
+	// is authoritative. Before that optional database exists, retain the
+	// registered-firewall fallback used during startup and standalone installs.
+	builder := newCatalogBuilder(firewalls, !isMissing)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return sourceCatalog{}, contextErr
@@ -129,7 +134,7 @@ func buildSourceCatalog(
 	return builder.build(), nil
 }
 
-func newCatalogBuilder(registered []firewallRef) *catalogBuilder {
+func newCatalogBuilder(registered []firewallRef, requireADMGraylogEnabled bool) *catalogBuilder {
 	builder := &catalogBuilder{
 		firewalls:       make([]catalogFirewall, 0, len(registered)),
 		aliasCandidates: make(map[string]*aliasCandidate),
@@ -150,24 +155,15 @@ func newCatalogBuilder(registered []firewallRef) *catalogBuilder {
 		full, fullOK := normalizeSourceAlias(registeredFirewall.Name)
 		if fullOK {
 			builder.fullNames[full] = append(builder.fullNames[full], index)
-			builder.addAlias(index, registeredFirewall.Name, "registered firewall name")
-		} else {
-			builder.addFirewallWarning(
-				index,
-				fmt.Sprintf("registered firewall %d has an invalid FQDN source alias", registeredFirewall.ID),
-			)
 		}
 
 		shortName := shortFQDN(registeredFirewall.Name)
 		short, shortOK := normalizeSourceAlias(shortName)
 		if shortOK {
 			builder.shortNames[short] = append(builder.shortNames[short], index)
-			builder.addAlias(index, shortName, "short-FQDN fallback")
-		} else {
-			builder.addFirewallWarning(
-				index,
-				fmt.Sprintf("registered firewall %d has no valid short-FQDN source alias", registeredFirewall.ID),
-			)
+		}
+		if !requireADMGraylogEnabled {
+			builder.enableFirewall(index)
 		}
 	}
 
@@ -182,6 +178,9 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 	})
 
 	for _, row := range rows {
+		if !row.graylogEnabled {
+			continue
+		}
 		matches := b.matchRegisteredFirewalls(row)
 		if len(matches) == 0 {
 			continue
@@ -200,6 +199,7 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 		}
 
 		index := matches[0]
+		b.enableFirewall(index)
 		usable := false
 		if strings.TrimSpace(row.firewallName) != "" {
 			usable = b.addAlias(index, row.firewallName, "ADM VPN firewallname") || usable
@@ -220,6 +220,31 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 				),
 			)
 		}
+	}
+}
+
+func (b *catalogBuilder) enableFirewall(index int) {
+	if index < 0 || index >= len(b.firewalls) || b.firewalls[index].enabled {
+		return
+	}
+	b.firewalls[index].enabled = true
+	registered := b.firewalls[index].ref
+	if _, ok := normalizeSourceAlias(registered.Name); ok {
+		b.addAlias(index, registered.Name, "registered firewall name")
+	} else {
+		b.addFirewallWarning(
+			index,
+			fmt.Sprintf("registered firewall %d has an invalid FQDN source alias", registered.ID),
+		)
+	}
+	shortName := shortFQDN(registered.Name)
+	if _, ok := normalizeSourceAlias(shortName); ok {
+		b.addAlias(index, shortName, "short-FQDN fallback")
+	} else {
+		b.addFirewallWarning(
+			index,
+			fmt.Sprintf("registered firewall %d has no valid short-FQDN source alias", registered.ID),
+		)
 	}
 }
 
@@ -332,6 +357,9 @@ func (b *catalogBuilder) build() sourceCatalog {
 
 	coverageRows := make([]sourceCoverage, 0, len(b.firewalls))
 	for index := range b.firewalls {
+		if !b.firewalls[index].enabled {
+			continue
+		}
 		aliasesForFirewall := acceptedByFirewall[index]
 		if len(aliasesForFirewall) == 0 {
 			warning := fmt.Sprintf(
@@ -444,7 +472,8 @@ func readADMAliasRows(
 
 	rows, err := db.QueryContext(ctx, `SELECT COALESCE(firewallname, ''),
 		COALESCE(dns_name, ''), COALESCE(dns_name_full, ''),
-		COALESCE(cluster_hostnames, '') FROM vpn_config`)
+		COALESCE(cluster_hostnames, ''), COALESCE(graylog_enabled, 0)
+		FROM vpn_config`)
 	if err != nil {
 		return nil, false, fmt.Errorf("query adm vpn aliases: %w", err)
 	}
@@ -462,6 +491,7 @@ func readADMAliasRows(
 			&row.dnsName,
 			&row.dnsNameFull,
 			&row.clusterHostnames,
+			&row.graylogEnabled,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan adm vpn alias row: %w", err)
 		}

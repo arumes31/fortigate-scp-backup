@@ -2,8 +2,10 @@ package fgtconftail
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -26,6 +28,7 @@ type graylogFetcher interface {
 type pollCycleStats struct {
 	Pages      int
 	Fetched    int
+	Skipped    int
 	Inserted   int
 	Duplicates int
 	Sealed     int
@@ -33,6 +36,7 @@ type pollCycleStats struct {
 
 type pollWorker struct {
 	store               *store
+	logger              *slog.Logger
 	graylog             graylogFetcher
 	loadCatalog         func(context.Context) (sourceCatalog, error)
 	publishCatalog      func(sourceCatalog)
@@ -66,6 +70,14 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	if w.publishCatalog != nil {
 		w.publishCatalog(catalog)
 	}
+	sourceGroups := catalog.sourceGroups()
+	if len(sourceGroups) == 0 {
+		return pollCycleStats{}, w.recordFailure(
+			ctx,
+			startedAt,
+			errors.New("conftail source catalog has no queryable aliases"),
+		)
+	}
 	state, err := w.store.pollState(ctx)
 	if err != nil {
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
@@ -93,11 +105,34 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	}
 	var normalizedBytes int64
 	stats := pollCycleStats{}
-	for _, sources := range catalog.sourceGroups() {
+	queryFingerprint := graylogQueryFingerprint(w.query)
+	for _, sources := range sourceGroups {
+		if w.logger != nil {
+			w.logger.Info(
+				"conftail Graylog query started",
+				"query_sha256", queryFingerprint,
+				"query_bytes", len(w.query),
+				"source_count", len(sources),
+				"from", from,
+				"to", pollEnd,
+			)
+		}
 		rawEvents, fetchStats, fetchErr := w.graylog.fetch(ctx, w.query, sources, from, pollEnd)
 		stats.Pages += fetchStats.Pages
 		if fetchErr != nil {
 			return pollCycleStats{}, w.recordFailure(ctx, startedAt, fetchErr)
+		}
+		if w.logger != nil {
+			w.logger.Info(
+				"conftail Graylog query completed",
+				"query_sha256", queryFingerprint,
+				"query_bytes", len(w.query),
+				"source_count", len(sources),
+				"from", from,
+				"to", pollEnd,
+				"pages", fetchStats.Pages,
+				"rows", fetchStats.Rows,
+			)
 		}
 		stats.Fetched += len(rawEvents)
 		if stats.Fetched > maxEvents {
@@ -115,8 +150,8 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 			}
 			firewall, ok := catalog.resolve(rawEvents[index].Source)
 			if !ok {
-				err := fmt.Errorf("graylog row %d has an unregistered or ambiguous source", index+1)
-				return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+				stats.Skipped++
+				continue
 			}
 			event, normalizeErr := normalizeRawEvent(rawEvents[index], firewall, pollEnd)
 			if normalizeErr != nil {
@@ -153,6 +188,10 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	stats.Duplicates = result.Duplicates
 	stats.Sealed = result.Sealed
 	return stats, nil
+}
+
+func graylogQueryFingerprint(query string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(query)))
 }
 
 func normalizedEventBytes(event Event) int64 {

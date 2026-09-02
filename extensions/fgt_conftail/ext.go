@@ -131,6 +131,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	e.currentUser = deps.CurrentUser
 	e.poller = &pollWorker{
 		store:   store,
+		logger:  e.logger,
 		graylog: graylog,
 		loadCatalog: func(ctx context.Context) (sourceCatalog, error) {
 			return loadSourceCatalog(ctx, deps.DB, deps.DataDir)
@@ -188,6 +189,7 @@ func (e *Extension) runPoll() {
 		"conftail poll completed",
 		"pages", stats.Pages,
 		"fetched", stats.Fetched,
+		"skipped", stats.Skipped,
 		"inserted", stats.Inserted,
 		"duplicates", stats.Duplicates,
 		"sealed", stats.Sealed,

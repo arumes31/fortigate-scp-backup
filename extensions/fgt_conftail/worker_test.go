@@ -1,10 +1,14 @@
 package fgtconftail
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,6 +125,76 @@ func TestPollWorkerPersistsAttributedAndUnattributedChanges(t *testing.T) {
 	}
 }
 
+func TestPollWorkerLogsGraylogQueries(t *testing.T) {
+	t.Parallel()
+
+	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	pollEnd := activation.Add(15 * time.Minute)
+	s := newTestStore(t, activation)
+	catalog, err := buildSourceCatalog(
+		context.Background(),
+		[]firewallRef{{ID: 7, Name: "fw-a.example.com"}},
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	worker := pollWorker{
+		store:  s,
+		logger: slog.New(slog.NewJSONHandler(&output, nil)),
+		graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
+			return nil, FetchStats{Pages: 2, Rows: 3}, nil
+		}},
+		loadCatalog:         func(context.Context) (sourceCatalog, error) { return catalog, nil },
+		query:               "type:event AND logid:0100044544",
+		overlap:             time.Hour,
+		idle:                30 * time.Minute,
+		maxDescriptionBytes: 60_000,
+		missingUserWindow:   5 * time.Minute,
+	}
+	if _, err := worker.poll(context.Background(), pollEnd); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := output.String()
+	queryFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(worker.query)))
+	for _, want := range []string{
+		`"msg":"conftail Graylog query started"`,
+		`"msg":"conftail Graylog query completed"`,
+		`"query_sha256":"` + queryFingerprint + `"`,
+		fmt.Sprintf(`"query_bytes":%d`, len(worker.query)),
+		`"source_count":2`,
+		`"pages":2`,
+		`"rows":3`,
+		`"from":"2026-09-01T08:00:00Z"`,
+		`"to":"2026-09-01T08:15:00Z"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("ConfTail logs do not contain %q:\n%s", want, logs)
+		}
+	}
+	for _, unsafe := range []string{
+		"type:event AND logid:0100044544",
+		"graylog-token",
+		"fw-a",
+		"fw-a.example.com",
+	} {
+		if strings.Contains(logs, unsafe) {
+			t.Errorf("ConfTail logs expose %q:\n%s", unsafe, logs)
+		}
+	}
+}
+
+func TestGraylogQueryFingerprintDoesNotExposeConfiguredQuery(t *testing.T) {
+	t.Parallel()
+
+	const query = `type:event AND password:"super-secret"`
+	if got := graylogQueryFingerprint(query); got == "" || strings.Contains(got, "super-secret") {
+		t.Fatalf("graylogQueryFingerprint() = %q", got)
+	}
+}
+
 func TestPollWorkerDoesNotAdvanceOnPartialGraylogFailure(t *testing.T) {
 	t.Parallel()
 	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
@@ -175,7 +249,6 @@ func TestPollWorkerRejectsUnexpectedOrUnsupportedRows(t *testing.T) {
 		name   string
 		mutate func(*RawEvent)
 	}{
-		{name: "unregistered source", mutate: func(event *RawEvent) { event.Source = "not-registered" }},
 		{name: "unsupported log id", mutate: func(event *RawEvent) { event.LogID = "0100044548" }},
 		{name: "unsupported event type", mutate: func(event *RawEvent) { event.Type = "traffic" }},
 		{name: "unsupported event subtype", mutate: func(event *RawEvent) { event.Subtype = "vpn" }},
@@ -218,6 +291,87 @@ func TestPollWorkerRejectsUnexpectedOrUnsupportedRows(t *testing.T) {
 				t.Fatalf("events = %d, want 0 after rejected batch", got)
 			}
 		})
+	}
+}
+
+func TestPollWorkerSkipsUnregisteredSources(t *testing.T) {
+	t.Parallel()
+	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	pollEnd := activation.Add(15 * time.Minute)
+	s := newTestStore(t, activation)
+	catalog, err := buildSourceCatalog(
+		context.Background(),
+		[]firewallRef{{ID: 1, Name: "fw-a.example.com"}},
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := pollWorker{
+		store: s,
+		graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
+			return []RawEvent{
+				rawConfigEvent("unknown", "not-registered", "admin-a", "tx-1", activation.Add(time.Minute)),
+				rawConfigEvent("known", "fw-a", "admin-a", "tx-1", activation.Add(2*time.Minute)),
+			}, FetchStats{Pages: 1, Rows: 2}, nil
+		}},
+		loadCatalog:         func(context.Context) (sourceCatalog, error) { return catalog, nil },
+		query:               "type:event",
+		overlap:             time.Hour,
+		idle:                30 * time.Minute,
+		maxDescriptionBytes: 60_000,
+		missingUserWindow:   5 * time.Minute,
+	}
+
+	stats, err := worker.poll(context.Background(), pollEnd)
+	if err != nil {
+		t.Fatalf("poll() error = %v", err)
+	}
+	if stats.Fetched != 2 || stats.Skipped != 1 || stats.Inserted != 1 {
+		t.Fatalf("poll stats = %+v, want fetched/skipped/inserted 2/1/1", stats)
+	}
+	if got := countRows(t, s, "events"); got != 1 {
+		t.Fatalf("events = %d, want 1", got)
+	}
+	state, err := s.pollState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Watermark.Equal(pollEnd) || state.LastFetched != 2 || state.LastInserted != 1 {
+		t.Fatalf("poll state = %+v", state)
+	}
+}
+
+func TestPollWorkerDoesNotAdvanceWithoutQueryableSources(t *testing.T) {
+	t.Parallel()
+	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, activation)
+	worker := pollWorker{
+		store: s,
+		graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
+			t.Fatal("Graylog fetch must not run without queryable source aliases")
+			return nil, FetchStats{}, nil
+		}},
+		loadCatalog:         func(context.Context) (sourceCatalog, error) { return sourceCatalog{}, nil },
+		query:               "type:event",
+		overlap:             time.Hour,
+		idle:                30 * time.Minute,
+		maxDescriptionBytes: 60_000,
+		missingUserWindow:   5 * time.Minute,
+	}
+
+	if _, err := worker.poll(context.Background(), activation.Add(15*time.Minute)); err == nil {
+		t.Fatal("poll() succeeded without queryable source aliases")
+	}
+	state, err := s.pollState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Watermark.Equal(activation) {
+		t.Fatalf("watermark = %s, want unchanged %s", state.Watermark, activation)
+	}
+	if state.LastFailureAt.IsZero() || state.LastError == "" {
+		t.Fatalf("poll failure was not recorded: %+v", state)
 	}
 }
 

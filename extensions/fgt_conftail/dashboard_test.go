@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -84,9 +85,10 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
 	extension := &Extension{
 		cfg:         &config.Config{ExtFgtConfTail: true, FgtConfTailIdleSeconds: 1800},
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
 		store:       s,
 		tmpl:        tmpl,
 		currentUser: func(*http.Request) string { return "reviewer" },
@@ -111,6 +113,18 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	}
 	if strings.Contains(body, `method="post"`) {
 		t.Fatal("detail page contains a state-changing form")
+	}
+	for _, want := range []string{
+		`"msg":"conftail session queried"`,
+		`"actor":"reviewer"`,
+		`"chain_id":"` + chainID + `"`,
+		`"page":2`,
+		`"total_pages":2`,
+		`"event_rows":5`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("ConfTail session log does not contain %q:\n%s", want, logs.String())
+		}
 	}
 
 	if err := s.markAccepted(
@@ -138,6 +152,97 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid chain status = %d, want 400", invalid.Code)
 	}
+}
+
+func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
+	t.Run("query failure", func(t *testing.T) {
+		s := newTestStore(t, time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
+		if err := s.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		tmpl, err := parseDashboardTemplate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		extension := &Extension{store: s, tmpl: tmpl}
+		response := serveDashboardChain(
+			t,
+			extension,
+			"11111111-2222-3333-4444-555555555555",
+		)
+		if response.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", response.Code)
+		}
+	})
+
+	t.Run("template failure", func(t *testing.T) {
+		base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+		s := newTestStore(t, base)
+		if _, err := s.applyPoll(context.Background(), pollBatch{
+			EndedAt: base.Add(time.Minute),
+			Events:  []Event{testEvent(1, "fw-a", "alice", "m-1", base.Add(time.Second))},
+		}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+			t.Fatal(err)
+		}
+		extension := &Extension{
+			cfg:   &config.Config{ExtFgtConfTail: true},
+			store: s,
+			tmpl:  template.New("root"),
+		}
+		response := serveDashboardChain(t, extension, chainIDForUser(t, s, "alice"))
+		if response.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", response.Code)
+		}
+	})
+}
+
+func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := dashboardPageData{
+		Base:      conftailBaseData{ExtAdmVPNEnabled: true},
+		Dashboard: dashboardData{TotalPages: 1},
+		Filters:   dashboardFilterView{State: dashboardStateAll, Page: 1},
+		Coverage: []sourceCoverage{{
+			FirewallID:   1,
+			FirewallName: "fw-a.example.com",
+			Aliases:      []string{"fw-a"},
+		}},
+	}
+	var output bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	if !strings.Contains(body, `<details class="card ct-coverage">`) {
+		t.Fatalf("coverage is not rendered as a disclosure: %q", body)
+	}
+	if strings.Contains(body, `<details class="card ct-coverage" open`) {
+		t.Fatal("coverage disclosure is open by default")
+	}
+
+	page.Base.ExtAdmVPNEnabled = false
+	output.Reset()
+	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "Graylog source coverage") {
+		t.Fatal("coverage is shown while ADM VPN Config is disabled")
+	}
+}
+
+func serveDashboardChain(t *testing.T, extension *Extension, chainID string) *httptest.ResponseRecorder {
+	t.Helper()
+	router := chi.NewRouter()
+	router.Get("/chain/{chainID}", extension.dashboardChain)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/chain/"+chainID, nil),
+	)
+	return response
 }
 
 func TestDashboardVDOMsReportsAllDistinctOmittedVDOMs(t *testing.T) {
@@ -455,6 +560,51 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 	extension.dashboard(post, httptest.NewRequest(http.MethodPost, "/fgt-conftail/", bytes.NewReader(nil)))
 	if post.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d, want 405", post.Code)
+	}
+}
+
+func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	extension := &Extension{
+		cfg:         &config.Config{ExtFgtConfTail: true},
+		logger:      slog.New(slog.NewJSONHandler(&output, nil)),
+		store:       s,
+		tmpl:        tmpl,
+		currentUser: func(*http.Request) string { return "operator" },
+	}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/?firewall=7&user=alice&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	extension.dashboard(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	logs := output.String()
+	for _, want := range []string{
+		`"msg":"conftail dashboard queried"`,
+		`"actor":"operator"`,
+		`"firewall_id":7`,
+		`"user_filter_set":true`,
+		`"state":"all"`,
+		`"from":"2026-09-01T09:00:00Z"`,
+		`"to":"2026-09-01T10:00:00Z"`,
+		`"page":1`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("ConfTail dashboard log does not contain %q:\n%s", want, logs)
+		}
 	}
 }
 

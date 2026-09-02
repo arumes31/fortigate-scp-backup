@@ -156,11 +156,39 @@ func nvdEntryToDef(v nvdVuln) (cveDef, bool) {
 			}
 		}
 	}
+	def.ranges = collapseCVERanges(def.ranges)
 	if len(def.ranges) == 0 || def.summaryEN == "" {
 		return cveDef{}, false
 	}
 	def.remediation = nvdRemediation(def.ranges)
 	return def, true
+}
+
+// collapseCVERanges keeps one entry per FortiOS major/minor train in source
+// order. A concrete fixed patch supersedes neverFixed, and duplicate concrete
+// ranges keep the highest fixed patch reported for the train.
+func collapseCVERanges(ranges []cveRange) []cveRange {
+	type train struct {
+		major int
+		minor int
+	}
+	collapsed := make([]cveRange, 0, len(ranges))
+	indexByTrain := make(map[train]int, len(ranges))
+	for _, candidate := range ranges {
+		key := train{major: candidate.major, minor: candidate.minor}
+		index, exists := indexByTrain[key]
+		if !exists {
+			indexByTrain[key] = len(collapsed)
+			collapsed = append(collapsed, candidate)
+			continue
+		}
+		current := collapsed[index]
+		if candidate.fixedPatch != neverFixed &&
+			(current.fixedPatch == neverFixed || candidate.fixedPatch > current.fixedPatch) {
+			collapsed[index] = candidate
+		}
+	}
+	return collapsed
 }
 
 func nvdSeverity(sets ...[]nvdCvssMetric) string {

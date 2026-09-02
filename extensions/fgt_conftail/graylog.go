@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"sort"
@@ -25,6 +26,7 @@ const (
 	graylogMaxSourceAliases   = 64
 	graylogMaxSourceAliasSize = 512
 	graylogMaxQuerySize       = 32 << 10
+	graylogMaxEventTimeDigits = 128
 )
 
 var graylogSelectedFields = []string{
@@ -477,12 +479,64 @@ func graylogEventTime(value any) (json.Number, error) {
 	if text == "" {
 		return "", nil
 	}
-	for _, r := range text {
-		if r < '0' || r > '9' {
-			return "", errors.New("field eventtime must contain only decimal digits")
+	integer, err := normalizeDecimalInteger(text)
+	if err != nil {
+		return "", fmt.Errorf("field eventtime must be a non-negative integer: %w", err)
+	}
+	return json.Number(integer), nil
+}
+
+func normalizeDecimalInteger(text string) (string, error) {
+	if len(text) > graylogMaxEventTimeDigits {
+		return "", errors.New("numeric representation is too long")
+	}
+	exponentAt := strings.IndexAny(text, "eE")
+	mantissa := text
+	if exponentAt >= 0 {
+		if strings.ContainsAny(text[exponentAt+1:], "eE") {
+			return "", errors.New("invalid decimal number")
+		}
+		mantissa = text[:exponentAt]
+		exponent, err := strconv.ParseInt(text[exponentAt+1:], 10, 32)
+		if err != nil || exponent < -graylogMaxEventTimeDigits || exponent > graylogMaxEventTimeDigits {
+			return "", errors.New("invalid decimal exponent")
 		}
 	}
-	return json.Number(text), nil
+	if strings.HasPrefix(mantissa, "-") {
+		return "", errors.New("negative value")
+	}
+	mantissa = strings.TrimPrefix(mantissa, "+")
+	digits := 0
+	dots := 0
+	for _, r := range mantissa {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '.':
+			dots++
+		default:
+			return "", errors.New("invalid decimal number")
+		}
+	}
+	if digits == 0 || dots > 1 {
+		return "", errors.New("invalid decimal number")
+	}
+
+	var number big.Rat
+	if _, ok := number.SetString(text); !ok {
+		return "", errors.New("invalid decimal number")
+	}
+	if number.Sign() < 0 {
+		return "", errors.New("negative value")
+	}
+	if !number.IsInt() {
+		return "", errors.New("fractional value")
+	}
+	integer := number.Num().String()
+	if len(integer) > graylogMaxEventTimeDigits {
+		return "", errors.New("integer value is too long")
+	}
+	return integer, nil
 }
 
 func graylogScalarString(value any) (string, error) {

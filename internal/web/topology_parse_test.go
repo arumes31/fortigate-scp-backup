@@ -264,6 +264,29 @@ func TestParseConfigDataSections(t *testing.T) {
 	}
 }
 
+func TestParseConfigDataSkipsUnspecifiedAddressObjects(t *testing.T) {
+	const cfg = `config firewall address
+    edit "all"
+        set subnet 0.0.0.0 0.0.0.0
+    next
+    edit "custom-any"
+        set subnet 0.0.0.0 0.0.0.0
+    next
+    edit "cidr-any"
+        set subnet 0.0.0.0/0
+    next
+    edit "real-network"
+        set subnet 192.0.2.0 255.255.255.0
+    next
+end`
+
+	objects := parseConfigData(parseCfg(cfg)).AddressObjs
+	if len(objects) != 1 || objects[0].Name != "real-network" ||
+		objects[0].IP != "192.0.2.0" || objects[0].Mask != "255.255.255.0" {
+		t.Fatalf("address objects = %+v, want only real-network", objects)
+	}
+}
+
 func TestBuildSwitchLinks(t *testing.T) {
 	links := buildSwitchLinks(parseConfigData(parseCfg(nestedConfig)).Switches, nil, nil)
 	if len(links) != 2 {

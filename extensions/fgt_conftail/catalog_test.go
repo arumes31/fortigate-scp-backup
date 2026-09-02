@@ -131,6 +131,38 @@ func TestBuildSourceCatalog_NormalizesHAAndIgnoresUnregisteredRows(t *testing.T)
 	}
 }
 
+func TestBuildSourceCatalogExcludesGraylogDisabledADMFirewalls(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	createADMDatabase(t, dataDir, []admTestRow{
+		{DNSNameFull: "enabled.example.com"},
+		{DNSNameFull: "disabled.example.com", GraylogDisabled: true},
+	})
+	catalog, err := buildSourceCatalog(
+		context.Background(),
+		[]firewallRef{
+			{ID: 1, Name: "enabled.example.com"},
+			{ID: 2, Name: "disabled.example.com"},
+		},
+		dataDir,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolved, ok := catalog.resolve("enabled"); !ok || resolved.ID != 1 {
+		t.Fatalf("enabled source resolution = (%+v, %t), want firewall 1", resolved, ok)
+	}
+	if _, ok := catalog.resolve("disabled"); ok {
+		t.Fatal("Graylog-disabled ADM VPN firewall was included in source resolution")
+	}
+	coverage := catalog.coverage()
+	if len(coverage) != 1 || coverage[0].FirewallID != 1 {
+		t.Fatalf("coverage = %+v, want only Graylog-enabled firewall 1", coverage)
+	}
+}
+
 func TestBuildSourceCatalog_ExcludesAmbiguousAliases(t *testing.T) {
 	t.Parallel()
 
@@ -235,16 +267,11 @@ func TestBuildSourceCatalog_ReportsInvalidNamesWithoutBroadening(t *testing.T) {
 	}
 
 	coverage := catalog.coverage()
-	if len(coverage) != 4 {
-		t.Fatalf("coverage() returned %d rows, want all 4 registered rows", len(coverage))
+	if len(coverage) != 1 || coverage[0].FirewallID != 4 {
+		t.Fatalf("coverage() = %+v, want only the Graylog-enabled ADM firewall", coverage)
 	}
-	for i := range 3 {
-		if len(coverage[i].Aliases) != 0 || len(coverage[i].Warnings) == 0 {
-			t.Fatalf("invalid registered firewall coverage = %+v, want no aliases and a warning", coverage[i])
-		}
-	}
-	if warnings := catalog.warnings(); len(warnings) < 4 {
-		t.Fatalf("warnings() = %v, want invalid registered and operator aliases to be visible", warnings)
+	if warnings := catalog.warnings(); len(warnings) == 0 {
+		t.Fatalf("warnings() = %v, want invalid enabled ADM aliases to be visible", warnings)
 	}
 }
 
@@ -280,8 +307,11 @@ func TestBuildSourceCatalog_OptionalAndMalformedADMDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildSourceCatalog() error = %v", err)
 		}
-		if resolved, ok := catalog.resolve("standalone"); !ok || resolved.ID != 1 {
-			t.Fatalf("fallback resolution = (%+v, %t), want registered firewall 1", resolved, ok)
+		if _, ok := catalog.resolve("standalone"); ok {
+			t.Fatal("catalog accepted a firewall without a readable ADM Graylog-enabled flag")
+		}
+		if coverage := catalog.coverage(); len(coverage) != 0 {
+			t.Fatalf("coverage = %+v, want none when ADM enablement cannot be read", coverage)
 		}
 		warnings := strings.Join(catalog.warnings(), "\n")
 		if !strings.Contains(warnings, "ADM VPN") {
@@ -376,6 +406,7 @@ type admTestRow struct {
 	DNSName          string
 	DNSNameFull      string
 	ClusterHostnames string
+	GraylogDisabled  bool
 }
 
 func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
@@ -390,19 +421,22 @@ func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 		firewallname TEXT,
 		dns_name TEXT,
 		dns_name_full TEXT,
-		cluster_hostnames TEXT
+		cluster_hostnames TEXT,
+		graylog_enabled BOOLEAN DEFAULT 1
 	)`); err != nil {
 		_ = db.Close()
 		t.Fatalf("create ADM VPN schema: %v", err)
 	}
 	for _, row := range rows {
 		if _, err := db.Exec(
-			`INSERT INTO vpn_config (firewallname, dns_name, dns_name_full, cluster_hostnames)
-			 VALUES (?, ?, ?, ?)`,
+			`INSERT INTO vpn_config
+			 (firewallname, dns_name, dns_name_full, cluster_hostnames, graylog_enabled)
+			 VALUES (?, ?, ?, ?, ?)`,
 			row.FirewallName,
 			row.DNSName,
 			row.DNSNameFull,
 			row.ClusterHostnames,
+			!row.GraylogDisabled,
 		); err != nil {
 			_ = db.Close()
 			t.Fatalf("insert ADM VPN row: %v", err)

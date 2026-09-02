@@ -467,14 +467,34 @@ func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status st
 	return err
 }
 
-// updateDNSStatus persists a DNS check result from the background sweep.
-// resolved is the comma-joined address list the name currently resolves to
-// ("" when it does not resolve), kept for the table tooltip and dashboard.
-func (e *Extension) updateDNSStatus(id int64, checkedAt time.Time, status, resolved string) error {
-	_, err := e.db.Exec(
-		"UPDATE vpn_config SET last_dns_check = ?, last_dns_status = ?, last_dns_resolved = ? WHERE id = ?",
-		formatDBTime(checkedAt), status, resolved, id)
-	return err
+// updateDNSStatus persists a DNS check result from the background sweep only
+// while the endpoint still matches the values that were checked. resolved is
+// the comma-joined address list the name currently resolves to ("" when it
+// does not resolve), kept for the table tooltip and dashboard.
+func (e *Extension) updateDNSStatus(
+	id int64,
+	expectedDNSName, expectedRemoteIP string,
+	checkedAt time.Time,
+	status, resolved string,
+) error {
+	result, err := e.db.Exec(
+		`UPDATE vpn_config
+		 SET last_dns_check = ?, last_dns_status = ?, last_dns_resolved = ?
+		 WHERE id = ? AND dns_name_full = ? AND remoteip_full = ?`,
+		formatDBTime(checkedAt), status, resolved, id, expectedDNSName, expectedRemoteIP,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		// The endpoint changed while DNS was being resolved; discard the stale result.
+		return nil
+	}
+	return nil
 }
 
 // ---- password generator (parity with Python get_random_password) ------------
