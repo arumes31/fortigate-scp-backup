@@ -17,8 +17,8 @@ type testPageData struct {
 
 func TestParsePageIsolatesSameNamedTemplates(t *testing.T) {
 	t.Parallel()
-	pageA := fstest.MapFS{"page.html": {Data: []byte(`{{define "webui.content"}}<h1>A: {{.Message}}</h1>{{end}}`)}}
-	pageB := fstest.MapFS{"page.html": {Data: []byte(`{{define "webui.content"}}<h1>B: {{.Message}}</h1>{{end}}`)}}
+	pageA := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}<h1>A: {{.Message}}</h1>{{end}}`)}}
+	pageB := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}<h1>B: {{.Message}}</h1>{{end}}`)}}
 
 	rendererA, err := ParsePage(pageA, "page.html", nil)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestParsePageIsolatesSameNamedTemplates(t *testing.T) {
 
 func TestRendererRejectsPreRenderedHTML(t *testing.T) {
 	t.Parallel()
-	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "webui.content"}}{{.Unsafe}}{{end}}`)}}
+	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}{{.Unsafe}}{{end}}`)}}
 	renderer, err := ParsePage(pageFS, "page.html", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestRendererRejectsPreRenderedHTML(t *testing.T) {
 
 func TestRendererBuffersTemplateErrors(t *testing.T) {
 	t.Parallel()
-	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "webui.content"}}before {{boom}}{{end}}`)}}
+	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}before {{boom}}{{end}}`)}}
 	renderer, err := ParsePage(pageFS, "page.html", template.FuncMap{
 		"boom": func() (string, error) { return "", errors.New("synthetic render failure") },
 	})
@@ -93,12 +93,15 @@ func TestRendererBuffersTemplateErrors(t *testing.T) {
 func TestNavigationGroupsAreDataDriven(t *testing.T) {
 	t.Parallel()
 	groups := Navigation(NavigationOptions{
-		Active: "conftail", AdmVPN: true, ConfGen: true, ConfTail: true,
+		Lang: "en", Active: "conftail", AdmVPN: true, ConfGen: true, ConfTail: true,
 	})
-	if got := groupLabels(groups); !reflect.DeepEqual(got, []string{"Overview", "Network data", "Tools", "Utilities"}) {
+	if got := groupLabels(groups); !reflect.DeepEqual(got, []string{"Overview", "Network data", "Tools"}) {
 		t.Fatalf("group labels = %v", got)
 	}
 	items := flattenItems(groups)
+	assertNavItem(t, items, "search", "/search", false)
+	assertNavItem(t, items, "audit", "/audit", false)
+	assertNavItem(t, items, "topology", "/topology", false)
 	assertNavItem(t, items, "conftail", "/fgt-conftail/", true)
 	assertNavItem(t, items, "admvpn", "/fgt-adm-vpn-conf/", false)
 	if _, ok := items["polsplit"]; ok {
@@ -109,11 +112,54 @@ func TestNavigationGroupsAreDataDriven(t *testing.T) {
 	}
 }
 
-func TestNavigationOmitsPasswordForRadiusUsers(t *testing.T) {
+func TestNavigationLocalizesGermanLabels(t *testing.T) {
 	t.Parallel()
-	items := flattenItems(Navigation(NavigationOptions{IsRadius: true}))
-	if _, ok := items["password"]; ok {
-		t.Fatal("password navigation item is present for a RADIUS user")
+	groups := Navigation(NavigationOptions{Lang: "de", AdmVPN: true})
+	if got := groupLabels(groups); !reflect.DeepEqual(got, []string{"Übersicht", "Netzwerkdaten", "Werkzeuge"}) {
+		t.Fatalf("German group labels = %v", got)
+	}
+	items := flattenItems(groups)
+	if items["search"].Label != "Suche" || items["licenses"].Label != "Lizenzen" {
+		t.Fatalf("German navigation labels = search:%q licenses:%q", items["search"].Label, items["licenses"].Label)
+	}
+}
+
+func TestSharedShellRendersNamedDesktopUtilities(t *testing.T) {
+	t.Parallel()
+	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}<h1>Fixture page</h1>{{end}}`)}}
+	renderer, err := ParsePage(pageFS, "page.html", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := testPageData{Base: BaseData{
+		Title: "Fixture", Username: "fixture-reviewer", Lang: "de", Active: "password",
+		ReturnTo: "/change_password", Shell: ShellText("de"),
+		Navigation: Navigation(NavigationOptions{Lang: "de", Active: "password", AdmVPN: true}),
+	}}
+
+	var output bytes.Buffer
+	if err := renderer.Render(&output, data); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		`<html lang="de">`, `class="skip-link"`, `class="app-rail"`,
+		`aria-label="Primärnavigation"`, `aria-label="Hilfsfunktionen"`,
+		`Betriebskonsole`,
+		`name="lang" value="en"`, `name="lang" value="de"`,
+		`fixture-reviewer`, `href="/change_password" aria-current="page"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("shared shell missing %q\n%s", want, body)
+		}
+	}
+	if strings.Count(body, `aria-current="page"`) != 1 {
+		t.Errorf("aria-current count = %d, want 1", strings.Count(body, `aria-current="page"`))
+	}
+	for _, unwanted := range []string{"topbar", "hamburger", "SEC_PROTO", "onclick="} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("shared shell unexpectedly contains %q", unwanted)
+		}
 	}
 }
 

@@ -31,7 +31,47 @@ type BaseData struct {
 	Username   string
 	Lang       string
 	IsRadius   bool
+	Active     string
+	ReturnTo   string
+	Shell      ShellLabels
 	Navigation []NavGroup
+}
+
+// ShellLabels contains the small set of localized strings owned by the shared
+// authenticated shell. Page-specific language remains with each page.
+type ShellLabels struct {
+	Product           string
+	SkipToContent     string
+	PrimaryNavigation string
+	Utilities         string
+	LiveStatus        string
+	Connecting        string
+	Connected         string
+	Reconnecting      string
+	Unavailable       string
+	Language          string
+	Account           string
+	ChangePassword    string
+	Logout            string
+}
+
+// ShellText returns the authenticated shell labels for a supported language.
+// English is the stable fallback for unknown or missing language values.
+func ShellText(lang string) ShellLabels {
+	if lang == "de" {
+		return ShellLabels{
+			Product: "Betriebskonsole", SkipToContent: "Zum Inhalt springen", PrimaryNavigation: "Primärnavigation",
+			Utilities: "Hilfsfunktionen", LiveStatus: "Live-Status", Connecting: "Verbindet",
+			Connected: "Verbunden", Reconnecting: "Verbindung unterbrochen", Unavailable: "Nicht verfügbar",
+			Language: "Sprache", Account: "Konto", ChangePassword: "Passwort ändern", Logout: "Abmelden",
+		}
+	}
+	return ShellLabels{
+		Product: "Operations console", SkipToContent: "Skip to content", PrimaryNavigation: "Primary navigation",
+		Utilities: "Utilities", LiveStatus: "Live status", Connecting: "Connecting",
+		Connected: "Connected", Reconnecting: "Connection interrupted", Unavailable: "Unavailable",
+		Language: "Language", Account: "Account", ChangePassword: "Change password", Logout: "Log out",
+	}
 }
 
 // Renderer owns one isolated shell-plus-page template set. A Renderer is safe

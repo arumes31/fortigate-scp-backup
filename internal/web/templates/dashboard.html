@@ -254,9 +254,6 @@
 <script>
 (function () {
     function tt(key) { return (window.I18N && window.I18N[key]) || key; }
-    var sseDot = document.getElementById('sseDot');
-    if (sseDot) { sseDot.hidden = false; sseDot.className = 'sse-dot connecting'; }
-
     function setText(k, v) {
         var el = document.querySelector('[data-k="' + k + '"]');
         if (el && v !== undefined && v !== null) { el.textContent = v; }
@@ -432,36 +429,31 @@
         while (stdoutLog.childElementCount > 200) { stdoutLog.removeChild(stdoutLog.lastChild); }
     }
 
-    // SSE.
+    // Shared shell SSE.
     var debounce = null;
     function scheduleRefresh() { clearTimeout(debounce); debounce = setTimeout(refreshStats, 400); }
-    if (window.EventSource) {
-        var es = new EventSource('/events');
-        var sseWasDown = false;
-        es.onopen = function () {
-            if (sseDot) { sseDot.className = 'sse-dot online'; sseDot.title = 'Live verbunden'; }
-            // On (re)connect, pull fresh stats immediately: events that fired
-            // while the stream was down (sleep, deploy, network blip) were
-            // missed, so the card and tiles would otherwise stay stale until
-            // the next interval poll.
+    var sseWasDown = false;
+    window.addEventListener('fortisafe:connection', function (event) {
+        if (event.detail.state === 'online') {
+            // On reconnect, pull fresh stats immediately: events that fired
+            // while the stream was down may have been missed.
             if (sseWasDown) { refreshStats(); }
             sseWasDown = false;
-        };
-        es.onerror = function () { sseWasDown = true; if (sseDot) { sseDot.className = 'sse-dot offline'; sseDot.title = 'Verbindung verloren – reconnect…'; } };
-        es.onmessage = function (e) {
-            try {
-                var d = JSON.parse(e.data);
-                // Every event carries its operation kind; the label reuses the
-                // running-card pill names (dashboard.running_*).
-                var kind = d.kind || 'backup';
-                logLine(tt('dashboard.running_' + kind) + ' fw #' + d.fw_id + ' → ' + d.status);
-                if (kind === 'backup' && typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
-                    toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
-                }
-                scheduleRefresh();
-            } catch (err) {}
-        };
-    }
+        } else if (event.detail.state === 'offline') {
+            sseWasDown = true;
+        }
+    });
+    window.addEventListener('fortisafe:message', function (event) {
+        try {
+            var d = JSON.parse(event.detail.data);
+            var kind = d.kind || 'backup';
+            logLine(tt('dashboard.running_' + kind) + ' fw #' + d.fw_id + ' → ' + d.status);
+            if (kind === 'backup' && typeof d.status === 'string' && d.status.indexOf('Failed') === 0) {
+                toast('Backup fehlgeschlagen: fw #' + d.fw_id, 'error');
+            }
+            scheduleRefresh();
+        } catch (err) {}
+    });
 
     // Test-connection buttons.
     document.querySelectorAll('.test-conn').forEach(function (b) {

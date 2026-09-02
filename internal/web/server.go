@@ -10,6 +10,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -63,6 +64,9 @@ type BaseData struct {
 	IsRadius              bool   // RADIUS users cannot change their password locally
 	Lang                  string // UI language: "en" (default) or "de"
 	Active                string // nav key: firewalls|search|activity|admvpn|password
+	ReturnTo              string
+	Shell                 webui.ShellLabels
+	Navigation            []webui.NavGroup
 }
 
 // Server holds the dependencies shared by every handler.
@@ -146,8 +150,7 @@ func (s *Server) hostKeyCallbackForSSH() ssh.HostKeyCallback {
 }
 
 type pageTmpl struct {
-	t    *template.Template
-	exec string // template name to execute ("base" for content pages)
+	render func(io.Writer, any) error
 }
 
 // BackupJobID is the scheduler job id for a firewall. main.go and the handlers
@@ -281,10 +284,6 @@ func (s *Server) parseTemplates() error {
 	if err != nil {
 		return err
 	}
-	base, err := templatesFS.ReadFile("templates/base.html")
-	if err != nil {
-		return err
-	}
 	pages := make(map[string]pageTmpl)
 	for _, e := range entries {
 		name := e.Name()
@@ -296,20 +295,20 @@ func (s *Server) parseTemplates() error {
 			return err
 		}
 		if strings.Contains(string(content), `{{define "content"}}`) {
-			t := template.New("layout").Funcs(funcMap)
-			if _, err := t.Parse(string(base)); err != nil {
+			renderer, err := webui.ParsePage(templatesFS, "templates/"+name, funcMap)
+			if err != nil {
 				return err
 			}
-			if _, err := t.Parse(string(content)); err != nil {
-				return err
-			}
-			pages[name] = pageTmpl{t: t, exec: "base"}
+			pages[name] = pageTmpl{render: renderer.Render}
 		} else {
 			t := template.New(name).Funcs(funcMap)
 			if _, err := t.Parse(string(content)); err != nil {
 				return err
 			}
-			pages[name] = pageTmpl{t: t, exec: name}
+			execName := name
+			pages[name] = pageTmpl{render: func(destination io.Writer, data any) error {
+				return t.ExecuteTemplate(destination, execName, data)
+			}}
 		}
 	}
 	s.pages = pages
@@ -325,7 +324,7 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := p.t.ExecuteTemplate(&buf, p.exec, data); err != nil {
+	if err := p.render(&buf, data); err != nil {
 		s.logger.Error("template render failed", "name", name, "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 		return
@@ -336,18 +335,21 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 
 // base builds the shared layout data for the current request.
 func (s *Server) base(r *http.Request, title, active string) BaseData {
-	d := s.sess.User(r)
+	page := s.PageBase(r, title, active)
 	return BaseData{
-		Title:                 title,
-		Username:              d.Username,
+		Title:                 page.Title,
+		Username:              page.Username,
 		ExtEnabled:            s.cfg.ExtAdmVpnConf,
 		ExtFgtConfGenEnabled:  s.cfg.ExtFgtConfGen,
 		ExtFgtPolSplitEnabled: s.cfg.ExtFgtPolSplit,
 		ExtFgtConfConvEnabled: s.cfg.ExtFgtConfConv,
 		ExtFgtConfTailEnabled: s.cfg.ExtFgtConfTail,
-		IsRadius:              d.IsRadiusUser,
-		Lang:                  langFromRequest(r),
-		Active:                active,
+		IsRadius:              page.IsRadius,
+		Lang:                  page.Lang,
+		Active:                page.Active,
+		ReturnTo:              page.ReturnTo,
+		Shell:                 page.Shell,
+		Navigation:            page.Navigation,
 	}
 }
 
@@ -356,7 +358,11 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 // request has passed through LoginRequired; a valid cookie on a public route
 // is intentionally insufficient.
 func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData {
-	base := webui.BaseData{Title: title, Lang: langFromRequest(r)}
+	lang := langFromRequest(r)
+	base := webui.BaseData{
+		Title: title, Lang: lang, Active: active, ReturnTo: r.URL.RequestURI(),
+		Shell: webui.ShellText(lang),
+	}
 	d, ok := s.sess.AuthenticatedUser(r)
 	if !ok {
 		return base
@@ -365,8 +371,8 @@ func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData 
 	base.Username = d.Username
 	base.IsRadius = d.IsRadiusUser
 	base.Navigation = webui.Navigation(webui.NavigationOptions{
+		Lang:     lang,
 		Active:   active,
-		IsRadius: d.IsRadiusUser,
 		AdmVPN:   s.cfg.ExtAdmVpnConf,
 		ConfGen:  s.cfg.ExtFgtConfGen,
 		PolSplit: s.cfg.ExtFgtPolSplit,

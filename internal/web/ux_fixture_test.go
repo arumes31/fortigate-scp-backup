@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 type uxScenario string
@@ -151,6 +152,16 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 			return
 		}
 		webServer.render(w, "dashboard.html", uxDashboardFixture(scenario))
+	})
+	mux.HandleFunc("/__ux/shell/de", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		data := uxDashboardFixture(scenario)
+		data.Base = uxBaseLang("Dashboard", "dashboard", "de")
+		webServer.render(w, "dashboard.html", data)
 	})
 	registerUXCoreRoutes(mux, webServer, defaultScenario)
 	registerUXExtensionRoutes(mux, extensionTemplates, defaultScenario)
@@ -454,8 +465,20 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 }
 
 func uxBase(title, active string) BaseData {
+	return uxBaseLang(title, active, "en")
+}
+
+func uxBaseLang(title, active, lang string) BaseData {
+	returnTo := "/" + active
+	if active == "firewalls" {
+		returnTo = "/"
+	}
 	return BaseData{
-		Title: title, Username: "reviewer", Lang: "en", Active: active,
+		Title: title, Username: "reviewer", Lang: lang, Active: active, ReturnTo: returnTo,
+		Shell: webui.ShellText(lang),
+		Navigation: webui.Navigation(webui.NavigationOptions{
+			Lang: lang, Active: active, AdmVPN: true, ConfGen: true, PolSplit: true, ConfConv: true, ConfTail: true,
+		}),
 		ExtEnabled: true, ExtFgtConfGenEnabled: true, ExtFgtPolSplitEnabled: true,
 		ExtFgtConfConvEnabled: true, ExtFgtConfTailEnabled: true,
 	}
@@ -571,11 +594,7 @@ func validUXScenario(scenario uxScenario) bool {
 
 func uxDashboardFixture(scenario uxScenario) dashboardData {
 	data := dashboardData{
-		Base: BaseData{
-			Title: "Dashboard", Username: "reviewer", Lang: "en", Active: "dashboard",
-			ExtEnabled: true, ExtFgtConfGenEnabled: true, ExtFgtPolSplitEnabled: true,
-			ExtFgtConfConvEnabled: true, ExtFgtConfTailEnabled: true,
-		},
+		Base: uxBase("Dashboard", "dashboard"),
 		Stats: models.DashboardStats{
 			TotalFirewalls: 3,
 			Healthy:        3,

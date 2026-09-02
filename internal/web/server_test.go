@@ -36,6 +36,9 @@ func TestPageBaseDerivesAuthenticatedPresentationContext(t *testing.T) {
 	if base.Title != "Configuration Tail" || base.Username != "fixture-reviewer" || base.Lang != "de" || !base.IsRadius {
 		t.Fatalf("PageBase = %+v", base)
 	}
+	if base.Active != "conftail" || base.ReturnTo != "/fgt-conftail/" || base.Shell.PrimaryNavigation != "Primärnavigation" {
+		t.Fatalf("PageBase shell context = %+v", base)
+	}
 	items := make(map[string]bool)
 	current := make(map[string]bool)
 	for _, group := range base.Navigation {

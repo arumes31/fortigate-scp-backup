@@ -21,7 +21,7 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, m
 	}
 	data := errorData{Base: s.base(r, "Error", ""), Code: code, Message: msg}
 	var buf bytes.Buffer
-	if err := p.t.ExecuteTemplate(&buf, p.exec, data); err != nil {
+	if err := p.render(&buf, data); err != nil {
 		http.Error(w, msg, code)
 		return
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // TestParseTemplates proves every embedded template parses with the real
@@ -23,6 +24,35 @@ func TestParseTemplates(t *testing.T) {
 	for _, name := range []string{"licenses.html", "ipam.html", "dashboard.html"} {
 		if _, ok := s.pages[name]; !ok {
 			t.Errorf("expected template %s missing", name)
+		}
+	}
+}
+
+func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
+	t.Parallel()
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	if err := s.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	s.render(recorder, "change_password.html", changePasswordData{Base: BaseData{
+		Title: "Change password", Username: "fixture-reviewer", Lang: "de", Active: "password",
+		ReturnTo: "/change_password", Shell: webui.ShellText("de"),
+		Navigation: webui.Navigation(webui.NavigationOptions{Lang: "de", Active: "password", AdmVPN: true}),
+	}})
+
+	body := recorder.Body.String()
+	for _, want := range []string{`<html lang="de">`, `class="skip-link"`, `class="app-rail"`, `aria-label="Primärnavigation"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Core shell missing %q", want)
+		}
+	}
+	if strings.Count(body, `aria-current="page"`) != 1 {
+		t.Errorf("aria-current count = %d, want 1", strings.Count(body, `aria-current="page"`))
+	}
+	for _, unwanted := range []string{"topbar", "SEC_PROTO", "onclick="} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("Core shell unexpectedly contains %q", unwanted)
 		}
 	}
 }

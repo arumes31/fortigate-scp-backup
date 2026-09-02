@@ -6,26 +6,56 @@
     <title>{{.Base.Title}} · FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
-    {{block "webui.head" .}}{{end}}
+    <script src="/static/ui.js"></script>
+    {{block "head" .}}{{end}}
 </head>
 <body>
+    <a class="skip-link" href="#main-content">{{.Base.Shell.SkipToContent}}</a>
     <div class="app-shell">
-        <aside class="app-rail">
-            <a class="brand" href="/dashboard">FortiSafe</a>
-            <nav aria-label="Primary navigation">
+        <aside class="app-rail" aria-label="FortiSafe">
+            <div class="rail-brand">
+                <a class="brand" href="/dashboard"><span aria-hidden="true">&gt;</span> FortiSafe</a>
+                <span class="rail-product">{{.Base.Shell.Product}}</span>
+            </div>
+            <nav class="rail-nav" aria-label="{{.Base.Shell.PrimaryNavigation}}">
                 {{range .Base.Navigation}}
-                <section class="nav-group" aria-label="{{.Label}}">
-                    <h2>{{.Label}}</h2>
-                    {{range .Items}}<a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
+                <section class="nav-group" aria-labelledby="nav-group-{{.Key}}">
+                    <h2 id="nav-group-{{.Key}}">{{.Label}}</h2>
+                    {{range .Items}}<a class="nav-item" href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}><span aria-hidden="true" class="nav-marker">›</span><span>{{.Label}}</span></a>{{end}}
                 </section>
                 {{end}}
             </nav>
+            <section class="rail-utilities" aria-label="{{.Base.Shell.Utilities}}">
+                <h2>{{.Base.Shell.Utilities}}</h2>
+                <div class="utility-status" aria-live="polite" data-live-status
+                     data-connected="{{.Base.Shell.Connected}}"
+                     data-reconnecting="{{.Base.Shell.Reconnecting}}"
+                     data-unavailable="{{.Base.Shell.Unavailable}}">
+                    <span class="sse-dot connecting" id="sseDot" aria-hidden="true"></span>
+                    <span><span class="utility-label">{{.Base.Shell.LiveStatus}}</span><span id="sseLabel">{{.Base.Shell.Connecting}}</span></span>
+                </div>
+                <form method="post" action="/lang" class="language-form">
+                    <input type="hidden" name="back" value="{{.Base.ReturnTo}}">
+                    <span class="utility-label" id="language-label">{{.Base.Shell.Language}}</span>
+                    <span class="language-options" role="group" aria-labelledby="language-label">
+                        <button type="submit" name="lang" value="en"{{if eq .Base.Lang "en"}} aria-pressed="true"{{end}}>EN</button>
+                        <button type="submit" name="lang" value="de"{{if eq .Base.Lang "de"}} aria-pressed="true"{{end}}>DE</button>
+                    </span>
+                </form>
+                <div class="utility-account">
+                    <span class="utility-label">{{.Base.Shell.Account}}</span>
+                    <span class="account-name">{{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+                </div>
+                {{if not .Base.IsRadius}}<a class="utility-link" href="/change_password"{{if eq .Base.Active "password"}} aria-current="page"{{end}}>{{.Base.Shell.ChangePassword}}</a>{{end}}
+                <form method="post" action="/logout" class="logout-form">
+                    <button type="submit" class="utility-link logout-btn">{{.Base.Shell.Logout}}</button>
+                </form>
+            </section>
         </aside>
         <div class="app-workspace">
-            <header class="app-utilities"><span>{{.Base.Username}}</span></header>
-            <main id="main-content">{{block "webui.content" .}}{{end}}</main>
+            <main id="main-content" tabindex="-1">{{block "content" .}}{{end}}</main>
         </div>
     </div>
-    {{block "webui.scripts" .}}{{end}}
+    {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}
