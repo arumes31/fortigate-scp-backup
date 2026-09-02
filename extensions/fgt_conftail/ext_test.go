@@ -87,6 +87,9 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	if err := e.Mount(router, deps); err != nil {
 		t.Fatalf("Mount() error = %v", err)
 	}
+	if e.poller == nil || e.poller.logger == nil {
+		t.Fatal("mounted poll worker does not use the application logger")
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()

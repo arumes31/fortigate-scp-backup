@@ -289,6 +289,63 @@ func TestGraylogFetchPaginatesMoreThanOneThousandResults(t *testing.T) {
 	}
 }
 
+func TestGraylogEventTimeAcceptsIntegerJSONRepresentations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name:  "decimal number",
+			value: json.Number("1756801446550422000"),
+			want:  "1756801446550422000",
+		},
+		{
+			name:  "scientific number",
+			value: json.Number("1.756801446550422E+18"),
+			want:  "1756801446550422000",
+		},
+		{
+			name:  "zero fraction string",
+			value: "1756801446550422000.000",
+			want:  "1756801446550422000",
+		},
+		{
+			name:  "scientific string",
+			value: "1.756801446550422e18",
+			want:  "1756801446550422000",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := graylogEventTime(test.value)
+			if err != nil {
+				t.Fatalf("graylogEventTime(%q) error = %v", test.value, err)
+			}
+			if got.String() != test.want {
+				t.Fatalf("graylogEventTime(%q) = %q, want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestGraylogEventTimeRejectsNonIntegerRepresentations(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []any{
+		json.Number("1.5"),
+		json.Number("-1756801446550422000"),
+		"0x10",
+	} {
+		if got, err := graylogEventTime(value); err == nil {
+			t.Errorf("graylogEventTime(%q) = %q, want an error", value, got)
+		}
+	}
+}
+
 func TestGraylogFetchRejectsUntrustedResponses(t *testing.T) {
 	t.Parallel()
 

@@ -2,8 +2,10 @@ package fgtconftail
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -33,6 +35,7 @@ type pollCycleStats struct {
 
 type pollWorker struct {
 	store               *store
+	logger              *slog.Logger
 	graylog             graylogFetcher
 	loadCatalog         func(context.Context) (sourceCatalog, error)
 	publishCatalog      func(sourceCatalog)
@@ -93,11 +96,34 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	}
 	var normalizedBytes int64
 	stats := pollCycleStats{}
+	queryFingerprint := graylogQueryFingerprint(w.query)
 	for _, sources := range catalog.sourceGroups() {
+		if w.logger != nil {
+			w.logger.Info(
+				"conftail Graylog query started",
+				"query_sha256", queryFingerprint,
+				"query_bytes", len(w.query),
+				"source_count", len(sources),
+				"from", from,
+				"to", pollEnd,
+			)
+		}
 		rawEvents, fetchStats, fetchErr := w.graylog.fetch(ctx, w.query, sources, from, pollEnd)
 		stats.Pages += fetchStats.Pages
 		if fetchErr != nil {
 			return pollCycleStats{}, w.recordFailure(ctx, startedAt, fetchErr)
+		}
+		if w.logger != nil {
+			w.logger.Info(
+				"conftail Graylog query completed",
+				"query_sha256", queryFingerprint,
+				"query_bytes", len(w.query),
+				"source_count", len(sources),
+				"from", from,
+				"to", pollEnd,
+				"pages", fetchStats.Pages,
+				"rows", fetchStats.Rows,
+			)
 		}
 		stats.Fetched += len(rawEvents)
 		if stats.Fetched > maxEvents {
@@ -153,6 +179,10 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	stats.Duplicates = result.Duplicates
 	stats.Sealed = result.Sealed
 	return stats, nil
+}
+
+func graylogQueryFingerprint(query string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(query)))
 }
 
 func normalizedEventBytes(event Event) int64 {

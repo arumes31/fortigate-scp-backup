@@ -334,6 +334,8 @@ FortiSafe is configured entirely via environment variables.
 | `MAIL_PASSWORD` / `MAIL_PASSWORD_FILE` | *(Unset)* | SMTP authentication password. |
 | `MAIL_RECIPIENT` | *(Same as user)* | Destination email address for error logs. |
 
+Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from the mechanisms advertised by the server. It never falls back to plaintext or unauthenticated delivery.
+
 ### Extension: FGT ADM VPN Configuration
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
@@ -349,6 +351,8 @@ FortiSafe is configured entirely via environment variables.
 When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
 
 By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated, read-only operations page is available at `/fgt-conftail`.
+
+The application log records each ConfTail Graylog query start/completion and each authenticated dashboard/session query with its time range, source or result counts, and request ID where applicable. Configured Graylog queries are identified by a SHA-256 fingerprint and byte length; query text, tokens, source aliases, filter values, and response payloads are not logged.
 
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |

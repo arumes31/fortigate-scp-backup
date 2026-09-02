@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -650,6 +651,22 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to render configuration change dashboard", http.StatusInternalServerError)
 		return
 	}
+	if e.logger != nil {
+		e.logger.InfoContext(
+			r.Context(),
+			"conftail dashboard queried",
+			"actor", sanitizeExternalString(username, maxIdentityRunes),
+			"firewall_id", filters.FirewallID,
+			"user_filter_set", filters.User != "",
+			"state", filters.State,
+			"from", dashboardLogTime(filters.From),
+			"to", dashboardLogTime(filters.To),
+			"page", filters.Page,
+			"active_rows", len(data.Active),
+			"history_rows", len(data.History),
+			"reqid", middleware.GetReqID(r.Context()),
+		)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
 }
@@ -708,6 +725,19 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to render configuration change session", http.StatusInternalServerError)
 		return
 	}
+	if e.logger != nil {
+		e.logger.InfoContext(
+			r.Context(),
+			"conftail session queried",
+			"actor", sanitizeExternalString(username, maxIdentityRunes),
+			"chain_id", chainID,
+			"state", chain.State,
+			"page", pageNumber,
+			"total_pages", totalPages,
+			"event_rows", len(chain.Events),
+			"reqid", middleware.GetReqID(r.Context()),
+		)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
 }
@@ -726,6 +756,13 @@ func parseDashboardChainRequest(r *http.Request) (string, int, error) {
 		}
 	}
 	return parsedID.String(), page, nil
+}
+
+func dashboardLogTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (e *Extension) conftailBaseData(username string) conftailBaseData {

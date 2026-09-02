@@ -84,9 +84,10 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
 	extension := &Extension{
 		cfg:         &config.Config{ExtFgtConfTail: true, FgtConfTailIdleSeconds: 1800},
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
 		store:       s,
 		tmpl:        tmpl,
 		currentUser: func(*http.Request) string { return "reviewer" },
@@ -111,6 +112,18 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	}
 	if strings.Contains(body, `method="post"`) {
 		t.Fatal("detail page contains a state-changing form")
+	}
+	for _, want := range []string{
+		`"msg":"conftail session queried"`,
+		`"actor":"reviewer"`,
+		`"chain_id":"` + chainID + `"`,
+		`"page":2`,
+		`"total_pages":2`,
+		`"event_rows":5`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("ConfTail session log does not contain %q:\n%s", want, logs.String())
+		}
 	}
 
 	if err := s.markAccepted(
@@ -455,6 +468,51 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 	extension.dashboard(post, httptest.NewRequest(http.MethodPost, "/fgt-conftail/", bytes.NewReader(nil)))
 	if post.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d, want 405", post.Code)
+	}
+}
+
+func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	extension := &Extension{
+		cfg:         &config.Config{ExtFgtConfTail: true},
+		logger:      slog.New(slog.NewJSONHandler(&output, nil)),
+		store:       s,
+		tmpl:        tmpl,
+		currentUser: func(*http.Request) string { return "operator" },
+	}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/?firewall=7&user=alice&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	extension.dashboard(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	logs := output.String()
+	for _, want := range []string{
+		`"msg":"conftail dashboard queried"`,
+		`"actor":"operator"`,
+		`"firewall_id":7`,
+		`"user_filter_set":true`,
+		`"state":"all"`,
+		`"from":"2026-09-01T09:00:00Z"`,
+		`"to":"2026-09-01T10:00:00Z"`,
+		`"page":1`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("ConfTail dashboard log does not contain %q:\n%s", want, logs)
+		}
 	}
 }
 

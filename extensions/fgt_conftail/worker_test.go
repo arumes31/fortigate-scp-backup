@@ -1,10 +1,14 @@
 package fgtconftail
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,6 +122,76 @@ func TestPollWorkerPersistsAttributedAndUnattributedChanges(t *testing.T) {
 	}
 	if got := countRows(t, s, "chains"); got != 2 {
 		t.Fatalf("chains = %d, want separate admin and unattributed chains", got)
+	}
+}
+
+func TestPollWorkerLogsGraylogQueries(t *testing.T) {
+	t.Parallel()
+
+	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	pollEnd := activation.Add(15 * time.Minute)
+	s := newTestStore(t, activation)
+	catalog, err := buildSourceCatalog(
+		context.Background(),
+		[]firewallRef{{ID: 7, Name: "fw-a.example.com"}},
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	worker := pollWorker{
+		store:  s,
+		logger: slog.New(slog.NewJSONHandler(&output, nil)),
+		graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
+			return nil, FetchStats{Pages: 2, Rows: 3}, nil
+		}},
+		loadCatalog:         func(context.Context) (sourceCatalog, error) { return catalog, nil },
+		query:               "type:event AND logid:0100044544",
+		overlap:             time.Hour,
+		idle:                30 * time.Minute,
+		maxDescriptionBytes: 60_000,
+		missingUserWindow:   5 * time.Minute,
+	}
+	if _, err := worker.poll(context.Background(), pollEnd); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := output.String()
+	queryFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(worker.query)))
+	for _, want := range []string{
+		`"msg":"conftail Graylog query started"`,
+		`"msg":"conftail Graylog query completed"`,
+		`"query_sha256":"` + queryFingerprint + `"`,
+		fmt.Sprintf(`"query_bytes":%d`, len(worker.query)),
+		`"source_count":2`,
+		`"pages":2`,
+		`"rows":3`,
+		`"from":"2026-09-01T08:00:00Z"`,
+		`"to":"2026-09-01T08:15:00Z"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("ConfTail logs do not contain %q:\n%s", want, logs)
+		}
+	}
+	for _, unsafe := range []string{
+		"type:event AND logid:0100044544",
+		"graylog-token",
+		"fw-a",
+		"fw-a.example.com",
+	} {
+		if strings.Contains(logs, unsafe) {
+			t.Errorf("ConfTail logs expose %q:\n%s", unsafe, logs)
+		}
+	}
+}
+
+func TestGraylogQueryFingerprintDoesNotExposeConfiguredQuery(t *testing.T) {
+	t.Parallel()
+
+	const query = `type:event AND password:"super-secret"`
+	if got := graylogQueryFingerprint(query); got == "" || strings.Contains(got, "super-secret") {
+		t.Fatalf("graylogQueryFingerprint() = %q", got)
 	}
 }
 
