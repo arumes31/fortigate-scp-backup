@@ -53,13 +53,16 @@ func startUXFixture(ctx context.Context, options uxFixtureOptions) (*uxFixtureSe
 		return nil, errors.New("invalid default fixture scenario")
 	}
 
+	serverCtx, stopServer := context.WithCancel(ctx)
 	webServer := &Server{logger: slog.New(slog.DiscardHandler)}
 	if err := webServer.parseTemplates(); err != nil {
+		stopServer()
 		return nil, err
 	}
-	handler := newUXFixtureHandler(webServer, options.DefaultScenario)
+	handler := newUXFixtureHandler(webServer, options.DefaultScenario, stopServer)
 	listener, err := net.Listen("tcp", options.Address)
 	if err != nil {
+		stopServer()
 		return nil, err
 	}
 
@@ -77,11 +80,12 @@ func startUXFixture(ctx context.Context, options uxFixtureOptions) (*uxFixtureSe
 		serveDone <- err
 	}()
 	go func() {
+		defer stopServer()
 		defer close(done)
 		select {
 		case err := <-serveDone:
 			done <- err
-		case <-ctx.Done():
+		case <-serverCtx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			shutdownErr := httpServer.Shutdown(shutdownCtx)
 			cancel()
@@ -95,11 +99,25 @@ func startUXFixture(ctx context.Context, options uxFixtureOptions) (*uxFixtureSe
 	}, nil
 }
 
-func newUXFixtureHandler(webServer *Server, defaultScenario uxScenario) http.Handler {
+func newUXFixtureHandler(webServer *Server, defaultScenario uxScenario, stopServer context.CancelFunc) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ready\n")
+	})
+	mux.HandleFunc("/__fixture/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			http.Error(w, "fixture shutdown is local-only", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		go stopServer()
 	})
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
@@ -206,7 +224,19 @@ func TestUXFixtureLifecycle(t *testing.T) {
 		t.Fatalf("GET /dashboard status = %d, want %d", response.StatusCode, http.StatusOK)
 	}
 
-	cancel()
+	shutdownRequest, err := http.NewRequest(http.MethodPost, fixture.URL()+"/__fixture/shutdown", nil)
+	if err != nil {
+		t.Fatalf("create fixture shutdown request: %v", err)
+	}
+	response, err = client.Do(shutdownRequest)
+	if err != nil {
+		t.Fatalf("POST /__fixture/shutdown: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /__fixture/shutdown status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	}
 	select {
 	case err := <-fixture.Done():
 		if err != nil {
