@@ -83,6 +83,8 @@ type Server struct {
 	hostKeyMu       sync.RWMutex
 	hostKeyCallback ssh.HostKeyCallback
 	hostKeyManager  *sshhostkey.Manager
+	healthMu        sync.RWMutex
+	healthProbes    map[string]func(context.Context) string
 
 	pages map[string]pageTmpl
 
@@ -161,6 +163,7 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		limiter:          newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		ipLimiter:        newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
 		hub:              newSSEHub(),
+		healthProbes:     make(map[string]func(context.Context) string),
 		warmSem:          make(chan struct{}, 2),
 		cveRefresh:       refreshCVECache,
 		cveRefreshCtx:    cveCtx,
@@ -185,6 +188,18 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	// ever parsing configs inside a page request.
 	sched.Schedule("ipam-refresh", 24*time.Hour, 5*time.Minute, s.refreshIPAM)
 	return s, nil
+}
+
+// RegisterHealth adds or replaces a bounded component probe exposed by
+// /healthz. The endpoint remains a liveness probe and never exposes raw errors.
+func (s *Server) RegisterHealth(name string, probe func(context.Context) string) {
+	name = strings.TrimSpace(name)
+	if name == "" || probe == nil {
+		return
+	}
+	s.healthMu.Lock()
+	s.healthProbes[name] = probe
+	s.healthMu.Unlock()
 }
 
 // BroadcastStatus pushes a firewall status change to any connected SSE clients.

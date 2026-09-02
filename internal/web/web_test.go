@@ -281,10 +281,28 @@ func TestUnauthenticatedRedirect(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	srv := testServer(t)
+	srv.RegisterHealth("conftail.graylog", func(context.Context) string { return "stale" })
+	srv.RegisterHealth("untrusted", func(context.Context) string { return "contains secret detail" })
 	rr := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	var response struct {
+		Status     string `json:"status"`
+		Components map[string]struct {
+			Status string `json:"status"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if response.Status != "ok" || response.Components["conftail.graylog"].Status != "stale" {
+		t.Fatalf("healthz response = %+v", response)
+	}
+	if response.Components["untrusted"].Status != "unknown" ||
+		strings.Contains(rr.Body.String(), "secret detail") {
+		t.Fatalf("healthz exposed an unbounded component status: %s", rr.Body.String())
 	}
 }
 

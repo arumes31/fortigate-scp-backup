@@ -115,6 +115,13 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		t.Fatal("detail page contains a state-changing form")
 	}
 	for _, want := range []string{
+		`class="ct-attribute-diff"`, "<del>before</del>", "<ins>after</ins>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail page does not contain structured cfgattr diff %q", want)
+		}
+	}
+	for _, want := range []string{
 		`"msg":"conftail session queried"`,
 		`"actor":"reviewer"`,
 		`"chain_id":"` + chainID + `"`,
@@ -324,6 +331,12 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 		"failure: 2026-09-01 10:03:00 UTC",
 		"Next poll run",
 		"2026-09-01 10:16:00 UTC",
+		`id="ct-next-poll-countdown"`,
+		`src="/fgt-conftail/static/conftail.js"`,
+		"Firewall name or ID",
+		"Graylog source contains",
+		"Device name contains",
+		"Serial contains",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard body does not contain %q", want)
@@ -339,10 +352,77 @@ func TestDashboardNextPollRunUsesFirstDelayBeforeInitialPoll(t *testing.T) {
 	}
 }
 
+func TestDashboardPollHealthIncludesActionableRemediation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		lastError  string
+		wantAction string
+	}{
+		{name: "authentication", lastError: "graylog returned HTTP 401", wantAction: "Verify the Graylog token"},
+		{name: "schema", lastError: "decode graylog response: schema missing requested field", wantAction: "Check the Graylog field mapping"},
+		{name: "catalog", lastError: "conftail source catalog has no queryable aliases", wantAction: "Enable Graylog for at least one ADM VPN firewall"},
+		{name: "fallback", lastError: "graylog network request failed", wantAction: "Check Graylog connectivity"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			health := dashboardPollHealth(PollState{
+				LastFailureAt: now,
+				LastError:     test.lastError,
+			}, now, 15*time.Minute)
+			if health.State != "failed" || !strings.Contains(health.Action, test.wantAction) {
+				t.Fatalf("health = %+v, want action containing %q", health, test.wantAction)
+			}
+		})
+	}
+}
+
+func TestDashboardDeliveryHealthIsIndependentFromCollector(t *testing.T) {
+	t.Parallel()
+
+	health := dashboardDeliveryHealth(dashboardCounts{Failed: 2, Retry: 3})
+	if health.State != "failed" || !strings.Contains(health.Detail, "2 failed") ||
+		!strings.Contains(health.Action, "Hookwise") {
+		t.Fatalf("delivery health = %+v", health)
+	}
+}
+
+func TestParseConfigAttributeDiff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		value      string
+		wantName   string
+		wantBefore string
+		wantAfter  string
+		wantOK     bool
+	}{
+		{name: "change", value: "type[fortimanager->normal]", wantName: "type", wantBefore: "fortimanager", wantAfter: "normal", wantOK: true},
+		{name: "empty old value", value: "comments[->managed]", wantName: "comments", wantAfter: "managed", wantOK: true},
+		{name: "no diff", value: "comments[managed]"},
+		{name: "free text", value: "Attribute configured"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			diff, ok := parseConfigAttributeDiff(test.value)
+			if ok != test.wantOK || diff.Name != test.wantName ||
+				diff.Before != test.wantBefore || diff.After != test.wantAfter {
+				t.Fatalf("parseConfigAttributeDiff(%q) = (%+v, %t)", test.value, diff, ok)
+			}
+		})
+	}
+}
+
 func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	values := url.Values{
 		"firewall": {"7"},
 		"user":     {" team%_ops "},
+		"source":   {" branch-east "},
+		"device":   {" FGT-EDGE "},
+		"serial":   {" FG100F123 "},
 		"state":    {deliveryStateRetry},
 		"from":     {"2026-09-01T10:15"},
 		"to":       {"2026-09-02T11:45Z"},
@@ -353,7 +433,8 @@ func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FirewallID != 7 || got.User != "team%_ops" ||
+	if got.FirewallID != 7 || got.User != "team%_ops" || got.Source != "branch-east" ||
+		got.Device != "FGT-EDGE" || got.Serial != "FG100F123" ||
 		got.State != deliveryStateRetry || got.Page != 3 {
 		t.Fatalf("filters = %+v", got)
 	}
@@ -383,6 +464,9 @@ func TestParseDashboardFiltersRejectsInvalidOrUnboundedValues(t *testing.T) {
 			},
 		},
 		{name: "user too long", values: url.Values{"user": {strings.Repeat("x", maxIdentityRunes+1)}}},
+		{name: "source too long", values: url.Values{"source": {strings.Repeat("x", maxIdentityRunes+1)}}},
+		{name: "device control character", values: url.Values{"device": {"fw\nname"}}},
+		{name: "serial control character", values: url.Values{"serial": {"serial\x00value"}}},
 	}
 
 	for _, test := range tests {
@@ -407,7 +491,15 @@ func TestQueryDashboardPaginatesAndTreatsUserWildcardsLiterally(t *testing.T) {
 		case 1:
 			user = "teamZZops"
 		}
-		events = append(events, testEvent(1+(i%2), "fw", user, user, base))
+		event := testEvent(1+(i%2), "fw", user, user, base)
+		if i == 0 {
+			event.Source = "branch-east"
+			event.DeviceName = "FGT-EDGE"
+			event.DeviceID = "FG100F123"
+			event.CorrelationHash = attributionCorrelationHash(event)
+			event.SemanticHash = semanticHash(event)
+		}
+		events = append(events, event)
 	}
 	if _, err := s.applyPoll(context.Background(), pollBatch{
 		EndedAt: base.Add(31 * time.Minute),
@@ -475,6 +567,20 @@ func TestQueryDashboardPaginatesAndTreatsUserWildcardsLiterally(t *testing.T) {
 	if len(accepted.Active) != 0 || accepted.HistoryTotal != 1 ||
 		accepted.History[0].DeliveryState != deliveryStateAccepted {
 		t.Fatalf("accepted filter returned %+v", accepted)
+	}
+
+	eventFiltered, err := s.queryDashboard(context.Background(), dashboardFilters{
+		Source: "branch-east",
+		Device: "FGT-EDGE",
+		Serial: "FG100F123",
+		State:  dashboardStateAll,
+		Page:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventFiltered.HistoryTotal != 1 || eventFiltered.History[0].User != "team%_ops" {
+		t.Fatalf("event filters returned %+v", eventFiltered.History)
 	}
 }
 
@@ -582,7 +688,7 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 	}
 	request := httptest.NewRequest(
 		http.MethodGet,
-		"/?firewall=7&user=alice&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+		"/?firewall=7&user=alice&source=branch&device=FGT&serial=FG100&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
 		nil,
 	)
 	response := httptest.NewRecorder()
@@ -597,6 +703,9 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 		`"actor":"operator"`,
 		`"firewall_id":7`,
 		`"user_filter_set":true`,
+		`"source_filter_set":true`,
+		`"device_filter_set":true`,
+		`"serial_filter_set":true`,
 		`"state":"all"`,
 		`"from":"2026-09-01T09:00:00Z"`,
 		`"to":"2026-09-01T10:00:00Z"`,

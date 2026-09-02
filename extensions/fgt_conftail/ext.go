@@ -25,10 +25,13 @@ import (
 const (
 	conftailPollJobID       = "fgt_conftail.poll"
 	conftailDeliveryJobID   = "fgt_conftail.delivery"
+	conftailCatalogJobID    = "fgt_conftail.catalog"
 	conftailDatabaseName    = "fgt-conftail.db"
 	conftailPollFirstDelay  = 10 * time.Second
 	conftailSendFirstDelay  = 20 * time.Second
 	conftailDeliveryCadence = time.Minute
+	conftailCatalogCadence  = 30 * time.Second
+	conftailCatalogDelay    = 5 * time.Second
 	conftailPollTimeout     = 5 * time.Minute
 	conftailDeliveryTimeout = 2 * time.Minute
 	missingUserWindow       = 5 * time.Minute
@@ -39,19 +42,25 @@ type Extension struct {
 	cfg    *config.Config
 	logger *slog.Logger
 
-	pgPool      *pgxpool.Pool
-	ctx         context.Context
-	store       *store
-	graylog     *graylogClient
-	hookwise    *hookwiseClient
-	poller      *pollWorker
-	tmpl        *template.Template
-	currentUser func(*http.Request) string
+	pgPool        *pgxpool.Pool
+	ctx           context.Context
+	store         *store
+	graylog       *graylogClient
+	hookwise      *hookwiseClient
+	poller        *pollWorker
+	tmpl          *template.Template
+	currentUser   func(*http.Request) string
+	catalogLoader func(context.Context) (sourceCatalog, error)
 
-	catalogMu  sync.RWMutex
-	catalog    sourceCatalog
-	pollMu     sync.Mutex
-	deliveryMu sync.Mutex
+	catalogMu            sync.RWMutex
+	catalog              sourceCatalog
+	catalogFingerprint   string
+	catalogLoadedAt      time.Time
+	catalogLastFailureAt time.Time
+	catalogLastError     string
+	catalogRefreshMu     sync.Mutex
+	pollMu               sync.Mutex
+	deliveryMu           sync.Mutex
 }
 
 // New creates an unmounted ConfTail extension.
@@ -129,13 +138,14 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	e.hookwise = hookwise
 	e.tmpl = tmpl
 	e.currentUser = deps.CurrentUser
+	e.catalogLoader = func(ctx context.Context) (sourceCatalog, error) {
+		return loadSourceCatalog(ctx, deps.DB, deps.DataDir)
+	}
 	e.poller = &pollWorker{
-		store:   store,
-		logger:  e.logger,
-		graylog: graylog,
-		loadCatalog: func(ctx context.Context) (sourceCatalog, error) {
-			return loadSourceCatalog(ctx, deps.DB, deps.DataDir)
-		},
+		store:               store,
+		logger:              e.logger,
+		graylog:             graylog,
+		loadCatalog:         e.catalogLoader,
 		publishCatalog:      e.publishCatalog,
 		query:               e.cfg.FgtConfTailGraylogQuery,
 		overlap:             time.Duration(e.cfg.FgtConfTailOverlapSeconds) * time.Second,
@@ -166,13 +176,112 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 		conftailSendFirstDelay,
 		e.runDeliveries,
 	)
+	if e.cfg.ExtAdmVpnConf {
+		deps.Schedule(
+			conftailCatalogJobID,
+			conftailCatalogCadence,
+			conftailCatalogDelay,
+			e.runCatalogRefresh,
+		)
+	}
+	if deps.RegisterHealth != nil {
+		deps.RegisterHealth("conftail.graylog", e.graylogHealth)
+		deps.RegisterHealth("conftail.catalog", e.catalogHealth)
+		deps.RegisterHealth("conftail.store", e.storeHealth)
+		deps.RegisterHealth("conftail.hookwise", e.hookwiseHealth)
+	}
 	return nil
+}
+
+func (e *Extension) graylogHealth(ctx context.Context) string {
+	if e.store == nil {
+		return "failed"
+	}
+	state, err := e.store.pollState(ctx)
+	if err != nil {
+		return "failed"
+	}
+	return dashboardPollHealth(
+		state,
+		time.Now().UTC(),
+		e.dashboardPollInterval(),
+	).State
+}
+
+func (e *Extension) catalogHealth(context.Context) string {
+	e.catalogMu.RLock()
+	defer e.catalogMu.RUnlock()
+	if e.catalogLastError != "" &&
+		(e.catalogLoadedAt.IsZero() || !e.catalogLastFailureAt.Before(e.catalogLoadedAt)) {
+		return "failed"
+	}
+	if e.catalogLoadedAt.IsZero() {
+		return "waiting"
+	}
+	if len(e.catalog.aliases) == 0 {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+func (e *Extension) storeHealth(ctx context.Context) string {
+	if e.store == nil || e.store.db == nil || e.store.db.PingContext(ctx) != nil {
+		return "failed"
+	}
+	return "healthy"
+}
+
+func (e *Extension) hookwiseHealth(ctx context.Context) string {
+	if e.store == nil {
+		return "failed"
+	}
+	counts, err := e.store.dashboardCounts(ctx)
+	if err != nil {
+		return "failed"
+	}
+	return dashboardDeliveryHealth(counts).State
 }
 
 func (e *Extension) publishCatalog(catalog sourceCatalog) {
 	e.catalogMu.Lock()
 	e.catalog = catalog
+	e.catalogFingerprint = catalog.fingerprint()
+	e.catalogLoadedAt = time.Now().UTC()
+	e.catalogLastError = ""
 	e.catalogMu.Unlock()
+}
+
+func (e *Extension) runCatalogRefresh() {
+	e.catalogRefreshMu.Lock()
+	defer e.catalogRefreshMu.Unlock()
+	if e.catalogLoader == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
+	defer cancel()
+	catalog, err := e.catalogLoader(ctx)
+	if err != nil {
+		now := time.Now().UTC()
+		e.catalogMu.Lock()
+		e.catalogLastFailureAt = now
+		e.catalogLastError = sanitizeDeliveryError(err)
+		e.catalogMu.Unlock()
+		e.logger.Warn("conftail source catalog refresh failed", "err", sanitizeDeliveryError(err))
+		return
+	}
+	newFingerprint := catalog.fingerprint()
+	e.catalogMu.RLock()
+	changed := newFingerprint != e.catalogFingerprint
+	e.catalogMu.RUnlock()
+	e.publishCatalog(catalog)
+	if changed {
+		e.logger.Info(
+			"conftail source catalog refreshed",
+			"firewalls", len(catalog.coverage()),
+			"aliases", len(catalog.aliases),
+			"warnings", len(catalog.warnings()),
+		)
+	}
 }
 
 func (e *Extension) runPoll() {
@@ -189,6 +298,8 @@ func (e *Extension) runPoll() {
 		"conftail poll completed",
 		"pages", stats.Pages,
 		"fetched", stats.Fetched,
+		"quarantined", stats.Quarantined,
+		"graylog_retries", stats.Retries,
 		"skipped", stats.Skipped,
 		"inserted", stats.Inserted,
 		"duplicates", stats.Duplicates,

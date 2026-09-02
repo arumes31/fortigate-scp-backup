@@ -2,6 +2,7 @@ package fgtconftail
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type sourceCoverage struct {
 
 type sourceCatalog struct {
 	byAlias       map[string]firewallRef
+	byID          map[int]firewallRef
 	aliases       []string
 	coverageRows  []sourceCoverage
 	warningValues []string
@@ -53,6 +55,8 @@ type admAliasRow struct {
 	dnsName          string
 	dnsNameFull      string
 	clusterHostnames string
+	company          string
+	cid              string
 	graylogEnabled   bool
 }
 
@@ -200,6 +204,7 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 
 		index := matches[0]
 		b.enableFirewall(index)
+		b.mergeConnectWiseMapping(index, row)
 		usable := false
 		if strings.TrimSpace(row.firewallName) != "" {
 			usable = b.addAlias(index, row.firewallName, "ADM VPN firewallname") || usable
@@ -220,6 +225,28 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 				),
 			)
 		}
+	}
+}
+
+func (b *catalogBuilder) mergeConnectWiseMapping(index int, row admAliasRow) {
+	company := strings.TrimSpace(sanitizeExternalString(row.company, maxIdentityRunes))
+	cid := strings.TrimSpace(sanitizeExternalString(row.cid, maxIdentityRunes))
+	current := &b.firewalls[index].ref
+	if current.Company == "" {
+		current.Company = company
+	} else if company != "" && company != current.Company {
+		b.addFirewallWarning(index, fmt.Sprintf(
+			"registered firewall %d has conflicting ADM VPN company mappings",
+			current.ID,
+		))
+	}
+	if current.CID == "" {
+		current.CID = cid
+	} else if cid != "" && cid != current.CID {
+		b.addFirewallWarning(index, fmt.Sprintf(
+			"registered firewall %d has conflicting ADM VPN CID mappings",
+			current.ID,
+		))
 	}
 }
 
@@ -380,6 +407,12 @@ func (b *catalogBuilder) build() sourceCatalog {
 
 	acceptedAliases := make([]string, 0, len(acceptedOwners))
 	byAlias := make(map[string]firewallRef, len(acceptedOwners))
+	byID := make(map[int]firewallRef, len(coverageRows))
+	for index := range b.firewalls {
+		if b.firewalls[index].enabled {
+			byID[b.firewalls[index].ref.ID] = cloneFirewallRef(b.firewalls[index].ref)
+		}
+	}
 	for _, alias := range aliases {
 		index, accepted := acceptedOwners[alias]
 		if !accepted {
@@ -394,10 +427,19 @@ func (b *catalogBuilder) build() sourceCatalog {
 
 	return sourceCatalog{
 		byAlias:       byAlias,
+		byID:          byID,
 		aliases:       acceptedAliases,
 		coverageRows:  coverageRows,
 		warningValues: sortedSetValues(b.warnings),
 	}
+}
+
+func (c sourceCatalog) firewall(id int) (firewallRef, bool) {
+	firewall, ok := c.byID[id]
+	if !ok {
+		return firewallRef{}, false
+	}
+	return cloneFirewallRef(firewall), true
 }
 
 func (c sourceCatalog) resolve(source string) (firewallRef, bool) {
@@ -436,6 +478,22 @@ func (c sourceCatalog) warnings() []string {
 	return append([]string{}, c.warningValues...)
 }
 
+func (c sourceCatalog) fingerprint() string {
+	values := make([]string, 0, len(c.byID)+len(c.aliases))
+	for id, firewall := range c.byID {
+		values = append(values, fmt.Sprintf(
+			"%d\x00%s\x00%s\x00%s",
+			id,
+			firewall.Name,
+			firewall.Company,
+			firewall.CID,
+		))
+	}
+	sort.Strings(values)
+	values = append(values, c.aliases...)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(values, "\x01"))))
+}
+
 func readADMAliasRows(
 	ctx context.Context,
 	dataDir string,
@@ -472,7 +530,8 @@ func readADMAliasRows(
 
 	rows, err := db.QueryContext(ctx, `SELECT COALESCE(firewallname, ''),
 		COALESCE(dns_name, ''), COALESCE(dns_name_full, ''),
-		COALESCE(cluster_hostnames, ''), COALESCE(graylog_enabled, 0)
+		COALESCE(cluster_hostnames, ''), COALESCE(kundenname, ''),
+		COALESCE(cid, ''), COALESCE(graylog_enabled, 0)
 		FROM vpn_config`)
 	if err != nil {
 		return nil, false, fmt.Errorf("query adm vpn aliases: %w", err)
@@ -491,6 +550,8 @@ func readADMAliasRows(
 			&row.dnsName,
 			&row.dnsNameFull,
 			&row.clusterHostnames,
+			&row.company,
+			&row.cid,
 			&row.graylogEnabled,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan adm vpn alias row: %w", err)

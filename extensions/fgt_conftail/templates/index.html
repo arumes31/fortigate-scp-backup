@@ -7,6 +7,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
     <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
+    <script defer src="/fgt-conftail/static/conftail.js"></script>
 </head>
 <body>
 <div class="app">
@@ -36,9 +37,22 @@
 
         <section class="ct-metrics" aria-label="Configuration change health">
             <article class="card ct-metric ct-health-{{.Health.State}}">
-                <span class="ct-label">Poll health</span>
+                <span class="ct-label">Graylog collector</span>
                 <strong>{{.Health.Label}}</strong>
                 {{if .Health.Detail}}<span class="ct-detail no-caps">{{.Health.Detail}}</span>{{end}}
+                {{if .Health.Action}}<span class="ct-action no-caps">Next: {{.Health.Action}}</span>{{end}}
+            </article>
+            <article class="card ct-metric ct-health-{{.SessionHealth.State}}">
+                <span class="ct-label">Session pipeline</span>
+                <strong>{{.SessionHealth.Label}}</strong>
+                {{if .SessionHealth.Detail}}<span class="ct-detail no-caps">{{.SessionHealth.Detail}}</span>{{end}}
+                {{if .SessionHealth.Action}}<span class="ct-action no-caps">Next: {{.SessionHealth.Action}}</span>{{end}}
+            </article>
+            <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}">
+                <span class="ct-label">Hookwise delivery</span>
+                <strong>{{.DeliveryHealth.Label}}</strong>
+                {{if .DeliveryHealth.Detail}}<span class="ct-detail no-caps">{{.DeliveryHealth.Detail}}</span>{{end}}
+                {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">Next: {{.DeliveryHealth.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric">
                 <span class="ct-label">Last poll start</span>
@@ -58,12 +72,7 @@
             <article class="card ct-metric">
                 <span class="ct-label">Next poll run</span>
                 <strong>{{fmtTime .NextPollRun}}</strong>
-                <span class="ct-detail">{{fmtDuration .Dashboard.Poll.LastDuration}} last duration</span>
-            </article>
-            <article class="card ct-metric">
-                <span class="ct-label">Sessions</span>
-                <strong>{{.Dashboard.Counts.Active}} active / {{.Dashboard.Counts.Sealed}} sealed</strong>
-                <span class="ct-detail">{{.Dashboard.Counts.Pending}} pending / {{.Dashboard.Counts.Retry}} retry / {{.Dashboard.Counts.Failed}} failed / {{.Dashboard.Counts.Accepted}} accepted</span>
+                <span id="ct-next-poll-countdown" class="ct-detail" data-next-poll="{{fmtMachineTime .NextPollRun}}">Countdown unavailable</span>
             </article>
         </section>
 
@@ -106,12 +115,27 @@
             <h2 id="ct-filter-title">Timeline filters</h2>
             <form method="get" action="/fgt-conftail/" class="ct-filter" role="search">
                 <div class="field">
-                    <label for="ct-firewall">Firewall ID</label>
-                    <input id="ct-firewall" type="number" min="1" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls">
+                    <label for="ct-firewall">Firewall name or ID</label>
+                    <input id="ct-firewall" type="search" inputmode="numeric" list="ct-firewall-options" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls" autocomplete="off">
+                    <datalist id="ct-firewall-options">
+                        {{range .Firewalls}}<option value="{{.FirewallID}}" label="{{.FirewallName}}"></option>{{end}}
+                    </datalist>
                 </div>
                 <div class="field">
                     <label for="ct-user">Administrator contains</label>
                     <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="All administrators">
+                </div>
+                <div class="field">
+                    <label for="ct-source">Graylog source contains</label>
+                    <input id="ct-source" type="search" maxlength="512" name="source" value="{{.Filters.Source}}" placeholder="All sources">
+                </div>
+                <div class="field">
+                    <label for="ct-device">Device name contains</label>
+                    <input id="ct-device" type="search" maxlength="512" name="device" value="{{.Filters.Device}}" placeholder="All device names">
+                </div>
+                <div class="field">
+                    <label for="ct-serial">Serial contains</label>
+                    <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="All serials">
                 </div>
                 <div class="field">
                     <label for="ct-state">Session / delivery state</label>

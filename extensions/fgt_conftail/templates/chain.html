@@ -68,7 +68,9 @@
                         {{if .DeviceID}}<span><b>device ID:</b> {{.DeviceID}}</span>{{end}}
                         {{if .Path}}<span><b>path:</b> {{.Path}}</span>{{end}}
                         {{if .Object}}<span><b>object:</b> {{.Object}}</span>{{end}}
-                        {{if .ConfigAttribute}}<span><b>attribute:</b> {{.ConfigAttribute}}</span>{{end}}
+                        {{if .HasAttributeDiff}}
+                        <span class="ct-attribute-diff"><b>attribute:</b> {{.AttributeDiff.Name}} <del>{{if .AttributeDiff.Before}}{{.AttributeDiff.Before}}{{else}}∅{{end}}</del><span aria-hidden="true">→</span><ins>{{if .AttributeDiff.After}}{{.AttributeDiff.After}}{{else}}∅{{end}}</ins></span>
+                        {{else if .ConfigAttribute}}<span><b>attribute:</b> {{.ConfigAttribute}}</span>{{end}}
                         {{if .LogDescription}}<span><b>description:</b> {{.LogDescription}}</span>{{end}}
                         {{if .Message}}<span><b>message:</b> {{.Message}}</span>{{end}}
                         <span><b>log ID:</b> {{.LogID}}</span>

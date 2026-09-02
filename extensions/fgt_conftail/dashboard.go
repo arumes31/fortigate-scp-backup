@@ -31,6 +31,12 @@ const (
 	dashboardWhereSQL      = `c.state = ?
 		AND (? = 0 OR c.firewall_id = ?)
 		AND (? = 0 OR LOWER(c.user) LIKE LOWER(?) ESCAPE '\')
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND LOWER(ef.source) LIKE LOWER(?) ESCAPE '\'))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND LOWER(ef.device_name) LIKE LOWER(?) ESCAPE '\'))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND LOWER(ef.device_id) LIKE LOWER(?) ESCAPE '\'))
 		AND (? = 0 OR c.last_event_at_ns >= ?)
 		AND (? = 0 OR c.first_event_at_ns <= ?)
 		AND (? = 0 OR o.state = ?)`
@@ -43,12 +49,15 @@ const (
 		FROM chains c LEFT JOIN outbox o ON o.chain_id = c.id`
 )
 
-//go:embed templates/*.html static/*.css
+//go:embed templates/*.html static/*
 var dashboardFS embed.FS
 
 type dashboardFilters struct {
 	FirewallID int
 	User       string
+	Source     string
+	Device     string
+	Serial     string
 	State      string
 	From       time.Time
 	To         time.Time
@@ -65,22 +74,24 @@ type dashboardCounts struct {
 }
 
 type dashboardEvent struct {
-	EventAt         time.Time
-	Source          string
-	DeviceName      string
-	DeviceID        string
-	VDOM            string
-	UserAttribution string
-	UI              string
-	Action          string
-	TransactionID   string
-	Path            string
-	Object          string
-	ConfigAttribute string
-	LogID           string
-	LogDescription  string
-	Message         string
-	Late            bool
+	EventAt          time.Time
+	Source           string
+	DeviceName       string
+	DeviceID         string
+	VDOM             string
+	UserAttribution  string
+	UI               string
+	Action           string
+	TransactionID    string
+	Path             string
+	Object           string
+	ConfigAttribute  string
+	AttributeDiff    configAttributeDiff
+	HasAttributeDiff bool
+	LogID            string
+	LogDescription   string
+	Message          string
+	Late             bool
 }
 
 type dashboardChain struct {
@@ -120,6 +131,9 @@ type dashboardData struct {
 type dashboardFilterView struct {
 	Firewall string
 	User     string
+	Source   string
+	Device   string
+	Serial   string
 	State    string
 	From     string
 	To       string
@@ -130,6 +144,7 @@ type dashboardHealth struct {
 	State  string
 	Label  string
 	Detail string
+	Action string
 }
 
 type conftailBaseData struct {
@@ -141,16 +156,19 @@ type conftailBaseData struct {
 }
 
 type dashboardPageData struct {
-	Base          conftailBaseData
-	Dashboard     dashboardData
-	Filters       dashboardFilterView
-	Health        dashboardHealth
-	NextPollRun   time.Time
-	Coverage      []sourceCoverage
-	Warnings      []string
-	ActiveOmitted int
-	PrevURL       string
-	NextURL       string
+	Base           conftailBaseData
+	Dashboard      dashboardData
+	Filters        dashboardFilterView
+	Health         dashboardHealth
+	SessionHealth  dashboardHealth
+	DeliveryHealth dashboardHealth
+	NextPollRun    time.Time
+	Coverage       []sourceCoverage
+	Firewalls      []sourceCoverage
+	Warnings       []string
+	ActiveOmitted  int
+	PrevURL        string
+	NextURL        string
 }
 
 type dashboardChainPageData struct {
@@ -164,8 +182,9 @@ type dashboardChainPageData struct {
 
 func parseDashboardTemplate() (*template.Template, error) {
 	return template.New("index.html").Funcs(template.FuncMap{
-		"fmtTime":     formatDashboardTime,
-		"fmtDuration": formatDashboardDuration,
+		"fmtTime":        formatDashboardTime,
+		"fmtMachineTime": formatDashboardMachineTime,
+		"fmtDuration":    formatDashboardDuration,
 	}).ParseFS(dashboardFS, "templates/*.html")
 }
 
@@ -175,15 +194,28 @@ func dashboardStaticFS() (fs.FS, error) {
 
 func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 	filters := dashboardFilters{
-		User:  strings.TrimSpace(values.Get("user")),
-		State: strings.TrimSpace(values.Get("state")),
-		Page:  1,
+		User:   strings.TrimSpace(values.Get("user")),
+		Source: strings.TrimSpace(values.Get("source")),
+		Device: strings.TrimSpace(values.Get("device")),
+		Serial: strings.TrimSpace(values.Get("serial")),
+		State:  strings.TrimSpace(values.Get("state")),
+		Page:   1,
 	}
 	if filters.State == "" {
 		filters.State = dashboardStateAll
 	}
-	if utf8.RuneCountInString(filters.User) > maxIdentityRunes {
-		return dashboardFilters{}, errors.New("dashboard user filter is too long")
+	for _, filter := range []struct {
+		name  string
+		value string
+	}{
+		{name: "user", value: filters.User},
+		{name: "source", value: filters.Source},
+		{name: "device", value: filters.Device},
+		{name: "serial", value: filters.Serial},
+	} {
+		if err := validateDashboardTextFilter(filter.value); err != nil {
+			return dashboardFilters{}, fmt.Errorf("invalid dashboard %s filter: %w", filter.name, err)
+		}
 	}
 	if !validDashboardState(filters.State) {
 		return dashboardFilters{}, errors.New("invalid dashboard state filter")
@@ -215,6 +247,18 @@ func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 		return dashboardFilters{}, errors.New("dashboard start time is after end time")
 	}
 	return filters, nil
+}
+
+func validateDashboardTextFilter(value string) error {
+	if utf8.RuneCountInString(value) > maxIdentityRunes {
+		return errors.New("value is too long")
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return errors.New("value contains a control character")
+		}
+	}
+	return nil
 }
 
 func parseDashboardTime(value string) (time.Time, error) {
@@ -341,6 +385,9 @@ func dashboardQueryArgs(filters dashboardFilters, chainState string) []any {
 		chainState,
 		boolInt(filters.FirewallID > 0), filters.FirewallID,
 		boolInt(filters.User != ""), "%" + escapeDashboardLike(filters.User) + "%",
+		boolInt(filters.Source != ""), "%" + escapeDashboardLike(filters.Source) + "%",
+		boolInt(filters.Device != ""), "%" + escapeDashboardLike(filters.Device) + "%",
+		boolInt(filters.Serial != ""), "%" + escapeDashboardLike(filters.Serial) + "%",
 		boolInt(!filters.From.IsZero()), unixNanos(filters.From),
 		boolInt(!filters.To.IsZero()), unixNanos(filters.To),
 		boolInt(deliveryState != ""), deliveryState,
@@ -478,6 +525,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 	}
 	event.EventAt = timeFromNanos(eventAt)
 	event.Late = late != 0
+	event.AttributeDiff, event.HasAttributeDiff = parseConfigAttributeDiff(event.ConfigAttribute)
 	return event, nil
 }
 
@@ -627,14 +675,17 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		username = e.currentUser(r)
 	}
 	page := dashboardPageData{
-		Base:          e.conftailBaseData(username),
-		Dashboard:     data,
-		Filters:       dashboardFiltersView(filters),
-		Health:        dashboardPollHealth(data.Poll, time.Now().UTC(), e.dashboardPollInterval()),
-		NextPollRun:   dashboardNextPollRun(data.Poll, e.dashboardPollInterval()),
-		Coverage:      coverage,
-		Warnings:      warnings,
-		ActiveOmitted: max(0, data.ActiveTotal-len(data.Active)),
+		Base:           e.conftailBaseData(username),
+		Dashboard:      data,
+		Filters:        dashboardFiltersView(filters),
+		Health:         dashboardPollHealth(data.Poll, time.Now().UTC(), e.dashboardPollInterval()),
+		SessionHealth:  dashboardSessionHealth(data.Counts),
+		DeliveryHealth: dashboardDeliveryHealth(data.Counts),
+		NextPollRun:    dashboardNextPollRun(data.Poll, e.dashboardPollInterval()),
+		Coverage:       coverage,
+		Firewalls:      coverage,
+		Warnings:       warnings,
+		ActiveOmitted:  max(0, data.ActiveTotal-len(data.Active)),
 	}
 	if filters.Page > 1 {
 		page.PrevURL = dashboardPageURL(filters, filters.Page-1)
@@ -658,6 +709,9 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 			"actor", sanitizeExternalString(username, maxIdentityRunes),
 			"firewall_id", filters.FirewallID,
 			"user_filter_set", filters.User != "",
+			"source_filter_set", filters.Source != "",
+			"device_filter_set", filters.Device != "",
+			"serial_filter_set", filters.Serial != "",
 			"state", filters.State,
 			"from", dashboardLogTime(filters.From),
 			"to", dashboardLogTime(filters.To),
@@ -810,9 +864,12 @@ func dashboardNextPollRun(state PollState, interval time.Duration) time.Time {
 
 func dashboardFiltersView(filters dashboardFilters) dashboardFilterView {
 	view := dashboardFilterView{
-		User:  filters.User,
-		State: filters.State,
-		Page:  filters.Page,
+		User:   filters.User,
+		Source: filters.Source,
+		Device: filters.Device,
+		Serial: filters.Serial,
+		State:  filters.State,
+		Page:   filters.Page,
 	}
 	if filters.FirewallID > 0 {
 		view.Firewall = strconv.Itoa(filters.FirewallID)
@@ -829,18 +886,89 @@ func dashboardFiltersView(filters dashboardFilters) dashboardFilterView {
 func dashboardPollHealth(state PollState, now time.Time, interval time.Duration) dashboardHealth {
 	if !state.LastFailureAt.IsZero() &&
 		(state.LastSuccessAt.IsZero() || !state.LastFailureAt.Before(state.LastSuccessAt)) {
-		return dashboardHealth{State: "failed", Label: "Poll failed", Detail: state.LastError}
+		return dashboardHealth{
+			State:  "failed",
+			Label:  "Collector failed",
+			Detail: state.LastError,
+			Action: dashboardPollRemediation(state.LastError),
+		}
 	}
 	if state.LastSuccessAt.IsZero() {
-		return dashboardHealth{State: "waiting", Label: "Waiting for first poll"}
+		return dashboardHealth{
+			State:  "waiting",
+			Label:  "Collector waiting",
+			Action: "Wait for the first scheduled poll; check the scheduler if this persists.",
+		}
 	}
 	if interval <= 0 {
 		interval = 15 * time.Minute
 	}
 	if now.After(state.LastSuccessAt.Add(2 * interval)) {
-		return dashboardHealth{State: "stale", Label: "Poll is stale"}
+		return dashboardHealth{
+			State:  "stale",
+			Label:  "Collector is stale",
+			Action: "Check the ConfTail poll scheduler and recent application logs.",
+		}
 	}
-	return dashboardHealth{State: "healthy", Label: "Polling healthy"}
+	return dashboardHealth{State: "healthy", Label: "Collector healthy"}
+}
+
+func dashboardPollRemediation(lastError string) string {
+	normalized := strings.ToLower(lastError)
+	switch {
+	case strings.Contains(normalized, "http 401"), strings.Contains(normalized, "http 403"):
+		return "Verify the Graylog token and its search permissions."
+	case strings.Contains(normalized, "http 429"):
+		return "Graylog is throttling requests; automatic retries honor Retry-After."
+	case strings.Contains(normalized, "schema"), strings.Contains(normalized, "decode graylog"),
+		strings.Contains(normalized, "eventtime"):
+		return "Check the Graylog field mapping and search response schema."
+	case strings.Contains(normalized, "no queryable aliases"):
+		return "Enable Graylog for at least one ADM VPN firewall and verify source aliases."
+	case strings.Contains(normalized, "timeout"), strings.Contains(normalized, "deadline"):
+		return "Check Graylog latency and the ConfTail poll timeout."
+	default:
+		return "Check Graylog connectivity, URL configuration, and the application log."
+	}
+}
+
+func dashboardSessionHealth(counts dashboardCounts) dashboardHealth {
+	return dashboardHealth{
+		State:  "healthy",
+		Label:  "Session ledger healthy",
+		Detail: fmt.Sprintf("%d active / %d sealed", counts.Active, counts.Sealed),
+	}
+}
+
+func dashboardDeliveryHealth(counts dashboardCounts) dashboardHealth {
+	switch {
+	case counts.Failed > 0:
+		return dashboardHealth{
+			State:  "failed",
+			Label:  "Hookwise delivery failed",
+			Detail: fmt.Sprintf("%d failed / %d retry", counts.Failed, counts.Retry),
+			Action: "Check the Hookwise endpoint, token, and failed delivery details.",
+		}
+	case counts.Retry > 0:
+		return dashboardHealth{
+			State:  "waiting",
+			Label:  "Hookwise retrying",
+			Detail: fmt.Sprintf("%d retry / %d pending", counts.Retry, counts.Pending),
+			Action: "Retries are automatic; inspect delivery details if the queue keeps growing.",
+		}
+	case counts.Pending > 0:
+		return dashboardHealth{
+			State:  "waiting",
+			Label:  "Hookwise queued",
+			Detail: fmt.Sprintf("%d pending", counts.Pending),
+		}
+	default:
+		return dashboardHealth{
+			State:  "healthy",
+			Label:  "Hookwise delivery healthy",
+			Detail: fmt.Sprintf("%d accepted", counts.Accepted),
+		}
+	}
 }
 
 func dashboardPageURL(filters dashboardFilters, page int) string {
@@ -850,6 +978,15 @@ func dashboardPageURL(filters dashboardFilters, page int) string {
 	}
 	if filters.User != "" {
 		values.Set("user", filters.User)
+	}
+	if filters.Source != "" {
+		values.Set("source", filters.Source)
+	}
+	if filters.Device != "" {
+		values.Set("device", filters.Device)
+	}
+	if filters.Serial != "" {
+		values.Set("serial", filters.Serial)
 	}
 	if filters.State != "" && filters.State != dashboardStateAll {
 		values.Set("state", filters.State)
@@ -883,6 +1020,13 @@ func formatDashboardTime(value time.Time) string {
 		return "-"
 	}
 	return value.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+func formatDashboardMachineTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func formatDashboardDuration(value time.Duration) string {

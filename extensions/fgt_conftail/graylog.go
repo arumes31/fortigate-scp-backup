@@ -28,6 +28,9 @@ const (
 	graylogMaxQuerySize       = 32 << 10
 	graylogMaxEventTimeDigits = 128
 	graylogCanonicalLogIDSize = 10
+	graylogRetryAttempts      = 3
+	graylogRetryBase          = 250 * time.Millisecond
+	graylogRetryMax           = 30 * time.Second
 )
 
 var graylogSelectedFields = []string{
@@ -79,12 +82,15 @@ type RawEvent struct {
 	UUID                string      `json:"uuid,omitempty"`
 }
 
-// FetchStats describes only pages that were fully received and validated.
-// Callers can report partial progress when fetch returns an error, but events
-// are deliberately returned only after every page succeeds.
+// FetchStats describes pages and rows received by the Graylog client. Rows
+// includes quarantined rows; only valid events are returned. Callers can report
+// partial progress when fetch returns an error, but events are deliberately
+// returned only after every page succeeds.
 type FetchStats struct {
-	Pages int
-	Rows  int
+	Pages       int
+	Rows        int
+	Quarantined int
+	Retries     int
 }
 
 type graylogClient struct {
@@ -95,7 +101,30 @@ type graylogClient struct {
 	maxPages         int
 	maxResponseBytes int64
 	maxDecodedBytes  int64
+	retryAttempts    int
+	retryBase        time.Duration
+	retryMax         time.Duration
+	retryJitter      func(time.Duration) time.Duration
+	sleep            func(context.Context, time.Duration) error
+	now              func() time.Time
 }
+
+type graylogPage struct {
+	events      []RawEvent
+	rows        int
+	quarantined int
+	retries     int
+}
+
+type graylogAttemptError struct {
+	err        error
+	retryable  bool
+	retryAfter time.Duration
+}
+
+func (e *graylogAttemptError) Error() string { return e.err.Error() }
+
+func (e *graylogAttemptError) Unwrap() error { return e.err }
 
 type graylogAbsoluteTimerange struct {
 	Type string `json:"type"`
@@ -161,6 +190,12 @@ func newGraylogClient(baseURL, token string, httpClient *http.Client) (*graylogC
 		maxPages:         graylogMaxPages,
 		maxResponseBytes: graylogMaxResponseBytes,
 		maxDecodedBytes:  graylogMaxDecodedBytes,
+		retryAttempts:    graylogRetryAttempts,
+		retryBase:        graylogRetryBase,
+		retryMax:         graylogRetryMax,
+		retryJitter:      randomRetryJitter,
+		sleep:            sleepWithContext,
+		now:              time.Now,
 	}, nil
 }
 
@@ -219,20 +254,22 @@ func (c *graylogClient) fetch(
 			Sort:      "gl2_message_id",
 			SortOrder: "asc",
 		}
-		pageEvents, err := c.fetchPage(ctx, request)
+		result, err := c.fetchPage(ctx, request)
 		if err != nil {
 			return nil, stats, fmt.Errorf("fetch graylog page at offset %d: %w", offset, err)
 		}
 		stats.Pages++
-		stats.Rows += len(pageEvents)
-		for i := range pageEvents {
-			decodedBytes += rawEventBytes(pageEvents[i])
+		stats.Rows += result.rows
+		stats.Quarantined += result.quarantined
+		stats.Retries += result.retries
+		for i := range result.events {
+			decodedBytes += rawEventBytes(result.events[i])
 			if decodedBytes > c.maxDecodedBytes {
 				return nil, stats, fmt.Errorf("graylog decoded data exceeds %d-byte limit", c.maxDecodedBytes)
 			}
 		}
-		events = append(events, pageEvents...)
-		if len(pageEvents) < c.pageSize {
+		events = append(events, result.events...)
+		if result.rows < c.pageSize {
 			sortRawEvents(events)
 			return events, stats, nil
 		}
@@ -251,14 +288,46 @@ func rawEventBytes(event RawEvent) int64 {
 		len(event.LogDescription) + len(event.Message) + len(event.UUID))
 }
 
-func (c *graylogClient) fetchPage(ctx context.Context, body graylogSearchRequest) ([]RawEvent, error) {
+func (c *graylogClient) fetchPage(ctx context.Context, body graylogSearchRequest) (graylogPage, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("encode graylog request: %w", err)
+		return graylogPage{}, fmt.Errorf("encode graylog request: %w", err)
 	}
+	attempts := c.retryAttempts
+	if attempts <= 0 {
+		attempts = graylogRetryAttempts
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		page, requestErr := c.fetchPageAttempt(ctx, payload, body.Size)
+		if requestErr == nil {
+			page.retries = attempt
+			return page, nil
+		}
+		if !requestErr.retryable || attempt == attempts-1 {
+			return graylogPage{}, requestErr
+		}
+		delay := c.retryDelay(attempt, requestErr.retryAfter)
+		sleep := c.sleep
+		if sleep == nil {
+			sleep = sleepWithContext
+		}
+		if err := sleep(ctx, delay); err != nil {
+			return graylogPage{}, err
+		}
+	}
+	return graylogPage{}, errors.New("graylog retry attempts exhausted")
+}
+
+func (c *graylogClient) fetchPageAttempt(
+	ctx context.Context,
+	payload []byte,
+	pageSize int,
+) (graylogPage, *graylogAttemptError) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("create graylog request: %w", err)
+		return graylogPage{}, &graylogAttemptError{
+			err: fmt.Errorf("create graylog request: %w", err),
+		}
 	}
 	req.SetBasicAuth(c.token, "token")
 	req.Header.Set("Accept", "application/json")
@@ -267,7 +336,19 @@ func (c *graylogClient) fetchPage(ctx context.Context, body graylogSearchRequest
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send graylog request: %w", err)
+		if contextErr := ctx.Err(); contextErr != nil {
+			return graylogPage{}, &graylogAttemptError{err: contextErr}
+		}
+		return graylogPage{}, &graylogAttemptError{
+			err:       fmt.Errorf("send graylog request: %w", err),
+			retryable: true,
+		}
+	}
+	if resp.Body == nil {
+		return graylogPage{}, &graylogAttemptError{
+			err:       errors.New("graylog returned an empty response body"),
+			retryable: true,
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -276,24 +357,83 @@ func (c *graylogClient) fetchPage(ctx context.Context, body graylogSearchRequest
 		// configuration values. Drain only a small prefix for connection hygiene,
 		// but never copy it into logs, SQLite health state, or user-visible errors.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("graylog returned HTTP %d", resp.StatusCode)
+		now := time.Now()
+		if c.now != nil {
+			now = c.now()
+		}
+		return graylogPage{}, &graylogAttemptError{
+			err:        fmt.Errorf("graylog returned HTTP %d", resp.StatusCode),
+			retryable:  graylogStatusRetryable(resp.StatusCode),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), now),
+		}
 	}
 
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read graylog response: %w", err)
+		return graylogPage{}, &graylogAttemptError{
+			err:       fmt.Errorf("read graylog response: %w", err),
+			retryable: true,
+		}
 	}
 	if int64(len(responseBody)) > c.maxResponseBytes {
-		return nil, fmt.Errorf("graylog response exceeds %d-byte limit", c.maxResponseBytes)
+		return graylogPage{}, &graylogAttemptError{
+			err: fmt.Errorf("graylog response exceeds %d-byte limit", c.maxResponseBytes),
+		}
 	}
-	events, err := decodeGraylogPage(responseBody)
+	page, err := decodeGraylogPage(responseBody)
 	if err != nil {
-		return nil, err
+		return graylogPage{}, &graylogAttemptError{err: err}
 	}
-	if len(events) > body.Size {
-		return nil, fmt.Errorf("graylog returned %d rows for a page size of %d", len(events), body.Size)
+	if page.rows > pageSize {
+		return graylogPage{}, &graylogAttemptError{
+			err: fmt.Errorf("graylog returned %d rows for a page size of %d", page.rows, pageSize),
+		}
 	}
-	return events, nil
+	return page, nil
+}
+
+func graylogStatusRetryable(status int) bool {
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusTooManyRequests ||
+		(status >= http.StatusInternalServerError && status <= 599)
+}
+
+func (c *graylogClient) retryDelay(attempt int, retryAfter time.Duration) time.Duration {
+	delay := c.retryBase
+	if delay <= 0 {
+		delay = graylogRetryBase
+	}
+	for range min(max(attempt, 0), 16) {
+		delay *= 2
+	}
+	maximum := c.retryMax
+	if maximum <= 0 {
+		maximum = graylogRetryMax
+	}
+	if delay > maximum {
+		delay = maximum
+	}
+	if c.retryJitter != nil {
+		delay += max(c.retryJitter(delay/5), 0)
+	}
+	if retryAfter > delay {
+		delay = retryAfter
+	}
+	return min(delay, maximum)
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func composeGraylogQuery(baseQuery string, sourceAliases []string) (string, error) {
@@ -350,7 +490,7 @@ func escapeGraylogQueryValue(value string) string {
 	return strings.ReplaceAll(value, `"`, `\"`)
 }
 
-func decodeGraylogPage(body []byte) ([]RawEvent, error) {
+func decodeGraylogPage(body []byte) (graylogPage, error) {
 	var response struct {
 		Schema   *[]graylogColumn `json:"schema"`
 		Datarows *[][]any         `json:"datarows"`
@@ -358,52 +498,59 @@ func decodeGraylogPage(body []byte) ([]RawEvent, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode graylog response: %w", err)
+		return graylogPage{}, fmt.Errorf("decode graylog response: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, errors.New("decode graylog response: trailing JSON value")
+			return graylogPage{}, errors.New("decode graylog response: trailing JSON value")
 		}
-		return nil, fmt.Errorf("decode graylog response trailing data: %w", err)
+		return graylogPage{}, fmt.Errorf("decode graylog response trailing data: %w", err)
 	}
 	if response.Schema == nil || len(*response.Schema) == 0 {
-		return nil, errors.New("decode graylog response: schema is missing or empty")
+		return graylogPage{}, errors.New("decode graylog response: schema is missing or empty")
 	}
 	if response.Datarows == nil {
-		return nil, errors.New("decode graylog response: datarows are missing or null")
+		return graylogPage{}, errors.New("decode graylog response: datarows are missing or null")
 	}
 
 	schema := *response.Schema
 	indexes := make(map[string]int, len(schema))
 	for i, column := range schema {
 		if column.ColumnType != "field" || column.Field == "" {
-			return nil, fmt.Errorf("decode graylog response: invalid schema column %d", i)
+			return graylogPage{}, fmt.Errorf("decode graylog response: invalid schema column %d", i)
 		}
 		if _, duplicate := indexes[column.Field]; duplicate {
-			return nil, errors.New("decode graylog response: duplicate schema field")
+			return graylogPage{}, errors.New("decode graylog response: duplicate schema field")
 		}
 		indexes[column.Field] = i
 	}
 	for _, field := range graylogSelectedFields {
 		if _, exists := indexes[field]; !exists {
-			return nil, fmt.Errorf("decode graylog response: schema missing requested field %q", field)
+			return graylogPage{}, fmt.Errorf("decode graylog response: schema missing requested field %q", field)
 		}
 	}
 
 	rows := *response.Datarows
 	events := make([]RawEvent, 0, len(rows))
-	for i, row := range rows {
+	quarantined := 0
+	for _, row := range rows {
 		if len(row) != len(schema) {
-			return nil, fmt.Errorf("decode graylog response: row %d has %d columns, schema has %d", i, len(row), len(schema))
+			quarantined++
+			continue
 		}
 		event, err := rawEventFromRow(row, indexes)
 		if err != nil {
-			return nil, fmt.Errorf("decode graylog response row %d: %w", i, err)
+			quarantined++
+			continue
 		}
 		events = append(events, event)
 	}
-	return events, nil
+	return graylogPage{
+		events:      events,
+		rows:        len(rows),
+		quarantined: quarantined,
+	}, nil
 }
 
 func rawEventFromRow(row []any, indexes map[string]int) (RawEvent, error) {
@@ -584,6 +731,9 @@ func graylogScalarString(value any) (string, error) {
 	case nil:
 		return "", nil
 	case string:
+		if strings.TrimSpace(value) == "-" {
+			return "", nil
+		}
 		return value, nil
 	case json.Number:
 		return value.String(), nil

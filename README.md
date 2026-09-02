@@ -350,7 +350,7 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 
 When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
 
-By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated, read-only operations page is available at `/fgt-conftail`.
+By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. The payload includes the structured ConfTail metadata plus Hookwise-compatible `source` and `message` fields, so ConnectWise can render the redacted session header and ordered change timeline directly instead of showing `Unknown Source` or `No message`. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated, read-only operations page is available at `/fgt-conftail`.
 
 The application log records each ConfTail Graylog query start/completion and each authenticated dashboard/session query with its time range, source or result counts, and request ID where applicable. Configured Graylog queries are identified by a SHA-256 fingerprint and byte length; query text, tokens, source aliases, filter values, and response payloads are not logged.
 
@@ -453,7 +453,9 @@ An optional module (`EXT_FGT_CONFTAIL=true`) that turns FortiGate configuration 
 * **Per-administrator sessions** — orders changes into independent timelines per registered firewall and exact administrator, including HA member normalization.
 * **No silent loss** — safely correlates missing users when possible and otherwise creates a visible `[unattributed]` session.
 * **Durable handoff** — seals a session after its configured quiet period, redacts sensitive values, and retries the same immutable payload until Hookwise accepts it.
-* **Read-only visibility** — `/fgt-conftail` shows poll, source coverage, active/history, and delivery state to authenticated users; ticket lifecycle actions remain in Hookwise/ConnectWise.
+* **Read-only visibility** — `/fgt-conftail` separates Graylog collector, session, and Hookwise health; offers firewall autocomplete plus source/device/serial filters; and keeps ADM-backed source coverage collapsed by default. Ticket lifecycle actions remain in Hookwise/ConnectWise.
+* **Resilient collection** — transient Graylog failures are retried with bounded backoff, `Retry-After` is honored for throttling, and malformed rows are quarantined without discarding valid rows from the same page.
+* **Operational health** — `/healthz` remains an HTTP 200 liveness endpoint and exposes bounded Graylog, catalog, ConfTail store, and Hookwise component states without error details.
 
 ### FortiGate Policy Generator (ConfGen)
 

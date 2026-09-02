@@ -60,7 +60,7 @@ func TestPollWorkerPersistsAttributedAndUnattributedChanges(t *testing.T) {
 			rawConfigEvent("m-1", "FW-A", "admin-a", "tx-1", activation.Add(time.Minute)),
 			rawConfigEvent("m-2", "fw-a.example.com", "", "tx-1", activation.Add(2*time.Minute)),
 			rawConfigEvent("m-3", "fw-a", "", "tx-unknown", activation.Add(3*time.Minute)),
-		}, FetchStats{Pages: 2, Rows: 3}, nil
+		}, FetchStats{Pages: 2, Rows: 4, Quarantined: 1}, nil
 	}}
 	var published sourceCatalog
 	clockCalls := 0
@@ -84,8 +84,8 @@ func TestPollWorkerPersistsAttributedAndUnattributedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poll() error = %v", err)
 	}
-	if stats.Fetched != 3 || stats.Inserted != 3 || stats.Pages != 2 {
-		t.Fatalf("poll stats = %+v, want fetched/inserted/pages 3/3/2", stats)
+	if stats.Fetched != 4 || stats.Quarantined != 1 || stats.Inserted != 3 || stats.Pages != 2 {
+		t.Fatalf("poll stats = %+v, want fetched/quarantined/inserted/pages 4/1/3/2", stats)
 	}
 	if len(fetcher.calls) != 1 {
 		t.Fatalf("fetch calls = %d, want 1", len(fetcher.calls))
@@ -108,7 +108,7 @@ func TestPollWorkerPersistsAttributedAndUnattributedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pollState() error = %v", err)
 	}
-	if !state.Watermark.Equal(pollEnd) || state.LastFetched != 3 || state.LastInserted != 3 {
+	if !state.Watermark.Equal(pollEnd) || state.LastFetched != 4 || state.LastInserted != 3 {
 		t.Fatalf("poll state = %+v", state)
 	}
 	if !state.LastSuccessAt.Equal(pollEnd.Add(2*time.Second)) || state.LastDuration != 2*time.Second {
@@ -243,7 +243,7 @@ func TestPollWorkerDoesNotAdvanceOnPartialGraylogFailure(t *testing.T) {
 	}
 }
 
-func TestPollWorkerRejectsUnexpectedOrUnsupportedRows(t *testing.T) {
+func TestPollWorkerQuarantinesUnexpectedOrUnsupportedRows(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -272,10 +272,12 @@ func TestPollWorkerRejectsUnexpectedOrUnsupportedRows(t *testing.T) {
 			}
 			raw := rawConfigEvent("m-1", "fw-a", "admin-a", "tx-1", activation.Add(time.Minute))
 			test.mutate(&raw)
+			valid := rawConfigEvent("m-2", "fw-a", "admin-a", "tx-2", activation.Add(2*time.Minute))
+			pollEnd := activation.Add(15 * time.Minute)
 			worker := pollWorker{
 				store: s,
 				graylog: &scriptedGraylogFetcher{fn: func(_ int, _ []string) ([]RawEvent, FetchStats, error) {
-					return []RawEvent{raw}, FetchStats{Pages: 1, Rows: 1}, nil
+					return []RawEvent{raw, valid}, FetchStats{Pages: 1, Rows: 2}, nil
 				}},
 				loadCatalog:         func(context.Context) (sourceCatalog, error) { return catalog, nil },
 				query:               "type:event",
@@ -284,11 +286,22 @@ func TestPollWorkerRejectsUnexpectedOrUnsupportedRows(t *testing.T) {
 				maxDescriptionBytes: 60_000,
 				missingUserWindow:   5 * time.Minute,
 			}
-			if _, err := worker.poll(context.Background(), activation.Add(15*time.Minute)); err == nil {
-				t.Fatal("poll() accepted an untrusted row outside its contract")
+			stats, err := worker.poll(context.Background(), pollEnd)
+			if err != nil {
+				t.Fatalf("poll() failed instead of quarantining one row: %v", err)
 			}
-			if got := countRows(t, s, "events"); got != 0 {
-				t.Fatalf("events = %d, want 0 after rejected batch", got)
+			if stats.Quarantined != 1 || stats.Inserted != 1 {
+				t.Fatalf("poll stats = %+v, want one quarantined and one inserted", stats)
+			}
+			if got := countRows(t, s, "events"); got != 1 {
+				t.Fatalf("events = %d, want only the valid row", got)
+			}
+			state, err := s.pollState(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !state.Watermark.Equal(pollEnd) {
+				t.Fatalf("watermark = %s, want %s", state.Watermark, pollEnd)
 			}
 		})
 	}

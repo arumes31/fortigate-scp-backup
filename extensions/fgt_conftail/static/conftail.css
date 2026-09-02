@@ -80,6 +80,14 @@
     overflow-wrap: anywhere;
 }
 
+.ct-action {
+    border-top: 1px solid var(--border-soft);
+    color: var(--text);
+    font-size: 10px;
+    margin-top: 2px;
+    padding-top: 7px;
+}
+
 .ct-health-healthy { border-left: 3px solid var(--success); }
 .ct-health-waiting,
 .ct-health-stale { border-left: 3px solid var(--warning); }
@@ -106,7 +114,7 @@
 
 .ct-filter {
     display: grid;
-    grid-template-columns: repeat(5, minmax(140px, 1fr));
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
     gap: 12px;
     align-items: end;
 }
@@ -195,6 +203,29 @@
 
 .ct-event-body b {
     color: var(--text-muted);
+}
+
+.ct-attribute-diff {
+    align-items: baseline;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.ct-attribute-diff del,
+.ct-attribute-diff ins {
+    border: 1px solid var(--border-soft);
+    padding: 2px 5px;
+    text-decoration: none;
+}
+
+.ct-attribute-diff del {
+    color: var(--danger);
+    text-decoration: line-through;
+}
+
+.ct-attribute-diff ins {
+    color: var(--success);
 }
 
 .ct-state-accepted { color: var(--success); border-color: var(--success); background: var(--success-soft); }

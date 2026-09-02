@@ -66,6 +66,7 @@ func TestExtensionMountRejectsMissingHostDependencies(t *testing.T) {
 
 func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing.T) {
 	var jobs []scheduledConftailJob
+	registeredHealth := map[string]func(context.Context) string{}
 	authCalls := 0
 	deps := validConftailDeps(t)
 	deps.LoginRequired = func(next http.Handler) http.Handler {
@@ -77,6 +78,9 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	}
 	deps.Schedule = func(id string, interval, firstDelay time.Duration, fn func()) {
 		jobs = append(jobs, scheduledConftailJob{id: id, interval: interval, firstDelay: firstDelay, fn: fn})
+	}
+	deps.RegisterHealth = func(name string, probe func(context.Context) string) {
+		registeredHealth[name] = probe
 	}
 	e := New(validConftailConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() {
@@ -148,14 +152,92 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 			chainResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
-	if len(jobs) != 2 {
-		t.Fatalf("scheduled jobs = %d, want poll and delivery", len(jobs))
+	if len(jobs) != 3 {
+		t.Fatalf("scheduled jobs = %d, want poll, delivery, and ADM catalog refresh", len(jobs))
+	}
+	for _, name := range []string{
+		"conftail.graylog", "conftail.catalog", "conftail.store", "conftail.hookwise",
+	} {
+		if registeredHealth[name] == nil {
+			t.Errorf("health component %q was not registered", name)
+		}
 	}
 	if jobs[0].id != conftailPollJobID || jobs[0].interval != 15*time.Minute || jobs[0].fn == nil {
 		t.Fatalf("poll job = %+v", jobs[0])
 	}
+	if jobs[2].id != conftailCatalogJobID || jobs[2].interval != 30*time.Second || jobs[2].fn == nil {
+		t.Fatalf("catalog refresh job = %+v", jobs[2])
+	}
 	if jobs[1].id != conftailDeliveryJobID || jobs[1].interval != time.Minute || jobs[1].fn == nil {
 		t.Fatalf("delivery job = %+v", jobs[1])
+	}
+}
+
+func TestExtensionMountSkipsCatalogRefreshWhenADMVPNIsDisabled(t *testing.T) {
+	var jobIDs []string
+	deps := validConftailDeps(t)
+	deps.Schedule = func(id string, _ time.Duration, _ time.Duration, _ func()) {
+		jobIDs = append(jobIDs, id)
+	}
+	cfg := validConftailConfig()
+	cfg.ExtAdmVpnConf = false
+	e := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() {
+		if e.store != nil {
+			_ = e.store.close()
+		}
+	})
+	if err := e.Mount(chi.NewRouter(), deps); err != nil {
+		t.Fatalf("Mount() error = %v", err)
+	}
+	if len(jobIDs) != 2 || jobIDs[0] != conftailPollJobID || jobIDs[1] != conftailDeliveryJobID {
+		t.Fatalf("scheduled jobs = %v, want only poll and delivery", jobIDs)
+	}
+}
+
+func TestRunCatalogRefreshPublishesChangesAndPreservesLastGoodCatalog(t *testing.T) {
+	first := sourceCatalog{
+		aliases: []string{"fw-a"},
+		byID: map[int]firewallRef{
+			1: {ID: 1, Name: "fw-a.example"},
+		},
+		coverageRows: []sourceCoverage{{FirewallID: 1, FirewallName: "fw-a.example"}},
+	}
+	second := sourceCatalog{
+		aliases: []string{"fw-b"},
+		byID: map[int]firewallRef{
+			2: {ID: 2, Name: "fw-b.example"},
+		},
+		coverageRows: []sourceCoverage{{FirewallID: 2, FirewallName: "fw-b.example"}},
+	}
+	calls := 0
+	e := &Extension{
+		ctx:    context.Background(),
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		catalogLoader: func(context.Context) (sourceCatalog, error) {
+			calls++
+			switch calls {
+			case 1:
+				return first, nil
+			case 2:
+				return second, nil
+			default:
+				return sourceCatalog{}, context.DeadlineExceeded
+			}
+		},
+	}
+
+	e.runCatalogRefresh()
+	e.runCatalogRefresh()
+	if firewall, ok := e.catalog.firewall(2); !ok || firewall.Name != "fw-b.example" {
+		t.Fatalf("refreshed catalog = %+v, want firewall 2", e.catalog)
+	}
+	e.runCatalogRefresh()
+	if firewall, ok := e.catalog.firewall(2); !ok || firewall.Name != "fw-b.example" {
+		t.Fatalf("failed refresh replaced last good catalog: %+v", e.catalog)
+	}
+	if e.catalogLastError == "" || e.catalogHealth(context.Background()) != "failed" {
+		t.Fatalf("failed refresh health = %q / %q", e.catalogLastError, e.catalogHealth(context.Background()))
 	}
 }
 
@@ -206,6 +288,7 @@ func TestRunPollLogsSkippedGraylogRows(t *testing.T) {
 
 func validConftailConfig() *config.Config {
 	return &config.Config{
+		ExtAdmVpnConf:             true,
 		ExtFgtConfTail:            true,
 		GraylogURL:                "https://graylog.example",
 		GraylogToken:              "graylog-token",

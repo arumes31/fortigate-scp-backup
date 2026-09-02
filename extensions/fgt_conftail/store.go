@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
@@ -60,25 +59,6 @@ type pollResult struct {
 	Inserted   int
 	Duplicates int
 	Sealed     int
-}
-
-type ticketFirewall struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-type ticketPayload struct {
-	Status       string         `json:"status"`
-	ChainID      string         `json:"chain_id"`
-	Summary      string         `json:"summary"`
-	Description  string         `json:"description"`
-	Firewall     ticketFirewall `json:"firewall"`
-	Admin        string         `json:"admin"`
-	StartedAt    time.Time      `json:"started_at"`
-	LastChangeAt time.Time      `json:"last_change_at"`
-	ChangeCount  int            `json:"change_count"`
-	Late         bool           `json:"late,omitempty"`
-	Unattributed bool           `json:"unattributed,omitempty"`
 }
 
 type chainRecord struct {
@@ -1447,146 +1427,6 @@ func eventsForChain(
 		return nil, fmt.Errorf("close conftail chain events: %w", err)
 	}
 	return events, nil
-}
-
-func buildTicketPayload(
-	chain chainRecord,
-	events []Event,
-	maxDescriptionBytes int,
-) (ticketPayload, error) {
-	if len(events) == 0 {
-		return ticketPayload{}, errors.New("cannot create a ticket for an empty chain")
-	}
-	changeCount := max(chain.EventCount, len(events))
-	shortID := chain.ID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
-	summary := fmt.Sprintf(
-		"[CT-%s] %s / %s / %s",
-		shortID,
-		chain.FirewallName,
-		chain.User,
-		chain.FirstEventAt.UTC().Format("2006-01-02 15:04Z"),
-	)
-	summary = truncateString(summary, 255)
-	description := buildTicketDescription(chain, events, maxDescriptionBytes)
-	return ticketPayload{
-		Status:       "OPEN",
-		ChainID:      chain.ID,
-		Summary:      summary,
-		Description:  description,
-		Firewall:     ticketFirewall{ID: chain.FirewallID, Name: chain.FirewallName},
-		Admin:        chain.User,
-		StartedAt:    chain.FirstEventAt.UTC(),
-		LastChangeAt: chain.LastEventAt.UTC(),
-		ChangeCount:  changeCount,
-		Late:         chain.Late,
-		Unattributed: chain.Unattributed,
-	}, nil
-}
-
-func buildTicketDescription(chain chainRecord, events []Event, maxBytes int) string {
-	var builder strings.Builder
-	if chain.Unattributed {
-		builder.WriteString("WARNING: No unique administrator could be attributed to these changes.\n\n")
-	}
-	if chain.Late {
-		builder.WriteString("NOTICE: This session contains configuration events that arrived after an earlier session was sealed.\n\n")
-	}
-	fmt.Fprintf(
-		&builder,
-		"Firewall: %s (FortiSafe ID %d)\nAdministrator: %s\nSession: %s\n\nOrdered changes:\n",
-		chain.FirewallName,
-		chain.FirewallID,
-		chain.User,
-		chain.ID,
-	)
-	totalEvents := max(chain.EventCount, len(events))
-	included := 0
-	for _, event := range events {
-		line := timelineLine(event)
-		omittedAfterLine := totalEvents - included - 1
-		reserve := 0
-		if omittedAfterLine > 0 {
-			reserve = len(ticketOmissionLine(omittedAfterLine, chain.ID))
-		}
-		if builder.Len()+len(line)+reserve > maxBytes {
-			break
-		}
-		builder.WriteString(line)
-		included++
-	}
-	omitted := totalEvents - included
-	if omitted <= 0 {
-		return truncateUTF8Bytes(builder.String(), maxBytes)
-	}
-	footer := ticketOmissionLine(omitted, chain.ID)
-	if len(footer) >= maxBytes {
-		return truncateUTF8Bytes(footer, maxBytes)
-	}
-	prefix := truncateUTF8Bytes(builder.String(), maxBytes-len(footer))
-	return prefix + footer
-}
-
-func ticketOmissionLine(omitted int, chainID string) string {
-	return fmt.Sprintf(
-		"… %d additional redacted change(s) omitted; see FortiSafe chain %s for the complete timeline.\n",
-		max(omitted, 0),
-		chainID,
-	)
-}
-
-func truncateUTF8Bytes(value string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	value = strings.ToValidUTF8(value, "�")
-	if len(value) <= maxBytes {
-		return value
-	}
-	marker := truncatedMarker
-	if maxBytes < len(marker) {
-		end := maxBytes
-		for end > 0 && !utf8.ValidString(value[:end]) {
-			end--
-		}
-		return value[:end]
-	}
-	end := maxBytes - len(marker)
-	for end > 0 && !utf8.ValidString(value[:end]) {
-		end--
-	}
-	return value[:end] + marker
-}
-
-func timelineLine(event Event) string {
-	parts := []string{event.EventAt.UTC().Format(time.RFC3339)}
-	for _, item := range []struct {
-		label string
-		value string
-	}{
-		{label: "source", value: event.Source},
-		{label: "device", value: event.DeviceName},
-		{label: "device_id", value: event.DeviceID},
-		{label: "vdom", value: event.VDOM},
-		{label: "attribution", value: event.UserAttribution},
-		{label: "tx", value: event.TransactionID},
-		{label: "ui", value: event.UI},
-		{label: "action", value: event.Action},
-		{label: "path", value: event.Path},
-		{label: "object", value: event.Object},
-		{label: "attribute", value: event.ConfigAttribute},
-		{label: "log_id", value: event.LogID},
-		{label: "description", value: event.LogDescription},
-		{label: "message", value: event.Message},
-		{label: "uuid", value: event.UUID},
-	} {
-		if item.value != "" {
-			parts = append(parts, item.label+"="+strings.ReplaceAll(item.value, "\n", " "))
-		}
-	}
-	return "- " + strings.Join(parts, " | ") + "\n"
 }
 
 type outboxDelivery struct {
