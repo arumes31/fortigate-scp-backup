@@ -493,7 +493,7 @@ func normalizeDecimalInteger(text string) (string, error) {
 	exponentAt := strings.IndexAny(text, "eE")
 	mantissa := text
 	if exponentAt >= 0 {
-		if strings.IndexAny(text[exponentAt+1:], "eE") >= 0 {
+		if strings.ContainsAny(text[exponentAt+1:], "eE") {
 			return "", errors.New("invalid decimal number")
 		}
 		mantissa = text[:exponentAt]
