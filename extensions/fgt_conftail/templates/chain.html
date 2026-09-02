@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration Change Session · FortiSafe</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
+        <nav class="nav" aria-label="Primary navigation">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/">Firewalls</a>
+            <a href="/search">Search</a>
+            <a href="/audit">Audit</a>
+            <a href="/topology">Topology</a>
+            <a href="/ipam">IPAM</a>
+            <a href="/licenses">Licenses</a>
+            <a href="/activity_log">Act_Log</a>
+            {{if .Base.ExtAdmVPNEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
+            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
+            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
+            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
+            <a href="/fgt-conftail/" class="active" aria-current="page">Conf_Tail</a>
+        </nav>
+        <div class="sysinfo"><span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span></div>
+    </header>
+
+    <main>
+        <a class="ct-back" href="/fgt-conftail/">← Back to configuration change sessions</a>
+        <h1 class="page-title"><span class="accent-bar"></span>Complete Redacted Timeline</h1>
+
+        <section class="card ct-session-summary" aria-label="Session details">
+            <div><span class="ct-label">Chain</span><strong class="no-caps">{{.Chain.ID}}</strong></div>
+            <div><span class="ct-label">Firewall</span><strong class="no-caps">#{{.Chain.FirewallID}} {{.Chain.FirewallName}}</strong></div>
+            <div><span class="ct-label">Administrator</span><strong class="no-caps">{{.Chain.User}}</strong></div>
+            <div><span class="ct-label">State</span><strong>{{.Chain.State}}{{if .Chain.DeliveryState}} / {{.Chain.DeliveryState}}{{end}}</strong></div>
+            <div><span class="ct-label">First / last</span><strong>{{fmtTime .Chain.FirstEventAt}} / {{fmtTime .Chain.LastEventAt}}</strong></div>
+            <div><span class="ct-label">Changes</span><strong>{{.Chain.EventCount}}</strong></div>
+            {{if eq .Chain.State "active"}}<div><span class="ct-label">Seal eligible at</span><strong>{{fmtTime .Chain.QuietEligibleAt}}</strong></div>{{end}}
+            <div><span class="ct-label">VDOMs</span><strong class="no-caps">{{if .Chain.VDOMs}}{{range $index, $vdom := .Chain.VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .Chain.VDOMsOmitted}}, …{{end}}{{else}}—{{end}}</strong></div>
+            <div><span class="ct-label">Delivery attempts</span><strong>{{.Chain.DeliveryAttempts}}</strong></div>
+            <div><span class="ct-label">Next delivery attempt</span><strong>{{if eq .Chain.DeliveryState "accepted"}}—{{else}}{{fmtTime .Chain.NextAttemptAt}}{{end}}</strong></div>
+            <div><span class="ct-label">Hookwise request ID</span><strong class="no-caps">{{if .Chain.RequestID}}{{.Chain.RequestID}}{{else}}—{{end}}</strong></div>
+            <div><span class="ct-label">Accepted at</span><strong>{{fmtTime .Chain.AcceptedAt}}</strong></div>
+            <div><span class="ct-label">Last delivery error</span><strong class="no-caps">{{if .Chain.LastError}}{{.Chain.LastError}}{{else}}—{{end}}</strong></div>
+        </section>
+
+        {{if .Chain.Unattributed}}<div class="ct-warning" role="status"><strong>No unique administrator could be attributed to this session.</strong></div>{{end}}
+        {{if .Chain.Late}}<div class="ct-warning" role="status"><strong>This session contains late-arriving Graylog events.</strong></div>{{end}}
+
+        <section class="card" aria-labelledby="ct-complete-title">
+            <div class="card-header">
+                <h2 id="ct-complete-title">Ordered changes</h2>
+                <span class="ct-count">page {{.Page}} / {{.TotalPages}}</span>
+            </div>
+            <ol class="ct-timeline ct-complete-timeline">
+                {{range .Chain.Events}}
+                <li>
+                    <div class="ct-event-head"><time>{{fmtTime .EventAt}}</time><span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}</div>
+                    <div class="ct-event-body no-caps">
+                        {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}
+                        {{if .DeviceName}}<span><b>device:</b> {{.DeviceName}}</span>{{end}}
+                        {{if .DeviceID}}<span><b>device ID:</b> {{.DeviceID}}</span>{{end}}
+                        {{if .Path}}<span><b>path:</b> {{.Path}}</span>{{end}}
+                        {{if .Object}}<span><b>object:</b> {{.Object}}</span>{{end}}
+                        {{if .ConfigAttribute}}<span><b>attribute:</b> {{.ConfigAttribute}}</span>{{end}}
+                        {{if .LogDescription}}<span><b>description:</b> {{.LogDescription}}</span>{{end}}
+                        {{if .Message}}<span><b>message:</b> {{.Message}}</span>{{end}}
+                        <span><b>log ID:</b> {{.LogID}}</span>
+                        <span><b>attribution:</b> {{.UserAttribution}}</span>
+                    </div>
+                </li>
+                {{end}}
+            </ol>
+            <nav class="ct-pagination" aria-label="Complete timeline pagination">
+                {{if .PrevURL}}<a class="btn" rel="prev" href="{{.PrevURL}}">Previous</a>{{end}}
+                {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
+            </nav>
+        </section>
+    </main>
+
+    <footer class="sysfooter"><div>EOF // FGT_CONFTAIL // READ_ONLY</div></footer>
+</div>
+</body>
+</html>

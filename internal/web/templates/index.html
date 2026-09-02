@@ -78,6 +78,7 @@
             <tbody>
             {{$root := .}}
             {{range .Firewalls}}
+                {{$firewall := .}}
                 <tr data-fw="{{.ID}}">
                     <td>{{.ID}}</td>
                     <td class="fw-fqdn">{{.FQDN}}</td>
@@ -95,6 +96,15 @@
                                 <button type="submit" class="btn btn-sm">Backup Now</button>
                             </form>
                             <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
+                            {{with index $root.PendingHostKeys .ID}}
+                            <div class="ssh-key-warning" role="alert">
+                                <strong>SSH host key changed</strong><br>
+                                <code title="{{.Algorithm}}">{{.Fingerprint}}</code>
+                                <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" style="display:inline" onsubmit="return confirm('Accept the detected SSH key {{.Fingerprint}}?');">
+                                    <button type="submit" class="btn btn-sm btn-danger">Accept new SSH key</button>
+                                </form>
+                            </div>
+                            {{end}}
                             <form method="post" action="/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Delete firewall {{.FQDN}}?');">
                                 <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                             </form>
@@ -197,7 +207,7 @@
                 var id = b.getAttribute('data-fw');
                 var orig = b.textContent;
                 b.textContent = '…'; b.disabled = true;
-                fetch('/test_connection/' + id).then(function (r) { return r.json(); }).then(function (j) {
+                fetch('/test_connection/' + id, {method: 'POST'}).then(function (r) { return r.json(); }).then(function (j) {
                     alert(j.message || (j.ok ? 'OK' : 'Failed'));
                 }).catch(function () { alert('Test failed'); }).finally(function () {
                     b.textContent = orig; b.disabled = false;

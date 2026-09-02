@@ -21,7 +21,7 @@
 
 **FortiSafe** is a web-based management tool and automation engine that backs up FortiGate firewall configurations securely over SSH/SCP. It compiles into a **single, fully static binary** that runs the web interface, the backup scheduler, and every extension's background worker as concurrent goroutines in one process — no external task queue, application server, or sidecar required.
 
-Point it at your firewalls, set a schedule, and FortiSafe pulls each configuration on a cron/interval basis, stores it (optionally encrypted at rest), keeps a configurable number of copies, and emails you when a run fails.
+Point it at your firewalls, set a schedule, and FortiSafe pulls each configuration on a cron/interval basis, stores it encrypted at rest, keeps a configurable number of copies, and emails you when a run fails.
 
 ### Highlights
 * **Single-process model** — the web server, cron scheduler, and extension workers all run as lightweight goroutines inside one binary.
@@ -68,12 +68,14 @@ graph TD
 - 🛡️ **Firewall Management**: Register and monitor multiple firewalls, each with its own credentials, SSH port, retention count, and backup schedule. Add them individually or in bulk via CSV.
 - ⏰ **Automated Scheduling**: Cron or interval-based backups, with staggered runs on startup to avoid traffic spikes. Trigger any backup on demand and test connectivity from the UI.
 - 🔐 **Hardened Security**:
-  - **AES-256-GCM at rest**: Optional encryption for every stored backup and firewall SSH password.
+  - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup and firewall SSH password, including startup migration of legacy plaintext data.
+  - **Persistent SSH identities**: Unknown FortiGate keys are learned on first use and stored in an application-managed OpenSSH `known_hosts` file. Changed keys stay blocked until their detected fingerprint is explicitly accepted in the firewall UI.
   - **Local passwords hashed with bcrypt**, plus a forced password change on first login.
   - **Session guard**: Signed sessions, idle timeouts, and X-Forwarded-For pinning.
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
   - **Brute-force lockout**: Per-IP + username rate limiting with a configurable lockout window.
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
+- 🧾 **Configuration Change Sessions**: The optional `fgt_conftail` extension groups Graylog configuration events by registered firewall and exact administrator, then opens one Hookwise ticket after that administrator has stopped editing the firewall.
 - 📊 **Dashboard & Activity Log**: At-a-glance health summary, failing-firewall shortlist, a **Graylog logging-issues** card (VPN devices whose logging is offline / errored / unconfigured, surfaced from the FGT ADM VPN Config module), a **blocked switch-ports** card (today's STP/BPDU/loop-/root-guard blocks across all firewalls, narrowed to the current calendar day and cleared automatically once a port recovers), with per-port **Check** / **Check All** buttons to re-verify live over SSH on demand (requires `FGT_DIAG_SSH_ENABLED`), and an audited activity trail with optional age-based pruning.
 - 📡 **Real-time Updates**: Live status propagation to the UI via Server-Sent Events (SSE).
 - 🔍 **Security Auditing & Insights**:
@@ -211,82 +213,47 @@ FortiSafe is distributed as a container image on the GitHub Container Registry (
 
 ### Option 1 — Run the pre-built image from GHCR (recommended)
 
-Pull the latest published image:
+Use a release image by immutable digest (shown on the package/release page):
 ```bash
-docker pull ghcr.io/arumes31/fortigate-scp-backup:latest
+docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-The quickest start is the bundled Compose file, which brings up FortiSafe together with a PostgreSQL database:
+Create the six Compose secret files and apply the Linux `0:65532` / `0440`
+ownership and mode documented in [`secrets/README.md`](secrets/README.md).
+Before starting the stack, configure a trusted HTTPS reverse proxy on the same
+host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately
+bound to loopback and is not intended for direct client access.
+
+On Linux, prepare the application bind mounts for the container's non-root UID/GID `65532:65532`. The recursive `chown` also repairs files from an existing installation:
+
 ```bash
+mkdir -p ./backups ./data
+sudo chown -R 65532:65532 ./backups ./data
+sudo chmod 0750 ./backups
+sudo chmod 0700 ./data
+stat -c '%u:%g %a %n' ./backups ./data
+```
+
+The final command should report `65532:65532 750` for `backups` and `65532:65532 700` for `data`. When using absolute bind-mount paths, substitute those host paths in the commands above. Do not apply this ownership change to `pgdata`; the PostgreSQL container manages that directory with its own account.
+
+Then start the stack:
+
+```bash
+export FORTISAFE_IMAGE_DIGEST='sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-Or run the container directly against an existing PostgreSQL instance:
-```bash
-docker run -d \
-  --name fortisafe \
-  -p 8521:8521 \
-  -e TZ=Europe/Vienna \
-  -e PG_HOST=db.internal -e PG_PORT=5432 \
-  -e PG_USER=fortisafe -e PG_PASSWORD=change-me \
-  -e PG_DATABASE=firewall_backups \
-  -e SESSION_KEY=please-change-me-to-a-long-random-string \
-  -v "$(pwd)/backups:/app/backups" \
-  -v "$(pwd)/data:/app/data" \
-  --restart unless-stopped \
-  ghcr.io/arumes31/fortigate-scp-backup:latest
-```
-
-Or drop this minimal `compose.yml` next to your project and run `docker compose up -d`:
-```yaml
-services:
-  fortisafe:
-    image: ghcr.io/arumes31/fortigate-scp-backup:latest
-    container_name: fortisafe
-    ports:
-      - "8521:8521"
-    environment:
-      TZ: Europe/Vienna
-      PG_HOST: db
-      PG_USER: fortisafe
-      PG_PASSWORD: change-me
-      PG_DATABASE: firewall_backups
-      SESSION_KEY: please-change-me-to-a-long-random-string
-      # Optional: 32-byte hex/base64 key to enable AES-256-GCM encryption at rest
-      # ENCRYPTION_KEY: ""
-    volumes:
-      - ./backups:/app/backups
-      - ./data:/app/data
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    container_name: fortisafe-db
-    environment:
-      POSTGRES_USER: fortisafe
-      POSTGRES_PASSWORD: change-me
-      POSTGRES_DB: firewall_backups
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fortisafe -d firewall_backups"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-```
+The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Keep the application port private behind the HTTPS proxy; only enable `TRUST_PROXY_HEADERS` when direct access to that port remains blocked.
 
 > [!WARNING]
 > The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dump` of the `firewall_backups` database with the matching old version into a `backup.sql`, then restore it into a freshly initialized data directory).
 
-**Available tags:** `latest`, a date tag (`DDMMYYYY`), the commit SHA, and release tags (`vX.Y.Z`). See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for a fully annotated example covering every setting.
+Published tags remain convenient discovery aliases, but deployments should record and use the corresponding immutable digest. See [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) for the hardened example.
 
 ### Option 2 — Build and run locally
 
 [`docker-compose.yml`](docker-compose.yml) compiles the static binary inside a multi-stage Docker build and starts it alongside PostgreSQL:
+Create the same six secret files, prepare `./backups` and `./data` for UID/GID `65532:65532` with the commands in Option 1, and configure the same-host HTTPS reverse proxy before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
 ```bash
 docker compose up -d
 ```
@@ -296,11 +263,7 @@ docker compose up -d
 
 ### First login
 
-Open <http://localhost:8521> and sign in with the seeded administrator account:
-
-| Username | Password   |
-| :------- | :--------- |
-| `admin`  | `changeme` |
+On a new database, FortiSafe creates the `admin` account with the value from `BOOTSTRAP_ADMIN_PASSWORD` or `BOOTSTRAP_ADMIN_PASSWORD_FILE`. There is no shared default password. The bootstrap value is ignored once the account exists and can then be cleared (the Compose secret file must still exist) after recording a tested recovery procedure.
 
 You are required to change the password on first login. Enable `TOTP_ENABLED` and/or `RADIUS_ENABLED` to add multi-factor authentication.
 
@@ -326,7 +289,7 @@ FortiSafe is configured entirely via environment variables.
 | `PG_HOST` | `localhost` | PostgreSQL host. |
 | `PG_PORT` | `5432` | PostgreSQL port. |
 | `PG_USER` | `your_user` | PostgreSQL user. |
-| `PG_PASSWORD` | `your_password` | PostgreSQL password. |
+| `PG_PASSWORD` / `PG_PASSWORD_FILE` | *(Required)* | PostgreSQL password (prefer a mounted secret file). |
 | `PG_DATABASE` | `firewall_backups` | PostgreSQL database name. |
 | `PGSSLMODE` | `prefer` | SSL connection mode. |
 | `PG_MAX_CONNS` | `50` | Maximum connections allowed in the database pool. |
@@ -337,14 +300,15 @@ FortiSafe is configured entirely via environment variables.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `TOTP_ENABLED` | `false` | Enable TOTP 2FA for the local admin account. |
-| `TOTP_SECRET` | *(Auto-generated)* | 16-character Base32 TOTP secret. |
+| `TOTP_SECRET` / `TOTP_SECRET_FILE` | *(Required when enabled)* | Stable Base32 TOTP secret. |
 | `RADIUS_ENABLED` | `false` | Enable RADIUS (PAP) authentication. |
 | `RADIUS_SERVER` | `localhost` | RADIUS server address. |
 | `RADIUS_PORT` | `1812` | RADIUS service port. |
-| `RADIUS_SECRET` | `secret` | RADIUS shared secret key. |
+| `RADIUS_SECRET` / `RADIUS_SECRET_FILE` | *(Required when enabled)* | RADIUS shared secret (minimum 16 bytes). |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Maximum login failures allowed before lockout. |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Minutes a user is locked out after the limit is exceeded. |
-| `SESSION_KEY` | *(Auto-generated)* | Session signing key (forces re-login on restart if empty). |
+| `SESSION_KEY` / `SESSION_KEY_FILE` | *(Required)* | Stable session signing secret, minimum 32 bytes. |
+| `BOOTSTRAP_ADMIN_PASSWORD` / `BOOTSTRAP_ADMIN_PASSWORD_FILE` | *(Required for a new DB)* | Initial `admin` password, minimum 16 bytes; never has a built-in default. |
 | `COOKIE_SECURE` | `false` | Set the `Secure` flag on session cookies (requires HTTPS). |
 | `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP (enable only behind a trusted proxy). |
@@ -352,8 +316,9 @@ FortiSafe is configured entirely via environment variables.
 ### Backup Engine & SCP Defaults
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| `ENCRYPTION_KEY` | *(Unset)* | 32-byte (hex/base64) key to enable AES-256-GCM encryption at rest. |
-| `DEFAULT_SCP_USER` | `admin` | Default SSH username when none is specified. |
+| `ENCRYPTION_KEY` / `ENCRYPTION_KEY_FILE` | *(Required)* | Exactly 32 bytes encoded as hex/base64. Startup migrates legacy plaintext; a wrong key makes encrypted credentials and backups unreadable. Keep a protected offline recovery copy. |
+| `SSH_KNOWN_HOSTS_FILE` | `DATA_DIR/ssh_known_hosts` | Writable, application-managed OpenSSH host-key store. Unknown hosts are learned on first use; changed keys require explicit acceptance in the firewall UI. |
+| `DEFAULT_SCP_USER` | `fortisafe` | Default dedicated SSH username when none is specified. |
 | `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
 | `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |
 | `SCP_TIMEOUT` | `60` | SSH connection and transfer timeout in seconds. |
@@ -366,7 +331,7 @@ FortiSafe is configured entirely via environment variables.
 | `MAIL_SERVER` | `smtp.example.com` | SMTP host for backup failure notifications. |
 | `MAIL_PORT` | `587` | SMTP port (STARTTLS is enforced). |
 | `MAIL_USER` | `user@example.com` | SMTP authentication user. |
-| `MAIL_PASSWORD` | `password` | SMTP authentication password. |
+| `MAIL_PASSWORD` / `MAIL_PASSWORD_FILE` | *(Unset)* | SMTP authentication password. |
 | `MAIL_RECIPIENT` | *(Same as user)* | Destination email address for error logs. |
 
 ### Extension: FGT ADM VPN Configuration
@@ -378,6 +343,26 @@ FortiSafe is configured entirely via environment variables.
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
+
+### Extension: FortiGate Configuration Change Tail (ConfTail)
+
+When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
+
+By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated, read-only operations page is available at `/fgt-conftail`.
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `EXT_FGT_CONFTAIL` | `false` | Enable configuration-change collection, session tracking, and Hookwise ticket creation. |
+| `GRAYLOG_URL` | *(Required when enabled)* | Existing shared Graylog API endpoint. |
+| `GRAYLOG_TOKEN` / `GRAYLOG_TOKEN_FILE` | *(Required when enabled)* | Existing shared Graylog API access token. A non-empty direct value takes precedence over the file. |
+| `FGT_CONFTAIL_HOOKWISE_URL` | *(Required when enabled)* | Dedicated Hookwise webhook endpoint for creating configuration-change tickets. |
+| `FGT_CONFTAIL_HOOKWISE_TOKEN` / `FGT_CONFTAIL_HOOKWISE_TOKEN_FILE` | *(Required when enabled)* | Dedicated bearer token. A non-empty direct environment value wins over the `_FILE` fallback. |
+| `FGT_CONFTAIL_POLL_SECONDS` | `900` | Graylog polling cadence in seconds (15 minutes). |
+| `FGT_CONFTAIL_IDLE_SECONDS` | `1800` | Quiet period in seconds before sealing the current administrator + firewall session (30 minutes). |
+| `FGT_CONFTAIL_OVERLAP_SECONDS` | `3600` | Look-back overlap in seconds for late Graylog indexing; overlapping events are deduplicated. |
+| `FGT_CONFTAIL_RETENTION_DAYS` | `365` | Days to retain sealed, Hookwise-accepted history. `0` disables pruning; active or unaccepted work is never pruned. |
+| `FGT_CONFTAIL_TICKET_MAX_BYTES` | `60000` | Maximum UTF-8 byte length of the generated Hookwise ticket description. |
+| `FGT_CONFTAIL_GRAYLOG_QUERY` | `type:event AND subtype:system AND (logid:0100044544 OR logid:0100044545 OR logid:0100044546 OR logid:0100044547)` | Base Graylog query override. FortiSafe adds bounded source filters for registered firewall/HA aliases. |
 
 ### Security Auditing (Live CVE Database)
 
@@ -456,6 +441,15 @@ An optional module (`EXT_ADM_VPN_CONF=true`) for managing customer-specific VPN 
 * **Public status DSV endpoint** — `/fgt-adm-vpn-conf/graylog_dsv` serves raw, unauthenticated status data (`Firewallname;Remote_IP;Status`) for external metrics collectors.
 * **Graylog integration** — checks the Graylog API to assert status. A firewall is `online` when logs are found within `GRAYLOG_SEARCH_TIMEFRAME` (default 24 h).
 * **HookWise alerting** — sends HTTP webhooks on transition states (`online` ↔ `offline`).
+
+### FortiGate Configuration Change Tail (ConfTail)
+
+An optional module (`EXT_FGT_CONFTAIL=true`) that turns FortiGate configuration logs into reviewable, create-only Hookwise tickets.
+
+* **Per-administrator sessions** — orders changes into independent timelines per registered firewall and exact administrator, including HA member normalization.
+* **No silent loss** — safely correlates missing users when possible and otherwise creates a visible `[unattributed]` session.
+* **Durable handoff** — seals a session after its configured quiet period, redacts sensitive values, and retries the same immutable payload until Hookwise accepts it.
+* **Read-only visibility** — `/fgt-conftail` shows poll, source coverage, active/history, and delivery state to authenticated users; ticket lifecycle actions remain in Hookwise/ConnectWise.
 
 ### FortiGate Policy Generator (ConfGen)
 

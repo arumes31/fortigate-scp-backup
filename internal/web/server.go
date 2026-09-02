@@ -5,6 +5,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -25,6 +26,8 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"golang.org/x/crypto/ssh"
 )
 
 //go:embed templates/*.html
@@ -55,6 +58,7 @@ type BaseData struct {
 	ExtFgtConfGenEnabled  bool
 	ExtFgtPolSplitEnabled bool
 	ExtFgtConfConvEnabled bool
+	ExtFgtConfTailEnabled bool
 	IsRadius              bool   // RADIUS users cannot change their password locally
 	Lang                  string // UI language: "en" (default) or "de"
 	Active                string // nav key: firewalls|search|activity|admvpn|password
@@ -73,9 +77,12 @@ type Server struct {
 	// ipLimiter is a per-source-IP aggregate guard so a password-spray across
 	// many usernames from one host is throttled even though each (IP,username)
 	// bucket in limiter never reaches its own threshold.
-	ipLimiter *loginLimiter
-	hub       *sseHub
-	logger    *slog.Logger
+	ipLimiter       *loginLimiter
+	hub             *sseHub
+	logger          *slog.Logger
+	hostKeyMu       sync.RWMutex
+	hostKeyCallback ssh.HostKeyCallback
+	hostKeyManager  *sshhostkey.Manager
 
 	pages map[string]pageTmpl
 
@@ -100,6 +107,39 @@ type Server struct {
 	// JS); begin() on each also coalesces concurrent sweeps.
 	licenseProgress sweepProgress
 	ipamProgress    sweepProgress
+
+	// CVE refreshes are coalesced across scheduled and manual triggers. The
+	// server-owned context lets Shutdown cancel and join a running refresh.
+	cveRefresh         func(context.Context, *sql.DB, string) error
+	cveRefreshMu       sync.Mutex
+	cveRefreshActive   bool
+	cveRefreshStopping bool
+	cveRefreshWG       sync.WaitGroup
+	cveRefreshCtx      context.Context
+	cveRefreshCancel   context.CancelFunc
+}
+
+// SetHostKeyCallback configures the verified host-key policy used by live SSH
+// collectors. It must be called before a collection is started.
+func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
+	s.hostKeyMu.Lock()
+	defer s.hostKeyMu.Unlock()
+	s.hostKeyCallback = callback
+}
+
+// SetHostKeyManager wires the application-managed persistent TOFU policy and
+// makes pending key rotations available to the firewall UI.
+func (s *Server) SetHostKeyManager(manager *sshhostkey.Manager) {
+	s.hostKeyManager = manager
+	if manager != nil {
+		s.SetHostKeyCallback(manager.Callback())
+	}
+}
+
+func (s *Server) hostKeyCallbackForSSH() ssh.HostKeyCallback {
+	s.hostKeyMu.RLock()
+	defer s.hostKeyMu.RUnlock()
+	return s.hostKeyCallback
 }
 
 type pageTmpl struct {
@@ -114,15 +154,20 @@ func BackupJobID(fwID int) string { return fmt.Sprintf("backup_firewall_%d", fwI
 // New builds the Server and parses all templates.
 func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	backupSvc *backup.Service, sess *session.Manager, auth Authenticator, cipher *crypto.Cipher, logger *slog.Logger) (*Server, error) {
+	cveCtx, cveCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, store: store, sched: sched, backup: backupSvc,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
-		limiter:   newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		ipLimiter: newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		hub:       newSSEHub(),
-		warmSem:   make(chan struct{}, 2),
+		limiter:          newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		ipLimiter:        newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		hub:              newSSEHub(),
+		warmSem:          make(chan struct{}, 2),
+		cveRefresh:       refreshCVECache,
+		cveRefreshCtx:    cveCtx,
+		cveRefreshCancel: cveCancel,
 	}
 	if err := s.parseTemplates(); err != nil {
+		cveCancel()
 		return nil, err
 	}
 	if cfg.CVEAutoUpdate {
@@ -166,6 +211,15 @@ func (s *Server) BroadcastOp(kind string, fwID int, status string) {
 // (which does not cancel their request contexts) can complete promptly.
 func (s *Server) Shutdown() {
 	s.hub.shutdown()
+	s.limiter.Close()
+	s.ipLimiter.Close()
+	s.cveRefreshMu.Lock()
+	s.cveRefreshStopping = true
+	if s.cveRefreshCancel != nil {
+		s.cveRefreshCancel()
+	}
+	s.cveRefreshMu.Unlock()
+	s.cveRefreshWG.Wait()
 }
 
 var funcMap = template.FuncMap{
@@ -274,6 +328,7 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 		ExtFgtConfGenEnabled:  s.cfg.ExtFgtConfGen,
 		ExtFgtPolSplitEnabled: s.cfg.ExtFgtPolSplit,
 		ExtFgtConfConvEnabled: s.cfg.ExtFgtConfConv,
+		ExtFgtConfTailEnabled: s.cfg.ExtFgtConfTail,
 		IsRadius:              d.IsRadiusUser,
 		Lang:                  langFromRequest(r),
 		Active:                active,
@@ -344,7 +399,8 @@ func (s *Server) Routes() chi.Router {
 		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)
 		pr.Post("/backup_now/{fwID}", s.handleBackupNow)
-		pr.Get("/test_connection/{fwID}", s.handleTestConnection)
+		pr.Post("/test_connection/{fwID}", s.handleTestConnection)
+		pr.Post("/ssh_host_key/accept/{fwID}", s.handleAcceptHostKey)
 		pr.HandleFunc("/change_password", s.handleChangePassword)
 		pr.HandleFunc("/search", s.handleSearch)
 		pr.Get("/activity_log", s.handleActivityLog)

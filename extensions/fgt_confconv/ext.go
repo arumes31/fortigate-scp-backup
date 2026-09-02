@@ -6,6 +6,7 @@ package fgt_confconv
 
 import (
 	"embed"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 )
 
@@ -32,6 +34,7 @@ type Extension struct {
 	pgPool *pgxpool.Pool
 	tmpl   *template.Template
 	tz     *time.Location
+	cipher *crypto.Cipher
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
@@ -48,10 +51,14 @@ func (e *Extension) Prefix() string { return "/fgt-confconv" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtConfConv }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.Cipher == nil {
+		return errors.New("shared cipher is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.tz = d.TZ
 	e.pgPool = d.DB
+	e.cipher = d.Cipher
 	if e.tz == nil {
 		e.tz = time.UTC
 	}
@@ -100,6 +107,7 @@ type baseData struct {
 	ExtConfigGenEnabled bool
 	ExtPolSplitEnabled  bool
 	ExtConfConvEnabled  bool
+	ExtConfTailEnabled  bool
 	Active              string
 }
 
@@ -115,6 +123,7 @@ func (e *Extension) baseData(r *http.Request, title, active string) baseData {
 		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
 		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
 		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
+		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
 		Active:              active,
 	}
 }

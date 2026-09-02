@@ -20,7 +20,7 @@
 # ---------------------------------------------------------------------------
 
 # --- Stage 1: build ---------------------------------------------------------
-FROM golang:1.26 AS build
+FROM golang:1.26.6@sha256:0d1d3a794be25f809dd2cb3160d8c73276c4056a9f8242a138e908ddeee7b6b6 AS build
 
 WORKDIR /src
 
@@ -30,16 +30,20 @@ RUN go mod download
 
 # Build the fully static, stripped binary.
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/fortisafe ./cmd/fortisafe
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fortisafe ./cmd/fortisafe \
+    && install -d -m 0750 /out/backups \
+    && install -d -m 0700 /out/data
 
 # --- Stage 2: runtime -------------------------------------------------------
-# distroless/static ships CA certificates and runs as root by default, which we
-# want so bind-mounted host volumes (/app/backups, /app/data) stay writable.
-FROM gcr.io/distroless/static-debian12:latest
+# The nonroot distroless variant includes CA certificates and has no shell or
+# package manager, while immutable digests make rebuild inputs reproducible.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 WORKDIR /app
 
-COPY --from=build /out/fortisafe /app/fortisafe
+COPY --chown=65532:65532 --from=build /out/fortisafe /app/fortisafe
+COPY --chown=65532:65532 --chmod=0750 --from=build /out/backups /app/backups
+COPY --chown=65532:65532 --chmod=0700 --from=build /out/data /app/data
 
 # Persistent data lives here. The binary creates these directories at startup
 # via os.MkdirAll if they are missing (distroless has no shell, so we cannot
@@ -49,6 +53,8 @@ COPY --from=build /out/fortisafe /app/fortisafe
 # Declared as VOLUMEs so they are writable even when not explicitly mounted.
 ENV DATA_DIR=/app/data
 VOLUME ["/app/backups", "/app/data"]
+
+USER 65532:65532
 
 EXPOSE 8521
 

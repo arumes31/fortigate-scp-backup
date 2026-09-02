@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -23,6 +25,8 @@ import (
 // would silently stop finding anything — permanently on offline installs,
 // whose fallback-seed rows are only ever written when the table is empty.
 const cveDefsSchema = 1
+
+const cveRefreshTimeout = 2 * time.Minute
 
 // ensureCVEDefsSchema wipes every stored CVE row (live and seed) when the
 // storage shape changed, so seedCVECacheIfEmpty re-seeds the fallback set in
@@ -85,19 +89,29 @@ func seedCVECacheIfEmpty(db *sql.DB) {
 	}
 }
 
-// loadCVEDefs returns the best available CVE dataset: live (NVD+KEV) rows
-// when a refresh has ever succeeded, otherwise the offline fallback seed.
+// loadCVEDefs combines live (NVD+KEV) rows with the offline fallback seed,
+// preferring live definitions when the same CVE exists in both datasets.
 func loadCVEDefs(db *sql.DB) []cveDef {
 	if db == nil {
 		return cveFallbackDefs
 	}
-	if defs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'live'"); len(defs) > 0 {
-		return defs
+	liveDefs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'live' ORDER BY id")
+	byID := make(map[string]cveDef, len(cveFallbackDefs)+len(liveDefs))
+	// A live refresh promotes overlapping seed rows because cve_cache is keyed
+	// by ID. Keep the compiled seed as the canonical fallback so a later refresh
+	// that omits that ID cannot remove its offline definition.
+	for _, def := range cveFallbackDefs {
+		byID[def.id] = def
 	}
-	if defs := queryCVEDefs(db, "SELECT id, summary_en, severity, ranges_json, remediation FROM cve_cache WHERE source = 'fallback-seed'"); len(defs) > 0 {
-		return defs
+	for _, def := range liveDefs {
+		byID[def.id] = def
 	}
-	return cveFallbackDefs
+	defs := make([]cveDef, 0, len(byID))
+	for _, def := range byID {
+		defs = append(defs, def)
+	}
+	sort.Slice(defs, func(i, j int) bool { return defs[i].id < defs[j].id })
+	return defs
 }
 
 func queryCVEDefs(db *sql.DB, query string) []cveDef {
@@ -172,36 +186,67 @@ func getCVERefreshStatus(db *sql.DB) cveRefreshStatus {
 // rows untouched, so a transient outage doesn't revert callers to the
 // (potentially much staler) offline fallback.
 func refreshCVECache(ctx context.Context, db *sql.DB, nvdAPIKey string) error {
+	return refreshCVECacheWithFetcher(ctx, db, nvdAPIKey, fetchLiveCVEDefs)
+}
+
+func refreshCVECacheWithFetcher(
+	ctx context.Context,
+	db *sql.DB,
+	nvdAPIKey string,
+	fetch func(context.Context, string) ([]cveDef, error),
+) (retErr error) {
 	now := time.Now().Format(insightsTimeLayout)
-	defs, err := fetchLiveCVEDefs(ctx, nvdAPIKey)
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if metaErr := recordCVERefreshFailure(db, now, retErr); metaErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("record CVE refresh failure: %w", metaErr))
+		}
+	}()
+
+	defs, err := fetch(ctx, nvdAPIKey)
 	if err != nil {
-		_, _ = db.Exec(`INSERT INTO cve_meta (id, last_attempt_at, last_error) VALUES (1, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = excluded.last_error`,
-			now, err.Error())
 		return err
 	}
 
-	tx, txErr := db.Begin()
+	tx, txErr := db.BeginTx(ctx, nil)
 	if txErr != nil {
-		return txErr
+		return fmt.Errorf("begin CVE refresh transaction: %w", txErr)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec("DELETE FROM cve_cache WHERE source = 'live'"); err != nil {
-		return err
+	if _, err := tx.ExecContext(ctx, "DELETE FROM cve_cache WHERE source = 'live'"); err != nil {
+		return fmt.Errorf("delete cached live CVEs: %w", err)
 	}
 	for _, def := range defs {
-		if _, err := tx.Exec(`INSERT INTO cve_cache (id, summary_en, severity, ranges_json, remediation, source)
-			VALUES (?, ?, ?, ?, ?, 'live')`,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO cve_cache (id, summary_en, severity, ranges_json, remediation, source)
+			VALUES (?, ?, ?, ?, ?, 'live')
+			ON CONFLICT(id) DO UPDATE SET
+				summary_en = excluded.summary_en,
+				severity = excluded.severity,
+				ranges_json = excluded.ranges_json,
+				remediation = excluded.remediation,
+				source = excluded.source`,
 			def.id, def.summaryEN, def.severity, encodeRanges(def.ranges), def.remediation); err != nil {
-			return err
+			return fmt.Errorf("store live CVE %s: %w", def.id, err)
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO cve_meta (id, last_success_at, last_attempt_at, last_error) VALUES (1, ?, ?, '')
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cve_meta (id, last_success_at, last_attempt_at, last_error) VALUES (1, ?, ?, '')
 		ON CONFLICT(id) DO UPDATE SET last_success_at = excluded.last_success_at, last_attempt_at = excluded.last_attempt_at, last_error = ''`,
 		now, now); err != nil {
-		return err
+		return fmt.Errorf("record CVE refresh success: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit CVE refresh: %w", err)
+	}
+	return nil
+}
+
+func recordCVERefreshFailure(db *sql.DB, attemptedAt string, refreshErr error) error {
+	_, err := db.Exec(`INSERT INTO cve_meta (id, last_attempt_at, last_error) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = excluded.last_error`,
+		attemptedAt, refreshErr.Error())
+	return err
 }
 
 // refreshCVECacheJob is the scheduled background refresh: best-effort and
@@ -213,9 +258,13 @@ func (s *Server) refreshCVECacheJob() {
 	if err != nil || db == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if !s.beginCVERefresh() {
+		return
+	}
+	defer s.endCVERefresh()
+	ctx, cancel := context.WithTimeout(s.cveRefreshContext(), cveRefreshTimeout)
 	defer cancel()
-	if err := refreshCVECache(ctx, db, s.cfg.NVDAPIKey); err != nil {
+	if err := s.runCVERefresh(ctx, db); err != nil {
 		s.logger.Warn("scheduled CVE refresh failed", "err", err)
 		return
 	}
@@ -236,14 +285,54 @@ func (s *Server) handleAuditCVERefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Insights DB not available", http.StatusInternalServerError)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	if refreshErr := refreshCVECache(ctx, db, s.cfg.NVDAPIKey); refreshErr != nil {
-		s.logger.Warn("manual CVE refresh failed", "err", refreshErr)
+	if s.beginCVERefresh() {
+		go func() {
+			defer s.endCVERefresh()
+			ctx, cancel := context.WithTimeout(s.cveRefreshContext(), cveRefreshTimeout)
+			defer cancel()
+			if refreshErr := s.runCVERefresh(ctx, db); refreshErr != nil {
+				s.logger.Warn("manual CVE refresh failed", "err", refreshErr)
+				return
+			}
+			// Findings recompute lazily via CVEFingerprint too, but clearing the
+			// cache gives immediate results for the next firewall that is opened.
+			if _, clearErr := db.ExecContext(ctx, "DELETE FROM audit_cache"); clearErr != nil {
+				s.logger.Warn("clear audit cache after CVE refresh", "err", clearErr)
+			}
+		}()
 	}
-	// Findings recompute lazily via CVEFingerprint too, but clearing the cache
-	// here matches the existing custom-rule-change convention and gives
-	// immediate, consistent results for whichever firewall is opened next.
-	_, _ = db.Exec("DELETE FROM audit_cache")
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
+}
+
+func (s *Server) runCVERefresh(ctx context.Context, db *sql.DB) error {
+	refresh := s.cveRefresh
+	if refresh == nil {
+		refresh = refreshCVECache
+	}
+	return refresh(ctx, db, s.cfg.NVDAPIKey)
+}
+
+func (s *Server) beginCVERefresh() bool {
+	s.cveRefreshMu.Lock()
+	defer s.cveRefreshMu.Unlock()
+	if s.cveRefreshActive || s.cveRefreshStopping {
+		return false
+	}
+	s.cveRefreshActive = true
+	s.cveRefreshWG.Add(1)
+	return true
+}
+
+func (s *Server) endCVERefresh() {
+	s.cveRefreshMu.Lock()
+	s.cveRefreshActive = false
+	s.cveRefreshMu.Unlock()
+	s.cveRefreshWG.Done()
+}
+
+func (s *Server) cveRefreshContext() context.Context {
+	if s.cveRefreshCtx != nil {
+		return s.cveRefreshCtx
+	}
+	return context.Background()
 }

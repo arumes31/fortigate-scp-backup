@@ -13,11 +13,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
 // Deps is the set of shared services an extension may use. Extensions get the
 // shared activity logger and auth middleware but own any private storage.
 type Deps struct {
+	// Context is canceled when the process begins graceful shutdown. Background
+	// extension work should derive request deadlines from it.
+	Context context.Context
 	// DB is the shared PostgreSQL pool (rarely needed; most extensions only log).
 	DB *pgxpool.Pool
 	// LogActivity writes to the shared activity_logs table.
@@ -30,11 +36,21 @@ type Deps struct {
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.
 	FirewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
+	// HostKeyCallback applies the application's persistent trust-on-first-use
+	// policy to every live FortiGate SSH connection.
+	HostKeyCallback ssh.HostKeyCallback
+	// Cipher is the shared strict-mode encryption service. Extensions must use
+	// it instead of creating a permissive cipher from configuration.
+	Cipher *crypto.Cipher
 	// BroadcastOp publishes an operation lifecycle event to the core's SSE
 	// stream (kind e.g. "analysis"/"devicedata"/"sshdiag"/"live", status
 	// "started"/"finished") so dashboards log and refresh live. nil when the
 	// host did not wire it.
 	BroadcastOp func(kind string, fwID int, status string)
+	// Schedule registers a non-overlapping recurring extension job with the
+	// process scheduler. The scheduler owns cancellation and waits for in-flight
+	// jobs during graceful shutdown.
+	Schedule func(id string, interval, firstDelay time.Duration, fn func())
 	// Logger is the process logger.
 	Logger *slog.Logger
 	// TZ is the configured timezone.

@@ -19,9 +19,9 @@ package web
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -92,38 +92,14 @@ type licenseDevice struct {
 
 // ---- SSH collection ---------------------------------------------------------
 
-// hostKeyTOFU returns a trust-on-first-use host-key callback: the first key a
-// firewall presents is pinned in the insights DB, and every later connection
-// must present the same key. A mismatch (device replaced, or a
-// man-in-the-middle) fails the fetch with a clear error; the stale pin can be
-// cleared from ssh_known_hosts to re-trust after a legitimate hardware swap.
-// HA failover keeps the pin valid because FortiGate clusters share host keys.
-func (s *Server) hostKeyTOFU(db *sql.DB, fwID int) ssh.HostKeyCallback {
-	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
-		presented := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
-		var stored string
-		err := db.QueryRow(`SELECT host_key FROM ssh_known_hosts WHERE fw_id = ?`, fwID).Scan(&stored)
-		if err == sql.ErrNoRows {
-			s.logger.Info("pinning SSH host key on first use", "fwID", fwID, "host", hostname, "type", key.Type())
-			_, ierr := db.Exec(`INSERT INTO ssh_known_hosts (fw_id, host_key, first_seen) VALUES (?, ?, ?)`,
-				fwID, presented, time.Now().UTC().Format(time.RFC3339))
-			return ierr
-		}
-		if err != nil {
-			return err
-		}
-		if subtle.ConstantTimeCompare([]byte(stored), []byte(presented)) != 1 {
-			return fmt.Errorf("SSH host key for %s changed since first use (pinned %s); if the device was legitimately replaced, clear its ssh_known_hosts row to re-trust", hostname, strings.Fields(stored)[0])
-		}
-		return nil
-	}
-}
-
 // sshRunCommands opens one SSH connection to the firewall (same credentials
 // the backup engine uses) and runs each command in its own session. A single
 // deadline covers the whole exchange: on expiry the client is closed, which
 // unblocks any in-flight session read.
 func sshRunCommands(fw models.Firewall, hostKey ssh.HostKeyCallback, cmds []string) (map[string]string, error) {
+	if hostKey == nil {
+		return nil, errors.New("SSH host key verification is not configured")
+	}
 	cfg := &ssh.ClientConfig{
 		User:            fw.Username,
 		Auth:            []ssh.AuthMethod{ssh.Password(fw.Password)},
@@ -578,7 +554,7 @@ func (s *Server) fetchLicense(fw models.Firewall) {
 		s.logger.Error("license fetch: insights DB unavailable", "err", err)
 		return
 	}
-	out, err := sshRunCommands(fw, s.hostKeyTOFU(db, fw.ID), []string{
+	out, err := sshRunCommands(fw, s.hostKeyCallbackForSSH(), []string{
 		"get system status",
 		"diagnose autoupdate versions",
 		"diagnose switch-controller switch-info status",

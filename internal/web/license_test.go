@@ -1,14 +1,8 @@
 package web
 
 import (
-	"crypto/ed25519"
-	"database/sql"
-	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
@@ -138,49 +132,6 @@ func TestLicenseLevel(t *testing.T) {
 		if got := licenseLevel(c.days); got != c.want {
 			t.Errorf("licenseLevel(%d) = %q, want %q", c.days, got, c.want)
 		}
-	}
-}
-
-// TestHostKeyTOFU verifies the trust-on-first-use pinning: the first key is
-// stored, the same key passes afterwards, and a different key is rejected.
-func TestHostKeyTOFU(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "insights.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE ssh_known_hosts (
-		fw_id INTEGER PRIMARY KEY, host_key TEXT NOT NULL, first_seen TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-
-	sshKey := func() ssh.PublicKey {
-		pub, _, kerr := ed25519.GenerateKey(nil)
-		if kerr != nil {
-			t.Fatal(kerr)
-		}
-		k, kerr := ssh.NewPublicKey(pub)
-		if kerr != nil {
-			t.Fatal(kerr)
-		}
-		return k
-	}
-	keyA, keyB := sshKey(), sshKey()
-
-	s := &Server{logger: slog.New(slog.DiscardHandler)}
-	cb := s.hostKeyTOFU(db, 7)
-	if err := cb("fw.example:22", nil, keyA); err != nil {
-		t.Fatalf("first use should pin, got %v", err)
-	}
-	if err := cb("fw.example:22", nil, keyA); err != nil {
-		t.Fatalf("same key should pass, got %v", err)
-	}
-	if err := cb("fw.example:22", nil, keyB); err == nil {
-		t.Fatal("changed key must be rejected")
-	}
-	// A different firewall gets its own independent pin.
-	if err := s.hostKeyTOFU(db, 8)("other.example:22", nil, keyB); err != nil {
-		t.Fatalf("other firewall first use should pin, got %v", err)
 	}
 }
 

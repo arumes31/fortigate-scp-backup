@@ -27,11 +27,13 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 	"github.com/arumes31/fortigate-scp-backup/internal/web"
 
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confconv"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
+	fgtconftail "github.com/arumes31/fortigate-scp-backup/extensions/fgt_conftail"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_polsplit"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
@@ -39,6 +41,16 @@ import (
 func main() {
 	bootstrap := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load(bootstrap)
+	if err := cfg.ValidateRuntime(); err != nil {
+		bootstrap.Error("invalid runtime configuration", "err", err)
+		os.Exit(1)
+	}
+	hostKeys, err := sshhostkey.New(cfg.SSHKnownHostsFile)
+	if err != nil {
+		bootstrap.Error("failed to initialize SSH host-key trust", "err", err)
+		os.Exit(1)
+	}
+	hostKeyCallback := hostKeys.Callback()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
@@ -49,7 +61,8 @@ func main() {
 		"scp_timeout", cfg.SCPTimeout,
 		"port", cfg.Port)
 
-	ctx := context.Background()
+	ctx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	// Bound all startup database work (connect+retry, schema init, migrations,
 	// schedule load) so a slow or unreachable database cannot block boot forever.
@@ -62,9 +75,7 @@ func main() {
 		logger.Error("failed to initialize cipher", "err", err)
 		os.Exit(1)
 	}
-	if cipher.Enabled() {
-		logger.Info("encryption at rest enabled (credentials + backup files)")
-	}
+	logger.Info("encryption at rest enabled (credentials + backup files)")
 
 	// Shared PostgreSQL store + schema init/migrations.
 	store, err := database.NewStore(startupCtx, cfg, cipher, logger)
@@ -73,7 +84,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
-	if err := store.InitSchema(startupCtx, cfg.TOTPEnabled, cfg.TOTPSecret); err != nil {
+	if err := store.InitSchema(startupCtx, cfg.TOTPEnabled, cfg.TOTPSecret, cfg.BootstrapAdminPassword); err != nil {
 		logger.Error("failed to initialize database schema", "err", err)
 		os.Exit(1)
 	}
@@ -81,16 +92,29 @@ func main() {
 		logger.Error("failed to run database migrations", "err", err)
 		os.Exit(1)
 	}
+	credentialMigrations, err := store.MigrateFirewallEncryption(startupCtx)
+	if err != nil {
+		logger.Error("failed to migrate firewall credentials to encrypted storage", "err", err)
+		os.Exit(1)
+	}
 	if cfg.ActivityLogRetentionDays > 0 {
 		go pruneActivityLogs(store, cfg.ActivityLogRetentionDays, logger)
 	}
 
-	// Backup storage directory. 0o750 keeps the FortiGate configs (potentially
-	// plaintext when encryption at rest is disabled) off world-readable paths.
+	// Backup storage directory. 0o750 keeps encrypted FortiGate configs and
+	// migration work files off world-readable paths.
 	if err := os.MkdirAll(cfg.BackupDir, 0o750); err != nil {
 		logger.Error("failed to create backup directory", "dir", cfg.BackupDir, "err", err)
 		os.Exit(1)
 	}
+	backupMigrations, err := backup.MigrateEncryptionAtRest(cfg.BackupDir, cipher)
+	if err != nil {
+		logger.Error("failed to migrate backup files to encrypted storage", "err", err)
+		os.Exit(1)
+	}
+	cipher.RequireEncrypted()
+	logger.Info("encryption migration verified",
+		"credentials_migrated", credentialMigrations, "backups_migrated", backupMigrations)
 
 	// Core services.
 	mail := mailer.New(cfg, logger)
@@ -98,6 +122,7 @@ func main() {
 	sess := session.New(cfg.SessionKey, cfg.CookieSecure, cfg.TrustProxyHeaders)
 	sched := scheduler.New(logger, cfg.TZ)
 	backupSvc := backup.New(store, mail, cfg, cipher, logger)
+	backupSvc.SetHostKeyCallback(hostKeyCallback)
 
 	// Rebuild recurring backup jobs from the firewalls table (replaces the
 	// APScheduler job store). Stagger startup by 10s per firewall. A cron
@@ -134,6 +159,7 @@ func main() {
 		logger.Error("failed to build web server", "err", err)
 		os.Exit(1)
 	}
+	srv.SetHostKeyManager(hostKeys)
 	// Live status updates: the engine notifies the web SSE hub on every change.
 	backupSvc.SetStatusHook(srv.BroadcastStatus)
 	router := srv.Routes()
@@ -145,12 +171,15 @@ func main() {
 	registry.Register(fgt_confgen.New(cfg, logger))
 	registry.Register(fgt_polsplit.New(cfg, logger))
 	registry.Register(fgt_confconv.New(cfg, logger))
+	registry.Register(fgtconftail.New(cfg, logger))
 	if err := registry.MountEnabled(router, extension.Deps{
+		Context:       ctx,
 		DB:            store.Pool(),
 		LogActivity:   store.LogActivity,
 		LoginRequired: sess.LoginRequired,
 		CurrentUser:   func(r *http.Request) string { return sess.User(r).Username },
 		BroadcastOp:   srv.BroadcastOp,
+		Schedule:      sched.Schedule,
 		Logger:        logger,
 		TZ:            cfg.TZ,
 		DataDir:       cfg.DataDir,
@@ -161,6 +190,8 @@ func main() {
 			}
 			return fw.FQDN, fw.Username, fw.Password, fw.SSHPort, nil
 		},
+		HostKeyCallback: hostKeyCallback,
+		Cipher:          cipher,
 	}); err != nil {
 		logger.Error("failed to mount extensions", "err", err)
 		os.Exit(1)
@@ -169,7 +200,11 @@ func main() {
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,
-		ReadHeaderTimeout: 30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Graceful shutdown.
@@ -185,6 +220,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	logger.Info("shutting down")
+	cancelApp()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

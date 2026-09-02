@@ -3,8 +3,20 @@ package fgt_confconv
 import (
 	"bytes"
 	"html/template"
+	"log/slog"
 	"testing"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/go-chi/chi/v5"
 )
+
+func TestMountRejectsNilSharedCipher(t *testing.T) {
+	e := New(&config.Config{}, slog.New(slog.DiscardHandler))
+	if err := e.Mount(chi.NewRouter(), extension.Deps{}); err == nil {
+		t.Fatal("Mount accepted a nil shared cipher")
+	}
+}
 
 func TestTemplatesParseAndRender(t *testing.T) {
 	tmpl, err := template.New("").ParseFS(extensionFS, "templates/*.html")

@@ -398,6 +398,15 @@ table.data .actions .btn {
 table.data .actions .btn:hover { background: transparent; color: var(--accent); text-decoration: underline; }
 table.data .actions .btn-danger { color: var(--danger); }
 table.data .actions .btn-danger:hover { color: var(--danger); background: transparent; }
+table.data .ssh-key-warning {
+  flex: 1 0 100%;
+  padding: 8px 10px;
+  border-left: 2px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--text);
+  line-height: 1.5;
+}
+table.data .ssh-key-warning code { display: block; margin: 4px 0; overflow-wrap: anywhere; }
 
 /* ---------- Status pills ---------- */
 .pill {

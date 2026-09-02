@@ -2,6 +2,7 @@ package fgt_polsplit
 
 import (
 	"embed"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 )
 
@@ -31,6 +33,7 @@ type Extension struct {
 	tmpl    *template.Template
 	tz      *time.Location
 	dataDir string
+	cipher  *crypto.Cipher
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
@@ -60,12 +63,16 @@ func (e *Extension) Prefix() string { return "/fgt-polsplit" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtPolSplit }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.Cipher == nil {
+		return errors.New("shared cipher is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.broadcastOp = d.BroadcastOp
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.dataDir = d.DataDir
+	e.cipher = d.Cipher
 	if e.tz == nil {
 		e.tz = time.UTC
 	}
@@ -115,6 +122,7 @@ type baseData struct {
 	ExtConfigGenEnabled bool
 	ExtPolSplitEnabled  bool
 	ExtConfConvEnabled  bool
+	ExtConfTailEnabled  bool
 	Lang                string
 	Active              string
 }
@@ -131,6 +139,7 @@ func (e *Extension) baseData(r *http.Request, title, active string) baseData {
 		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
 		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
 		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
+		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
 		Lang:                "en",
 		Active:              active,
 	}

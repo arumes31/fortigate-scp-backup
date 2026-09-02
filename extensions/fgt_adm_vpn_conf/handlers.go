@@ -67,6 +67,7 @@ type indexBase struct {
 	ExtConfigGenEnabled bool
 	ExtPolSplitEnabled  bool
 	ExtConfConvEnabled  bool
+	ExtConfTailEnabled  bool
 }
 
 type indexData struct {
@@ -111,6 +112,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 			ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
 			ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
 			ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
+			ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
 		},
 		Configs:                rows,
 		AvailableIPsCount:      count,

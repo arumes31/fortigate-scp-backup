@@ -1,16 +1,19 @@
 // Package config loads all runtime configuration from environment variables,
-// preserving the exact variable names, defaults and semantics of the original
-// Python application so an existing deployment can be swapped in place, plus a
-// set of newer optional settings (session/crypto keys, pool tuning, limits).
+// preserving the runtime variable names of the original Python application
+// while requiring stable secrets and encrypted storage for secure deployments.
 package config
 
 import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"log/slog"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,8 +39,9 @@ type Config struct {
 	RadiusPort    int
 	RadiusSecret  string
 	// Brute-force protection.
-	LoginMaxAttempts    int
-	LoginLockoutMinutes int
+	LoginMaxAttempts       int
+	LoginLockoutMinutes    int
+	BootstrapAdminPassword string
 
 	// Sessions / cookies
 	SessionKey   []byte // derived from SESSION_KEY; nil => random per start
@@ -49,9 +53,11 @@ type Config struct {
 	// rate limiter).
 	TrustProxyHeaders bool
 
-	// Encryption at rest (firewall credentials + backup files). Nil => disabled,
-	// preserving drop-in behaviour with existing plaintext data.
+	// Encryption at rest (firewall credentials + backup files).
 	EncryptionKey []byte
+	// SSHKnownHostsFile is the application-managed OpenSSH known_hosts file used
+	// for persistent trust-on-first-use verification.
+	SSHKnownHostsFile string
 
 	// SCP / backup defaults
 	DefaultSCPUser       string
@@ -76,6 +82,17 @@ type Config struct {
 	GraylogSearchTimeframe string
 	HookwiseURL            string
 	HookwiseToken          string
+
+	// Extension: fgt_conftail (Graylog configuration-change sessions to Hookwise)
+	ExtFgtConfTail            bool
+	FgtConfTailHookwiseURL    string
+	FgtConfTailHookwiseToken  string
+	FgtConfTailPollSeconds    int
+	FgtConfTailIdleSeconds    int
+	FgtConfTailOverlapSeconds int
+	FgtConfTailRetentionDays  int
+	FgtConfTailTicketMaxBytes int
+	FgtConfTailGraylogQuery   string
 
 	// Extension: graylog_device_data (switch client inventory for the topology)
 	ExtGraylogDeviceData  bool
@@ -147,46 +164,39 @@ func Load(logger *slog.Logger) *Config {
 		tz = time.UTC
 	}
 
-	totpSecret := os.Getenv("TOTP_SECRET")
-	if totpSecret == "" {
-		totpSecret = randomBase32(16)
-		// Warn but never log the generated secret: writing it to logs would
-		// leak the credential. Operators should set TOTP_SECRET explicitly so
-		// the value is known (and stable across restarts).
-		if boolenv("TOTP_ENABLED", false) {
-			logger.Warn("TOTP_ENABLED but TOTP_SECRET is unset; using a random admin TOTP secret. Set TOTP_SECRET explicitly to make it known and stable across restarts.")
-		}
-	}
+	totpSecret := secretEnv("TOTP_SECRET", logger)
 
 	c := &Config{
 		PGHost:           getenv("PG_HOST", "localhost"),
 		PGPort:           getenv("PG_PORT", "5432"),
 		PGUser:           getenv("PG_USER", "your_user"),
-		PGPassword:       getenv("PG_PASSWORD", "your_password"),
+		PGPassword:       secretEnv("PG_PASSWORD", logger),
 		PGDatabase:       getenv("PG_DATABASE", "firewall_backups"),
 		PGSSLMode:        getenv("PGSSLMODE", "prefer"),
 		PGMaxConns:       intenv("PG_MAX_CONNS", 50),
 		PGConnectRetries: intenv("PG_CONNECT_RETRIES", 10),
 		PGConnectBackoff: time.Duration(intenv("PG_CONNECT_BACKOFF_SECONDS", 3)) * time.Second,
 
-		TOTPEnabled:         boolenv("TOTP_ENABLED", false),
-		TOTPSecret:          totpSecret,
-		RadiusEnabled:       boolenv("RADIUS_ENABLED", false),
-		RadiusServer:        getenv("RADIUS_SERVER", "localhost"),
-		RadiusPort:          intenv("RADIUS_PORT", 1812),
-		RadiusSecret:        getenv("RADIUS_SECRET", "secret"),
-		LoginMaxAttempts:    intenv("LOGIN_MAX_ATTEMPTS", 5),
-		LoginLockoutMinutes: intenv("LOGIN_LOCKOUT_MINUTES", 15),
+		TOTPEnabled:            boolenv("TOTP_ENABLED", false),
+		TOTPSecret:             totpSecret,
+		RadiusEnabled:          boolenv("RADIUS_ENABLED", false),
+		RadiusServer:           getenv("RADIUS_SERVER", "localhost"),
+		RadiusPort:             intenv("RADIUS_PORT", 1812),
+		RadiusSecret:           secretEnv("RADIUS_SECRET", logger),
+		LoginMaxAttempts:       intenv("LOGIN_MAX_ATTEMPTS", 5),
+		LoginLockoutMinutes:    intenv("LOGIN_LOCKOUT_MINUTES", 15),
+		BootstrapAdminPassword: secretEnv("BOOTSTRAP_ADMIN_PASSWORD", logger),
 
-		SessionKey:        deriveOrNil(os.Getenv("SESSION_KEY")),
+		SessionKey:        deriveOrNil(secretEnv("SESSION_KEY", logger)),
 		CookieSecure:      boolenv("COOKIE_SECURE", false),
 		EnableHSTS:        boolenv("ENABLE_HSTS", false),
 		TrustProxyHeaders: boolenv("TRUST_PROXY_HEADERS", false),
 
-		EncryptionKey: decodeKey(os.Getenv("ENCRYPTION_KEY"), logger),
+		EncryptionKey:     decodeKey(secretEnv("ENCRYPTION_KEY", logger), logger),
+		SSHKnownHostsFile: os.Getenv("SSH_KNOWN_HOSTS_FILE"),
 
-		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "admin"),
-		DefaultSCPPassword:   getenv("DEFAULT_SCP_PASSWORD", ""),
+		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "fortisafe"),
+		DefaultSCPPassword:   secretEnv("DEFAULT_SCP_PASSWORD", logger),
 		FortigateConfigPath:  getenv("FORTIGATE_CONFIG_PATH", "sys_config"),
 		SCPTimeout:           intenv("SCP_TIMEOUT", 60),
 		MaxConcurrentBackups: intenv("MAX_CONCURRENT_BACKUPS", 10),
@@ -195,16 +205,27 @@ func Load(logger *slog.Logger) *Config {
 		MailServer:    getenv("MAIL_SERVER", "smtp.example.com"),
 		MailPort:      intenv("MAIL_PORT", 587),
 		MailUser:      getenv("MAIL_USER", "user@example.com"),
-		MailPassword:  getenv("MAIL_PASSWORD", "password"),
+		MailPassword:  secretEnv("MAIL_PASSWORD", logger),
 		MailRecipient: getenv("MAIL_RECIPIENT", getenv("MAIL_USER", "user@example.com")),
 
 		ExtAdmVpnConf:          boolenv("EXT_ADM_VPN_CONF", false),
 		ExtFgtConfGen:          boolenv("EXT_FGT_CONF_GEN", false),
 		GraylogURL:             os.Getenv("GRAYLOG_URL"),
-		GraylogToken:           os.Getenv("GRAYLOG_TOKEN"),
+		GraylogToken:           secretEnv("GRAYLOG_TOKEN", logger),
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
-		HookwiseToken:          os.Getenv("HOOKWISE_TOKEN"),
+		HookwiseToken:          secretEnv("HOOKWISE_TOKEN", logger),
+
+		ExtFgtConfTail:            boolenv("EXT_FGT_CONFTAIL", false),
+		FgtConfTailHookwiseURL:    os.Getenv("FGT_CONFTAIL_HOOKWISE_URL"),
+		FgtConfTailHookwiseToken:  secretEnv("FGT_CONFTAIL_HOOKWISE_TOKEN", logger),
+		FgtConfTailPollSeconds:    intenv("FGT_CONFTAIL_POLL_SECONDS", 900),
+		FgtConfTailIdleSeconds:    intenv("FGT_CONFTAIL_IDLE_SECONDS", 1800),
+		FgtConfTailOverlapSeconds: intenv("FGT_CONFTAIL_OVERLAP_SECONDS", 3600),
+		FgtConfTailRetentionDays:  intenv("FGT_CONFTAIL_RETENTION_DAYS", 365),
+		FgtConfTailTicketMaxBytes: intenv("FGT_CONFTAIL_TICKET_MAX_BYTES", 60000),
+		FgtConfTailGraylogQuery: getenv("FGT_CONFTAIL_GRAYLOG_QUERY", `type:event AND subtype:system AND (`+
+			`logid:0100044544 OR logid:0100044545 OR logid:0100044546 OR logid:0100044547)`),
 
 		ExtGraylogDeviceData: boolenv("EXT_GRAYLOG_DEVICE_DATA", false),
 		GraylogDeviceQuery:   getenv("GRAYLOG_DEVICE_QUERY", `source:"%s" AND (mac:* OR srcmac:* OR macaddr:*)`),
@@ -244,7 +265,7 @@ func Load(logger *slog.Logger) *Config {
 
 		CVEAutoUpdate:   boolenv("CVE_AUTOUPDATE", false),
 		CVERefreshHours: intenv("CVE_REFRESH_HOURS", 24),
-		NVDAPIKey:       os.Getenv("NVD_API_KEY"),
+		NVDAPIKey:       secretEnv("NVD_API_KEY", logger),
 
 		ActivityLogRetentionDays: intenv("ACTIVITY_LOG_RETENTION_DAYS", 0),
 
@@ -260,7 +281,117 @@ func Load(logger *slog.Logger) *Config {
 	if c.PGMaxConns < 1 {
 		c.PGMaxConns = 1
 	}
+	if c.SSHKnownHostsFile == "" {
+		c.SSHKnownHostsFile = filepath.Join(c.DataDir, "ssh_known_hosts")
+	}
 	return c
+}
+
+// ValidateRuntime rejects insecure or unstable production configuration before
+// any network listener or database migration is started.
+func (c *Config) ValidateRuntime() error {
+	var errs []error
+	if c.PGPassword == "" {
+		errs = append(errs, errors.New("PG_PASSWORD or PG_PASSWORD_FILE is required"))
+	}
+	if len(c.SessionKey) < 32 {
+		errs = append(errs, errors.New("SESSION_KEY or SESSION_KEY_FILE must contain at least 32 bytes"))
+	}
+	if len(c.EncryptionKey) != 32 {
+		errs = append(errs, errors.New("ENCRYPTION_KEY or ENCRYPTION_KEY_FILE must decode to exactly 32 bytes"))
+	}
+	if c.SSHKnownHostsFile == "" {
+		errs = append(errs, errors.New("SSH_KNOWN_HOSTS_FILE is required"))
+	}
+	if c.TOTPEnabled && c.TOTPSecret == "" {
+		errs = append(errs, errors.New("TOTP_SECRET or TOTP_SECRET_FILE is required when TOTP is enabled"))
+	}
+	if c.RadiusEnabled && len(c.RadiusSecret) < 16 {
+		errs = append(errs, errors.New("RADIUS_SECRET or RADIUS_SECRET_FILE must contain at least 16 bytes when RADIUS is enabled"))
+	}
+	if !validRemotePath(c.FortigateConfigPath) {
+		errs = append(errs, errors.New("FORTIGATE_CONFIG_PATH contains unsafe characters or a parent-directory segment"))
+	}
+	if c.SCPTimeout < 5 || c.SCPTimeout > 3600 {
+		errs = append(errs, errors.New("SCP_TIMEOUT must be between 5 and 3600 seconds"))
+	}
+	if c.ExtFgtConfTail {
+		if !validHTTPURL(c.GraylogURL) {
+			errs = append(errs, errors.New("GRAYLOG_URL must be an absolute HTTP(S) URL when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.GraylogToken == "" {
+			errs = append(errs, errors.New("GRAYLOG_TOKEN or GRAYLOG_TOKEN_FILE is required when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if !validHTTPURL(c.FgtConfTailHookwiseURL) {
+			errs = append(errs, errors.New("FGT_CONFTAIL_HOOKWISE_URL must be an absolute HTTP(S) URL when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.FgtConfTailHookwiseToken == "" {
+			errs = append(errs, errors.New("FGT_CONFTAIL_HOOKWISE_TOKEN or FGT_CONFTAIL_HOOKWISE_TOKEN_FILE is required when EXT_FGT_CONFTAIL is enabled"))
+		}
+		if c.FgtConfTailPollSeconds < 60 || c.FgtConfTailPollSeconds > 86400 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_POLL_SECONDS must be between 60 and 86400"))
+		}
+		if c.FgtConfTailIdleSeconds < 60 || c.FgtConfTailIdleSeconds > 604800 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_IDLE_SECONDS must be between 60 and 604800"))
+		}
+		if c.FgtConfTailOverlapSeconds < 60 || c.FgtConfTailOverlapSeconds > 2592000 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_OVERLAP_SECONDS must be between 60 and 2592000"))
+		}
+		if c.FgtConfTailRetentionDays < 0 || c.FgtConfTailRetentionDays > 36500 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_RETENTION_DAYS must be between 0 and 36500"))
+		}
+		if c.FgtConfTailTicketMaxBytes < 1024 || c.FgtConfTailTicketMaxBytes > 1<<20 {
+			errs = append(errs, errors.New("FGT_CONFTAIL_TICKET_MAX_BYTES must be between 1024 and 1048576"))
+		}
+		if strings.TrimSpace(c.FgtConfTailGraylogQuery) == "" {
+			errs = append(errs, errors.New("FGT_CONFTAIL_GRAYLOG_QUERY must not be empty"))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validHTTPURL(value string) bool {
+	u, err := url.ParseRequestURI(value)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+func validRemotePath(value string) bool {
+	if value == "" || len(value) > 255 || strings.Contains(value, "..") {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("_./-", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// secretEnv reads KEY directly, or KEY_FILE when direct configuration is
+// absent. File values support Docker/Kubernetes secrets and have only trailing
+// line endings removed; other whitespace remains part of the secret.
+func secretEnv(key string, logger *slog.Logger) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	path := os.Getenv(key + "_FILE")
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		logger.Error("failed to read secret file", "variable", key+"_FILE", "err", err)
+		return ""
+	}
+	return strings.TrimRight(string(data), "\r\n")
 }
 
 func getenv(key, def string) string {
@@ -331,6 +462,6 @@ func decodeKey(v string, logger *slog.Logger) []byte {
 	if b, err := hex.DecodeString(v); err == nil && len(b) == 32 {
 		return b
 	}
-	logger.Warn("ENCRYPTION_KEY is not a valid 32-byte base64/hex key; encryption at rest disabled")
+	logger.Warn("ENCRYPTION_KEY is not a valid 32-byte base64/hex key")
 	return nil
 }

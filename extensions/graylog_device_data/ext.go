@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
@@ -44,9 +45,10 @@ type Extension struct {
 	// Live SSH diagnostics (optional): resolve a firewall's decrypted SSH
 	// credentials, and a per-device serial executor that rate-limits CLI queries
 	// (never more than one in flight per firewall; extra requests are queued).
-	firewallCreds func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
-	diagMu        sync.Mutex
-	diagState     map[int]*diagRunState // fw_id → serial-execution state
+	firewallCreds   func(ctx context.Context, fwID int) (host, user, pass string, port int, err error)
+	hostKeyCallback ssh.HostKeyCallback
+	diagMu          sync.Mutex
+	diagState       map[int]*diagRunState // fw_id → serial-execution state
 
 	// In-flight fetches and active live views, listed on the core dashboard
 	// (see running.go).
@@ -93,6 +95,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.pool = d.DB
 	e.dataDir = d.DataDir
 	e.firewallCreds = d.FirewallCreds
+	e.hostKeyCallback = d.HostKeyCallback
 	e.diagState = map[int]*diagRunState{}
 	liveExt.Store(e) // publish for the core dashboard's running-operations card
 

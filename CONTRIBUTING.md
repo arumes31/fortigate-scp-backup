@@ -25,19 +25,23 @@ docker run -d --name fs-db -e POSTGRES_USER=postgre -e POSTGRES_PASSWORD=pass \
 
 PG_HOST=localhost PG_PORT=15432 PG_USER=postgre PG_PASSWORD=pass \
   PG_DATABASE=firewall_backups BACKUP_DIR=./backups DATA_DIR=./data \
+  SESSION_KEY='<at-least-32-random-bytes>' \
+  ENCRYPTION_KEY='<32-byte-base64-or-hex-key>' \
+  BOOTSTRAP_ADMIN_PASSWORD='<at-least-16-random-bytes>' \
   go run ./cmd/fortisafe
-# open http://localhost:8521  (admin / changeme)
+# sign in as admin with BOOTSTRAP_ADMIN_PASSWORD on a new database
 ```
 
 ## Tests
 
 - Unit tests run with the default `go test ./...` and require nothing external.
-- The store integration test is **skipped** unless `TEST_PG_HOST` is set:
+- External-service tests require the explicit `integration` build tag and
+  their protected environment credentials:
 
   ```bash
   TEST_PG_HOST=localhost TEST_PG_PORT=15432 TEST_PG_USER=postgre \
     TEST_PG_PASSWORD=pass TEST_PG_DATABASE=firewall_backups \
-    go test ./internal/database
+    go test -tags=integration ./internal/database
   ```
 
 - Run the fuzzers with e.g. `go test ./internal/web -fuzz FuzzBuildSearchPattern`.

@@ -1,3 +1,5 @@
+//go:build integration
+
 package database
 
 import (
@@ -49,7 +51,7 @@ func TestStoreIntegration(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.InitSchema(ctx, false, ""); err != nil {
+	if err := store.InitSchema(ctx, false, "", "integration-test-admin-password"); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
 	if err := store.Migrate(ctx); err != nil {

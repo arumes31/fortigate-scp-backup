@@ -1,3 +1,5 @@
+//go:build integration
+
 package web
 
 import (
@@ -5,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
@@ -31,7 +33,11 @@ func TestLiveLicenseChildDevices(t *testing.T) {
 		Username: os.Getenv("LIVE_FGT_USER"),
 		Password: os.Getenv("LIVE_FGT_PW"),
 	}
-	out, err := sshRunCommands(fw, ssh.InsecureIgnoreHostKey(), []string{
+	hostKeyCallback, err := knownhosts.New(os.Getenv("SSH_KNOWN_HOSTS_FILE"))
+	if err != nil {
+		t.Fatalf("load SSH_KNOWN_HOSTS_FILE: %v", err)
+	}
+	out, err := sshRunCommands(fw, hostKeyCallback, []string{
 		"diagnose switch-controller switch-info status",
 		"get switch-controller managed-switch",
 		"show wireless-controller wtp",

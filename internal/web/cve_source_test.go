@@ -25,12 +25,16 @@ func TestNvdCpeRange(t *testing.T) {
 			ok:   true,
 		},
 		{
-			name: "missing start is rejected",
+			name: "end-only range derives its train from the end",
 			m:    nvdCpeMatch{VersionEndExcluding: "7.4.3"},
+			want: cveRange{major: 7, minor: 4, fixedPatch: 3},
+			ok:   true,
 		},
 		{
-			name: "missing end is rejected",
+			name: "missing fixed version marks the train never fixed",
 			m:    nvdCpeMatch{VersionStartIncluding: "7.4.0"},
+			want: cveRange{major: 7, minor: 4, fixedPatch: neverFixed},
+			ok:   true,
 		},
 		{
 			name: "cross-train bounds are rejected rather than guessed",
@@ -105,6 +109,38 @@ func TestNvdEntryToDef(t *testing.T) {
 	}
 	if _, ok := nvdEntryToDef(parsed2.Vulnerabilities[0]); ok {
 		t.Error("entry with no FortiOS-matching range should be rejected")
+	}
+}
+
+func TestNvdEntryToDefKeepsEndOnlyAndNeverFixedRanges(t *testing.T) {
+	const sample = `{
+		"vulnerabilities": [{
+			"cve": {
+				"id": "CVE-2099-9998",
+				"descriptions": [{"lang": "en", "value": "range edge cases"}],
+				"configurations": [{"nodes": [{"cpeMatch": [
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "7.4.3"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "6.0.0"}
+				]}]}]
+			}
+		}]
+	}`
+	var parsed nvdResponse
+	if err := json.Unmarshal([]byte(sample), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	def, ok := nvdEntryToDef(parsed.Vulnerabilities[0])
+	if !ok {
+		t.Fatal("entry with valid end-only and never-fixed ranges was discarded")
+	}
+	want := []cveRange{{major: 7, minor: 4, fixedPatch: 3}, {major: 6, minor: 0, fixedPatch: neverFixed}}
+	if len(def.ranges) != len(want) {
+		t.Fatalf("ranges = %+v, want %+v", def.ranges, want)
+	}
+	for i := range want {
+		if def.ranges[i] != want[i] {
+			t.Errorf("range %d = %+v, want %+v", i, def.ranges[i], want[i])
+		}
 	}
 }
 

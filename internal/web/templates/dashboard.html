@@ -468,7 +468,7 @@
         b.addEventListener('click', function () {
             var id = b.getAttribute('data-fw'), orig = b.textContent;
             b.textContent = '…'; b.disabled = true;
-            fetch('/test_connection/' + id).then(function (r) { return r.json(); }).then(function (j) {
+            fetch('/test_connection/' + id, {method: 'POST'}).then(function (r) { return r.json(); }).then(function (j) {
                 toast(j.message || (j.ok ? 'OK' : 'Failed'), j.ok ? 'ok' : 'error');
             }).catch(function () { toast('Test fehlgeschlagen', 'error'); }).finally(function () {
                 b.textContent = orig; b.disabled = false;

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // isValidTemplateName rejects only what would break the places a template
@@ -193,7 +193,11 @@ func (e *Extension) loadFirewallConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	diskPath := filepath.Join(e.cfg.BackupDir, filepath.FromSlash(filename))
+	diskPath, err := appsecurity.JoinWithin(e.cfg.BackupDir, filename)
+	if err != nil {
+		http.Error(w, "Invalid backup path", http.StatusInternalServerError)
+		return
+	}
 	encData, err := os.ReadFile(diskPath)
 	if err != nil {
 		e.logger.Error("Failed to read backup file", "path", diskPath, "err", err)
@@ -202,10 +206,13 @@ func (e *Extension) loadFirewallConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Decrypt config content
-	cipher, err := crypto.New(e.cfg.EncryptionKey)
-	if err != nil {
-		http.Error(w, "Failed to init cipher", http.StatusInternalServerError)
-		return
+	cipher := e.cipher
+	if cipher == nil { // unit-test compatibility; production always injects the strict shared cipher
+		cipher, err = crypto.New(e.cfg.EncryptionKey)
+		if err != nil {
+			http.Error(w, "Failed to init cipher", http.StatusInternalServerError)
+			return
+		}
 	}
 	plain, err := cipher.Decrypt(encData)
 	if err != nil {

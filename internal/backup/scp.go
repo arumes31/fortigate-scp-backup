@@ -23,7 +23,7 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	clientConfig := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: s.hostKeyCallback,
 		Timeout:         time.Duration(timeout) * time.Second,
 	}
 
@@ -100,7 +100,7 @@ func (s *Service) TestConnection(fwID int) (string, error) {
 	clientConfig := &ssh.ClientConfig{
 		User:            fw.Username,
 		Auth:            []ssh.AuthMethod{ssh.Password(fw.Password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: s.hostKeyCallback,
 		Timeout:         time.Duration(s.cfg.SCPTimeout) * time.Second,
 	}
 	addr := net.JoinHostPort(fw.FQDN, strconv.Itoa(fw.SSHPort))

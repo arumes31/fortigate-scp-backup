@@ -30,6 +30,7 @@
             {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/" class="active">Policy_Gen</a>{{end}}
             {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
             {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
+            {{if .Base.ExtConfTailEnabled}}<a href="/fgt-conftail/">Conf_Tail</a>{{end}}
         </nav>
         <div class="sysinfo">
             <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>

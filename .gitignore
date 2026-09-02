@@ -24,7 +24,11 @@ example*.conf
 graphify-out/
 temp/
 .claudeignore
+.claude
 .agents/
+.kimi-code
 pgdata/
+/secrets/*
+!/secrets/README.md
 
 

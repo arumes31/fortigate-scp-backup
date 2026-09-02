@@ -19,6 +19,8 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
 
 // ---- page data structs (each embeds Base for the shared layout) ----
@@ -28,6 +30,8 @@ type loginData struct {
 	TOTPEnabled   bool
 	RadiusEnabled bool
 }
+
+const csvRequestBodyTimeout = 2 * time.Minute
 
 // loginView builds the login page data, carrying the TOTP/RADIUS flags the
 // template needs to decide whether to reveal the TOTP field and show the
@@ -41,10 +45,11 @@ func (s *Server) loginView(errMsg string) loginData {
 }
 
 type indexData struct {
-	Base      BaseData
-	Error     string
-	Firewalls []models.Firewall
-	NextRuns  map[int]time.Time
+	Base            BaseData
+	Error           string
+	Firewalls       []models.Firewall
+	NextRuns        map[int]time.Time
+	PendingHostKeys map[int]sshhostkey.PendingKey
 }
 
 type backupsData struct {
@@ -191,6 +196,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	d := s.sess.User(r)
 
 	if r.Method == http.MethodPost {
+		// The server-wide ReadTimeout protects ordinary requests. CSV uploads get
+		// a larger, explicit body-read window after their headers are accepted.
+		if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(csvRequestBodyTimeout)); err != nil &&
+			!errors.Is(err, http.ErrNotSupported) {
+			s.logger.Debug("failed to set CSV request-body deadline", "err", err)
+		}
 		// Cap the request body to guard against oversized uploads (#38).
 		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.CSVMaxBytes)
 
@@ -266,15 +277,22 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nextRuns := make(map[int]time.Time, len(fws))
+	pendingHostKeys := make(map[int]sshhostkey.PendingKey)
 	for _, fw := range fws {
 		if info, ok := s.sched.Info(BackupJobID(fw.ID)); ok {
 			nextRuns[fw.ID] = info.NextRun
 		}
+		if s.hostKeyManager != nil {
+			if pending, ok := s.hostKeyManager.Pending(fw.FQDN, fw.SSHPort); ok {
+				pendingHostKeys[fw.ID] = pending
+			}
+		}
 	}
 	s.render(w, "index.html", indexData{
-		Base:      s.base(r, "Firewalls", "firewalls"),
-		Firewalls: fws,
-		NextRuns:  nextRuns,
+		Base:            s.base(r, "Firewalls", "firewalls"),
+		Firewalls:       fws,
+		NextRuns:        nextRuns,
+		PendingHostKeys: pendingHostKeys,
 	})
 }
 
@@ -433,11 +451,11 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 // when encryption at rest is enabled so the user always downloads plaintext.
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := chi.URLParam(r, "*")
-	if filename == "" || strings.Contains(filename, "..") {
+	diskPath, err := appsecurity.JoinWithin(s.cfg.BackupDir, filename)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	diskPath := filepath.Join(s.cfg.BackupDir, filepath.FromSlash(filename))
 	raw, err := os.ReadFile(diskPath)
 	if err != nil {
 		http.NotFound(w, r)

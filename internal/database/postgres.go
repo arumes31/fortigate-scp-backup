@@ -132,7 +132,7 @@ func (s *Store) Now() time.Time { return time.Now().In(s.tz) }
 // InitSchema creates every table if missing and applies the same idempotent
 // migrations the Python init_db performed. Safe to run on an empty database or
 // one created by the previous Python version.
-func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret string) error {
+func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret, bootstrapAdminPassword string) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS firewalls (
 			id SERIAL PRIMARY KEY,
@@ -174,14 +174,24 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 		}
 	}
 
-	adminHash, err := security.HashPassword("changeme")
-	if err != nil {
-		return fmt.Errorf("hash admin password: %w", err)
+	var adminExists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE username = 'admin')`).Scan(&adminExists); err != nil {
+		return fmt.Errorf("check bootstrap admin: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO users (username, password, first_login, is_radius_user)
-		 VALUES ('admin', $1, 1, FALSE) ON CONFLICT DO NOTHING`, adminHash); err != nil {
-		return fmt.Errorf("seed admin: %w", err)
+	if !adminExists {
+		if len(bootstrapAdminPassword) < 16 || strings.EqualFold(bootstrapAdminPassword, "changeme") {
+			return errors.New("BOOTSTRAP_ADMIN_PASSWORD(_FILE) must contain at least 16 bytes for a new database")
+		}
+		adminHash, err := security.HashPassword(bootstrapAdminPassword)
+		if err != nil {
+			return fmt.Errorf("hash admin password: %w", err)
+		}
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO users (username, password, first_login, is_radius_user)
+			 VALUES ('admin', $1, 1, FALSE)`, adminHash); err != nil {
+			return fmt.Errorf("seed admin: %w", err)
+		}
 	}
 
 	if totpEnabled {
@@ -203,7 +213,7 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 
 	// ssh_port column back-compat (older databases may lack it).
 	var col string
-	err = s.pool.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		`SELECT column_name FROM information_schema.columns
 		 WHERE table_name = 'firewalls' AND column_name = 'ssh_port'`).Scan(&col)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -227,6 +237,65 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 		return fmt.Errorf("dedupe backups: %w", err)
 	}
 	return nil
+}
+
+// MigrateFirewallEncryption encrypts every legacy plaintext firewall password
+// and verifies existing envelopes in one transaction. A wrong key or malformed
+// ciphertext aborts startup without partially migrating the table.
+func (s *Store) MigrateFirewallEncryption(ctx context.Context) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin credential encryption migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	type credential struct {
+		id       int
+		password string
+	}
+	rows, err := tx.Query(ctx, `SELECT id, password FROM firewalls ORDER BY id FOR UPDATE`)
+	if err != nil {
+		return 0, fmt.Errorf("list credentials for encryption migration: %w", err)
+	}
+	var credentials []credential
+	for rows.Next() {
+		var item credential
+		if err := rows.Scan(&item.id, &item.password); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan credential for encryption migration: %w", err)
+		}
+		credentials = append(credentials, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate credentials for encryption migration: %w", err)
+	}
+	rows.Close()
+
+	migrated := 0
+	for _, item := range credentials {
+		if crypto.IsEncryptedString(item.password) {
+			if _, err := s.cipher.DecryptString(item.password); err != nil {
+				return 0, fmt.Errorf("verify encrypted credential for firewall %d: %w", item.id, err)
+			}
+			continue
+		}
+		encrypted, err := s.cipher.EncryptString(item.password)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt credential for firewall %d: %w", item.id, err)
+		}
+		if !crypto.IsEncryptedString(encrypted) {
+			return 0, errors.New("credential encryption migration requires an enabled cipher")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE firewalls SET password = $1 WHERE id = $2`, encrypted, item.id); err != nil {
+			return 0, fmt.Errorf("store encrypted credential for firewall %d: %w", item.id, err)
+		}
+		migrated++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit credential encryption migration: %w", err)
+	}
+	return migrated, nil
 }
 
 // LogActivity records a user action. Fire-and-forget: failures are logged, not
