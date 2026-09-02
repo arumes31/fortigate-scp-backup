@@ -196,7 +196,7 @@
                                 <input type="checkbox" class="toggle-field" data-field="webfilter-profile" id="webfilter-enabled" checked>
                                 <label for="webfilter-enabled">Webfilter Profile</label>
                             </div>
-                            <select class="webfilter-profile" id="webfilter-profile">
+                            <select class="webfilter-profile" id="webfilter-profile" aria-label="Webfilter Profile">
                                 <option value="">None</option>
                                 {{range .WebfilterProfiles}}
                                     <option value="{{.}}">{{.}}</option>
@@ -211,7 +211,7 @@
                                 <input type="checkbox" class="toggle-field" data-field="application-list" id="application-list-enabled" checked>
                                 <label for="application-list-enabled">Application List</label>
                             </div>
-                            <select class="application-list" id="application-list">
+                            <select class="application-list" id="application-list" aria-label="Application List">
                                 <option value="">None</option>
                                 {{range .ApplicationLists}}
                                     <option value="{{.}}">{{.}}</option>
@@ -224,7 +224,7 @@
                                 <input type="checkbox" class="toggle-field" data-field="av-profile" id="av-enabled">
                                 <label for="av-enabled">Antivirus</label>
                             </div>
-                            <select class="av-profile" id="av-profile" disabled>
+                            <select class="av-profile" id="av-profile" aria-label="Antivirus Profile" disabled>
                                 <option value="">None</option>
                                 {{range .AVProfiles}}
                                     <option value="{{.}}">{{.}}</option>
@@ -239,7 +239,7 @@
                                 <input type="checkbox" class="toggle-field" data-field="ips-sensor" id="ips-sensor-enabled" checked>
                                 <label for="ips-sensor-enabled">IPS Sensor</label>
                             </div>
-                            <select class="ips-sensor" id="ips-sensor">
+                            <select class="ips-sensor" id="ips-sensor" aria-label="IPS Sensor">
                                 <option value="">None</option>
                                 {{range .IPSSensors}}
                                     <option value="{{.}}">{{.}}</option>

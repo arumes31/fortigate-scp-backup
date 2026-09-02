@@ -43,7 +43,7 @@
                 <input type="text" name="pattern" placeholder="{{T .Base.Lang "audit.rule_pattern"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
             </div>
             <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
-                <select name="severity" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
+                <select name="severity" required aria-label="{{T .Base.Lang "audit.rule_severity"}}" style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
                     <option value="critical">Critical</option>
                     <option value="warning" selected>Warning</option>
                     <option value="info">Info</option>
@@ -123,7 +123,7 @@
     <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
             <h2 class="mt-0 mb-0">{{T .Base.Lang "audit.per_firewall"}}</h2>
-            <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent);">{{T .Base.Lang "audit.topology_link"}}</a></span>
+            <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em;">{{T .Base.Lang "audit.topology_link"}}</a></span>
         </div>
         <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
     </div>

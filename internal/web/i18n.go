@@ -74,6 +74,7 @@ var uiMsgs = map[string]map[string]string{
 	"audit.custom_rules":               {"en": "Custom audit rules", "de": "Eigene Audit-Regeln"},
 	"audit.rule_name":                  {"en": "Rule name (e.g. SSH port check)", "de": "Regel-Name (z.B. SSH Port Check)"},
 	"audit.rule_pattern":               {"en": "Search pattern (e.g. set admin-sport 443)", "de": "Such-Muster (z.B. set admin-sport 443)"},
+	"audit.rule_severity":              {"en": "Severity", "de": "Schweregrad"},
 	"audit.rule_remediation":           {"en": "Remediation (CLI commands)", "de": "Behebung (CLI Kommandos)"},
 	"audit.rule_add":                   {"en": "Add rule", "de": "Regel hinzufügen"},
 	"audit.rules_configured":           {"en": "Configured rules:", "de": "Konfigurierte Regeln:"},
