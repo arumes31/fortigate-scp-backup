@@ -228,6 +228,21 @@ func TestParseSwitchInfoStatus(t *testing.T) {
 	}
 }
 
+func TestParseSwitchInfoStatusPreservesManagedSwitchIDAsMergeKey(t *testing.T) {
+	t.Parallel()
+	output := "Managed Switch : SWITCH-ID-01 0\r\n" +
+		"Version: FortiSwitch-108E v7.4.9,build0946,260122 (GA)\r\n" +
+		"Hostname: FRIENDLY-HOSTNAME\r\n"
+	devices := parseSwitchInfoStatus(output)
+	if len(devices) != 1 || devices[0].Name != "SWITCH-ID-01" {
+		t.Fatalf("parsed switches = %+v, want managed switch ID as name", devices)
+	}
+	merged := mergeSwitchDevices([]string{"SWITCH-ID-01"}, devices)
+	if len(merged) != 1 || merged[0].Status != "online" {
+		t.Fatalf("merged switches = %+v, want one online switch", merged)
+	}
+}
+
 const managedSwitchListFixture = "FGT90G-TEST-N1(Primary) $ == [ TEST-CORE01 ]\r\n" +
 	"switch-id: TEST-CORE01   \r\n" +
 	"== [ TEST-EDGE01 ]\r\n" +

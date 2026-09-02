@@ -1,3 +1,18 @@
+.ct-page-heading {
+    align-items: flex-start;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.ct-page-heading .page-title {
+    min-width: 0;
+}
+
+.ct-page-heading + .ct-intro {
+    margin-top: 0;
+}
+
 .ct-intro {
     color: var(--text-muted);
     font-size: 12px;
@@ -285,6 +300,15 @@
 }
 
 @media (max-width: 640px) {
+    .ct-page-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .ct-page-heading [data-ct-time-toggle] {
+        align-self: flex-start;
+    }
+
     .ct-metrics,
     .ct-filter { grid-template-columns: 1fr; }
     .ct-filter-actions { align-items: stretch; flex-direction: column; }

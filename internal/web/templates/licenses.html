@@ -166,6 +166,7 @@
     var wasRunning = false;
     var retryDelay = 2000;
     var POLL_RETRY_MAX_MS = 30000;
+    var IDLE_POLL_MS = 30000;
     function poll() {
         fetch('/licenses/status').then(function (r) {
             if (!r.ok) { throw new Error('http ' + r.status); }
@@ -180,10 +181,11 @@
                 location.reload();
             } else {
                 el.textContent = '';
+                setTimeout(poll, IDLE_POLL_MS);
             }
         }).catch(function () {
+            setTimeout(poll, wasRunning ? retryDelay : IDLE_POLL_MS);
             if (wasRunning) {
-                setTimeout(poll, retryDelay);
                 retryDelay = Math.min(POLL_RETRY_MAX_MS, retryDelay * 2);
             }
         });

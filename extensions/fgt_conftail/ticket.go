@@ -43,12 +43,18 @@ func buildTicketPayload(
 		shortID = shortID[:8]
 	}
 	administrator := ticketAdministrator(chain)
+	changeLabel := "changes"
+	if changeCount == 1 {
+		changeLabel = "change"
+	}
 	summary := fmt.Sprintf(
-		"[CT-%s] %s / %s / %s",
+		"[FortiSafe ID %d · CT-%s] %s / %s / %d %s",
+		chain.FirewallID,
 		shortID,
 		chain.FirewallName,
 		administrator,
-		chain.FirstEventAt.UTC().Format("2006-01-02 15:04Z"),
+		changeCount,
+		changeLabel,
 	)
 	summary = truncateString(summary, 255)
 	description := buildTicketDescription(chain, events, maxDescriptionBytes)

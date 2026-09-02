@@ -28,6 +28,82 @@
         }
     }
 
+    const pollStatus = document.querySelector("[data-ct-poll-status]");
+    if (pollStatus) {
+        const initialSignature = pollStatus.dataset.pollSignature || "";
+        let pollRunning = pollStatus.dataset.pollRunning === "true";
+        const pollStatusRefresh = () => {
+            fetch("/fgt-conftail/status", {
+                cache: "no-store",
+                credentials: "same-origin",
+                headers: { Accept: "application/json" },
+            }).then((response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            }).then((status) => {
+                pollRunning = status.running === true;
+                if (status.signature && status.signature !== initialSignature) {
+                    window.location.reload();
+                    return;
+                }
+                window.setTimeout(pollStatusRefresh, pollRunning ? 2000 : 30000);
+            }).catch(() => {
+                window.setTimeout(pollStatusRefresh, pollRunning ? 5000 : 30000);
+            });
+        };
+        window.setTimeout(pollStatusRefresh, pollRunning ? 2000 : 30000);
+    }
+
+    const timeStorageKey = "fortisafe.conftail.timezone.v1";
+    const timeNodes = Array.from(document.querySelectorAll("[data-ct-time]"));
+    const timeToggles = Array.from(document.querySelectorAll("[data-ct-time-toggle]"));
+    let timeMode = "utc";
+    try {
+        if (window.localStorage.getItem(timeStorageKey) === "local") timeMode = "local";
+    } catch (_) {
+        timeMode = "utc";
+    }
+    timeNodes.forEach((node) => {
+        node.dataset.ctUtc = node.textContent;
+    });
+    const localTime = new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+    });
+    const applyTimeMode = () => {
+        timeNodes.forEach((node) => {
+            if (!node.dateTime) return;
+            if (timeMode === "local") {
+                const parsed = new Date(node.dateTime);
+                if (!Number.isNaN(parsed.getTime())) node.textContent = localTime.format(parsed);
+            } else {
+                node.textContent = node.dataset.ctUtc || "-";
+            }
+        });
+        timeToggles.forEach((toggle) => {
+            const local = timeMode === "local";
+            toggle.textContent = local ? "Time: Browser" : "Time: UTC";
+            toggle.setAttribute("aria-pressed", local ? "true" : "false");
+        });
+    };
+    timeToggles.forEach((toggle) => {
+        toggle.addEventListener("click", () => {
+            timeMode = timeMode === "local" ? "utc" : "local";
+            try {
+                window.localStorage.setItem(timeStorageKey, timeMode);
+            } catch (_) {
+                // Storage can be disabled; the current page still switches.
+            }
+            applyTimeMode();
+        });
+    });
+    applyTimeMode();
+
     const storageKey = "fortisafe.conftail.columns.v1";
     let preferences = {};
     try {

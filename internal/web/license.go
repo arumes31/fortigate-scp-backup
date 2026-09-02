@@ -289,7 +289,9 @@ func parseSwitchInfoStatus(out string) []licenseDevice {
 		case "Serial-Number":
 			cur.Serial = val
 		case "Hostname":
-			cur.Name = val
+			if cur.Name == "" {
+				cur.Name = val
+			}
 		}
 	}
 	return devs

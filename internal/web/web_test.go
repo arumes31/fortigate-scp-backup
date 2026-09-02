@@ -281,8 +281,14 @@ func TestUnauthenticatedRedirect(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	srv := testServer(t)
+	var probeHasBoundedDeadline bool
 	srv.RegisterHealth("conftail.graylog", func(context.Context) string { return "stale" })
 	srv.RegisterHealth("untrusted", func(context.Context) string { return "contains secret detail" })
+	srv.RegisterHealth("bounded", func(ctx context.Context) string {
+		deadline, ok := ctx.Deadline()
+		probeHasBoundedDeadline = ok && time.Until(deadline) > 0 && time.Until(deadline) <= 3*time.Second
+		return "healthy"
+	})
 	rr := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rr.Code != http.StatusOK {
@@ -303,6 +309,9 @@ func TestHealthz(t *testing.T) {
 	if response.Components["untrusted"].Status != "unknown" ||
 		strings.Contains(rr.Body.String(), "secret detail") {
 		t.Fatalf("healthz exposed an unbounded component status: %s", rr.Body.String())
+	}
+	if !probeHasBoundedDeadline {
+		t.Fatal("health probe did not receive the three-second bounded request context")
 	}
 }
 

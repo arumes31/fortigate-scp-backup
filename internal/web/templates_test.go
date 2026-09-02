@@ -66,9 +66,10 @@ func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 			name: "licenses.html",
 			wants: []string{
 				"if (!r.ok) { throw new Error('http ' + r.status); }",
-				"if (wasRunning)",
+				"var IDLE_POLL_MS = 30000;",
+				"setTimeout(poll, IDLE_POLL_MS);",
+				"setTimeout(poll, wasRunning ? retryDelay : IDLE_POLL_MS);",
 				"Math.min(POLL_RETRY_MAX_MS",
-				"setTimeout(poll, retryDelay);",
 			},
 		},
 	}

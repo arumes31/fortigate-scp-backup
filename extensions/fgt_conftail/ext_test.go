@@ -105,6 +105,13 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 	if authCalls != 1 || response.Header().Get("X-Test-Authenticated") != "yes" {
 		t.Fatal("dashboard route did not pass through LoginRequired")
 	}
+	statusResponse := httptest.NewRecorder()
+	router.ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/status", nil))
+	if statusResponse.Code != http.StatusOK ||
+		statusResponse.Header().Get("X-Test-Authenticated") != "yes" ||
+		!strings.Contains(statusResponse.Body.String(), `"running":false`) {
+		t.Fatalf("authenticated GET /status = %d/%q", statusResponse.Code, statusResponse.Body.String())
+	}
 
 	postResponse := httptest.NewRecorder()
 	router.ServeHTTP(postResponse, httptest.NewRequest(http.MethodPost, "/", nil))

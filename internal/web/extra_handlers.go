@@ -31,8 +31,10 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		probes[name] = probe
 	}
 	s.healthMu.RUnlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
 	for name, probe := range probes {
-		response.Components[name] = component{Status: boundedHealthStatus(probe(r.Context()))}
+		response.Components[name] = component{Status: boundedHealthStatus(probe(ctx))}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)

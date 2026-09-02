@@ -41,6 +41,9 @@ func TestBuildTicketPayloadProvidesHookwiseDisplayFields(t *testing.T) {
 	if payload.Source != "FortiSafe ConfTail" {
 		t.Fatalf("Hookwise source = %q, want %q", payload.Source, "FortiSafe ConfTail")
 	}
+	if want := "[FortiSafe ID 9 · CT-11111111] branch-fw.example / alice / 1 change"; payload.Summary != want {
+		t.Fatalf("Hookwise summary = %q, want %q", payload.Summary, want)
+	}
 	if payload.Message == "" || payload.Message != payload.Description {
 		t.Fatal("Hookwise message must contain the complete formatted description")
 	}

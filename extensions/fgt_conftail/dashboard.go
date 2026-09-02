@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -42,6 +43,12 @@ const (
 			AND LOWER(ef.device_name) LIKE LOWER(?) ESCAPE '\'))
 		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
 			AND LOWER(ef.device_id) LIKE LOWER(?) ESCAPE '\'))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND LOWER(ef.action) LIKE LOWER(?) ESCAPE '\'))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND ef.transaction_id = ?))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+			AND ef.log_id = ?))
 		AND (? = 0 OR c.last_event_at_ns >= ?)
 		AND (? = 0 OR c.first_event_at_ns <= ?)
 		AND (? = 0 OR o.state = ?)`
@@ -58,16 +65,19 @@ const (
 var dashboardFS embed.FS
 
 type dashboardFilters struct {
-	FirewallID int
-	Search     string
-	User       string
-	Source     string
-	Device     string
-	Serial     string
-	State      string
-	From       time.Time
-	To         time.Time
-	Page       int
+	FirewallID    int
+	Search        string
+	User          string
+	Source        string
+	Device        string
+	Serial        string
+	Action        string
+	TransactionID string
+	LogID         string
+	State         string
+	From          time.Time
+	To            time.Time
+	Page          int
 }
 
 type dashboardCounts struct {
@@ -135,16 +145,19 @@ type dashboardData struct {
 }
 
 type dashboardFilterView struct {
-	Firewall string
-	Search   string
-	User     string
-	Source   string
-	Device   string
-	Serial   string
-	State    string
-	From     string
-	To       string
-	Page     int
+	Firewall      string
+	Search        string
+	User          string
+	Source        string
+	Device        string
+	Serial        string
+	Action        string
+	TransactionID string
+	LogID         string
+	State         string
+	From          string
+	To            string
+	Page          int
 }
 
 type dashboardHealth struct {
@@ -171,6 +184,8 @@ type dashboardPageData struct {
 	SessionHealth  dashboardHealth
 	DeliveryHealth dashboardHealth
 	NextPollRun    time.Time
+	PollRunning    bool
+	PollSignature  string
 	Coverage       []sourceCoverage
 	Firewalls      []sourceCoverage
 	Warnings       []string
@@ -188,6 +203,11 @@ type dashboardChainPageData struct {
 	NextURL    string
 }
 
+type dashboardStatusResponse struct {
+	Running   bool   `json:"running"`
+	Signature string `json:"signature"`
+}
+
 func parseDashboardTemplate() (*template.Template, error) {
 	return template.New("index.html").Funcs(template.FuncMap{
 		"fmtTime":        formatDashboardTime,
@@ -202,13 +222,16 @@ func dashboardStaticFS() (fs.FS, error) {
 
 func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 	filters := dashboardFilters{
-		Search: strings.TrimSpace(values.Get("q")),
-		User:   strings.TrimSpace(values.Get("user")),
-		Source: strings.TrimSpace(values.Get("source")),
-		Device: strings.TrimSpace(values.Get("device")),
-		Serial: strings.TrimSpace(values.Get("serial")),
-		State:  strings.TrimSpace(values.Get("state")),
-		Page:   1,
+		Search:        strings.TrimSpace(values.Get("q")),
+		User:          strings.TrimSpace(values.Get("user")),
+		Source:        strings.TrimSpace(values.Get("source")),
+		Device:        strings.TrimSpace(values.Get("device")),
+		Serial:        strings.TrimSpace(values.Get("serial")),
+		Action:        strings.TrimSpace(values.Get("action")),
+		TransactionID: strings.TrimSpace(values.Get("transaction")),
+		LogID:         strings.TrimSpace(values.Get("log_id")),
+		State:         strings.TrimSpace(values.Get("state")),
+		Page:          1,
 	}
 	if filters.State == "" {
 		filters.State = dashboardStateAll
@@ -224,6 +247,9 @@ func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 		{name: "source", value: filters.Source},
 		{name: "device", value: filters.Device},
 		{name: "serial", value: filters.Serial},
+		{name: "action", value: filters.Action},
+		{name: "transaction", value: filters.TransactionID},
+		{name: "log id", value: filters.LogID},
 	} {
 		if err := validateDashboardTextFilter(filter.value); err != nil {
 			return dashboardFilters{}, fmt.Errorf("invalid dashboard %s filter: %w", filter.name, err)
@@ -429,6 +455,9 @@ func dashboardQueryArgs(filters dashboardFilters, chainState string) []any {
 		boolInt(filters.Source != ""), "%" + escapeDashboardLike(filters.Source) + "%",
 		boolInt(filters.Device != ""), "%" + escapeDashboardLike(filters.Device) + "%",
 		boolInt(filters.Serial != ""), "%" + escapeDashboardLike(filters.Serial) + "%",
+		boolInt(filters.Action != ""), "%" + escapeDashboardLike(filters.Action) + "%",
+		boolInt(filters.TransactionID != ""), filters.TransactionID,
+		boolInt(filters.LogID != ""), filters.LogID,
 		boolInt(!filters.From.IsZero()), unixNanos(filters.From),
 		boolInt(!filters.To.IsZero()), unixNanos(filters.To),
 		boolInt(deliveryState != ""), deliveryState,
@@ -728,6 +757,8 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		SessionHealth:  dashboardSessionHealth(data.Counts),
 		DeliveryHealth: dashboardDeliveryHealth(data.Counts),
 		NextPollRun:    dashboardNextPollRun(data.Poll, pollInterval),
+		PollRunning:    dashboardPollRunning(data.Poll),
+		PollSignature:  dashboardPollSignature(data.Poll),
 		Coverage:       coverage,
 		Firewalls:      coverage,
 		Warnings:       warnings,
@@ -760,6 +791,9 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 			"source_filter_set", filters.Source != "",
 			"device_filter_set", filters.Device != "",
 			"serial_filter_set", filters.Serial != "",
+			"action_filter_set", filters.Action != "",
+			"transaction_filter_set", filters.TransactionID != "",
+			"log_id_filter_set", filters.LogID != "",
 			"state", filters.State,
 			"from", dashboardLogTime(filters.From),
 			"to", dashboardLogTime(filters.To),
@@ -771,6 +805,34 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
+}
+
+func (e *Extension) dashboardStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if e.store == nil {
+		http.Error(w, "Configuration change dashboard unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := e.store.pollState(r.Context())
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Error("conftail: dashboard status query failed", "code", codeDashboardQueryFailed, "err", err)
+		}
+		http.Error(w, "Unable to load configuration change status", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(dashboardStatusResponse{
+		Running:   dashboardPollRunning(state),
+		Signature: dashboardPollSignature(state),
+	}); err != nil && e.logger != nil {
+		e.logger.Warn("conftail: dashboard status response failed", "code", codeDashboardRenderFailed, "err", err)
+	}
 }
 
 func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
@@ -904,15 +966,38 @@ func dashboardNextPollRun(state PollState, interval time.Duration) time.Time {
 	return time.Time{}
 }
 
+func dashboardPollRunning(state PollState) bool {
+	if state.LastStartedAt.IsZero() {
+		return false
+	}
+	lastCompletedAt := state.LastSuccessAt
+	if state.LastFailureAt.After(lastCompletedAt) {
+		lastCompletedAt = state.LastFailureAt
+	}
+	return lastCompletedAt.Before(state.LastStartedAt)
+}
+
+func dashboardPollSignature(state PollState) string {
+	return fmt.Sprintf(
+		"%d:%d:%d",
+		unixNanos(state.LastStartedAt),
+		unixNanos(state.LastSuccessAt),
+		unixNanos(state.LastFailureAt),
+	)
+}
+
 func dashboardFiltersView(filters dashboardFilters) dashboardFilterView {
 	view := dashboardFilterView{
-		Search: filters.Search,
-		User:   filters.User,
-		Source: filters.Source,
-		Device: filters.Device,
-		Serial: filters.Serial,
-		State:  filters.State,
-		Page:   filters.Page,
+		Search:        filters.Search,
+		User:          filters.User,
+		Source:        filters.Source,
+		Device:        filters.Device,
+		Serial:        filters.Serial,
+		Action:        filters.Action,
+		TransactionID: filters.TransactionID,
+		LogID:         filters.LogID,
+		State:         filters.State,
+		Page:          filters.Page,
 	}
 	if filters.FirewallID > 0 {
 		view.Firewall = strconv.Itoa(filters.FirewallID)
@@ -927,6 +1012,13 @@ func dashboardFiltersView(filters dashboardFilters) dashboardFilterView {
 }
 
 func dashboardPollHealth(state PollState, now time.Time, interval time.Duration) dashboardHealth {
+	if dashboardPollRunning(state) {
+		return dashboardHealth{
+			State:  "waiting",
+			Label:  "Collector polling",
+			Detail: "Graylog query in progress",
+		}
+	}
 	if !state.LastFailureAt.IsZero() &&
 		(state.LastSuccessAt.IsZero() || !state.LastFailureAt.Before(state.LastSuccessAt)) {
 		return dashboardHealth{
@@ -1035,6 +1127,15 @@ func dashboardPageURL(filters dashboardFilters, page int) string {
 	}
 	if filters.Serial != "" {
 		values.Set("serial", filters.Serial)
+	}
+	if filters.Action != "" {
+		values.Set("action", filters.Action)
+	}
+	if filters.TransactionID != "" {
+		values.Set("transaction", filters.TransactionID)
+	}
+	if filters.LogID != "" {
+		values.Set("log_id", filters.LogID)
 	}
 	if filters.State != "" && filters.State != dashboardStateAll {
 		values.Set("state", filters.State)

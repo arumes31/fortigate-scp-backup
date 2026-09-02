@@ -33,21 +33,24 @@
 
     <main>
         <a class="ct-back" href="/fgt-conftail/">← Back to configuration change sessions</a>
-        <h1 class="page-title"><span class="accent-bar"></span>Complete Redacted Timeline</h1>
+        <div class="ct-page-heading">
+            <h1 class="page-title"><span class="accent-bar"></span>Complete Redacted Timeline</h1>
+            <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
+        </div>
 
         <section class="card ct-session-summary" aria-label="Session details">
             <div><span class="ct-label">Chain</span><strong class="no-caps">{{.Chain.ID}}</strong></div>
             <div><span class="ct-label">Firewall</span><strong class="no-caps">#{{.Chain.FirewallID}} {{.Chain.FirewallName}}</strong></div>
             <div><span class="ct-label">Administrator</span><strong class="no-caps">{{.Chain.User}}</strong></div>
             <div><span class="ct-label">State</span><strong>{{.Chain.State}}{{if .Chain.DeliveryState}} / {{.Chain.DeliveryState}}{{end}}</strong></div>
-            <div><span class="ct-label">First / last</span><strong>{{fmtTime .Chain.FirstEventAt}} / {{fmtTime .Chain.LastEventAt}}</strong></div>
+            <div><span class="ct-label">First / last</span><strong>{{template "dashboardTime" .Chain.FirstEventAt}} / {{template "dashboardTime" .Chain.LastEventAt}}</strong></div>
             <div><span class="ct-label">Changes</span><strong>{{.Chain.EventCount}}</strong></div>
-            {{if eq .Chain.State "active"}}<div><span class="ct-label">Seal eligible at</span><strong>{{fmtTime .Chain.QuietEligibleAt}}</strong></div>{{end}}
+            {{if eq .Chain.State "active"}}<div><span class="ct-label">Seal eligible at</span><strong>{{template "dashboardTime" .Chain.QuietEligibleAt}}</strong></div>{{end}}
             <div><span class="ct-label">VDOMs</span><strong class="no-caps">{{if .Chain.VDOMs}}{{range $index, $vdom := .Chain.VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .Chain.VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</strong></div>
             <div><span class="ct-label">Delivery attempts</span><strong>{{.Chain.DeliveryAttempts}}</strong></div>
-            <div><span class="ct-label">Next delivery attempt</span><strong>{{if eq .Chain.DeliveryState "accepted"}}-{{else}}{{fmtTime .Chain.NextAttemptAt}}{{end}}</strong></div>
+            <div><span class="ct-label">Next delivery attempt</span><strong>{{if eq .Chain.DeliveryState "accepted"}}-{{else}}{{template "dashboardTime" .Chain.NextAttemptAt}}{{end}}</strong></div>
             <div><span class="ct-label">Hookwise request ID</span><strong class="no-caps">{{if .Chain.RequestID}}{{.Chain.RequestID}}{{else}}-{{end}}</strong></div>
-            <div><span class="ct-label">Accepted at</span><strong>{{fmtTime .Chain.AcceptedAt}}</strong></div>
+            <div><span class="ct-label">Accepted at</span><strong>{{template "dashboardTime" .Chain.AcceptedAt}}</strong></div>
             <div><span class="ct-label">Last delivery error</span><strong class="no-caps">{{if .Chain.LastError}}{{.Chain.LastError}}{{else}}-{{end}}</strong></div>
         </section>
 
@@ -62,7 +65,7 @@
             <ol class="ct-timeline ct-complete-timeline">
                 {{range .Chain.Events}}
                 <li class="ct-virtual-item">
-                    <div class="ct-event-head"><time>{{fmtTime .EventAt}}</time><span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}</div>
+                    <div class="ct-event-head">{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}</div>
                     <div class="ct-event-body no-caps">
                         {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}
                         {{if .DeviceName}}<span><b>device:</b> {{.DeviceName}}</span>{{end}}

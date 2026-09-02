@@ -167,6 +167,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	r.Group(func(protected chi.Router) {
 		protected.Use(deps.LoginRequired)
 		protected.Get("/", e.dashboard)
+		protected.Get("/status", e.dashboardStatus)
 		protected.Get("/chain/{chainID}", e.dashboardChain)
 		protected.Get(
 			"/static/*",

@@ -256,8 +256,9 @@ func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 func truncateCVESummary(s string) string {
 	s = strings.TrimSpace(s)
 	const max = 240
-	if len(s) > max {
-		return s[:max] + "…"
+	runes := []rune(s)
+	if len(runes) > max {
+		return string(runes[:max]) + "…"
 	}
 	return s
 }

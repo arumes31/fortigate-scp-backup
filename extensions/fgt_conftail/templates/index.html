@@ -32,11 +32,14 @@
     </header>
 
     <main>
-        <h1 class="page-title"><span class="accent-bar"></span>Configuration Change Tail</h1>
+        <div class="ct-page-heading">
+            <h1 class="page-title"><span class="accent-bar"></span>Configuration Change Tail</h1>
+            <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
+        </div>
         <p class="ct-intro">Read-only configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window.</p>
 
         <section class="ct-metrics" aria-label="Configuration change health">
-            <article class="card ct-metric ct-health-{{.Health.State}}">
+            <article class="card ct-metric ct-health-{{.Health.State}}" data-ct-poll-status data-poll-running="{{.PollRunning}}" data-poll-signature="{{.PollSignature}}">
                 <span class="ct-label">Graylog collector</span>
                 <strong>{{.Health.Label}}</strong>
                 {{if .Health.Code}}<span class="ct-code no-caps">{{.Health.Code}}</span>{{end}}
@@ -59,22 +62,22 @@
             </article>
             <article class="card ct-metric">
                 <span class="ct-label">Last poll start</span>
-                <strong>{{fmtTime .Dashboard.Poll.LastStartedAt}}</strong>
+                <strong>{{template "dashboardTime" .Dashboard.Poll.LastStartedAt}}</strong>
                 <span class="ct-detail">{{fmtDuration .Dashboard.Poll.LastDuration}} duration</span>
             </article>
             <article class="card ct-metric">
                 <span class="ct-label">Last success / failure</span>
-                <strong>{{fmtTime .Dashboard.Poll.LastSuccessAt}}</strong>
-                <span class="ct-detail">failure: {{fmtTime .Dashboard.Poll.LastFailureAt}}</span>
+                <strong>{{template "dashboardTime" .Dashboard.Poll.LastSuccessAt}}</strong>
+                <span class="ct-detail">failure: {{template "dashboardTime" .Dashboard.Poll.LastFailureAt}}</span>
             </article>
             <article class="card ct-metric">
                 <span class="ct-label">Watermark</span>
-                <strong>{{fmtTime .Dashboard.Poll.Watermark}}</strong>
+                <strong>{{template "dashboardTime" .Dashboard.Poll.Watermark}}</strong>
                 <span class="ct-detail">{{.Dashboard.Poll.LastPages}} page(s) / {{.Dashboard.Poll.LastFetched}} fetched / {{.Dashboard.Poll.LastInserted}} inserted</span>
             </article>
             <article class="card ct-metric">
                 <span class="ct-label">Next poll run</span>
-                <strong>{{fmtTime .NextPollRun}}</strong>
+                <strong>{{template "dashboardTime" .NextPollRun}}</strong>
                 <span id="ct-next-poll-countdown" class="ct-detail" data-next-poll="{{fmtMachineTime .NextPollRun}}">Countdown unavailable</span>
             </article>
         </section>
@@ -83,9 +86,10 @@
         <details class="card ct-coverage">
             <summary class="ct-coverage-summary">
                 <span class="ct-coverage-title">Graylog source coverage</span>
-                <span class="ct-count">{{len .Coverage}} registered firewall(s)</span>
+                <span class="ct-count">{{len .Coverage}} Graylog-enabled firewall(s)</span>
             </summary>
             <div class="ct-coverage-body">
+            <p class="ct-help">Coverage includes only firewalls with Graylog enabled in ADM VPN Config.</p>
             {{if .Warnings}}
             <div class="ct-warning" role="status">
                 <strong>Coverage warnings</strong>
@@ -143,6 +147,18 @@
                 <div class="field">
                     <label for="ct-serial">Serial contains</label>
                     <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="All serials">
+                </div>
+                <div class="field">
+                    <label for="ct-action">Action contains</label>
+                    <input id="ct-action" type="search" maxlength="512" name="action" value="{{.Filters.Action}}" placeholder="All actions">
+                </div>
+                <div class="field">
+                    <label for="ct-transaction">Config transaction ID</label>
+                    <input id="ct-transaction" type="search" maxlength="512" name="transaction" value="{{.Filters.TransactionID}}" placeholder="Exact transaction ID">
+                </div>
+                <div class="field">
+                    <label for="ct-log-id">FortiGate log ID</label>
+                    <input id="ct-log-id" type="search" inputmode="numeric" maxlength="512" name="log_id" value="{{.Filters.LogID}}" placeholder="Exact log ID">
                 </div>
                 <div class="field">
                     <label for="ct-state">Session / delivery state</label>
@@ -247,9 +263,9 @@
     <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
     <td class="no-caps" data-ct-column="administrator">{{.User}}</td>
     <td class="no-caps" data-ct-column="vdoms">{{if .VDOMs}}{{range $index, $vdom := .VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</td>
-    <td data-ct-column="first">{{fmtTime .FirstEventAt}}</td>
-    <td data-ct-column="last">{{fmtTime .LastEventAt}}</td>
-    <td data-ct-column="eligible">{{fmtTime .QuietEligibleAt}}</td>
+    <td data-ct-column="first">{{template "dashboardTime" .FirstEventAt}}</td>
+    <td data-ct-column="last">{{template "dashboardTime" .LastEventAt}}</td>
+    <td data-ct-column="eligible">{{template "dashboardTime" .QuietEligibleAt}}</td>
     <td data-ct-column="changes">{{.EventCount}}</td>
     <td data-ct-column="flags">{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">unattributed</span>{{end}}</td>
 </tr>
@@ -260,12 +276,12 @@
 <tr class="ct-virtual-row">
     <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
     <td class="no-caps" data-ct-column="administrator">{{.User}}{{if .Late}} <span class="pill ct-state-retry">late</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">unattributed</span>{{end}}</td>
-    <td data-ct-column="first">{{fmtTime .FirstEventAt}}</td>
-    <td data-ct-column="last">{{fmtTime .LastEventAt}}</td>
+    <td data-ct-column="first">{{template "dashboardTime" .FirstEventAt}}</td>
+    <td data-ct-column="last">{{template "dashboardTime" .LastEventAt}}</td>
     <td data-ct-column="changes">{{.EventCount}}</td>
     <td data-ct-column="delivery"><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{.DeliveryState}}{{else}}unknown{{end}}</span></td>
     <td data-ct-column="attempts">{{.DeliveryAttempts}}</td>
-    <td data-ct-column="next">{{if eq .DeliveryState "accepted"}}{{fmtTime .AcceptedAt}}{{else}}{{fmtTime .NextAttemptAt}}{{end}}</td>
+    <td data-ct-column="next">{{if eq .DeliveryState "accepted"}}{{template "dashboardTime" .AcceptedAt}}{{else}}{{template "dashboardTime" .NextAttemptAt}}{{end}}</td>
     <td class="no-caps" data-ct-column="result">{{if .RequestID}}{{.RequestID}}{{else if .LastError}}{{.LastError}}{{else}}-{{end}}</td>
 </tr>
 <tr class="ct-timeline-row"><td colspan="9">{{template "timelineLink" .}}</td></tr>
@@ -274,3 +290,5 @@
 {{define "timelineLink"}}
 <p class="ct-complete-link"><a href="/fgt-conftail/chain/{{.ID}}">Open complete redacted timeline ({{.EventCount}} change{{if ne .EventCount 1}}s{{end}})</a></p>
 {{end}}
+
+{{define "dashboardTime"}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{end}}

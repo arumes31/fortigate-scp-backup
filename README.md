@@ -218,11 +218,29 @@ Use a release image by immutable digest (shown on the package/release page):
 docker pull ghcr.io/arumes31/fortigate-scp-backup@sha256:<digest>
 ```
 
-Create the six Compose secret files and apply the Linux `0:65532` / `0440`
+Create the seven Compose secret files and apply the Linux `0:65532` / `0440`
 ownership and mode documented in [`secrets/README.md`](secrets/README.md).
 Before starting the stack, configure a trusted HTTPS reverse proxy on the same
 host to forward to `http://127.0.0.1:8521`; the Compose listener is deliberately
 bound to loopback and is not intended for direct client access.
+
+The bundled Compose files therefore enable `TRUST_PROXY_HEADERS`. The edge
+proxy must overwrite client-supplied forwarding headers instead of appending
+to them. For nginx, the relevant location is:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8521;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Do not use `$proxy_add_x_forwarded_for` at this trust boundary: it retains an
+attacker-supplied `X-Forwarded-For` value. Keep port 8521 loopback-only so only
+the trusted same-host proxy can supply the client address.
 
 On Linux, prepare the application bind mounts for the container's non-root UID/GID `65532:65532`. The recursive `chown` also repairs files from an existing installation:
 
@@ -243,7 +261,7 @@ export FORTISAFE_IMAGE_DIGEST='sha256:<digest>'
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Keep the application port private behind the HTTPS proxy; only enable `TRUST_PROXY_HEADERS` when direct access to that port remains blocked.
+The runtime image uses UID/GID `65532`, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. Ensure bind-mounted `backups/` and `data/` are writable by that UID. Keep the application port private behind the HTTPS proxy; the bundled `TRUST_PROXY_HEADERS=true` setting is safe only while direct access to that port remains blocked and the proxy overwrites forwarded headers as shown above.
 
 > [!WARNING]
 > The `db` service is pinned to `postgres:16-alpine`. PostgreSQL only opens a data directory created by the **same major version** — this applies to downgrades too: a `./pgdata` initialized by a newer major (e.g. `postgres:latest`, i.e. 17/18, used by earlier revisions of the bundled compose files) will not start under 16. Before switching images, check `cat ./pgdata/PG_VERSION`; if it differs from the image's major version, follow the dump/restore procedure documented in [`docker-compose.yml`](docker-compose.yml) (`pg_dump` of the `firewall_backups` database with the matching old version into a `backup.sql`, then restore it into a freshly initialized data directory).
@@ -253,7 +271,7 @@ Published tags remain convenient discovery aliases, but deployments should recor
 ### Option 2 — Build and run locally
 
 [`docker-compose.yml`](docker-compose.yml) compiles the static binary inside a multi-stage Docker build and starts it alongside PostgreSQL:
-Create the same six secret files, prepare `./backups` and `./data` for UID/GID `65532:65532` with the commands in Option 1, and configure the same-host HTTPS reverse proxy before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
+Create the same seven secret files, prepare `./backups` and `./data` for UID/GID `65532:65532` with the commands in Option 1, and configure the same-host HTTPS reverse proxy before starting it. This Compose file also exposes the application only on `127.0.0.1:8521`.
 ```bash
 docker compose up -d
 ```
@@ -311,7 +329,7 @@ FortiSafe is configured entirely via environment variables.
 | `BOOTSTRAP_ADMIN_PASSWORD` / `BOOTSTRAP_ADMIN_PASSWORD_FILE` | *(Required for a new DB)* | Initial `admin` password, minimum 16 bytes; never has a built-in default. |
 | `COOKIE_SECURE` | `false` | Set the `Secure` flag on session cookies (requires HTTPS). |
 | `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
-| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP (enable only behind a trusted proxy). |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP. The bundled loopback-only Compose deployments set this to `true` and require a trusted proxy that overwrites forwarded headers. |
 
 ### Backup Engine & SCP Defaults
 | Variable | Default Value | Description |
@@ -453,7 +471,7 @@ An optional module (`EXT_FGT_CONFTAIL=true`) that turns FortiGate configuration 
 * **Per-administrator sessions** — orders changes into independent timelines per registered firewall and exact administrator, including HA member normalization.
 * **No silent loss** — safely correlates missing users when possible and otherwise creates a visible `[unattributed]` session.
 * **Durable handoff** — seals a session after its configured quiet period, redacts sensitive values, and retries the same immutable payload until Hookwise accepts it.
-* **Read-only visibility** — `/fgt-conftail` separates Graylog collector, session, and Hookwise health; offers firewall autocomplete plus source/device/serial filters; and keeps ADM-backed source coverage collapsed by default. Ticket lifecycle actions remain in Hookwise/ConnectWise.
+* **Read-only visibility** — `/fgt-conftail` separates Graylog collector, session, and Hookwise health; refreshes only when collector state changes; offers firewall autocomplete plus source/device/serial/action and exact transaction/log-ID filters; and lets operators switch displayed timestamps between UTC and the browser time zone. Source coverage is available only with ADM VPN Config, includes only Graylog-enabled firewalls, and stays collapsed by default. Ticket lifecycle actions remain in Hookwise/ConnectWise.
 * **Resilient collection** — transient Graylog failures are retried with bounded backoff, `Retry-After` is honored for throttling, and malformed rows are quarantined without discarding valid rows from the same page.
 * **Operational health** — `/healthz` remains an HTTP 200 liveness endpoint and exposes bounded Graylog, catalog, ConfTail store, and Hookwise component states without error details.
 

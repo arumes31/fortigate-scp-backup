@@ -3,6 +3,7 @@ package fgtconftail
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -230,6 +231,14 @@ func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
 	if strings.Contains(body, `<details class="card ct-coverage" open`) {
 		t.Fatal("coverage disclosure is open by default")
 	}
+	for _, want := range []string{
+		"1 Graylog-enabled firewall(s)",
+		"Coverage includes only firewalls with Graylog enabled in ADM VPN Config.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("coverage summary does not contain %q", want)
+		}
+	}
 
 	page.Base.ExtAdmVPNEnabled = false
 	output.Reset()
@@ -329,7 +338,7 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 	for _, want := range []string{
 		"Last poll start",
 		"2026-09-01 10:01:00 UTC",
-		"failure: 2026-09-01 10:03:00 UTC",
+		"2026-09-01 10:03:00 UTC",
 		"CT-GL-001",
 		"Next poll run",
 		"2026-09-01 10:02:00 UTC",
@@ -340,10 +349,148 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 		"Graylog source contains",
 		"Device name contains",
 		"Serial contains",
+		"Action contains",
+		"Config transaction ID",
+		"FortiGate log ID",
+		`data-ct-time-toggle`,
+		`<time data-ct-time datetime="2026-09-01T10:01:00Z">2026-09-01 10:01:00 UTC</time>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard body does not contain %q", want)
 		}
+	}
+}
+
+func TestDashboardShowsRunningPollAndStatusRefreshContract(t *testing.T) {
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if err := s.markPollStarted(context.Background(), base.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := parseDashboardTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension := &Extension{
+		cfg:    &config.Config{ExtFgtConfTail: true},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:  s,
+		tmpl:   tmpl,
+	}
+	response := httptest.NewRecorder()
+	extension.dashboard(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, body = %q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		"Collector polling",
+		`data-ct-poll-status`,
+		`data-poll-running="true"`,
+		`data-poll-signature=`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("running dashboard does not contain %q", want)
+		}
+	}
+}
+
+func TestDashboardStatusReportsPollTransitions(t *testing.T) {
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	started := base.Add(time.Minute)
+	if err := s.markPollStarted(context.Background(), started); err != nil {
+		t.Fatal(err)
+	}
+	extension := &Extension{store: s}
+
+	readStatus := func() dashboardStatusResponse {
+		t.Helper()
+		response := httptest.NewRecorder()
+		extension.dashboardStatus(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status endpoint = %d, body = %q", response.Code, response.Body.String())
+		}
+		if response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("cache control = %q, want no-store", response.Header().Get("Cache-Control"))
+		}
+		var status dashboardStatusResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+
+	running := readStatus()
+	if !running.Running || running.Signature == "" {
+		t.Fatalf("running status = %+v", running)
+	}
+	if err := s.markPollFailed(context.Background(), started, started.Add(time.Second), errors.New("temporary")); err != nil {
+		t.Fatal(err)
+	}
+	completed := readStatus()
+	if completed.Running || completed.Signature == running.Signature {
+		t.Fatalf("completed status = %+v, running status = %+v", completed, running)
+	}
+
+	post := httptest.NewRecorder()
+	extension.dashboardStatus(post, httptest.NewRequest(http.MethodPost, "/status", nil))
+	if post.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want 405", post.Code)
+	}
+}
+
+func TestDashboardPollRunningTracksUnfinishedCycle(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		state PollState
+		want  bool
+	}{
+		{name: "never started"},
+		{name: "started", state: PollState{LastStartedAt: base}, want: true},
+		{name: "failed", state: PollState{LastStartedAt: base, LastFailureAt: base.Add(time.Second)}},
+		{name: "succeeded", state: PollState{LastStartedAt: base, LastSuccessAt: base.Add(time.Second)}},
+		{name: "new cycle after success", state: PollState{LastStartedAt: base.Add(time.Minute), LastSuccessAt: base}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dashboardPollRunning(test.state); got != test.want {
+				t.Fatalf("dashboardPollRunning(%+v) = %t, want %t", test.state, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDashboardScriptPollsStatusAndTogglesBrowserTime(t *testing.T) {
+	t.Parallel()
+	script, err := dashboardFS.ReadFile("static/conftail.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`fetch("/fgt-conftail/status"`,
+		"2000",
+		"30000",
+		`document.querySelectorAll("[data-ct-time]")`,
+		"Intl.DateTimeFormat",
+		"fortisafe.conftail.timezone.v1",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Errorf("ConfTail script does not contain %q", want)
+		}
+	}
+}
+
+func TestDashboardStylesKeepTimeToggleClearOfIntro(t *testing.T) {
+	t.Parallel()
+	styles, err := dashboardFS.ReadFile("static/conftail.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(styles), ".ct-page-heading + .ct-intro") {
+		t.Fatal("ConfTail styles do not neutralize the intro's negative margin after the time controls")
 	}
 }
 
@@ -453,16 +600,19 @@ func TestParseConfigAttributeDiff(t *testing.T) {
 
 func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	values := url.Values{
-		"firewall": {"7"},
-		"q":        {" urgent vpn "},
-		"user":     {" team%_ops "},
-		"source":   {" branch-east "},
-		"device":   {" FGT-EDGE "},
-		"serial":   {" FG100F123 "},
-		"state":    {deliveryStateRetry},
-		"from":     {"2026-09-01T10:15"},
-		"to":       {"2026-09-02T11:45Z"},
-		"page":     {"3"},
+		"firewall":    {"7"},
+		"q":           {" urgent vpn "},
+		"user":        {" team%_ops "},
+		"source":      {" branch-east "},
+		"device":      {" FGT-EDGE "},
+		"serial":      {" FG100F123 "},
+		"action":      {" Edit "},
+		"transaction": {" 82378752 "},
+		"log_id":      {" 0100044546 "},
+		"state":       {deliveryStateRetry},
+		"from":        {"2026-09-01T10:15"},
+		"to":          {"2026-09-02T11:45Z"},
+		"page":        {"3"},
 	}
 
 	got, err := parseDashboardFilters(values)
@@ -471,6 +621,7 @@ func TestParseDashboardFiltersAcceptsBoundedReadFilters(t *testing.T) {
 	}
 	if got.FirewallID != 7 || got.Search != "urgent vpn" || got.User != "team%_ops" || got.Source != "branch-east" ||
 		got.Device != "FGT-EDGE" || got.Serial != "FG100F123" ||
+		got.Action != "Edit" || got.TransactionID != "82378752" || got.LogID != "0100044546" ||
 		got.State != deliveryStateRetry || got.Page != 3 {
 		t.Fatalf("filters = %+v", got)
 	}
@@ -506,6 +657,9 @@ func TestParseDashboardFiltersRejectsInvalidOrUnboundedValues(t *testing.T) {
 		{name: "source too long", values: url.Values{"source": {strings.Repeat("x", maxIdentityRunes+1)}}},
 		{name: "device control character", values: url.Values{"device": {"fw\nname"}}},
 		{name: "serial control character", values: url.Values{"serial": {"serial\x00value"}}},
+		{name: "action control character", values: url.Values{"action": {"Edit\nDelete"}}},
+		{name: "transaction too long", values: url.Values{"transaction": {strings.Repeat("x", maxIdentityRunes+1)}}},
+		{name: "log id control character", values: url.Values{"log_id": {"0100044546\x00"}}},
 	}
 
 	for _, test := range tests {
@@ -550,14 +704,19 @@ func TestQueryDashboardFullTextSearchMatchesAllLiteralTerms(t *testing.T) {
 func TestDashboardPageURLPreservesFullTextSearch(t *testing.T) {
 	t.Parallel()
 	got := dashboardPageURL(dashboardFilters{
-		Search: "urgent vpn",
-		State:  deliveryStateRetry,
+		Search:        "urgent vpn",
+		Action:        "Edit",
+		TransactionID: "82378752",
+		LogID:         "0100044546",
+		State:         deliveryStateRetry,
 	}, 3)
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Query().Get("q") != "urgent vpn" || parsed.Query().Get("state") != deliveryStateRetry || parsed.Query().Get("page") != "3" {
+	if parsed.Query().Get("q") != "urgent vpn" || parsed.Query().Get("action") != "Edit" ||
+		parsed.Query().Get("transaction") != "82378752" || parsed.Query().Get("log_id") != "0100044546" ||
+		parsed.Query().Get("state") != deliveryStateRetry || parsed.Query().Get("page") != "3" {
 		t.Fatalf("pagination URL = %q", got)
 	}
 }
@@ -580,6 +739,9 @@ func TestQueryDashboardPaginatesAndTreatsUserWildcardsLiterally(t *testing.T) {
 			event.Source = "branch-east"
 			event.DeviceName = "FGT-EDGE"
 			event.DeviceID = "FG100F123"
+			event.Action = "Edit"
+			event.TransactionID = "82378752"
+			event.LogID = "0100044546"
 			event.CorrelationHash = attributionCorrelationHash(event)
 			event.SemanticHash = semanticHash(event)
 		}
@@ -654,17 +816,34 @@ func TestQueryDashboardPaginatesAndTreatsUserWildcardsLiterally(t *testing.T) {
 	}
 
 	eventFiltered, err := s.queryDashboard(context.Background(), dashboardFilters{
-		Source: "branch-east",
-		Device: "FGT-EDGE",
-		Serial: "FG100F123",
-		State:  dashboardStateAll,
-		Page:   1,
+		Source:        "branch-east",
+		Device:        "FGT-EDGE",
+		Serial:        "FG100F123",
+		Action:        "edi",
+		TransactionID: "82378752",
+		LogID:         "0100044546",
+		State:         dashboardStateAll,
+		Page:          1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if eventFiltered.HistoryTotal != 1 || eventFiltered.History[0].User != "team%_ops" {
 		t.Fatalf("event filters returned %+v", eventFiltered.History)
+	}
+
+	for _, filters := range []dashboardFilters{
+		{Action: "%", State: dashboardStateAll, Page: 1},
+		{TransactionID: "8237875", State: dashboardStateAll, Page: 1},
+		{LogID: "010004454", State: dashboardStateAll, Page: 1},
+	} {
+		mismatched, err := s.queryDashboard(context.Background(), filters)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mismatched.HistoryTotal != 0 || len(mismatched.History) != 0 {
+			t.Fatalf("literal/exact event filter %+v returned %+v", filters, mismatched.History)
+		}
 	}
 }
 
@@ -772,7 +951,7 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 	}
 	request := httptest.NewRequest(
 		http.MethodGet,
-		"/?firewall=7&q=urgent+vpn&user=alice&source=branch&device=FGT&serial=FG100&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+		"/?firewall=7&q=urgent+vpn&user=alice&source=branch&device=FGT&serial=FG100&action=SensitiveAction&transaction=SensitiveTransaction&log_id=SensitiveLogID&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
 		nil,
 	)
 	response := httptest.NewRecorder()
@@ -792,6 +971,9 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 		`"source_filter_set":true`,
 		`"device_filter_set":true`,
 		`"serial_filter_set":true`,
+		`"action_filter_set":true`,
+		`"transaction_filter_set":true`,
+		`"log_id_filter_set":true`,
 		`"state":"all"`,
 		`"from":"2026-09-01T09:00:00Z"`,
 		`"to":"2026-09-01T10:00:00Z"`,
@@ -801,8 +983,10 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 			t.Errorf("ConfTail dashboard log does not contain %q:\n%s", want, logs)
 		}
 	}
-	if strings.Contains(logs, "urgent") || strings.Contains(logs, "vpn") {
-		t.Fatalf("dashboard log contains full-text search terms: %s", logs)
+	for _, unsafe := range []string{"urgent", "vpn", "SensitiveAction", "SensitiveTransaction", "SensitiveLogID"} {
+		if strings.Contains(logs, unsafe) {
+			t.Fatalf("dashboard log contains filter value %q: %s", unsafe, logs)
+		}
 	}
 }
 
