@@ -476,7 +476,7 @@ func graylogEventTime(value any) (json.Number, error) {
 	default:
 		return "", fmt.Errorf("field eventtime must be an integer, got %T", value)
 	}
-	if text == "" {
+	if text == "" || text == "-" {
 		return "", nil
 	}
 	integer, err := normalizeDecimalInteger(text)

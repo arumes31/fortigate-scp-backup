@@ -303,6 +303,11 @@ func TestGraylogEventTimeAcceptsIntegerJSONRepresentations(t *testing.T) {
 			want:  "1756801446550422000",
 		},
 		{
+			name:  "missing value sentinel",
+			value: "-",
+			want:  "",
+		},
+		{
 			name:  "scientific number",
 			value: json.Number("1.756801446550422E+18"),
 			want:  "1756801446550422000",
