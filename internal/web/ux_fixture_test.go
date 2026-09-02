@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -260,7 +262,10 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	})
 	mux.HandleFunc("GET /fgt-confgen/{$}", render(templates.confGen, "fgt_confgen_index.html", uxConfGenFixture))
 	mux.HandleFunc("GET /fgt-confgen/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
-	mux.HandleFunc("GET /fgt-confgen/load_templates", jsonResponse(`["Synthetic baseline"]`))
+	mux.HandleFunc("GET /fgt-confgen/load_templates", jsonResponse(`{"templates":["Synthetic baseline"]}`))
+	mux.HandleFunc("POST /fgt-confgen/log", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /fgt-polsplit/{$}", render(templates.polSplit, "fgt_polsplit_index.html", uxSimpleExtensionFixture))
 	mux.HandleFunc("GET /fgt-polsplit/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
 	mux.HandleFunc("GET /fgt-polsplit/progress", jsonResponse(`{"state":"complete","progress":100}`))
@@ -299,7 +304,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 func uxConfGenFixture(scenario uxScenario) any {
 	data := uxSimpleExtensionFixture(scenario).(map[string]any)
 	data["Templates"] = []string{"Synthetic baseline"}
-	data["PreselectedTemplate"] = "Synthetic baseline"
+	data["PreselectedTemplate"] = ""
 	return data
 }
 
@@ -389,6 +394,8 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	mux.HandleFunc("GET /ipam/data", jsonResponse(`{"running":false,"snapshot":{"entries":[],"overlaps":[],"prefixes":0}}`))
 	mux.HandleFunc("GET /topology", render("topology.html", uxTopologyFixture))
 	mux.HandleFunc("GET /topology/data/{fwID}", jsonResponse(`{"fw_id":7,"fqdn":"edge.example.test","has_config":true,"model":"FortiGate-VM","interfaces":[]}`))
+	mux.HandleFunc("GET /topology/shares", jsonResponse(`[]`))
+	mux.HandleFunc("GET /graylog-devices/data/{fwID}", jsonResponse(`{"devices":[]}`))
 	mux.HandleFunc("GET /topology/shared/{token}", render("topology_shared.html", func(uxScenario) any {
 		return topologySharedPage{Token: "fixture-token", Lang: "en", IncludeDevices: true}
 	}))
@@ -416,17 +423,33 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
 			return
 		}
-		payload := `{"total_firewalls":3,"healthy":3,"failed":0,"backups_last_24h":12,"running":[]}`
+		payload := map[string]any{
+			"total": 3, "healthy": 3, "failed": 0, "new": 0,
+			"backups24h": 12, "totalBackups": 240, "storageBytes": 8 << 30,
+			"storageWeek": 300 << 20, "largestBytes": 6 << 20, "smallestBytes": 900 << 10,
+			"avgDuration": "4.8s", "backupsRun": 46, "prunedTotal": 0,
+			"nextBackup":   uxFixtureNow.Add(10 * time.Minute).Format(time.RFC3339),
+			"clusterAlert": "", "running": []runningView{}, "stale": []staleBackup{},
+			"blockedPorts": []blockedPortIssue{}, "graylogIssues": []graylogIssue{},
+			"dnsIssues": []dnsIssue{}, "licenseIssues": []licenseIssue{},
+		}
 		switch scenario {
 		case uxScenarioEmpty:
-			payload = `{"total_firewalls":0,"healthy":0,"failed":0,"backups_last_24h":0,"running":[]}`
+			payload["total"] = 0
+			payload["healthy"] = 0
+			payload["backups24h"] = 0
 		case uxScenarioWarning, uxScenarioError:
-			payload = `{"total_firewalls":3,"healthy":2,"failed":1,"backups_last_24h":12,"running":[]}`
+			payload["healthy"] = 2
+			payload["failed"] = 1
 		case uxScenarioLoading:
-			payload = `{"total_firewalls":3,"healthy":3,"failed":0,"backups_last_24h":12,"running":[{"kind":"backup","fw_id":7,"fqdn":"edge.example.test","detail":"Downloading synthetic configuration","step":2,"total":4,"since":"2026-09-02T10:29:00Z"}]}`
+			payload["running"] = []runningView{{
+				Kind: "backup", FwID: 7, FQDN: "edge.example.test",
+				Detail: "Downloading synthetic configuration", Step: 2, Total: 4,
+				SinceISO: uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
+			}}
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = io.WriteString(w, payload)
+		_ = json.NewEncoder(w).Encode(payload)
 	})
 }
 
@@ -524,7 +547,13 @@ func uxBackupsFixture(scenario uxScenario) any {
 }
 
 func uxScenarioFromRequest(r *http.Request, fallback uxScenario) (uxScenario, bool) {
-	value := uxScenario(strings.TrimSpace(r.URL.Query().Get("scenario")))
+	rawValue := strings.TrimSpace(r.URL.Query().Get("scenario"))
+	if rawValue == "" && r.Referer() != "" {
+		if refererURL, err := url.Parse(r.Referer()); err == nil {
+			rawValue = strings.TrimSpace(refererURL.Query().Get("scenario"))
+		}
+	}
+	value := uxScenario(rawValue)
 	if value == "" {
 		value = fallback
 	}
@@ -553,6 +582,9 @@ func uxDashboardFixture(scenario uxScenario) dashboardData {
 			BackupsLast24h: 12,
 			TotalBackups:   240,
 		},
+		StorageBytes: 8 << 30, StorageWeek: 300 << 20,
+		LargestBytes: 6 << 20, SmallestBytes: 900 << 10,
+		AvgDuration: "4.8s", BackupsRun: 46,
 		NextBackupISO: uxFixtureNow.Add(10 * time.Minute).Format(time.RFC3339),
 	}
 	if scenario == uxScenarioWarning || scenario == uxScenarioError {
@@ -750,6 +782,8 @@ func TestUXFixtureCoreRouteInventory(t *testing.T) {
 		{name: "IPAM data", method: http.MethodGet, path: "/ipam/data", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "topology page", method: http.MethodGet, path: "/topology", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "topology data", method: http.MethodGet, path: "/topology/data/7", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "topology shares", method: http.MethodGet, path: "/topology/shares?fw_id=7", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "topology devices", method: http.MethodGet, path: "/graylog-devices/data/7", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "shared topology", method: http.MethodGet, path: "/topology/shared/fixture-token", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "shared topology data", method: http.MethodGet, path: "/topology/shared/fixture-token/data", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "shared topology devices", method: http.MethodGet, path: "/topology/shared/fixture-token/devices", wantStatus: http.StatusOK, contentType: "application/json"},
@@ -770,6 +804,7 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "ConfGen", method: http.MethodGet, path: "/fgt-confgen/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfGen firewalls", method: http.MethodGet, path: "/fgt-confgen/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen templates", method: http.MethodGet, path: "/fgt-confgen/load_templates", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfGen frontend log", method: http.MethodPost, path: "/fgt-confgen/log", wantStatus: http.StatusNoContent},
 		{name: "Policy Split", method: http.MethodGet, path: "/fgt-polsplit/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Policy Split firewalls", method: http.MethodGet, path: "/fgt-polsplit/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Policy Split progress", method: http.MethodGet, path: "/fgt-polsplit/progress?id=fixture", wantStatus: http.StatusOK, contentType: "application/json"},
