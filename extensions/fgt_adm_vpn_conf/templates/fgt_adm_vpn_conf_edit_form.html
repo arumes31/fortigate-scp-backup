@@ -1,48 +1,48 @@
 <form action="/fgt-adm-vpn-conf/edit/{{.ID}}" method="post">
     <div class="form-grid">
         <div class="field">
-            <label>Kundenname</label>
-            <input type="text" name="kundenname" value="{{.Kundenname}}">
+            <label for="edit-kundenname">Customer name</label>
+            <input id="edit-kundenname" type="text" name="kundenname" value="{{.Kundenname}}">
         </div>
         <div class="field">
-            <label>Standort</label>
-            <input type="text" name="standort" value="{{.Standort}}">
+            <label for="edit-standort">Site</label>
+            <input id="edit-standort" type="text" name="standort" value="{{.Standort}}">
         </div>
         <div class="field">
-            <label>Firewallname</label>
-            <input type="text" name="firewallname" value="{{.Firewallname}}">
+            <label for="edit-firewallname">Firewall name</label>
+            <input id="edit-firewallname" type="text" name="firewallname" value="{{.Firewallname}}">
         </div>
         <div class="field">
-            <label>CID</label>
-            <input type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+            <label for="edit-cid">CID</label>
+            <input id="edit-cid" type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
         </div>
         <div class="field">
-            <label>REMOTEIP-FULL</label>
-            <input type="text" name="remoteip_full" value="{{.RemoteipFull}}">
+            <label for="edit-remoteip-full">Remote IPv4 address</label>
+            <input id="edit-remoteip-full" type="text" name="remoteip_full" value="{{.RemoteipFull}}">
         </div>
         <div class="field">
-            <label>WAN-Interface</label>
-            <input type="text" name="wan_interface" value="{{.WanInterface}}">
+            <label for="edit-wan-interface">WAN interface</label>
+            <input id="edit-wan-interface" type="text" name="wan_interface" value="{{.WanInterface}}">
         </div>
         <div class="field">
-            <label>LAN-Interface</label>
-            <input type="text" name="lan_interface" value="{{.LanInterface}}">
+            <label for="edit-lan-interface">LAN interface</label>
+            <input id="edit-lan-interface" type="text" name="lan_interface" value="{{.LanInterface}}">
         </div>
         <div class="field">
-            <label>IPSEC-PSK-RO</label>
-            <input type="text" name="ipsec_psk_ro" value="{{.IpsecPskRo}}">
+            <label for="edit-ipsec-psk-ro">IPsec PSK RO</label>
+            <input id="edit-ipsec-psk-ro" type="text" name="ipsec_psk_ro" value="{{.IpsecPskRo}}">
         </div>
         <div class="field">
-            <label>IPSEC-PSK-HCI</label>
-            <input type="text" name="ipsec_psk_hci" value="{{.IpsecPskHci}}">
+            <label for="edit-ipsec-psk-hci">IPsec PSK HCI</label>
+            <input id="edit-ipsec-psk-hci" type="text" name="ipsec_psk_hci" value="{{.IpsecPskHci}}">
         </div>
         <div class="field">
-            <label>RADIUSMGT (YES/NO)</label>
-            <input type="text" name="radiusmgt" value="{{.Radiusmgt}}">
+            <label for="edit-radiusmgt">RADIUS management (YES/NO)</label>
+            <input id="edit-radiusmgt" type="text" name="radiusmgt" value="{{.Radiusmgt}}">
         </div>
         <div class="field">
-            <label>Cluster Hostnames (comma separated)</label>
-            <input type="text" name="cluster_hostnames" value="{{.ClusterHostnames}}" placeholder="FW1,FW2">
+            <label for="edit-cluster-hostnames">Cluster hostnames (comma separated)</label>
+            <input id="edit-cluster-hostnames" type="text" name="cluster_hostnames" value="{{.ClusterHostnames}}" placeholder="FW1,FW2">
         </div>
         <div class="field checkbox-row">
             <input type="checkbox" name="graylog_enabled" id="edit_graylog_enabled" {{if .GraylogEnabled}}checked{{end}}>

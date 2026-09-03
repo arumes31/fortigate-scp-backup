@@ -7,6 +7,7 @@ package fgtadmvpnconf
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // Extension implements extension.Extension.
@@ -27,12 +29,14 @@ type Extension struct {
 	cfg    *config.Config
 	logger *slog.Logger
 
-	db   *sql.DB
-	tmpl *template.Template
-	tz   *time.Location
+	db           *sql.DB
+	page         *webui.Renderer
+	editTemplate *template.Template
+	tz           *time.Location
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+	pageBase    extension.PageBaseProvider
 
 	// lookupHost resolves a hostname for the DNS record check; tests replace it
 	// with a stub so no real DNS traffic happens.
@@ -59,8 +63,12 @@ func (e *Extension) Enabled() bool { return e.cfg.ExtAdmVpnConf }
 // Mount opens the private database, runs migrations, parses templates, registers
 // routes and starts the Graylog background worker.
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.PageBase == nil {
+		return errors.New("fgt_adm_vpn_conf: shared page context is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.pageBase = d.PageBase
 	e.tz = d.TZ
 	if e.tz == nil {
 		e.tz = time.UTC

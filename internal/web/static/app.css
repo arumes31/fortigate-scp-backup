@@ -469,7 +469,7 @@ h3 { font-size: 12px; font-weight: 700; color: var(--text-muted); margin: 18px 0
   text-decoration: none;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  transition: all .12s ease;
+  transition: color .12s ease, border-color .12s ease, background-color .12s ease;
   white-space: nowrap;
 }
 .btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); text-decoration: none; }

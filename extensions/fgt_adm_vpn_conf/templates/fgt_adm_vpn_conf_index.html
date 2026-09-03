@@ -1,97 +1,72 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FGT ADM VPN Config · FortiSafe</title>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="/static/app.css">
+{{define "head"}}
     <style>
         /* Compact variant for this page's wide config table. */
-        table.data.compact thead th { padding: 8px 10px; }
-        table.data.compact tbody td { padding: 6px 10px; }
-        table.data.compact code { font-size: 11px; }
+        .adm-vpn-page table.data.compact thead th { padding: 8px 10px; }
+        .adm-vpn-page table.data.compact tbody td { padding: 6px 10px; }
+        .adm-vpn-page table.data.compact code { font-size: 11px; }
         /* Secondary line inside a cell (REMOTEIP-1st, next-check countdown). */
-        .sub { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+        .adm-vpn-page .sub { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
         /* DNS record check icon beside the DNS-Name-Full link. */
-        .dns-check { font-weight: 700; margin-right: 6px; cursor: help; }
-        .dns-ok { color: var(--success); }
-        .dns-fail { color: var(--danger); }
-        .dns-warn { color: var(--warning); }
-        .dns-unknown { color: var(--text-dim); }
+        .adm-vpn-page .dns-check { font-weight: 700; margin-right: 6px; cursor: help; }
+        .adm-vpn-page .dns-ok { color: var(--success); }
+        .adm-vpn-page .dns-fail { color: var(--danger); }
+        .adm-vpn-page .dns-warn { color: var(--warning); }
+        .adm-vpn-page .dns-unknown { color: var(--text-dim); }
+        .adm-vpn-page .add-entry summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+        .adm-vpn-page .add-entry summary::marker { color: var(--action); }
+        .adm-vpn-page .add-entry[open] summary { margin-bottom: 18px; }
+        .adm-vpn-page .dialog-feedback { margin: 0; }
     </style>
-</head>
-<body>
-<div class="app">
-    <header class="topbar">
-        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
-        <nav class="nav">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/">Firewalls</a>
-            <a href="/search">Search</a>
-            <a href="/audit">Audit</a>
-            <a href="/topology">Topology</a>
-            <a href="/ipam">IPAM</a>
-            <a href="/licenses">Licenses</a>
-            <a href="/activity_log">Act_Log</a>
-            <a href="/fgt-adm-vpn-conf/" class="active">VPN_Conf</a>
-            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
-            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
-            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
-            {{if .Base.ExtConfTailEnabled}}<a href="/fgt-conftail/">Conf_Tail</a>{{end}}
-        </nav>
-    </header>
+{{end}}
 
-    <main>
+{{define "content"}}
+    <div class="page adm-vpn-page" id="adm-vpn-page">
         <h1 class="page-title"><span class="accent-bar"></span>FGT ADM VPN Config</h1>
 
-        <div class="card">
-            <h2 class="collapsible-header mb-0" id="addToggle">
-                Add New Entry
-                <button type="button" class="btn btn-sm" id="addToggleBtn">Show</button>
-            </h2>
-            <div class="collapsible-content" id="addContent" style="display:none; margin-top:18px;">
+        <details class="card add-entry">
+            <summary><span class="no-caps">Add new entry</span><span class="muted">Create VPN configuration</span></summary>
+            <div>
                 <form action="/fgt-adm-vpn-conf/add" method="post">
                     <div class="form-grid">
                         <div class="field">
-                            <label>Firewallname</label>
-                            <input type="text" name="firewallname" required>
+                            <label for="add-firewallname">Firewall name</label>
+                            <input id="add-firewallname" type="text" name="firewallname" required>
                         </div>
                         <div class="field">
-                            <label>CID</label>
-                            <input type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+                            <label for="add-cid">CID</label>
+                            <input id="add-cid" type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
                         </div>
                         <div class="field">
-                            <label>Kundenname</label>
-                            <input type="text" name="kundenname" required>
+                            <label for="add-kundenname">Customer name</label>
+                            <input id="add-kundenname" type="text" name="kundenname" required>
                         </div>
                         <div class="field">
-                            <label>Standort</label>
-                            <input type="text" name="standort" required>
+                            <label for="add-standort">Site</label>
+                            <input id="add-standort" type="text" name="standort" required>
                         </div>
                         <div class="field">
-                            <label>WAN-Interface</label>
-                            <input type="text" name="wan_interface" value="wan1" required>
+                            <label for="add-wan-interface">WAN interface</label>
+                            <input id="add-wan-interface" type="text" name="wan_interface" value="wan1" required>
                         </div>
                         <div class="field">
-                            <label>LAN-Interface</label>
-                            <input type="text" name="lan_interface" value="loopback" required>
+                            <label for="add-lan-interface">LAN interface</label>
+                            <input id="add-lan-interface" type="text" name="lan_interface" value="loopback" required>
                         </div>
                         <div class="field">
-                            <label>IPSEC-PSK-RO</label>
-                            <input type="text" name="ipsec_psk_ro" value="psauto" required>
+                            <label for="add-ipsec-psk-ro">IPsec PSK RO</label>
+                            <input id="add-ipsec-psk-ro" type="text" name="ipsec_psk_ro" value="psauto" required>
                         </div>
                         <div class="field">
-                            <label>IPSEC-PSK-HCI</label>
-                            <input type="text" name="ipsec_psk_hci" value="psauto" required>
+                            <label for="add-ipsec-psk-hci">IPsec PSK HCI</label>
+                            <input id="add-ipsec-psk-hci" type="text" name="ipsec_psk_hci" value="psauto" required>
                         </div>
                         <div class="field">
-                            <label>RADIUSMGT (YES/NO)</label>
-                            <input type="text" name="radiusmgt" value="YES" required>
+                            <label for="add-radiusmgt">RADIUS management (YES/NO)</label>
+                            <input id="add-radiusmgt" type="text" name="radiusmgt" value="YES" required>
                         </div>
                         <div class="field">
-                            <label>Cluster Hostnames (comma separated)</label>
-                            <input type="text" name="cluster_hostnames" placeholder="FW1,FW2">
+                            <label for="add-cluster-hostnames">Cluster hostnames (comma separated)</label>
+                            <input id="add-cluster-hostnames" type="text" name="cluster_hostnames" placeholder="FW1,FW2">
                         </div>
                         <div class="field checkbox-row">
                             <input type="checkbox" name="graylog_enabled" id="add_graylog_enabled" checked>
@@ -103,7 +78,7 @@
                     </div>
                 </form>
             </div>
-        </div>
+        </details>
 
         <div class="card">
             <div class="card-header">
@@ -117,7 +92,7 @@
             <div class="card-header">
                 <h2 class="mt-0 mb-0">Entries</h2>
                 <input type="text" id="vpnSearch" placeholder="Search entries&hellip;"
-                       autocomplete="off" style="max-width:280px;">
+                       aria-label="Search VPN entries" autocomplete="off" style="max-width:280px;">
                 <span class="muted" id="vpnSearchCount" style="font-size: 0.85em;"></span>
             </div>
             <div class="table-wrap">
@@ -169,21 +144,21 @@
                             <td>
                                 {{if .DnsNameFull}}
                                     {{if eq .LastDnsStatus "ok"}}
-                                        <span class="dns-check dns-ok" title="DNS OK — resolves to {{.LastDnsResolved}}">&#10003;</span>
+                                        <span class="dns-check dns-ok" role="img" title="DNS OK — resolves to {{.LastDnsResolved}}" aria-label="DNS OK"><span aria-hidden="true">&#10003;</span></span>
                                     {{else if eq .LastDnsStatus "mismatch"}}
-                                        <span class="dns-check dns-fail" title="Wrong IP — resolves to {{.LastDnsResolved}}, expected {{.RemoteipFull}}">&#10007;</span>
+                                        <span class="dns-check dns-fail" role="img" title="Wrong IP — resolves to {{.LastDnsResolved}}, expected {{.RemoteipFull}}" aria-label="DNS address mismatch"><span aria-hidden="true">&#10007;</span></span>
                                     {{else if eq .LastDnsStatus "unresolved"}}
-                                        <span class="dns-check dns-fail" title="No DNS record — expected {{.RemoteipFull}}">&#10007;</span>
+                                        <span class="dns-check dns-fail" role="img" title="No DNS record — expected {{.RemoteipFull}}" aria-label="DNS record unresolved"><span aria-hidden="true">&#10007;</span></span>
                                     {{else if eq .LastDnsStatus "error"}}
-                                        <span class="dns-check dns-warn" title="DNS lookup failed (resolver error)">&#9888;</span>
+                                        <span class="dns-check dns-warn" role="img" title="DNS lookup failed (resolver error)" aria-label="DNS lookup failed"><span aria-hidden="true">&#9888;</span></span>
                                     {{else}}
-                                        <span class="dns-check dns-unknown" title="DNS not checked yet">&middot;</span>
+                                        <span class="dns-check dns-unknown" role="img" title="DNS not checked yet" aria-label="DNS not checked"><span aria-hidden="true">&middot;</span></span>
                                     {{end}}<a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a>
                                 {{else}}-{{end}}
                             </td>
                             <td class="actions">
-                                <a href="#" class="btn btn-sm open-edit-modal" data-id="{{.ID}}">Edit</a>
-                                <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-id="{{.ID}}" data-name="{{.Firewallname}}">Remove</button>
+                                <button type="button" class="btn btn-sm open-edit-modal" data-dialog-open="editModal" data-id="{{.ID}}" aria-label="Edit {{.Firewallname}}">Edit</button>
+                                <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-dialog-open="removeModal" data-id="{{.ID}}" data-name="{{.Firewallname}}" aria-label="Remove {{.Firewallname}}">Remove</button>
                                 <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
                             </td>
                         </tr>
@@ -204,181 +179,153 @@
                 <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">Export to Browser Favorites</a>
             </form>
         </div>
-    </main>
+        <dialog id="editModal" class="ui-dialog adm-vpn-dialog" data-ui-dialog aria-labelledby="editModalTitle">
+            <div class="ui-dialog__body">
+                <h2 id="editModalTitle">Edit configuration</h2>
+                <p id="editFeedback" class="dialog-feedback" aria-label="Edit status" data-feedback="loading">Loading configuration…</p>
+                <div id="modal-body-content"></div>
+                <div class="ui-dialog__actions">
+                    <button class="btn" id="modalClose" type="button" data-dialog-close data-dialog-initial>Close</button>
+                </div>
+            </div>
+        </dialog>
 
-    <footer class="sysfooter">
-        <div>EOF // (C) FORTISAFE_SEC</div>
-        <div class="sysfooter-links"><span>MODULE: FGT_ADM_VPN_CONF</span></div>
-    </footer>
-</div>
-
-<div id="editModal" class="modal">
-    <div class="modal-content">
-        <button class="modal-close" id="modalClose" type="button">&times;</button>
-        <h2 class="mt-0">Edit Configuration</h2>
-        <div id="modal-body-content"></div>
-    </div>
-</div>
-
-<div id="removeModal" class="modal">
-    <div class="modal-content">
-        <button class="modal-close" id="removeModalClose" type="button">&times;</button>
-        <h2 class="mt-0">Remove Configuration</h2>
+        <dialog id="removeModal" class="ui-dialog adm-vpn-dialog" data-ui-dialog data-confirm-text="" aria-labelledby="removeModalTitle">
+            <div class="ui-dialog__body">
+        <h2 id="removeModalTitle">Remove configuration</h2>
         <p class="muted" id="removeIntro">
             This configuration must be removed from the FortiGate device(s) first.
             Run the commands below on the matching device, then confirm removal.
         </p>
         <pre id="removalCommands" class="code-block">Loading&hellip;</pre>
-        <label class="checkbox-row" style="margin-top:14px; align-items:flex-start;">
-            <input type="checkbox" id="removeConfirmCheck">
-            <span>I have removed this configuration from the FortiGate device(s).</span>
+        <label for="removeConfirmInput">
+            Type <strong id="removeConfirmName">the firewall name</strong> to confirm
+            <input type="text" id="removeConfirmInput" autocomplete="off" data-confirm-input data-dialog-initial>
         </label>
-        <div class="toolbar" style="margin-top:16px;">
-            <button type="button" class="btn btn-sm" id="copyRemovalBtn">Copy commands</button>
+        <p id="removeFeedback" class="dialog-feedback" aria-label="Removal status" data-feedback="loading">Loading removal commands…</p>
+        <div class="ui-dialog__actions">
+            <button type="button" class="btn btn-sm button-with-icon" id="copyRemovalBtn" data-copy-target="removalCommands" data-copy-feedback="removeFeedback" data-copy-success="Commands copied" data-copy-error="Copy failed">
+                <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#copy"></use></svg>
+                <span>Copy commands</span>
+            </button>
             <span class="spacer"></span>
-            <button type="button" class="btn" id="removeCancelBtn">Cancel</button>
+            <button type="button" class="btn" id="removeCancelBtn" data-dialog-close>Cancel</button>
             <form method="post" id="removeForm" action="" style="display:inline; margin:0;">
-                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" disabled>Remove entry</button>
+                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" data-confirm-action disabled>Remove entry</button>
             </form>
         </div>
+            </div>
+        </dialog>
     </div>
-</div>
+{{end}}
 
+{{define "scripts"}}
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    var editModal = document.getElementById('editModal');
-    var modalClose = document.getElementById('modalClose');
-    var modalBody = document.getElementById('modal-body-content');
+(function () {
+function startADMVPNPage() {
+    var root = document.getElementById('adm-vpn-page');
+    if (!root) { return; }
+    var editModal = root.querySelector('#editModal');
+    var modalBody = root.querySelector('#modal-body-content');
+    var editFeedback = root.querySelector('#editFeedback');
+    var editRequest = null;
 
-    function closeModal() {
-        editModal.classList.remove('open');
-        modalBody.innerHTML = '';
+    function announce(target, kind, message) {
+        target.hidden = false;
+        window.FortiSafeUI.announce(target, kind, message);
     }
 
-    document.querySelectorAll('.open-edit-modal').forEach(function (link) {
-        link.addEventListener('click', function (ev) {
-            ev.preventDefault();
-            var id = this.dataset.id;
-            fetch('/fgt-adm-vpn-conf/edit/' + id)
-                .then(function (resp) {
-                    if (!resp.ok) { throw new Error('Network response was not ok'); }
-                    return resp.text();
+    root.querySelectorAll('.open-edit-modal').forEach(function (button) {
+        button.addEventListener('click', function () {
+            if (editRequest) { editRequest.abort(); }
+            editRequest = new AbortController();
+            modalBody.replaceChildren();
+            announce(editFeedback, 'loading', 'Loading configuration…');
+            fetch('/fgt-adm-vpn-conf/edit/' + encodeURIComponent(button.dataset.id), { signal: editRequest.signal })
+                .then(function (response) {
+                    if (!response.ok) { throw new Error('HTTP ' + response.status); }
+                    return response.text();
                 })
                 .then(function (html) {
                     modalBody.innerHTML = html;
-                    editModal.classList.add('open');
+                    editFeedback.hidden = true;
                     var form = modalBody.querySelector('form');
-                    if (form) {
-                        form.addEventListener('submit', function (e) {
-                            e.preventDefault();
-                            fetch(form.action, { method: 'POST', body: new FormData(form) })
-                                .then(function (resp) {
-                                    if (!resp.ok) { return resp.text().then(function (t) { throw new Error(t); }); }
-                                    return resp.text();
-                                })
-                                .then(function () {
-                                    alert('Configuration updated successfully!');
-                                    closeModal();
-                                    window.location.reload();
-                                })
-                                .catch(function (err) {
-                                    alert('Error updating configuration: ' + err.message);
-                                });
-                        });
+                    if (!form) { throw new Error('Edit form is unavailable'); }
+                    form.addEventListener('submit', function (event) {
+                        event.preventDefault();
+                        announce(editFeedback, 'loading', 'Saving configuration…');
+                        fetch(form.action, { method: 'POST', body: new FormData(form) })
+                            .then(function (response) {
+                                if (!response.ok) {
+                                    return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); });
+                                }
+                                window.location.assign('/fgt-adm-vpn-conf/');
+                            })
+                            .catch(function (error) {
+                                announce(editFeedback, 'error', 'Could not update configuration: ' + error.message);
+                            });
+                    });
+                })
+                .catch(function (error) {
+                    if (error.name !== 'AbortError') {
+                        announce(editFeedback, 'error', 'Could not load configuration: ' + error.message);
                     }
-                })
-                .catch(function (err) {
-                    modalBody.innerHTML = '<p class="alert alert-error">Error loading form: ' + err.message + '</p>';
-                    editModal.classList.add('open');
                 });
         });
     });
+    editModal.addEventListener('close', function () {
+        if (editRequest) { editRequest.abort(); editRequest = null; }
+        modalBody.replaceChildren();
+    });
 
-    if (modalClose) { modalClose.addEventListener('click', closeModal); }
-    window.addEventListener('click', function (e) { if (e.target === editModal) { closeModal(); } });
+    // Removal stays POST-only and is unlocked only when the operator types the
+    // exact resource name shown in the dialog.
+    var removeModal = root.querySelector('#removeModal');
+    var removeForm = root.querySelector('#removeForm');
+    var removeInput = root.querySelector('#removeConfirmInput');
+    var removeName = root.querySelector('#removeConfirmName');
+    var removalPre = root.querySelector('#removalCommands');
+    var removeIntro = root.querySelector('#removeIntro');
+    var removeFeedback = root.querySelector('#removeFeedback');
+    var removalRequest = null;
 
-    // ---- Remove confirmation modal ----
-    // Shows the FortiGate teardown commands for the entry and requires the
-    // operator to confirm (checkbox) that the device was cleaned up before the
-    // delete POST is allowed to submit.
-    var removeModal = document.getElementById('removeModal');
-    var removeForm = document.getElementById('removeForm');
-    var removeCheck = document.getElementById('removeConfirmCheck');
-    var removeBtn = document.getElementById('removeConfirmBtn');
-    var removalPre = document.getElementById('removalCommands');
-    var removeIntro = document.getElementById('removeIntro');
-
-    function closeRemoveModal() {
-        if (removeModal) { removeModal.classList.remove('open'); }
-    }
-
-    document.querySelectorAll('.open-remove-modal').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var id = this.dataset.id;
-            var name = this.dataset.name || ('#' + id);
-            removeForm.action = '/fgt-adm-vpn-conf/delete/' + id;
-            removeCheck.checked = false;
-            removeBtn.disabled = true;
+    root.querySelectorAll('.open-remove-modal').forEach(function (button) {
+        button.addEventListener('click', function () {
+            var id = button.dataset.id;
+            var name = button.dataset.name || ('#' + id);
+            removeModal.dataset.confirmText = name;
+            removeName.textContent = name;
+            removeInput.value = '';
+            removeInput.dispatchEvent(new Event('input'));
+            removeForm.action = '/fgt-adm-vpn-conf/delete/' + encodeURIComponent(id);
             removalPre.textContent = 'Loading…';
-            if (removeIntro) {
-                removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
-            }
-            removeModal.classList.add('open');
-            fetch('/fgt-adm-vpn-conf/removal_commands/' + id)
-                .then(function (resp) {
-                    if (!resp.ok) { throw new Error('Network response was not ok'); }
-                    return resp.text();
+            removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
+            announce(removeFeedback, 'loading', 'Loading removal commands…');
+            if (removalRequest) { removalRequest.abort(); }
+            removalRequest = new AbortController();
+            fetch('/fgt-adm-vpn-conf/removal_commands/' + encodeURIComponent(id), { signal: removalRequest.signal })
+                .then(function (response) {
+                    if (!response.ok) { throw new Error('HTTP ' + response.status); }
+                    return response.text();
                 })
-                .then(function (text) { removalPre.textContent = text; })
-                .catch(function (err) { removalPre.textContent = 'Could not load removal commands: ' + err.message; });
+                .then(function (text) {
+                    removalPre.textContent = text;
+                    announce(removeFeedback, 'success', 'Removal commands ready');
+                })
+                .catch(function (error) {
+                    if (error.name !== 'AbortError') {
+                        removalPre.textContent = '';
+                        announce(removeFeedback, 'error', 'Could not load removal commands: ' + error.message);
+                    }
+                });
         });
     });
-
-    if (removeCheck) {
-        removeCheck.addEventListener('change', function () {
-            removeBtn.disabled = !this.checked;
-        });
-    }
-    // Guard: never submit the delete unless the box is ticked.
-    if (removeForm) {
-        removeForm.addEventListener('submit', function (e) {
-            if (!removeCheck.checked) { e.preventDefault(); }
-        });
-    }
-    var copyRemovalBtn = document.getElementById('copyRemovalBtn');
-    if (copyRemovalBtn) {
-        copyRemovalBtn.addEventListener('click', function () {
-            var text = removalPre.textContent || '';
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(function () {
-                    copyRemovalBtn.textContent = 'Copied!';
-                    setTimeout(function () { copyRemovalBtn.textContent = 'Copy commands'; }, 1500);
-                });
-            }
-        });
-    }
-    var removeCancelBtn = document.getElementById('removeCancelBtn');
-    var removeModalCloseBtn = document.getElementById('removeModalClose');
-    if (removeCancelBtn) { removeCancelBtn.addEventListener('click', closeRemoveModal); }
-    if (removeModalCloseBtn) { removeModalCloseBtn.addEventListener('click', closeRemoveModal); }
-    window.addEventListener('click', function (e) { if (e.target === removeModal) { closeRemoveModal(); } });
-
-    // Collapsible "Add New Entry" panel.
-    var addHeader = document.getElementById('addToggle');
-    var addBtn = document.getElementById('addToggleBtn');
-    var addContent = document.getElementById('addContent');
-    if (addHeader) {
-        addHeader.addEventListener('click', function () {
-            if (!addContent) { return; }
-            if (addContent.style.display === 'none') {
-                addContent.style.display = 'block';
-                if (addBtn) { addBtn.textContent = 'Hide'; }
-            } else {
-                addContent.style.display = 'none';
-                if (addBtn) { addBtn.textContent = 'Show'; }
-            }
-        });
-    }
+    removeForm.addEventListener('submit', function (event) {
+        if (removeInput.value !== removeModal.dataset.confirmText) { event.preventDefault(); }
+    });
+    removeModal.addEventListener('close', function () {
+        if (removalRequest) { removalRequest.abort(); removalRequest = null; }
+    });
 
     // Client-side table search: hides rows not matching every whitespace-
     // separated term (case-insensitive, against the row's full text).
@@ -386,7 +333,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var searchCount = document.getElementById('vpnSearchCount');
     if (searchInput) {
         var searchRows = Array.prototype.slice.call(
-            document.querySelectorAll('#vpnTable tbody tr')).filter(function (row) {
+            root.querySelectorAll('#vpnTable tbody tr')).filter(function (row) {
                 return !row.querySelector('td.empty');
             });
         var applySearch = function () {
@@ -408,7 +355,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // Live "next check" countdown.
     function updateGraylogCheckTimers() {
         var now = Date.now();
-        document.querySelectorAll('.next-graylog-check').forEach(function (el) {
+        root.querySelectorAll('.next-graylog-check').forEach(function (el) {
             var target = new Date(el.dataset.next).getTime();
             if (isNaN(target)) { el.textContent = '-'; return; }
             var diff = Math.round((target - now) / 1000);
@@ -420,7 +367,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     updateGraylogCheckTimers();
     setInterval(updateGraylogCheckTimers, 1000);
-});
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startADMVPNPage, { once: true });
+} else {
+    startADMVPNPage();
+}
+})();
 </script>
-</body>
-</html>
+{{end}}

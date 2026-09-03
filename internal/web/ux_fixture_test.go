@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -257,12 +258,13 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 }
 
 type uxExtensionTemplates struct {
-	root     string
-	admVPN   *template.Template
-	confGen  *template.Template
-	polSplit *template.Template
-	confConv *template.Template
-	confTail *template.Template
+	root       string
+	admVPN     *webui.Renderer
+	admVPNEdit *template.Template
+	confGen    *template.Template
+	polSplit   *template.Template
+	confConv   *template.Template
+	confTail   *template.Template
 }
 
 func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
@@ -275,7 +277,15 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 		return template.ParseFiles(filepath.Join(root, relativePath))
 	}
 
-	admVPN, err := parse("extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_index.html")
+	admVPN, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_index.html",
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	admVPNEdit, err := parse("extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_edit_form.html")
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +310,7 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 		return nil, err
 	}
 	return &uxExtensionTemplates{
-		root: root, admVPN: admVPN, confGen: confGen, polSplit: polSplit,
+		root: root, admVPN: admVPN, admVPNEdit: admVPNEdit, confGen: confGen, polSplit: polSplit,
 		confConv: confConv, confTail: confTail,
 	}, nil
 }
@@ -343,6 +353,18 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 			_, _ = output.WriteTo(w)
 		}
 	}
+	renderShared := func(renderer *webui.Renderer, data func(uxScenario) any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+			if !ok {
+				http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+				return
+			}
+			if err := renderer.RenderHTTP(w, data(scenario)); err != nil {
+				http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
+			}
+		}
+	}
 	jsonResponse := func(payload string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -354,7 +376,41 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		mux.Handle("GET "+prefix, http.StripPrefix(prefix, http.FileServer(http.Dir(directory))))
 	}
 
-	mux.HandleFunc("GET /fgt-adm-vpn-conf/{$}", render(templates.admVPN, "fgt_adm_vpn_conf_index.html", uxADMVPNFixture))
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/{$}", renderShared(templates.admVPN, uxADMVPNFixture))
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/edit/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		data := map[string]any{
+			"ID": 7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
+			"Cid": "101", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
+			"IpsecPskRo": "psauto", "IpsecPskHci": "psauto", "Radiusmgt": "YES", "GraylogEnabled": true,
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.admVPNEdit.ExecuteTemplate(w, "fgt_adm_vpn_conf_edit_form.html", data); err != nil {
+			http.Error(w, "render edit form", http.StatusInternalServerError)
+		}
+	})
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/removal_commands/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "config vpn ipsec phase1-interface\n    delete edge.example.test\nend\n")
+	})
+	redirectADMVPN := func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/fgt-adm-vpn-conf/", http.StatusSeeOther)
+	}
+	mux.HandleFunc("POST /fgt-adm-vpn-conf/add", redirectADMVPN)
+	mux.HandleFunc("POST /fgt-adm-vpn-conf/import", redirectADMVPN)
+	mux.HandleFunc("POST /fgt-adm-vpn-conf/edit/{id}", redirectADMVPN)
+	mux.HandleFunc("POST /fgt-adm-vpn-conf/delete/{id}", redirectADMVPN)
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/generate_single/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "# synthetic generated configuration\n")
+	})
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/export", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		_, _ = io.WriteString(w, "firewallname,cid\nedge.example.test,101\n")
+	})
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/export_bookmarks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><title>Synthetic bookmarks</title>")
+	})
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/graylog_dsv", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "edge.example.test|203.0.113.7|synthetic-site\n")
@@ -392,10 +448,17 @@ func uxExtensionBase() map[string]any {
 func uxADMVPNFixture(scenario uxScenario) any {
 	configs := []any{}
 	if scenario != uxScenarioEmpty {
-		configs = append(configs, map[string]any{"ID": 7, "Firewallname": "edge.example.test"})
+		configs = append(configs, map[string]any{
+			"ID": 7, "Firewallname": "edge.example.test", "Cid": "101", "Kundenname": "Synthetic customer",
+			"Standort": "Vienna", "RemoteipFull": "10.105.1.7", "RemoteipFull1st": "10.150.11.7",
+			"Ike2Username": "vpn-adm-synthetic-vienna", "WanInterface": "wan1", "Radiusmgt": "YES",
+			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(time.Minute).Format(time.RFC3339),
+			"ClusterHostnames": "edge-a, edge-b", "DnsNameFull": "edge.example.test", "LastDnsStatus": "ok",
+			"LastDnsResolved": "10.105.1.7",
+		})
 	}
 	return map[string]any{
-		"Base": uxExtensionBase(), "Configs": configs,
+		"Base": uxBase("FGT ADM VPN Config", "admvpn"), "Configs": configs,
 		"AvailableIPsCount": 42, "AvailableIPsPercentage": "84.0",
 	}
 }
@@ -908,6 +971,15 @@ func TestUXFixtureCoreRouteInventory(t *testing.T) {
 func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 	routes := []uxFixtureRoute{
 		{name: "ADM VPN", method: http.MethodGet, path: "/fgt-adm-vpn-conf/", wantStatus: http.StatusOK, contentType: "text/html"},
+		{name: "ADM VPN add", method: http.MethodPost, path: "/fgt-adm-vpn-conf/add", wantStatus: http.StatusSeeOther},
+		{name: "ADM VPN import", method: http.MethodPost, path: "/fgt-adm-vpn-conf/import", wantStatus: http.StatusSeeOther},
+		{name: "ADM VPN edit form", method: http.MethodGet, path: "/fgt-adm-vpn-conf/edit/7", wantStatus: http.StatusOK, contentType: "text/html"},
+		{name: "ADM VPN edit submit", method: http.MethodPost, path: "/fgt-adm-vpn-conf/edit/7", wantStatus: http.StatusSeeOther},
+		{name: "ADM VPN removal commands", method: http.MethodGet, path: "/fgt-adm-vpn-conf/removal_commands/7", wantStatus: http.StatusOK, contentType: "text/plain"},
+		{name: "ADM VPN delete", method: http.MethodPost, path: "/fgt-adm-vpn-conf/delete/7", wantStatus: http.StatusSeeOther},
+		{name: "ADM VPN generate", method: http.MethodGet, path: "/fgt-adm-vpn-conf/generate_single/7", wantStatus: http.StatusOK, contentType: "text/plain"},
+		{name: "ADM VPN CSV export", method: http.MethodGet, path: "/fgt-adm-vpn-conf/export", wantStatus: http.StatusOK, contentType: "text/csv"},
+		{name: "ADM VPN bookmark export", method: http.MethodGet, path: "/fgt-adm-vpn-conf/export_bookmarks", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ADM VPN status", method: http.MethodGet, path: "/fgt-adm-vpn-conf/graylog_dsv", wantStatus: http.StatusOK, contentType: "text/plain"},
 		{name: "ConfGen", method: http.MethodGet, path: "/fgt-confgen/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfGen firewalls", method: http.MethodGet, path: "/fgt-confgen/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},

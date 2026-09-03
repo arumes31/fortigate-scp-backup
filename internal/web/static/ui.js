@@ -79,10 +79,10 @@ function tt(key) { return (window.I18N && window.I18N[key]) || key; }
             var opener = null;
             var confirmation = dialog.querySelector('[data-confirm-input]');
             var action = dialog.querySelector('[data-confirm-action]');
-            var expected = dialog.dataset.confirmText || '';
 
             function updateConfirmation() {
-                if (confirmation && action) action.disabled = confirmation.value !== expected;
+                var expected = dialog.dataset.confirmText || '';
+                if (confirmation && action) action.disabled = !expected || confirmation.value !== expected;
             }
             if (confirmation) confirmation.addEventListener('input', updateConfirmation);
             updateConfirmation();

@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // TestIndexTemplateRenders parses the embedded templates and renders the index
@@ -24,6 +28,11 @@ func TestIndexTemplateRenders(t *testing.T) {
 		t.Fatalf("parseTemplates: %v", err)
 	}
 	data := indexData{
+		Base: webui.BaseData{
+			Title: "FGT ADM VPN Config", Username: "reviewer", Lang: "en", Active: "admvpn", ReturnTo: "/fgt-adm-vpn-conf/",
+			Shell:      webui.ShellText("en"),
+			Navigation: webui.Navigation(webui.NavigationOptions{Lang: "en", Active: "admvpn", AdmVPN: true}),
+		},
 		Configs: []configRow{
 			{VpnConfig: &VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}},
 			{VpnConfig: &VpnConfig{ID: 2, Firewallname: "acme-ok", DnsNameFull: "fgt-acme-ok.adm.example",
@@ -35,11 +44,21 @@ func TestIndexTemplateRenders(t *testing.T) {
 		AvailableIPsPercentage: "50.00",
 	}
 	var buf bytes.Buffer
-	if err := e.tmpl.ExecuteTemplate(&buf, indexTemplate, data); err != nil {
+	if err := e.page.Render(&buf, data); err != nil {
 		t.Fatalf("execute index: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"open-remove-modal", "removeConfirmCheck", "removal_commands",
+	for _, want := range []string{`class="app-rail"`, `data-live-status`, `data-time-controls`, `aria-current="page"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("shared shell missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{`class="topbar"`, `class="sysfooter"`, `FORTISAFE_SYS`} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("standalone shell remains: %q", unwanted)
+		}
+	}
+	for _, want := range []string{"open-remove-modal", "removeConfirmInput", "removal_commands",
 		// DNS record check icons: green tick for a matching record, red cross
 		// (with resolved-vs-expected tooltip) for a wrong-IP record.
 		"dns-ok", "dns-fail", "expected 10.105.1.3",
@@ -47,6 +66,57 @@ func TestIndexTemplateRenders(t *testing.T) {
 		"vpnSearch", "vpnTable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered index missing %q", want)
+		}
+	}
+}
+
+func TestMountRequiresSharedPageContext(t *testing.T) {
+	e := New(&config.Config{}, slog.New(slog.DiscardHandler))
+	if err := e.Mount(chi.NewRouter(), extension.Deps{}); err == nil || !strings.Contains(err.Error(), "page context") {
+		t.Fatalf("Mount error = %v, want missing shared page context", err)
+	}
+}
+
+func TestIndexUsesHostPageContext(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/fgt-adm-vpn-conf/?view=all", nil)
+	contextCalled := false
+	e := &Extension{
+		cfg: &config.Config{}, db: db, logger: slog.New(slog.DiscardHandler),
+		pageBase: func(gotRequest *http.Request, title, active string) webui.BaseData {
+			contextCalled = true
+			if gotRequest != request || title != "FGT ADM VPN Config" || active != "admvpn" {
+				t.Errorf("PageBase arguments = (%p, %q, %q)", gotRequest, title, active)
+			}
+			return webui.BaseData{
+				Title: title, Username: "host-user", Lang: "de", Active: active, ReturnTo: gotRequest.URL.RequestURI(),
+				Shell:      webui.ShellText("de"),
+				Navigation: webui.Navigation(webui.NavigationOptions{Lang: "de", Active: active, AdmVPN: true}),
+			}
+		},
+	}
+	if err := e.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	e.index(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("index status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	if !contextCalled {
+		t.Fatal("index did not request the host page context")
+	}
+	for _, want := range []string{`<html lang="de">`, "host-user", `aria-current="page"`} {
+		if !strings.Contains(recorder.Body.String(), want) {
+			t.Errorf("index missing host context %q", want)
 		}
 	}
 }

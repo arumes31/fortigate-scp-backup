@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 //go:embed templates/fgt_adm_vpn_conf_index.html templates/fgt_adm_vpn_conf_edit_form.html
@@ -24,11 +26,16 @@ const indexTemplate = "fgt_adm_vpn_conf_index.html"
 const editFormTemplate = "fgt_adm_vpn_conf_edit_form.html"
 
 func (e *Extension) parseTemplates() error {
-	t, err := template.New("").ParseFS(templatesFS, "templates/*.html")
+	page, err := webui.ParsePage(templatesFS, "templates/"+indexTemplate, nil)
 	if err != nil {
 		return err
 	}
-	e.tmpl = t
+	editTemplate, err := template.ParseFS(templatesFS, "templates/"+editFormTemplate)
+	if err != nil {
+		return err
+	}
+	e.page = page
+	e.editTemplate = editTemplate
 	return nil
 }
 
@@ -61,17 +68,8 @@ type configRow struct {
 	NextCheckISO string
 }
 
-// indexBase carries the cross-extension enablement flags the shared topbar
-// nav needs (the same shape the other extension templates read via .Base).
-type indexBase struct {
-	ExtConfigGenEnabled bool
-	ExtPolSplitEnabled  bool
-	ExtConfConvEnabled  bool
-	ExtConfTailEnabled  bool
-}
-
 type indexData struct {
-	Base                   indexBase
+	Base                   webui.BaseData
 	Configs                []configRow
 	AvailableIPsCount      int
 	AvailableIPsPercentage string
@@ -108,24 +106,15 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := indexData{
-		Base: indexBase{
-			ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
-			ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
-			ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
-			ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
-		},
+		Base:                   e.pageBase(r, "FGT ADM VPN Config", "admvpn"),
 		Configs:                rows,
 		AvailableIPsCount:      count,
 		AvailableIPsPercentage: fmt.Sprintf("%.2f", pct),
 	}
 
-	var buf bytes.Buffer
-	if err := e.tmpl.ExecuteTemplate(&buf, indexTemplate, data); err != nil {
+	if err := e.page.RenderHTTP(w, data); err != nil {
 		e.serverError(w, err)
-		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = buf.WriteTo(w)
 }
 
 // ---- add --------------------------------------------------------------------
@@ -216,7 +205,7 @@ func (e *Extension) editForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := e.tmpl.ExecuteTemplate(&buf, editFormTemplate, c); err != nil {
+	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, c); err != nil {
 		e.serverError(w, err)
 		return
 	}
