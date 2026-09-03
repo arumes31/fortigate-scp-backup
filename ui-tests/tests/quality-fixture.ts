@@ -21,6 +21,12 @@ export const test = base.extend<BrowserQuality>({
         if (/^\[\.WebGL-.*\]GL Driver Message .*GPU stall due to ReadPixels/.test(message.text())) {
           return;
         }
+        // Navigating away from the synthetic topology page intentionally
+        // destroys its renderer. Chromium reports that normal teardown as a
+        // WebGL warning while the multi-route axe test moves to the next page.
+        if (message.text() === 'WebGL: CONTEXT_LOST_WEBGL: loseContext: context lost') {
+          return;
+        }
         consoleProblems.push(`${message.type()}: ${message.text()}`);
       }
     });
