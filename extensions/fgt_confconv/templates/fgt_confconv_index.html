@@ -1,43 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration Conversions · FortiSafe</title>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="/static/app.css">
+{{define "head"}}
     <link rel="stylesheet" href="/fgt-confconv/static/styles.css">
-    <script defer src="/static/searchable.js"></script>
-    <script defer src="/fgt-confconv/static/confconv.js"></script>
-</head>
-<body>
-<div class="app">
-    <header class="topbar">
-        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
-        <nav class="nav">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/">Firewalls</a>
-            <a href="/search">Search</a>
-            <a href="/audit">Audit</a>
-            <a href="/topology">Topology</a>
-            <a href="/ipam">IPAM</a>
-            <a href="/licenses">Licenses</a>
-            <a href="/activity_log">Act_Log</a>
-            {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
-            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
-            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
-            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/" class="active">Conf_Conv</a>{{end}}
-            {{if .Base.ExtConfTailEnabled}}<a href="/fgt-conftail/">Conf_Tail</a>{{end}}
-        </nav>
-        <div class="sysinfo">
-            <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
-            <form method="post" action="/logout" class="logout-form" style="display:inline; margin:0;">
-                <button type="submit" class="logout-btn">[EXIT]</button>
-            </form>
-        </div>
-    </header>
+{{end}}
 
-    <main>
+{{define "content"}}
+    <div class="page confconv-page" id="confconv-page">
         <h1 class="page-title"><span class="accent-bar"></span>Configuration Conversions <span class="cc-alpha" title="Alpha — under active development; review all generated CLI before applying">Alpha</span></h1>
         <p class="cc-intro">Pick a firewall and one or more structural migration recipes. Recipes run as a chained pipeline against the latest config backup and produce one reviewable, copy-paste FortiGate CLI script — nothing is applied to the device automatically.</p>
 
@@ -163,11 +129,10 @@
             <div id="cc-sections"></div>
             <button type="button" class="btn btn-sm" id="cc-copy-all">Copy All</button>
         </div>
-    </main>
+    </div>
+{{end}}
 
-    <footer class="sysfooter">
-        <div>EOF // (C) FORTISAFE_SEC</div>
-    </footer>
-</div>
-</body>
-</html>
+{{define "scripts"}}
+    <script src="/static/searchable.js"></script>
+    <script src="/fgt-confconv/static/confconv.js"></script>
+{{end}}

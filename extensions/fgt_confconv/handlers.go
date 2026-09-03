@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // ErrNotFound is returned by loadBackup when the firewall or backup does not
@@ -25,19 +26,21 @@ type FirewallRef struct {
 	FQDN string `json:"fqdn"`
 }
 
+type indexData struct {
+	Base      webui.BaseData
+	Firewalls []FirewallRef
+}
+
 func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	firewalls, err := e.fetchFirewalls(r.Context())
 	if err != nil {
 		e.logger.Error("confconv: failed to fetch firewalls", "err", err)
 	}
-	data := struct {
-		Base      baseData
-		Firewalls []FirewallRef
-	}{
-		Base:      e.baseData(r, "Configuration Conversions", "confconv"),
+	data := indexData{
+		Base:      e.pageBase(r, "Configuration Conversions", "confconv"),
 		Firewalls: firewalls,
 	}
-	if err := e.tmpl.ExecuteTemplate(w, "fgt_confconv_index.html", data); err != nil {
+	if err := e.page.RenderHTTP(w, data); err != nil {
 		e.logger.Error("confconv: template render failed", "err", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}

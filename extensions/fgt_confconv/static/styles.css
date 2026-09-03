@@ -1,35 +1,35 @@
 /* Configuration Conversions — adapts to the FortiSafe TTY design system. */
 
-.cc-intro {
+.confconv-page .cc-intro {
     color: var(--text-muted);
     font-size: 13px;
     margin: 8px 0 16px;
     max-width: 900px;
 }
 
-.cc-error {
+.confconv-page .cc-error {
     color: var(--danger);
     font-size: 12px;
     margin: 8px 0 0;
 }
 
-.cc-muted {
+.confconv-page .cc-muted {
     color: var(--text-muted);
     font-size: 11px;
 }
 
-.cc-chips {
+.confconv-page .cc-chips {
     margin: 8px 0 12px;
     min-height: 24px;
     align-items: center;
 }
-.cc-port-chip { cursor: pointer; }
-.cc-chip-x { color: var(--text-dim); font-weight: 700; margin-left: 2px; }
-.cc-port-chip:hover { border-color: var(--danger); color: #fff; }
-.cc-port-chip:hover .cc-chip-x { color: var(--danger); }
+.confconv-page .cc-port-chip { cursor: pointer; }
+.confconv-page .cc-chip-x { color: var(--text-dim); font-weight: 700; margin-left: 2px; }
+.confconv-page .cc-port-chip:hover { border-color: var(--danger); color: #fff; }
+.confconv-page .cc-port-chip:hover .cc-chip-x { color: var(--danger); }
 
 /* Pre-release marker in the page title — flags this extension as Alpha. */
-.cc-alpha {
+.confconv-page .cc-alpha {
     display: inline-flex;
     align-items: center;
     padding: 2px 8px;
@@ -41,35 +41,35 @@
     background: var(--warning-soft);
     border: 1px solid rgba(255, 184, 107, .35);
 }
-.cc-alpha::before { content: ""; width: 6px; height: 6px; margin-right: 6px; background: currentColor; }
+.confconv-page .cc-alpha::before { content: ""; width: 6px; height: 6px; margin-right: 6px; background: currentColor; }
 
-main .card {
+.confconv-page .card {
     margin-bottom: 20px;
 }
 
-.form-grid {
+.confconv-page .form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
     margin-bottom: 12px;
 }
 
-.field {
+.confconv-page .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
-.field label {
+.confconv-page .field label {
     font-size: 11px;
     color: var(--text-muted);
     font-weight: 500;
 }
 
-.form-control,
-input[type="text"],
-input[type="number"],
-select {
+.confconv-page .form-control,
+.confconv-page input[type="text"],
+.confconv-page input[type="number"],
+.confconv-page select {
     width: 100%;
     background-color: var(--surface-2);
     border: 1px solid var(--border);
@@ -81,34 +81,34 @@ select {
     transition: border-color 0.12s ease;
 }
 
-.form-control:focus,
-input:focus,
-select:focus {
+.confconv-page .form-control:focus,
+.confconv-page input:focus,
+.confconv-page select:focus {
     border-color: var(--accent);
 }
 
-.cc-recipe h2 {
+.confconv-page .cc-recipe h2 {
     margin-bottom: 8px;
 }
 
-.cc-recipe h2 label {
+.confconv-page .cc-recipe h2 label {
     display: flex;
     align-items: center;
     gap: 8px;
     cursor: pointer;
 }
 
-.cc-recipe h2 input[type="checkbox"],
-.field input[type="checkbox"] {
+.confconv-page .cc-recipe h2 input[type="checkbox"],
+.confconv-page .field input[type="checkbox"] {
     accent-color: var(--accent);
     cursor: pointer;
 }
 
-.cc-options {
+.confconv-page .cc-options {
     margin-top: 8px;
 }
 
-.cc-checklist {
+.confconv-page .cc-checklist {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 6px 12px;
@@ -120,7 +120,7 @@ select:focus {
     overflow-y: auto;
 }
 
-.cc-check-item {
+.confconv-page .cc-check-item {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -128,12 +128,12 @@ select:focus {
     cursor: pointer;
 }
 
-.cc-check-item input[type="checkbox"] {
+.confconv-page .cc-check-item input[type="checkbox"] {
     accent-color: var(--accent);
     cursor: pointer;
 }
 
-.cc-vlanmove-row {
+.confconv-page .cc-vlanmove-row {
     display: grid;
     grid-template-columns: 2fr 1fr auto;
     gap: 10px;
@@ -141,34 +141,34 @@ select:focus {
     margin-bottom: 8px;
 }
 
-.cc-actions {
+.confconv-page .cc-actions {
     display: flex;
     justify-content: flex-start;
     margin: 20px 0;
 }
 
-.cc-warning-list {
+.confconv-page .cc-warning-list {
     margin: 0 0 16px;
     padding-left: 18px;
 }
 
-.cc-warning-list li {
+.confconv-page .cc-warning-list li {
     color: var(--warn, #e0af68);
     font-size: 12px;
     padding: 3px 0;
 }
 
-.cc-warning-list code {
+.confconv-page .cc-warning-list code {
     color: var(--text-muted);
     font-family: var(--mono);
 }
 
-#cc-sections h3 {
+.confconv-page #cc-sections h3 {
     font-size: 13px;
     margin: 16px 0 8px;
 }
 
-.cc-config {
+.confconv-page .cc-config {
     background: var(--surface-2);
     border: 1px solid var(--border);
     padding: 12px;
@@ -181,10 +181,10 @@ select:focus {
     margin-top: 8px;
 }
 
-.cc-copy {
+.confconv-page .cc-copy {
     margin-top: 4px;
 }
 
-#cc-copy-all {
+.confconv-page #cc-copy-all {
     margin-top: 8px;
 }

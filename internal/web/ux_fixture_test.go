@@ -263,7 +263,7 @@ type uxExtensionTemplates struct {
 	admVPNEdit *template.Template
 	confGen    *webui.Renderer
 	polSplit   *webui.Renderer
-	confConv   *template.Template
+	confConv   *webui.Renderer
 	confTail   *template.Template
 }
 
@@ -305,7 +305,11 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 	if err != nil {
 		return nil, err
 	}
-	confConv, err := parse("extensions/fgt_confconv/templates/fgt_confconv_index.html")
+	confConv, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_confconv/templates/fgt_confconv_index.html",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -462,9 +466,21 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		"strategies":[{"key":"per_service","label":"Per service","recommended":true,"policies":[{"id":100,"name":"PS42_HTTPS","tags":[],"src":[{"value":"10.0.0.10/32","is_net":false,"hosts":1}],"dst":[{"value":"203.0.113.10/32","is_net":false,"hosts":1}],"services":[{"key":"tcp/443","log_name":"HTTPS"}],"hits":24}],"new_objects":[],"config":"config firewall policy\n    edit 100\n        set name PS42_HTTPS\n    next\nend"}]
 	}`))
 	mux.HandleFunc("GET /fgt-polsplit/progress", jsonResponse(`{"state":"complete","progress":100}`))
-	mux.HandleFunc("GET /fgt-confconv/{$}", render(templates.confConv, "fgt_confconv_index.html", uxSimpleExtensionFixture))
+	mux.HandleFunc("GET /fgt-confconv/{$}", renderShared(templates.confConv, uxConfConvFixture))
 	mux.HandleFunc("GET /fgt-confconv/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
-	mux.HandleFunc("GET /fgt-confconv/config_summary", jsonResponse(`{"fqdn":"edge.example.test","version":"synthetic","interfaces":[]}`))
+	mux.HandleFunc("GET /fgt-confconv/config_summary", jsonResponse(`{
+		"version":"7.6.1","versionOK":true,
+		"interfaces":[{"name":"wan1","type":"physical","parent":"","vlanId":0,"ip":"203.0.113.2 255.255.255.0","allowaccess":"ping","role":"wan","members":[],"fortilink":false}],
+		"zones":[],"sdwanZones":[{"name":"virtual-wan-link"}],
+		"sdwanMembers":[{"seq":1,"interface":"wan1","gateway":"203.0.113.1","zone":"virtual-wan-link"}],
+		"staticRoutes":[{"seq":1,"dst":"","device":"wan1","gateway":"203.0.113.1","disabled":false}],
+		"backupTime":"2026-09-02T10:30:00Z"
+	}`))
+	mux.HandleFunc("POST /fgt-confconv/convert", jsonResponse(`{
+		"sections":[{"recipe":"sdwan-routes-to-rules","label":"SD-WAN rules","lines":["config system sdwan","    config service","        edit 1","        next","    end","end"]}],
+		"warnings":[],"appliedOrder":["sdwan-routes-to-rules"],
+		"combined":"config system sdwan\n    config service\n        edit 1\n        next\n    end\nend"
+	}`))
 	mux.HandleFunc("GET /fgt-conftail/{$}", render(templates.confTail, "index.html", uxConfTailFixture))
 	mux.HandleFunc("GET /fgt-conftail/status", jsonResponse(`{"running":false,"signature":"fixture"}`))
 	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", render(templates.confTail, "chain.html", uxConfTailChainFixture))
@@ -518,6 +534,14 @@ func uxPolSplitFixture(scenario uxScenario) any {
 		firewalls = append(firewalls, map[string]any{"ID": 7, "FQDN": "edge.example.test"})
 	}
 	return map[string]any{"Base": uxBase("Policy Split Advisor", "polsplit"), "Firewalls": firewalls}
+}
+
+func uxConfConvFixture(scenario uxScenario) any {
+	firewalls := []any{}
+	if scenario != uxScenarioEmpty {
+		firewalls = append(firewalls, map[string]any{"ID": 7, "FQDN": "edge.example.test"})
+	}
+	return map[string]any{"Base": uxBase("Configuration Conversions", "confconv"), "Firewalls": firewalls}
 }
 
 func uxSimpleExtensionFixture(scenario uxScenario) any {
@@ -1046,6 +1070,7 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "Config Converter", method: http.MethodGet, path: "/fgt-confconv/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Config Converter firewalls", method: http.MethodGet, path: "/fgt-confconv/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Config Converter summary", method: http.MethodGet, path: "/fgt-confconv/config_summary?fw_id=7", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Config Converter convert", method: http.MethodPost, path: "/fgt-confconv/convert", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfTail", method: http.MethodGet, path: "/fgt-conftail/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfTail status", method: http.MethodGet, path: "/fgt-conftail/status", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfTail chain", method: http.MethodGet, path: "/fgt-conftail/chain/fixture-chain", wantStatus: http.StatusOK, contentType: "text/html"},

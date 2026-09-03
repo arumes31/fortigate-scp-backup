@@ -1,11 +1,15 @@
 /* Configuration Conversions front-end: load the parsed config summary for a
  * firewall, let the operator pick recipes + options, run the chained
  * pipeline, and render the resulting CLI sections + warnings. */
+(function () {
 'use strict';
+
+const ccRoot = document.getElementById('confconv-page');
+if (!ccRoot) return;
 
 const ccState = { summary: null, vlanMoveRowCount: 0, combined: '', fortilinkPorts: [] };
 
-function $(id) { return document.getElementById(id); }
+function $(id) { return ccRoot.querySelector('#' + CSS.escape(id)); }
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -174,14 +178,14 @@ function addVLANMoveRow() {
 }
 
 function refreshVLANMoveOptions() {
-    document.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-iface').forEach(sel => {
+    ccRoot.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-iface').forEach(sel => {
         const current = sel.value;
         sel.innerHTML = vlanMoveIfaceOptions(current);
     });
 }
 
 function collectVLANMoves() {
-    return Array.from(document.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-row')).map(row => ({
+    return Array.from(ccRoot.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-row')).map(row => ({
         interface: row.querySelector('.cc-vlanmove-iface').value,
         vlan_id: parseInt(row.querySelector('.cc-vlanmove-vlanid').value, 10) || 0,
     })).filter(m => m.interface && m.vlan_id);
@@ -367,7 +371,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('cc-port-modal-done').addEventListener('click', commitPortModal);
     $('cc-port-search').addEventListener('input', filterPortList);
     $('cc-port-modal').addEventListener('click', e => { if (e.target === $('cc-port-modal')) closePortModal(); });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closePortModal(); });
+    ccRoot.addEventListener('keydown', e => { if (e.key === 'Escape') closePortModal(); });
     renderFortilinkPorts();
 
     $('cc-generate-btn').addEventListener('click', generate);
@@ -375,3 +379,5 @@ document.addEventListener('DOMContentLoaded', () => {
         if (navigator.clipboard) navigator.clipboard.writeText(ccState.combined || '');
     });
 });
+
+})();

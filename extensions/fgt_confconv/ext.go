@@ -7,7 +7,6 @@ package fgt_confconv
 import (
 	"embed"
 	"errors"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 //go:embed templates/* static/*
@@ -32,12 +32,13 @@ type Extension struct {
 	logger *slog.Logger
 
 	pgPool *pgxpool.Pool
-	tmpl   *template.Template
+	page   *webui.Renderer
 	tz     *time.Location
 	cipher *crypto.Cipher
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+	pageBase    extension.PageBaseProvider
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
@@ -51,11 +52,15 @@ func (e *Extension) Prefix() string { return "/fgt-confconv" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtConfConv }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.PageBase == nil {
+		return errors.New("fgt_confconv: shared page context is required")
+	}
 	if d.Cipher == nil {
-		return errors.New("shared cipher is required")
+		return errors.New("fgt_confconv: shared cipher is required")
 	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.pageBase = d.PageBase
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.cipher = d.Cipher
@@ -63,11 +68,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		e.tz = time.UTC
 	}
 
-	t, err := template.New("").ParseFS(extensionFS, "templates/*.html")
-	if err != nil {
+	if err := e.parseTemplates(); err != nil {
 		return err
 	}
-	e.tmpl = t
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(d.LoginRequired)
@@ -97,35 +100,13 @@ func (e *Extension) log(r *http.Request, action, details string) {
 	e.logActivity(user, action, details)
 }
 
-// baseData carries the fields the shared topbar nav needs — every known
-// extension's enablement flag, the same shape read via .Base in the sibling
-// extension templates.
-type baseData struct {
-	Title               string
-	Username            string
-	ExtEnabled          bool
-	ExtConfigGenEnabled bool
-	ExtPolSplitEnabled  bool
-	ExtConfConvEnabled  bool
-	ExtConfTailEnabled  bool
-	Active              string
-}
-
-func (e *Extension) baseData(r *http.Request, title, active string) baseData {
-	username := ""
-	if e.currentUser != nil {
-		username = e.currentUser(r)
+func (e *Extension) parseTemplates() error {
+	page, err := webui.ParsePage(extensionFS, "templates/fgt_confconv_index.html", nil)
+	if err != nil {
+		return err
 	}
-	return baseData{
-		Title:               title,
-		Username:            username,
-		ExtEnabled:          e.cfg.ExtAdmVpnConf,
-		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
-		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
-		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
-		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
-		Active:              active,
-	}
+	e.page = page
+	return nil
 }
 
 var _ extension.Extension = (*Extension)(nil)
