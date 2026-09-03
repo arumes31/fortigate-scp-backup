@@ -21,7 +21,7 @@
             {{if isZero .CVEStatus.LastSuccessAt}}
             — {{T .Base.Lang "audit.cve_db_never"}}
             {{else}}
-            — {{T .Base.Lang "audit.cve_db_updated"}} {{fmtTime .CVEStatus.LastSuccessAt}}
+            — {{T .Base.Lang "audit.cve_db_updated"}} <time datetime="{{fmtMachineTime .CVEStatus.LastSuccessAt}}">{{fmtTime .CVEStatus.LastSuccessAt}}</time>
             {{end}}
             {{if .CVEStatus.LastError}}
             · <span style="color: #f87171;" title="{{.CVEStatus.LastError}}">{{T .Base.Lang "audit.cve_db_error"}}</span>

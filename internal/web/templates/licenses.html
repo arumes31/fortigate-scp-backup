@@ -59,7 +59,7 @@
                         {{if and .Lapsed (ne .Level "expired")}}<span class="muted" style="font-size:0.85em;" title="{{T $.Base.Lang "lic.lapsed_hint"}}"> · {{.Lapsed}} {{T $.Base.Lang "lic.lapsed"}}</span>{{end}}
                         {{if .FetchError}}<span class="muted" style="font-size:0.85em;" title="{{.FetchError}}"> ⚠</span>{{end}}
                     </td>
-                    <td class="muted">{{if .FetchedAt}}{{.FetchedAt}}{{else}}—{{end}}</td>
+                    <td class="muted">{{if isZero .FetchedAt}}—{{else}}<time datetime="{{fmtMachineTime .FetchedAt}}">{{fmtTime .FetchedAt}}</time>{{end}}</td>
                     <td class="actions">
                         {{if or .Entitlements .Devices}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
                         <form method="post" action="/licenses/refresh/{{.FwID}}" style="display:inline">

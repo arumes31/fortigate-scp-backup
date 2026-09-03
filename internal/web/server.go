@@ -242,19 +242,20 @@ func (s *Server) Shutdown() {
 }
 
 var funcMap = template.FuncMap{
-	"hasPrefix": strings.HasPrefix,
-	"hasSuffix": strings.HasSuffix,
-	"contains":  strings.Contains,
-	"lower":     strings.ToLower,
-	"upper":     strings.ToUpper,
-	"trim":      strings.TrimSpace,
-	"add":       func(a, b int) int { return a + b },
-	"sub":       func(a, b int) int { return a - b },
-	"fmtTime":   fmtTime,
-	"fmtBytes":  fmtBytes,
-	"T":         tr,
-	"i18nJSON":  i18nJSON,
-	"isZero":    func(t time.Time) bool { return t.IsZero() },
+	"hasPrefix":      strings.HasPrefix,
+	"hasSuffix":      strings.HasSuffix,
+	"contains":       strings.Contains,
+	"lower":          strings.ToLower,
+	"upper":          strings.ToUpper,
+	"trim":           strings.TrimSpace,
+	"add":            func(a, b int) int { return a + b },
+	"sub":            func(a, b int) int { return a - b },
+	"fmtTime":        fmtTime,
+	"fmtMachineTime": fmtMachineTime,
+	"fmtBytes":       fmtBytes,
+	"T":              tr,
+	"i18nJSON":       i18nJSON,
+	"isZero":         func(t time.Time) bool { return t.IsZero() },
 }
 
 // fmtTime renders a timestamp for display, or "—" when zero.
@@ -262,7 +263,17 @@ func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return "—"
 	}
-	return t.Local().Format("2006-01-02 15:04:05")
+	return t.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+// fmtMachineTime renders an instant for the datetime attribute of a time
+// element. UTC keeps server output deterministic; ui.js may switch the visible
+// value to the user's browser timezone.
+func fmtMachineTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // fmtBytes renders a byte count in human units.

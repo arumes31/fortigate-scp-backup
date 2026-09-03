@@ -50,6 +50,10 @@ type ShellLabels struct {
 	Reconnecting      string
 	Unavailable       string
 	Language          string
+	TimeDisplay       string
+	UTC               string
+	BrowserTime       string
+	Local             string
 	Account           string
 	ChangePassword    string
 	Logout            string
@@ -63,14 +67,16 @@ func ShellText(lang string) ShellLabels {
 			Product: "Betriebskonsole", SkipToContent: "Zum Inhalt springen", PrimaryNavigation: "Primärnavigation",
 			Utilities: "Hilfsfunktionen", LiveStatus: "Live-Status", Connecting: "Verbindet",
 			Connected: "Verbunden", Reconnecting: "Verbindung unterbrochen", Unavailable: "Nicht verfügbar",
-			Language: "Sprache", Account: "Konto", ChangePassword: "Passwort ändern", Logout: "Abmelden",
+			Language: "Sprache", TimeDisplay: "Zeitanzeige", UTC: "UTC", BrowserTime: "Browserzeit", Local: "Lokal",
+			Account: "Konto", ChangePassword: "Passwort ändern", Logout: "Abmelden",
 		}
 	}
 	return ShellLabels{
 		Product: "Operations console", SkipToContent: "Skip to content", PrimaryNavigation: "Primary navigation",
 		Utilities: "Utilities", LiveStatus: "Live status", Connecting: "Connecting",
 		Connected: "Connected", Reconnecting: "Connection interrupted", Unavailable: "Unavailable",
-		Language: "Language", Account: "Account", ChangePassword: "Change password", Logout: "Log out",
+		Language: "Language", TimeDisplay: "Time display", UTC: "UTC", BrowserTime: "Browser time", Local: "Local",
+		Account: "Account", ChangePassword: "Change password", Logout: "Log out",
 	}
 }
 

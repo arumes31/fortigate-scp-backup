@@ -426,6 +426,26 @@ func TestFmtTimeZero(t *testing.T) {
 	}
 }
 
+func TestFmtMachineTimeUsesRFC3339UTC(t *testing.T) {
+	instant := time.Date(2026, 9, 2, 12, 30, 0, 0, time.FixedZone("CEST", 2*60*60))
+	if got := fmtMachineTime(instant); got != "2026-09-02T10:30:00Z" {
+		t.Fatalf("fmtMachineTime() = %q, want RFC3339 UTC", got)
+	}
+	if got := fmtMachineTime(time.Time{}); got != "" {
+		t.Fatalf("fmtMachineTime(zero) = %q, want empty", got)
+	}
+}
+
+func TestParseADMVPNCheckTimeNormalizesLegacyUTC(t *testing.T) {
+	got := parseADMVPNCheckTime("2026-09-02 10:30:00.000000")
+	if got.IsZero() || got.Location() != time.UTC || got.Format(time.RFC3339) != "2026-09-02T10:30:00Z" {
+		t.Fatalf("parseADMVPNCheckTime() = %v, want RFC3339-equivalent UTC", got)
+	}
+	if got := parseADMVPNCheckTime("not-a-timestamp"); !got.IsZero() {
+		t.Fatalf("malformed timestamp parsed as %v", got)
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	cases := []struct {
 		name       string

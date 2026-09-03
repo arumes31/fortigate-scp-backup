@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
@@ -33,6 +34,79 @@ const (
 )
 
 var uxFixtureNow = time.Date(2026, 9, 2, 10, 30, 0, 0, time.UTC)
+
+const uxInteractionPage = `{{define "content"}}
+<div class="page ui-primitives">
+    <header class="page-header">
+        <div><p class="eyebrow">Shared UI contract</p><h1>Interaction primitives</h1></div>
+    </header>
+
+    <section aria-labelledby="dialog-demo-heading">
+        <h2 id="dialog-demo-heading">Confirmation dialog</h2>
+        <p class="muted">Destructive actions require the exact resource name.</p>
+        <button type="button" class="btn btn-danger" data-dialog-open="remove-firewall-dialog">Remove synthetic firewall</button>
+        <dialog class="ui-dialog" id="remove-firewall-dialog" data-ui-dialog data-confirm-text="edge.example.test" aria-labelledby="remove-firewall-title">
+            <div class="ui-dialog__body">
+                <h2 id="remove-firewall-title">Confirm removal</h2>
+                <p>This permanently removes <strong>edge.example.test</strong> from the synthetic fixture.</p>
+                <label for="remove-firewall-confirmation">Type edge.example.test to confirm
+                    <input id="remove-firewall-confirmation" type="text" autocomplete="off" data-confirm-input data-dialog-initial>
+                </label>
+                <div class="ui-dialog__actions">
+                    <button type="button" class="btn btn-danger" data-confirm-action disabled>Remove firewall</button>
+                    <button type="button" class="btn" data-dialog-close>Cancel</button>
+                </div>
+            </div>
+        </dialog>
+    </section>
+
+    <section aria-labelledby="disclosure-demo-heading">
+        <h2 id="disclosure-demo-heading">Progressive disclosure</h2>
+        <details>
+            <summary>Synthetic details</summary>
+            <p>Secondary diagnostics remain available without competing with the primary task.</p>
+        </details>
+    </section>
+
+    <section class="ui-tabs" aria-labelledby="tabs-demo-heading" data-tabs>
+        <h2 id="tabs-demo-heading">Related views</h2>
+        <div class="ui-tablist" role="tablist" aria-label="Synthetic record views">
+            <button class="ui-tab" id="summary-tab" type="button" role="tab" aria-selected="true" aria-controls="summary-panel">Summary</button>
+            <button class="ui-tab" id="raw-tab" type="button" role="tab" aria-selected="false" aria-controls="raw-panel" tabindex="-1">Raw data</button>
+        </div>
+        <div class="ui-tabpanel" id="summary-panel" role="tabpanel" aria-labelledby="summary-tab">Readable change summary.</div>
+        <div class="ui-tabpanel" id="raw-panel" role="tabpanel" aria-labelledby="raw-tab" hidden>Raw synthetic configuration.</div>
+    </section>
+
+    <section aria-labelledby="copy-demo-heading">
+        <h2 id="copy-demo-heading">Copy and feedback</h2>
+        <div class="ui-copy-row">
+            <code id="synthetic-copy-value">edge.example.test</code>
+            <button type="button" class="btn button-with-icon" data-copy-target="synthetic-copy-value" data-copy-feedback="copy-result" data-copy-success="Copied" data-copy-error="Copy failed">
+                <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#copy"></use></svg>
+                <span>Copy synthetic value</span>
+            </button>
+        </div>
+        <span id="copy-result" aria-label="Copy result" data-feedback></span>
+        <div class="feedback-examples" aria-label="Feedback examples">
+            <p aria-label="Loading state" data-feedback="loading">Loading synthetic record…</p>
+            <p aria-label="Success state" data-feedback="success">Synthetic record loaded.</p>
+            <p aria-label="Warning state" data-feedback="warning">Synthetic record may be stale.</p>
+            <p aria-label="Error state" data-feedback="error">Synthetic record could not be loaded.</p>
+        </div>
+    </section>
+
+    <section aria-labelledby="time-demo-heading">
+        <h2 id="time-demo-heading">Timestamp</h2>
+        <time datetime="{{fmtMachineTime .Timestamp}}">{{fmtTime .Timestamp}}</time>
+    </section>
+</div>
+{{end}}`
+
+type uxInteractionData struct {
+	Base      BaseData
+	Timestamp time.Time
+}
 
 type uxFixtureOptions struct {
 	Address         string
@@ -122,6 +196,14 @@ func startUXFixture(ctx context.Context, options uxFixtureOptions) (*uxFixtureSe
 
 func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTemplates, defaultScenario uxScenario, stopServer context.CancelFunc) http.Handler {
 	mux := http.NewServeMux()
+	interactionRenderer, err := webui.ParsePage(
+		fstest.MapFS{"page.html": {Data: []byte(uxInteractionPage)}},
+		"page.html",
+		template.FuncMap{"fmtTime": fmtTime, "fmtMachineTime": fmtMachineTime},
+	)
+	if err != nil {
+		panic(err)
+	}
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		panic(err)
@@ -162,6 +244,12 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 		data := uxDashboardFixture(scenario)
 		data.Base = uxBaseLang("Dashboard", "dashboard", "de")
 		webServer.render(w, "dashboard.html", data)
+	})
+	mux.HandleFunc("GET /__ux/primitives", func(w http.ResponseWriter, _ *http.Request) {
+		data := uxInteractionData{Base: uxBase("Interaction primitives", "dashboard"), Timestamp: uxFixtureNow}
+		if err := interactionRenderer.RenderHTTP(w, data); err != nil {
+			http.Error(w, "render interaction primitives", http.StatusInternalServerError)
+		}
 	})
 	registerUXCoreRoutes(mux, webServer, defaultScenario)
 	registerUXExtensionRoutes(mux, extensionTemplates, defaultScenario)
@@ -748,6 +836,7 @@ func TestUXFixtureScenarios(t *testing.T) {
 		{name: "ConfTail error", path: "/fgt-conftail/?scenario=error", contains: "Synthetic Graylog failure"},
 		{name: "ConfTail loading", path: "/fgt-conftail/?scenario=loading", contains: `data-poll-running="true"`},
 		{name: "fixed clock", path: "/fgt-conftail/?scenario=full", contains: "2026-09-02T10:30:00Z"},
+		{name: "shared primitive clock", path: "/__ux/primitives", contains: `datetime="2026-09-02T10:30:00Z"`},
 	}
 
 	for _, test := range tests {

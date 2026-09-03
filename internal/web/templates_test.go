@@ -28,6 +28,44 @@ func TestParseTemplates(t *testing.T) {
 	}
 }
 
+func TestCoreTimestampTemplatesUseMachineReadableTimeElements(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"activity_log.html", "audit.html", "backups.html", "dashboard.html",
+		"errors.html", "index.html", "licenses.html",
+	} {
+		t.Run(name, func(t *testing.T) {
+			blob, err := templatesFS.ReadFile("templates/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for lineNumber, line := range strings.Split(string(blob), "\n") {
+				if strings.Contains(line, "fmtTime") &&
+					(!strings.Contains(line, "<time") || !strings.Contains(line, "datetime=\"{{fmtMachineTime")) {
+					t.Errorf("line %d displays fmtTime outside a machine-readable <time>: %s", lineNumber+1, line)
+				}
+			}
+		})
+	}
+}
+
+func TestSharedIconSpriteKeepsButtonNamesInMarkup(t *testing.T) {
+	t.Parallel()
+	blob, err := staticFS.ReadFile("static/icons.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(blob)
+	for _, symbol := range []string{`id="copy"`, `id="close"`, `id="chevron"`} {
+		if !strings.Contains(body, symbol) {
+			t.Errorf("icon sprite missing %s", symbol)
+		}
+	}
+	if strings.Contains(body, "<title") {
+		t.Error("shared sprite contains a title; icon meaning belongs to its visible button label")
+	}
+}
+
 func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
 	t.Parallel()
 	s := &Server{logger: slog.New(slog.DiscardHandler)}

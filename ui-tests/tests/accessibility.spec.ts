@@ -13,6 +13,7 @@ const routes = [
   '/fgt-polsplit/',
   '/fgt-confconv/',
   '/fgt-conftail/?scenario=warning',
+  '/__ux/primitives',
 ];
 
 test('primary pages have no unwaived WCAG A or AA findings', async ({ page }) => {

@@ -145,7 +145,7 @@ func TestSharedShellRendersNamedDesktopUtilities(t *testing.T) {
 	for _, want := range []string{
 		`<html lang="de">`, `class="skip-link"`, `class="app-rail"`,
 		`aria-label="Primärnavigation"`, `aria-label="Hilfsfunktionen"`,
-		`Betriebskonsole`,
+		`Betriebskonsole`, `data-time-controls`, `data-time-mode="utc"`, `data-time-mode="local"`,
 		`name="lang" value="en"`, `name="lang" value="de"`,
 		`fixture-reviewer`, `href="/change_password" aria-current="page"`,
 	} {

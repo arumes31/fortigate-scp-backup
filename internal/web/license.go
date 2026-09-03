@@ -632,7 +632,7 @@ type licenseRow struct {
 	Build        string
 	Registration string
 	HAMode       string
-	FetchedAt    string
+	FetchedAt    time.Time
 	FetchError   string
 	Expiry       string // driving entitlement expiry (ISO), "" unknown
 	DaysLeft     int
@@ -735,14 +735,18 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 	rows := make([]licenseRow, 0, len(fws))
 	for _, fw := range fws {
 		row := licenseRow{FwID: fw.ID, FQDN: fw.FQDN, Level: "unknown"}
+		var fetchedAt string
 		err := db.QueryRow(`SELECT COALESCE(serial,''), COALESCE(hostname,''), COALESCE(model,''),
 			COALESCE(version,''), COALESCE(build,''), COALESCE(registration,''), COALESCE(ha_mode,''),
 			COALESCE(fetched_at,''), COALESCE(fetch_error,'')
 			FROM license_status WHERE fw_id = ?`, fw.ID).Scan(
 			&row.Serial, &row.Hostname, &row.Model, &row.Version, &row.Build,
-			&row.Registration, &row.HAMode, &row.FetchedAt, &row.FetchError)
+			&row.Registration, &row.HAMode, &fetchedAt, &row.FetchError)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, err
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339, fetchedAt); parseErr == nil {
+			row.FetchedAt = parsed
 		}
 		ents, err := db.Query(`SELECT COALESCE(service,''), COALESCE(version,''), COALESCE(expiry,''),
 			COALESCE(last_update,''), COALESCE(result,'')

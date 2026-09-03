@@ -308,20 +308,66 @@ main { flex: 1 0 auto; padding-bottom: 40px; }
 .utility-account { grid-template-columns: 1fr; gap: 1px; }
 .utility-label { display: block; color: var(--text-dim); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .account-name { color: var(--text); overflow-wrap: anywhere; }
-.language-form { margin: 0; padding: 0 var(--space-2); }
-.language-options { display: flex; gap: var(--space-1); margin-top: var(--space-1); }
-.language-options button {
-  min-width: 38px;
+.utility-switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); padding: 0 var(--space-2); }
+.language-form, .time-form { min-width: 0; margin: 0; }
+.utility-options { display: flex; gap: var(--space-1); margin-top: var(--space-1); }
+.utility-options button {
+  min-width: 34px;
   min-height: 28px;
-  padding: 3px var(--space-2);
+  padding: 3px 6px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
   cursor: pointer;
 }
-.language-options button:hover { border-color: var(--action); color: var(--action-hover); }
-.language-options button[aria-pressed="true"] { border-color: var(--action); background: var(--action-soft); color: #dcecff; }
+.utility-options button:hover { border-color: var(--action); color: var(--action-hover); }
+.utility-options button[aria-pressed="true"] { border-color: var(--action); background: var(--action-soft); color: #dcecff; }
+
+/* ---------- Shared interaction primitives ---------- */
+.icon { width: 1em; height: 1em; flex: 0 0 auto; fill: currentColor; }
+.button-with-icon { display: inline-flex; align-items: center; gap: var(--space-2); }
+
+.ui-dialog {
+  width: min(520px, calc(100vw - 64px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .65);
+}
+.ui-dialog::backdrop { background: rgba(5, 3, 3, .74); backdrop-filter: blur(2px); }
+.ui-dialog__body { display: grid; gap: var(--space-4); padding: var(--space-5); }
+.ui-dialog__body h2 { margin: 0; }
+.ui-dialog__body label { display: grid; gap: var(--space-2); }
+.ui-dialog__actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+.ui-tabs { margin-top: var(--space-5); }
+.ui-tablist { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); }
+.ui-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ui-tab[aria-selected="true"] { border-bottom-color: var(--action); color: var(--text); }
+.ui-tabpanel { padding: var(--space-4) 0; }
+.ui-tabpanel[hidden] { display: none; }
+
+[data-feedback] { min-height: 1.4em; color: var(--text-muted); }
+[data-feedback="loading"] { color: var(--info); }
+[data-feedback="success"] { color: var(--success); }
+[data-feedback="warning"] { color: var(--warning); }
+[data-feedback="error"] { color: var(--danger); }
+
+.ui-primitives { max-width: 760px; }
+.ui-primitives > section { margin-top: var(--space-6); }
+.ui-primitives details { border: 1px solid var(--border-soft); padding: var(--space-3); background: var(--surface); }
+.ui-primitives summary { cursor: pointer; font-weight: 650; }
+.ui-copy-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 .utility-link {
   display: flex;
   width: 100%;
@@ -438,8 +484,9 @@ h3 { font-size: 12px; font-weight: 700; color: var(--text-muted); margin: 18px 0
 
 /* Keyboard focus (accessibility): a visible ring on every interactive element. */
 .btn:focus-visible, .nav a:focus-visible, .nav-item:focus-visible, .chip:focus-visible,
-.logout-btn:focus-visible, .utility-link:focus-visible, .language-options button:focus-visible,
-.modal-close:focus-visible, .brand:focus-visible, .skip-link:focus-visible, a:focus-visible {
+.logout-btn:focus-visible, .utility-link:focus-visible, .utility-options button:focus-visible,
+.ui-tab:focus-visible, summary:focus-visible, .modal-close:focus-visible, .brand:focus-visible,
+.skip-link:focus-visible, a:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }

@@ -34,14 +34,23 @@
                     <span class="sse-dot connecting" id="sseDot" aria-hidden="true"></span>
                     <span><span class="utility-label">{{.Base.Shell.LiveStatus}}</span><span id="sseLabel">{{.Base.Shell.Connecting}}</span></span>
                 </div>
-                <form method="post" action="/lang" class="language-form">
-                    <input type="hidden" name="back" value="{{.Base.ReturnTo}}">
-                    <span class="utility-label" id="language-label">{{.Base.Shell.Language}}</span>
-                    <span class="language-options" role="group" aria-labelledby="language-label">
-                        <button type="submit" name="lang" value="en"{{if eq .Base.Lang "en"}} aria-pressed="true"{{end}}>EN</button>
-                        <button type="submit" name="lang" value="de"{{if eq .Base.Lang "de"}} aria-pressed="true"{{end}}>DE</button>
-                    </span>
-                </form>
+                <div class="utility-switches">
+                    <form method="post" action="/lang" class="language-form">
+                        <input type="hidden" name="back" value="{{.Base.ReturnTo}}">
+                        <span class="utility-label" id="language-label">{{.Base.Shell.Language}}</span>
+                        <span class="utility-options" role="group" aria-labelledby="language-label">
+                            <button type="submit" name="lang" value="en" aria-pressed="{{if eq .Base.Lang "en"}}true{{else}}false{{end}}">EN</button>
+                            <button type="submit" name="lang" value="de" aria-pressed="{{if eq .Base.Lang "de"}}true{{else}}false{{end}}">DE</button>
+                        </span>
+                    </form>
+                    <div class="time-form" data-time-controls>
+                        <span class="utility-label" id="time-display-label">{{.Base.Shell.TimeDisplay}}</span>
+                        <span class="utility-options" role="group" aria-labelledby="time-display-label">
+                            <button type="button" data-time-mode="utc" aria-label="{{.Base.Shell.UTC}}" aria-pressed="true">UTC</button>
+                            <button type="button" data-time-mode="local" aria-label="{{.Base.Shell.BrowserTime}}" aria-pressed="false">{{.Base.Shell.Local}}</button>
+                        </span>
+                    </div>
+                </div>
                 <div class="utility-account">
                     <span class="utility-label">{{.Base.Shell.Account}}</span>
                     <span class="account-name">{{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>

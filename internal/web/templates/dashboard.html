@@ -57,7 +57,7 @@
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
-                    <td class="muted">{{if isZero .LastSuccess}}<span class="pill pill-failed">{{T $.Base.Lang "dashboard.never"}}</span>{{else}}{{fmtTime .LastSuccess}}{{end}}</td>
+                    <td class="muted">{{if isZero .LastSuccess}}<span class="pill pill-failed">{{T $.Base.Lang "dashboard.never"}}</span>{{else}}<time datetime="{{fmtMachineTime .LastSuccess}}">{{fmtTime .LastSuccess}}</time>{{end}}</td>
                     <td class="err-cell" title="{{.Error}}">{{.Error}}</td>
                     <td>
                         <div class="actions">
@@ -89,7 +89,7 @@
                 <tr>
                     <td>{{.ID}}</td>
                     <td>{{.FQDN}}</td>
-                    <td class="muted">{{fmtTime .LastSuccess}}</td>
+                    <td class="muted"><time datetime="{{fmtMachineTime .LastSuccess}}">{{fmtTime .LastSuccess}}</time></td>
                     <td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{.AgeHours}}h {{T $.Base.Lang "dashboard.stale_ago"}}</span></td>
                     <td class="muted">{{T $.Base.Lang "dashboard.stale_every"}} {{.Cadence}}</td>
                     <td>
@@ -168,7 +168,7 @@
                         {{else if eq .Status "config_missing"}}<span class="pill" style="background: rgba(148,163,184,0.15); color: #cbd5e1; border-color: rgba(148,163,184,0.4);">{{T $.Base.Lang "dashboard.gl_config_missing"}}</span>
                         {{else}}<span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">{{T $.Base.Lang "dashboard.gl_error"}}</span>{{end}}
                     </td>
-                    <td class="muted">{{if .LastCheck}}{{.LastCheck}}{{else}}—{{end}}</td>
+                    <td class="muted">{{if isZero .LastCheckTime}}—{{else}}<time datetime="{{fmtMachineTime .LastCheckTime}}">{{fmtTime .LastCheckTime}}</time>{{end}}</td>
                 </tr>
             {{end}}
             </tbody>
@@ -198,7 +198,7 @@
                     </td>
                     <td class="muted">{{if .Resolved}}<code>{{.Resolved}}</code>{{else}}—{{end}}</td>
                     <td><code>{{.Expected}}</code></td>
-                    <td class="muted">{{if .LastCheck}}{{.LastCheck}}{{else}}—{{end}}</td>
+                    <td class="muted">{{if isZero .LastCheckTime}}—{{else}}<time datetime="{{fmtMachineTime .LastCheckTime}}">{{fmtTime .LastCheckTime}}</time>{{end}}</td>
                 </tr>
             {{end}}
             </tbody>
@@ -241,7 +241,7 @@
     <div class="stdout" id="stdout">
         <p class="prompt blink" id="stdoutPrompt">root@fsys:/var/log#&nbsp;</p>
         <div id="stdoutLog">
-            {{range .Events}}<p><span class="ts">[{{.Timestamp.Format "15:04:05"}}]</span> {{.Action}} — {{.Details}}</p>{{end}}
+            {{range .Events}}<p><span class="ts">[<time data-time-format="time" datetime="{{fmtMachineTime .Timestamp}}">{{.Timestamp.UTC.Format "15:04:05 UTC"}}</time>]</span> {{.Action}} — {{.Details}}</p>{{end}}
         </div>
     </div>
 </div>
@@ -302,7 +302,7 @@
             return '<div class="running-row"><span class="spinner"></span><b>' + name + '</b>' +
                 pill + detail +
                 ' <span class="muted running-elapsed" data-since="' + esc(r.since) + '" title="' +
-                tt('dashboard.running_since') + ' ' + new Date(r.since).toLocaleTimeString() + '"></span>' +
+                tt('dashboard.running_since') + ' ' + window.FortiSafeUI.formatTimestamp(r.since, true) + '"></span>' +
                 bar + '</div>';
         }).join('');
         tickRunningElapsed();
@@ -326,7 +326,6 @@
     var staleCard = document.getElementById('staleCard');
     var staleList = document.getElementById('staleList');
     var staleCount = document.getElementById('staleCount');
-    function fmtLocal(iso) { var d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString(); }
     function renderStale(list) {
         if (!staleCard || !staleList) { return; }
         if (!list || !list.length) {
@@ -340,7 +339,7 @@
             var name = esc(r.fqdn || ('fw #' + r.fw_id));
             var id = encodeURIComponent(r.fw_id);
             return '<tr><td>' + esc(r.fw_id) + '</td><td>' + name + '</td>' +
-                '<td class="muted">' + esc(fmtLocal(r.last_success)) + '</td>' +
+                '<td class="muted"><time datetime="' + esc(r.last_success) + '"></time></td>' +
                 '<td><span class="pill" style="background: rgba(245,158,11,0.15); color: #fbbf24; border-color: rgba(245,158,11,0.4);">' +
                 esc(r.age_hours) + 'h ' + tt('dashboard.stale_ago') + '</span></td>' +
                 '<td class="muted">' + tt('dashboard.stale_every') + ' ' + esc(r.cadence) + '</td>' +
@@ -350,6 +349,7 @@
                 '<a class="btn btn-sm" href="/backups/' + id + '">' + tt('dashboard.backups') + '</a>' +
                 '</div></td></tr>';
         }).join('');
+        if (window.FortiSafeUI) { window.FortiSafeUI.refreshTimes(staleList); }
     }
 
     // While anything is running, poll faster than the configured auto-refresh:
@@ -423,9 +423,11 @@
     function logLine(text) {
         if (!stdoutLog) { return; }
         var p = document.createElement('p');
-        p.innerHTML = '<span class="ts">[' + new Date().toLocaleTimeString() + ']</span> ' +
+        var instant = new Date().toISOString();
+        p.innerHTML = '<span class="ts">[<time data-time-format="time" datetime="' + instant + '"></time>]</span> ' +
             esc(text);
         stdoutLog.insertBefore(p, stdoutLog.firstChild);
+        if (window.FortiSafeUI) { window.FortiSafeUI.refreshTimes(p); }
         while (stdoutLog.childElementCount > 200) { stdoutLog.removeChild(stdoutLog.lastChild); }
     }
 

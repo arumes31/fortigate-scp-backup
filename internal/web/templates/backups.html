@@ -18,7 +18,7 @@
             {{range .Backups}}
                 <tr>
                     <td>{{.ID}}</td>
-                    <td>{{fmtTime .Timestamp}}</td>
+                    <td><time datetime="{{fmtMachineTime .Timestamp}}">{{fmtTime .Timestamp}}</time></td>
                     <td><code>{{.Filename}}</code></td>
                     <td class="muted">{{if .SizeBytes}}{{fmtBytes .SizeBytes}}{{else}}—{{end}}</td>
                     <td><a class="btn btn-sm" href="/download/{{.Filename}}">Download</a></td>

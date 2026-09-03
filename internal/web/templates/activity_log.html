@@ -17,7 +17,7 @@
             <tbody>
             {{range .Logs}}
                 <tr>
-                    <td class="muted">{{fmtTime .Timestamp}}</td>
+                    <td class="muted"><time datetime="{{fmtMachineTime .Timestamp}}">{{fmtTime .Timestamp}}</time></td>
                     <td>{{.Username}}</td>
                     <td>
                         {{if contains .Action "Failed"}}<span class="pill pill-failed">{{.Action}}</span>

@@ -8,6 +8,7 @@ const shellCases = [
     groups: ['Overview', 'Network data', 'Tools'],
     utilities: 'Utilities',
     pressedLanguage: 'EN',
+    browserTime: 'Browser time',
   },
   {
     name: 'German',
@@ -16,6 +17,7 @@ const shellCases = [
     groups: ['Übersicht', 'Netzwerkdaten', 'Werkzeuge'],
     utilities: 'Hilfsfunktionen',
     pressedLanguage: 'DE',
+    browserTime: 'Browserzeit',
   },
 ];
 
@@ -30,6 +32,7 @@ for (const shellCase of shellCases) {
     await expect(rail.getByRole('region', { name: shellCase.utilities })).toBeVisible();
     await expect(rail.locator('[aria-current="page"]')).toHaveCount(1);
     await expect(rail.getByRole('button', { name: shellCase.pressedLanguage, exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(rail.getByRole('button', { name: shellCase.browserTime })).toHaveText(shellCase.lang === 'de' ? 'Lokal' : 'Local');
     await expect(page.locator('.hamburger, [aria-label*="menu" i], [aria-label*="menü" i]')).toHaveCount(0);
 
     const layout = await page.evaluate(() => {

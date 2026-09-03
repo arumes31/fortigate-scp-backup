@@ -85,8 +85,8 @@
                     <td class="muted">{{.Username}}</td>
                     <td>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}{{.IntervalMin}} min{{end}}</td>
                     <td>{{.RetentionCount}}</td>
-                    <td class="muted">{{fmtTime .LastBackup}}</td>
-                    <td class="muted">{{fmtTime (index $root.NextRuns .ID)}}</td>
+                    <td class="muted">{{if isZero .LastBackup}}—{{else}}<time datetime="{{fmtMachineTime .LastBackup}}">{{fmtTime .LastBackup}}</time>{{end}}</td>
+                    {{$nextRun := index $root.NextRuns .ID}}<td class="muted">{{if isZero $nextRun}}—{{else}}<time datetime="{{fmtMachineTime $nextRun}}">{{fmtTime $nextRun}}</time>{{end}}</td>
                     <td class="fw-status">{{template "statusPill" .Status}}</td>
                     <td>{{.SSHPort}}</td>
                     <td>
