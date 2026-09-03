@@ -262,7 +262,7 @@ type uxExtensionTemplates struct {
 	admVPN     *webui.Renderer
 	admVPNEdit *template.Template
 	confGen    *webui.Renderer
-	polSplit   *template.Template
+	polSplit   *webui.Renderer
 	confConv   *template.Template
 	confTail   *template.Template
 }
@@ -297,7 +297,11 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 	if err != nil {
 		return nil, err
 	}
-	polSplit, err := parse("extensions/fgt_polsplit/templates/fgt_polsplit_index.html")
+	polSplit, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_polsplit/templates/fgt_polsplit_index.html",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -444,8 +448,19 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("POST /fgt-confgen/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /fgt-polsplit/{$}", render(templates.polSplit, "fgt_polsplit_index.html", uxSimpleExtensionFixture))
+	mux.HandleFunc("GET /fgt-polsplit/{$}", renderShared(templates.polSplit, uxPolSplitFixture))
 	mux.HandleFunc("GET /fgt-polsplit/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
+	mux.HandleFunc("GET /fgt-polsplit/policy_info", jsonResponse(`{
+		"firewall":{"id":7,"fqdn":"edge.example.test"},
+		"policy":{"id":42,"name":"Synthetic open policy","vdom":"root","srcintf":["lan"],"dstintf":["wan1"],"srcaddr":["all"],"dstaddr":["all"],"services":["ALL"],"action":"accept","schedule":"always","nat":"enable","comments":"Synthetic fixture"},
+		"action_display":"accept","backup_time":"2026-09-02 10:30","used_policy_id_count":1,"wan_bound":true,"warnings":[]
+	}`))
+	mux.HandleFunc("POST /fgt-polsplit/analyze", jsonResponse(`{
+		"warnings":[],"total_messages":24,"tuple_count":1,"src_count":1,"dst_count":1,"svc_count":1,
+		"tuples":[{"srcip":"10.0.0.10","dstip":"203.0.113.10","proto":"tcp","port":443,"service":"HTTPS","hits":24,"last_seen":"2026-09-02T10:30:00Z","flow":""}],
+		"stale_tuples":[],"dns_suggestions":[],"isdb_suggestions":[],"user_activity":[],"app_usage":[],"utm_blocked":[],
+		"strategies":[{"key":"per_service","label":"Per service","recommended":true,"policies":[{"id":100,"name":"PS42_HTTPS","tags":[],"src":[{"value":"10.0.0.10/32","is_net":false,"hosts":1}],"dst":[{"value":"203.0.113.10/32","is_net":false,"hosts":1}],"services":[{"key":"tcp/443","log_name":"HTTPS"}],"hits":24}],"new_objects":[],"config":"config firewall policy\n    edit 100\n        set name PS42_HTTPS\n    next\nend"}]
+	}`))
 	mux.HandleFunc("GET /fgt-polsplit/progress", jsonResponse(`{"state":"complete","progress":100}`))
 	mux.HandleFunc("GET /fgt-confconv/{$}", render(templates.confConv, "fgt_confconv_index.html", uxSimpleExtensionFixture))
 	mux.HandleFunc("GET /fgt-confconv/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
@@ -495,6 +510,14 @@ func uxConfGenFixture(scenario uxScenario) any {
 		"Base": uxBase("Policy Generator", "configgen"), "Firewalls": firewalls,
 		"Templates": []string{"Synthetic baseline"}, "PreselectedTemplate": "",
 	}
+}
+
+func uxPolSplitFixture(scenario uxScenario) any {
+	firewalls := []any{}
+	if scenario != uxScenarioEmpty {
+		firewalls = append(firewalls, map[string]any{"ID": 7, "FQDN": "edge.example.test"})
+	}
+	return map[string]any{"Base": uxBase("Policy Split Advisor", "polsplit"), "Firewalls": firewalls}
 }
 
 func uxSimpleExtensionFixture(scenario uxScenario) any {
@@ -1017,6 +1040,8 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "ConfGen frontend log", method: http.MethodPost, path: "/fgt-confgen/log", wantStatus: http.StatusNoContent},
 		{name: "Policy Split", method: http.MethodGet, path: "/fgt-polsplit/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Policy Split firewalls", method: http.MethodGet, path: "/fgt-polsplit/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Policy Split policy", method: http.MethodGet, path: "/fgt-polsplit/policy_info?fw_id=7&policy_id=42", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Policy Split analyze", method: http.MethodPost, path: "/fgt-polsplit/analyze", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Policy Split progress", method: http.MethodGet, path: "/fgt-polsplit/progress?id=fixture", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Config Converter", method: http.MethodGet, path: "/fgt-confconv/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Config Converter firewalls", method: http.MethodGet, path: "/fgt-confconv/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},

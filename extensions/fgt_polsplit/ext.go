@@ -3,7 +3,6 @@ package fgt_polsplit
 import (
 	"embed"
 	"errors"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 //go:embed templates/* static/*
@@ -30,7 +30,7 @@ type Extension struct {
 	logger *slog.Logger
 
 	pgPool  *pgxpool.Pool
-	tmpl    *template.Template
+	page    *webui.Renderer
 	tz      *time.Location
 	dataDir string
 	cipher  *crypto.Cipher
@@ -38,6 +38,7 @@ type Extension struct {
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
 	broadcastOp func(kind string, fwID int, status string)
+	pageBase    extension.PageBaseProvider
 
 	// Live progress of running analyses, polled by the UI (see progress.go).
 	progressMu   sync.Mutex
@@ -63,12 +64,16 @@ func (e *Extension) Prefix() string { return "/fgt-polsplit" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtPolSplit }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.PageBase == nil {
+		return errors.New("fgt_polsplit: shared page context is required")
+	}
 	if d.Cipher == nil {
-		return errors.New("shared cipher is required")
+		return errors.New("fgt_polsplit: shared cipher is required")
 	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.broadcastOp = d.BroadcastOp
+	e.pageBase = d.PageBase
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.dataDir = d.DataDir
@@ -77,11 +82,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		e.tz = time.UTC
 	}
 
-	t, err := template.New("").ParseFS(extensionFS, "templates/*.html")
-	if err != nil {
+	if err := e.parseTemplates(); err != nil {
 		return err
 	}
-	e.tmpl = t
 
 	e.progressByID = map[string]*progressState{}
 	liveExt.Store(e) // publish for the core dashboard's running-queries card
@@ -115,34 +118,13 @@ func (e *Extension) log(r *http.Request, action, details string) {
 	e.logActivity(user, action, details)
 }
 
-type baseData struct {
-	Title               string
-	Username            string
-	ExtEnabled          bool
-	ExtConfigGenEnabled bool
-	ExtPolSplitEnabled  bool
-	ExtConfConvEnabled  bool
-	ExtConfTailEnabled  bool
-	Lang                string
-	Active              string
-}
-
-func (e *Extension) baseData(r *http.Request, title, active string) baseData {
-	username := ""
-	if e.currentUser != nil {
-		username = e.currentUser(r)
+func (e *Extension) parseTemplates() error {
+	page, err := webui.ParsePage(extensionFS, "templates/fgt_polsplit_index.html", nil)
+	if err != nil {
+		return err
 	}
-	return baseData{
-		Title:               title,
-		Username:            username,
-		ExtEnabled:          e.cfg.ExtAdmVpnConf,
-		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
-		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
-		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
-		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
-		Lang:                "en",
-		Active:              active,
-	}
+	e.page = page
+	return nil
 }
 
 var _ extension.Extension = (*Extension)(nil)

@@ -1,40 +1,40 @@
 /* Policy Split Advisor — adapts to the FortiSafe TTY design system. */
 
-.ps-intro {
+.polsplit-page .ps-intro {
     color: var(--text-muted);
     font-size: 13px;
     margin: 8px 0 16px;
     max-width: 900px;
 }
 
-main .card {
+.polsplit-page .card {
     margin-bottom: 20px;
 }
 
-.form-grid {
+.polsplit-page .form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
     margin-bottom: 12px;
 }
 
-.field {
+.polsplit-page .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
-.field label {
+.polsplit-page .field label {
     font-size: 11px;
     color: var(--text-muted);
     font-weight: 500;
 }
 
-.form-control,
-input[type="text"],
-input[type="number"],
-input[type="datetime-local"],
-select {
+.polsplit-page .form-control,
+.polsplit-page input[type="text"],
+.polsplit-page input[type="number"],
+.polsplit-page input[type="datetime-local"],
+.polsplit-page select {
     width: 100%;
     background-color: var(--surface-2);
     border: 1px solid var(--border);
@@ -46,56 +46,56 @@ select {
     transition: border-color 0.12s ease;
 }
 
-.form-control:focus,
-input:focus,
-select:focus {
+.polsplit-page .form-control:focus,
+.polsplit-page input:focus,
+.polsplit-page select:focus {
     border-color: var(--accent);
 }
 
-.checkbox-row {
+.polsplit-page .checkbox-row {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 12px;
 }
 
-.checkbox-row input[type="checkbox"] {
+.polsplit-page .checkbox-row input[type="checkbox"] {
     accent-color: var(--accent);
     cursor: pointer;
 }
 
-.ps-field-btn {
+.polsplit-page .ps-field-btn {
     justify-content: flex-end;
 }
 
 /* Time range preset row */
-.ps-range-row {
+.polsplit-page .ps-range-row {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-bottom: 12px;
 }
 
-.ps-range.active,
-.ps-tab.active {
+.polsplit-page .ps-range.active,
+.polsplit-page .ps-tab.active {
     border-color: var(--accent);
     color: var(--accent);
 }
 
 /* Original policy box */
-.ps-policy-box {
+.polsplit-page .ps-policy-box {
     margin-top: 16px;
     border: 1px solid var(--border);
     background: var(--surface-2);
     padding: 12px;
 }
 
-.ps-policy-box h3 {
+.polsplit-page .ps-policy-box h3 {
     margin: 0 0 10px;
     font-size: 13px;
 }
 
-.ps-kv-row {
+.polsplit-page .ps-kv-row {
     display: grid;
     grid-template-columns: 140px 1fr;
     gap: 10px;
@@ -104,69 +104,69 @@ select:focus {
     border-bottom: 1px dotted var(--border);
 }
 
-.ps-kv-key {
+.polsplit-page .ps-kv-key {
     color: var(--text-muted);
     text-transform: uppercase;
 }
 
-.ps-muted {
+.polsplit-page .ps-muted {
     color: var(--text-muted);
     font-size: 12px;
 }
 
 /* Warnings */
-.ps-warnings {
+.polsplit-page .ps-warnings {
     margin: 0;
     padding-left: 18px;
 }
 
-.ps-warnings li {
+.polsplit-page .ps-warnings li {
     color: var(--warn, #e0af68);
     font-size: 12px;
     padding: 2px 0;
 }
 
 /* Stats row */
-.ps-stats {
+.polsplit-page .ps-stats {
     display: flex;
     flex-wrap: wrap;
     gap: 14px;
     margin-bottom: 14px;
 }
 
-.ps-stat {
+.polsplit-page .ps-stat {
     border: 1px solid var(--border);
     background: var(--surface-2);
     padding: 8px 14px;
     min-width: 120px;
 }
 
-.ps-stat-val {
+.polsplit-page .ps-stat-val {
     font-size: 18px;
     color: var(--accent);
 }
 
-.ps-stat-key {
+.polsplit-page .ps-stat-key {
     font-size: 10px;
     color: var(--text-muted);
     text-transform: uppercase;
 }
 
 /* Tables */
-.ps-table-wrap {
+.polsplit-page .ps-table-wrap {
     max-height: 420px;
     overflow: auto;
     border: 1px solid var(--border);
     margin-bottom: 12px;
 }
 
-.ps-table {
+.polsplit-page .ps-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 12px;
 }
 
-.ps-table th {
+.polsplit-page .ps-table th {
     position: sticky;
     top: 0;
     background: var(--surface-2);
@@ -178,26 +178,26 @@ select:focus {
     border-bottom: 1px solid var(--border);
 }
 
-.ps-table td {
+.polsplit-page .ps-table td {
     padding: 5px 10px;
     border-bottom: 1px solid var(--border);
     vertical-align: top;
 }
 
-.ps-num {
+.polsplit-page .ps-num {
     text-align: right;
     font-variant-numeric: tabular-nums;
 }
 
 /* Strategy tabs */
-.ps-tabs {
+.polsplit-page .ps-tabs {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 14px;
 }
 
-.ps-badge {
+.polsplit-page .ps-badge {
     background: var(--accent);
     color: var(--surface, #000);
     font-size: 9px;
@@ -206,7 +206,7 @@ select:focus {
     text-transform: uppercase;
 }
 
-.ps-count {
+.polsplit-page .ps-count {
     border: 1px solid var(--border);
     font-size: 10px;
     padding: 0 6px;
@@ -214,7 +214,7 @@ select:focus {
     color: var(--text-muted);
 }
 
-.ps-badge-new {
+.polsplit-page .ps-badge-new {
     background: var(--warn, #e0af68);
     color: var(--surface, #000);
     font-size: 9px;
@@ -222,17 +222,17 @@ select:focus {
     text-transform: uppercase;
 }
 
-#ps-stale-wrap h3,
-#ps-dns-wrap h3,
-#ps-isdb-wrap h3,
-#ps-users-wrap h3,
-#ps-apps-wrap h3,
-#ps-utm-wrap h3 {
+.polsplit-page #ps-stale-wrap h3,
+.polsplit-page #ps-dns-wrap h3,
+.polsplit-page #ps-isdb-wrap h3,
+.polsplit-page #ps-users-wrap h3,
+.polsplit-page #ps-apps-wrap h3,
+.polsplit-page #ps-utm-wrap h3 {
     font-size: 13px;
     margin: 16px 0 8px;
 }
 
-.ps-tag {
+.polsplit-page .ps-tag {
     border: 1px solid var(--accent);
     color: var(--accent);
     font-size: 9px;
@@ -242,13 +242,13 @@ select:focus {
     white-space: nowrap;
 }
 
-.ps-panel h3 {
+.polsplit-page .ps-panel h3 {
     font-size: 13px;
     margin: 16px 0 8px;
 }
 
 /* Generated config block */
-.ps-config {
+.polsplit-page .ps-config {
     background: var(--surface-2);
     border: 1px solid var(--border);
     padding: 12px;
@@ -261,19 +261,19 @@ select:focus {
     margin-top: 8px;
 }
 
-.ps-copy {
+.polsplit-page .ps-copy {
     margin-top: 4px;
 }
 
 /* Analyze-button row with live progress */
-.ps-analyze-row {
+.polsplit-page .ps-analyze-row {
     display: flex;
     align-items: center;
     gap: 14px;
     flex-wrap: wrap;
 }
 
-.ps-progress {
+.polsplit-page .ps-progress {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -281,7 +281,7 @@ select:focus {
     min-width: 260px;
 }
 
-.ps-progress-track {
+.polsplit-page .ps-progress-track {
     flex: 0 0 220px;
     height: 10px;
     border: 1px solid var(--border);
@@ -289,7 +289,7 @@ select:focus {
     overflow: hidden;
 }
 
-#ps-progress-bar {
+.polsplit-page #ps-progress-bar {
     height: 100%;
     width: 0%;
     background: var(--accent);
@@ -305,10 +305,10 @@ select:focus {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    #ps-progress-bar { animation: none; }
+    .polsplit-page #ps-progress-bar { animation: none; }
 }
 
-.ps-progress-meta {
+.polsplit-page .ps-progress-meta {
     color: var(--accent);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
@@ -317,7 +317,7 @@ select:focus {
 }
 
 /* Per-stage timing log ("✓ Aggregating traffic tuples (12.0s)") */
-.ps-progress-log {
+.polsplit-page .ps-progress-log {
     margin-top: 8px;
     font-family: var(--mono);
     font-size: 11px;
@@ -327,6 +327,6 @@ select:focus {
     overflow-y: auto;
 }
 
-.ps-progress-log .ps-progress-done {
+.polsplit-page .ps-progress-log .ps-progress-done {
     color: var(--accent);
 }

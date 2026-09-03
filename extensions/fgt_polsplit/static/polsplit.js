@@ -1,10 +1,14 @@
 /* Policy Split Advisor front-end: load the target policy from the latest
  * backup, run the Graylog traffic analysis, render tuples + strategies. */
+(function () {
 'use strict';
+
+const psRoot = document.getElementById('polsplit-page');
+if (!psRoot) return;
 
 const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null };
 
-function $(id) { return document.getElementById(id); }
+function $(id) { return psRoot.querySelector('#' + CSS.escape(id)); }
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -429,7 +433,7 @@ function renderStrategies(strategies) {
     });
     panels.querySelectorAll('.ps-copy').forEach(btn => {
         btn.addEventListener('click', () => {
-            const pre = document.getElementById(btn.dataset.target);
+            const pre = $(btn.dataset.target);
             copyText(pre.textContent).then(ok => {
                 btn.textContent = ok ? 'Copied!' : 'Copy failed — select & copy manually';
                 setTimeout(() => { btn.textContent = 'Copy Config'; }, 2000);
@@ -499,3 +503,5 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 });
+
+})();

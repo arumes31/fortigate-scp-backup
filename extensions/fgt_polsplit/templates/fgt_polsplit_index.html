@@ -1,43 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Policy Split Advisor · FortiSafe</title>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="/static/app.css">
+{{define "head"}}
     <link rel="stylesheet" href="/fgt-polsplit/static/styles.css">
-    <script defer src="/static/searchable.js"></script>
-    <script defer src="/fgt-polsplit/static/polsplit.js"></script>
-</head>
-<body>
-<div class="app">
-    <header class="topbar">
-        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
-        <nav class="nav">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/">Firewalls</a>
-            <a href="/search">Search</a>
-            <a href="/audit">Audit</a>
-            <a href="/topology">Topology</a>
-            <a href="/ipam">IPAM</a>
-            <a href="/licenses">Licenses</a>
-            <a href="/activity_log">Act_Log</a>
-            {{if .Base.ExtEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
-            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
-            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/" class="active">Pol_Split</a>{{end}}
-            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
-            {{if .Base.ExtConfTailEnabled}}<a href="/fgt-conftail/">Conf_Tail</a>{{end}}
-        </nav>
-        <div class="sysinfo">
-            <span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
-            <form method="post" action="/logout" class="logout-form" style="display:inline; margin:0;">
-                <button type="submit" class="logout-btn">[EXIT]</button>
-            </form>
-        </div>
-    </header>
+{{end}}
 
-    <main>
+{{define "content"}}
+    <div class="page polsplit-page" id="polsplit-page">
         <h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Split Advisor</h1>
         <p class="ps-intro">Analyze the traffic an open policy actually carries and split it into tightly-scoped policies. Traffic data comes from Graylog; the policy definition from the latest config backup.</p>
 
@@ -251,7 +217,10 @@
                 <div id="ps-strategy-panels"></div>
             </div>
         </div>
-    </main>
-</div>
-</body>
-</html>
+    </div>
+{{end}}
+
+{{define "scripts"}}
+    <script src="/static/searchable.js"></script>
+    <script src="/fgt-polsplit/static/polsplit.js"></script>
+{{end}}
