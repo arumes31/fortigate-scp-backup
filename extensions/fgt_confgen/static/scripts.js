@@ -1,4 +1,12 @@
 // scripts.js (Version 1.17)
+(function () {
+'use strict';
+
+const confGenRoot = document.getElementById('confgen-page');
+if (!confGenRoot) return;
+
+const initSearchableSelect = window.FortiSafeConfGen?.initSearchableSelect;
+let preselectedTemplate = confGenRoot.dataset.preselectedTemplate || '';
 let policies = [];
 let interfaces = [];
 let addresses = [];
@@ -17,26 +25,14 @@ let users = [];
 let groups = [];
 
 function showNotification(message, type = 'success') {
-    const container = document.getElementById('notification-container');
-    if (!container) {
-        console.error('Notification container not found');
-        logToBackend('Notification container not found');
-        return;
+    const feedback = document.getElementById('confgen-feedback');
+    const kind = type === 'info' ? 'loading' : type;
+    if (window.FortiSafeUI?.announce) {
+        window.FortiSafeUI.announce(feedback, kind, message);
+    } else if (feedback) {
+        feedback.dataset.feedback = kind;
+        feedback.textContent = message;
     }
-
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.textContent = message;
-
-    container.appendChild(notification);
-
-    setTimeout(() => {
-        notification.style.opacity = '0';
-        notification.style.transform = 'translateX(100%)';
-        setTimeout(() => {
-            notification.remove();
-        }, 500);
-    }, 3000);
 }
 
 // New function to send logs to backend
@@ -271,11 +267,11 @@ function renderInterfaces(container, items, type) {
         const div = document.createElement('div');
         div.className = 'interface-item';
         div.innerHTML = `
-            <select onchange="updateInterface('${type}', ${index}, this.value)">
+            <select data-change-action="update-interface" data-item-type="${type}" data-item-index="${index}">
                 <option value="">Select Interface</option>
                 ${interfaces.map(intf => `<option value="${escHtml(intf)}" ${item === intf ? 'selected' : ''}>${escHtml(intf)}</option>`).join('')}
             </select>
-            <button onclick="deleteInterface('${type}', ${index})">Delete</button>
+            <button type="button" data-action="delete-interface" data-item-type="${type}" data-item-index="${index}">Delete</button>
         `;
         container.appendChild(div);
     });
@@ -299,7 +295,7 @@ function renderAddresses(container, addrItems, addrGroupItems, isdbItems, vipIte
         const div = document.createElement('div');
         div.className = 'address-item';
         div.innerHTML = `
-            <select class="address-select" onchange="updateAddressOrInternetService('${type}', ${index}, this.value)">
+            <select class="address-select" data-change-action="update-address" data-item-type="${type}" data-item-index="${index}">
                 <option value="">Select Address/ISDB</option>
                 <optgroup label="Addresses">
                     ${addresses.map(addr => `<option value="address:${escHtml(addr)}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${escHtml(addr)}</option>`).join('')}
@@ -314,7 +310,7 @@ function renderAddresses(container, addrItems, addrGroupItems, isdbItems, vipIte
                     ${vips.map(vip => `<option value="vip:${escHtml(vip)}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${escHtml(vip)}</option>`).join('')}
                 </optgroup>
             </select>
-            <button onclick="deleteAddressOrInternetService('${type}', ${index})">Delete</button>
+            <button type="button" data-action="delete-address" data-item-type="${type}" data-item-index="${index}">Delete</button>
         `;
         container.appendChild(div);
         initSearchableSelect(div.querySelector('.address-select'), {
@@ -334,7 +330,7 @@ function renderServices(container, items) {
         const div = document.createElement('div');
         div.className = 'service-item';
         div.innerHTML = `
-            <select onchange="updateService(${index}, this.value)">
+            <select data-change-action="update-service" data-item-index="${index}">
                 <option value="">Select Service/Group</option>
                 <optgroup label="Service Groups">
                     ${Object.keys(serviceGroups).map(group => `<option value="group:${escHtml(group)}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
@@ -347,16 +343,16 @@ function renderServices(container, items) {
                 </optgroup>
             </select>
             ${item.type === 'custom' ? `
-                <input type="text" value="${escHtml(item.name)}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
-                <select onchange="updateCustomService(${index}, 'protocol', this.value)">
+                <input type="text" value="${escHtml(item.name)}" data-change-action="update-custom-service" data-item-index="${index}" data-item-field="name" placeholder="Service Name" aria-label="Custom service name">
+                <select data-change-action="update-custom-service" data-item-index="${index}" data-item-field="protocol" aria-label="Custom service protocol">
                     <option value="TCP" ${item.protocol === 'TCP' ? 'selected' : ''}>TCP</option>
                     <option value="UDP" ${item.protocol === 'UDP' ? 'selected' : ''}>UDP</option>
                     <option value="SCTP" ${item.protocol === 'SCTP' ? 'selected' : ''}>SCTP</option>
                     <option value="ICMP" ${item.protocol === 'ICMP' ? 'selected' : ''}>ICMP</option>
                 </select>
-                <input type="text" value="${escHtml(item.port)}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
+                <input type="text" value="${escHtml(item.port)}" data-change-action="update-custom-service" data-item-index="${index}" data-item-field="port" placeholder="Port" aria-label="Custom service port">
             ` : ''}
-            <button onclick="deleteService(${index})">Delete</button>
+            <button type="button" data-action="delete-service" data-item-index="${index}">Delete</button>
         `;
         container.appendChild(div);
     });
@@ -374,7 +370,7 @@ function renderUsersGroups(container, userItems, groupItems) {
         const div = document.createElement('div');
         div.className = 'user-group-item';
         div.innerHTML = `
-            <select class="user-group-select" onchange="updateUserOrGroup(${index}, this.value)">
+            <select class="user-group-select" data-change-action="update-user-group" data-item-index="${index}">
                 <option value="">Select User/Group</option>
                 <optgroup label="Users">
                     ${users.map(user => `<option value="user:${escHtml(user)}" ${isUser && item === user ? 'selected' : ''}>${escHtml(user)}</option>`).join('')}
@@ -383,7 +379,7 @@ function renderUsersGroups(container, userItems, groupItems) {
                     ${groups.map(group => `<option value="group:${escHtml(group)}" ${!isUser && item === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
             </select>
-            <button onclick="deleteUserOrGroup(${index})">Delete</button>
+            <button type="button" data-action="delete-user-group" data-item-index="${index}">Delete</button>
         `;
         container.appendChild(div);
         initSearchableSelect(div.querySelector('.user-group-select'), {
@@ -421,7 +417,7 @@ function updateDropdowns() {
     ipPoolSelect.innerHTML = opts(ipPools);
 
     const policyId = form.dataset.policyId;
-    if (policyId) {
+    if (policyId && policies.some(policy => policy.id === policyId)) {
         selectPolicy(policyId);
     }
 }
@@ -1098,8 +1094,8 @@ function saveTemplate() {
 
 function loadTemplateList() {
     return new Promise((resolve, reject) => {
-        console.log('Loading template list, checking for preselected template:', window.preselectedTemplate);
-        logToBackend(`Loading template list, preselected template: ${window.preselectedTemplate || 'none'}`);
+        console.log('Loading template list, checking for preselected template:', preselectedTemplate);
+        logToBackend(`Loading template list, preselected template: ${preselectedTemplate || 'none'}`);
         fetch('/fgt-confgen/load_templates')
         .then(response => response.json())
         .then(data => {
@@ -1119,20 +1115,20 @@ function loadTemplateList() {
             });
             console.log('Templates loaded:', data.templates);
             logToBackend(`Templates loaded: ${JSON.stringify(data.templates)}`);
-            if (window.preselectedTemplate) {
-                console.log('Attempting to select preselected template:', window.preselectedTemplate);
-                logToBackend(`Attempting to select preselected template: ${window.preselectedTemplate}`);
-                if (data.templates.includes(window.preselectedTemplate)) {
-                    select.value = window.preselectedTemplate;
-                    console.log(`Preselected template ${window.preselectedTemplate} found, loading template`);
-                    logToBackend(`Preselected template ${window.preselectedTemplate} found, loading template`);
+            if (preselectedTemplate) {
+                console.log('Attempting to select preselected template:', preselectedTemplate);
+                logToBackend(`Attempting to select preselected template: ${preselectedTemplate}`);
+                if (data.templates.includes(preselectedTemplate)) {
+                    select.value = preselectedTemplate;
+                    console.log(`Preselected template ${preselectedTemplate} found, loading template`);
+                    logToBackend(`Preselected template ${preselectedTemplate} found, loading template`);
                     loadTemplate();
                 } else {
-                    console.warn(`Preselected template "${window.preselectedTemplate}" not found in available templates:`, data.templates);
-                    logToBackend(`Preselected template "${window.preselectedTemplate}" not found in available templates: ${JSON.stringify(data.templates)}`);
-                    showNotification(`Template "${window.preselectedTemplate}" not found`, 'error');
+                    console.warn(`Preselected template "${preselectedTemplate}" not found in available templates:`, data.templates);
+                    logToBackend(`Preselected template "${preselectedTemplate}" not found in available templates: ${JSON.stringify(data.templates)}`);
+                    showNotification(`Template "${preselectedTemplate}" not found`, 'error');
                     // Clear preselected template to prevent repeated attempts
-                    window.preselectedTemplate = null;
+                    preselectedTemplate = '';
                 }
             } else {
                 console.log('No preselected template provided');
@@ -1394,7 +1390,7 @@ function renameTemplate() {
             }
             showNotification(`Template renamed to ${newName}`, 'success');
             logToBackend(`Template renamed to ${newName}`);
-            window.preselectedTemplate = newName;
+            preselectedTemplate = newName;
             loadTemplateList();
         } else {
             console.error('Error renaming template:', data.error);
@@ -1730,41 +1726,65 @@ function copyOutput(outputId) {
 
 
 
-function toggleTheme() {
-    const html = document.documentElement;
-    const currentTheme = html.getAttribute('data-theme') || 'light';
-    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    
-    html.setAttribute('data-theme', newTheme);
-    localStorage.setItem('theme', newTheme);
-    
-    const toggleButton = document.getElementById('theme-toggle');
-    if (toggleButton) {
-        toggleButton.textContent = newTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-        toggleButton.setAttribute('aria-label', `Toggle ${newTheme === 'dark' ? 'light' : 'dark'} mode`);
-    }
-    
-    logToBackend(`Theme toggled to: ${newTheme}`);
+function itemIndex(control) {
+    return Number.parseInt(control.dataset.itemIndex, 10);
+}
+
+function bindPageActions() {
+    const clickActions = {
+        'load-template': () => loadTemplate(),
+        'clone-template': () => cloneTemplate(),
+        'copy-url': () => copyUrl(),
+        'save-template': () => saveTemplate(),
+        'delete-template': () => deleteTemplate(),
+        'rename-template': () => renameTemplate(),
+        'export-template': () => exportTemplate(),
+        'choose-template-file': () => document.getElementById('import-template')?.click(),
+        'add-policy': () => addPolicy(),
+        'load-firewall-config': () => loadFirewallConfig(),
+        'add-src-interface': button => addSrcInterface(button),
+        'add-src-address': button => addSrcAddress(button),
+        'add-src-user-group': button => addSrcUserOrGroup(button),
+        'add-dst-interface': button => addDstInterface(button),
+        'add-dst-address': button => addDstAddress(button),
+        'add-service': button => addService(button),
+        'save-policy': button => savePolicy(button),
+        'clear-form': button => clearForm(button),
+        'clone-policy': button => clonePolicy(button),
+        'generate-policies': () => generatePolicies(),
+        'copy-output': button => copyOutput(button.dataset.outputId),
+        'delete-interface': button => deleteInterface(button.dataset.itemType, itemIndex(button)),
+        'delete-address': button => deleteAddressOrInternetService(button.dataset.itemType, itemIndex(button)),
+        'delete-service': button => deleteService(itemIndex(button)),
+        'delete-user-group': button => deleteUserOrGroup(itemIndex(button)),
+    };
+    const changeActions = {
+        'import-template': (control, event) => importTemplate(event),
+        'toggle-profile-fields': control => toggleProfileFields(control),
+        'toggle-ip-pool-field': control => toggleIpPoolField(control),
+        'update-interface': control => updateInterface(control.dataset.itemType, itemIndex(control), control.value),
+        'update-address': control => updateAddressOrInternetService(control.dataset.itemType, itemIndex(control), control.value),
+        'update-service': control => updateService(itemIndex(control), control.value),
+        'update-custom-service': control => updateCustomService(itemIndex(control), control.dataset.itemField, control.value),
+        'update-user-group': control => updateUserOrGroup(itemIndex(control), control.value),
+    };
+
+    confGenRoot.addEventListener('click', event => {
+        const button = event.target.closest('[data-action]');
+        if (!button || !confGenRoot.contains(button)) return;
+        const action = clickActions[button.dataset.action];
+        if (action) action(button, event);
+    });
+    confGenRoot.addEventListener('change', event => {
+        const control = event.target.closest('[data-change-action]');
+        if (!control || !confGenRoot.contains(control)) return;
+        const action = changeActions[control.dataset.changeAction];
+        if (action) action(control, event);
+    });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Determine initial theme
-    let initialTheme = localStorage.getItem('theme');
-    if (!initialTheme) {
-        initialTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        localStorage.setItem('theme', initialTheme);
-    }
-    
-    // Apply initial theme
-    const html = document.documentElement;
-    html.setAttribute('data-theme', initialTheme);
-    
-    const toggleButton = document.getElementById('theme-toggle');
-    if (toggleButton) {
-        toggleButton.textContent = initialTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-        toggleButton.setAttribute('aria-label', `Toggle ${initialTheme === 'dark' ? 'light' : 'dark'} mode`);
-        toggleButton.addEventListener('click', toggleTheme);
-    }
+	bindPageActions();
 
     const form = document.getElementById('policy-form');
     if (form) {
@@ -1805,19 +1825,19 @@ document.addEventListener('DOMContentLoaded', () => {
         initSearchableSelect(fwSelect, { placeholder: 'Select Firewall' });
     }
 
-    console.log('DOM loaded, checking preselected template immediately:', window.preselectedTemplate);
-    logToBackend(`DOM loaded, initial preselected template: ${window.preselectedTemplate || 'none'}`);
+    console.log('DOM loaded, checking preselected template immediately:', preselectedTemplate);
+    logToBackend(`DOM loaded, initial preselected template: ${preselectedTemplate || 'none'}`);
 
     // Function to initialize templates
     let _templatesInitialized = false;
     const initializeTemplates = () => {
         if (_templatesInitialized) return;
         _templatesInitialized = true;
-        console.log('Initializing template list, final preselected template:', window.preselectedTemplate);
-        logToBackend(`Initializing template list, final preselected template: ${window.preselectedTemplate || 'none'}`);
+        console.log('Initializing template list, final preselected template:', preselectedTemplate);
+        logToBackend(`Initializing template list, final preselected template: ${preselectedTemplate || 'none'}`);
         loadTemplateList().then(() => {
             updateDropdowns();
-            if (!window.preselectedTemplate) {
+            if (!preselectedTemplate) {
                 console.log('No preselected template, adding new policy');
                 logToBackend('No preselected template, adding new policy');
                 addPolicy();
@@ -1830,30 +1850,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
-    // If preselectedTemplate is already set, initialize immediately
-    if (typeof window.preselectedTemplate !== 'undefined') {
-        initializeTemplates();
-    } else {
-        // Otherwise, wait for the window 'load' event to ensure inline scripts have run
-        window.addEventListener('load', () => {
-            console.log('Window load event, preselected template:', window.preselectedTemplate);
-            logToBackend(`Window load event, preselected template: ${window.preselectedTemplate || 'none'}`);
-            initializeTemplates();
-        });
-        // Fallback: if load event takes too long, check after a short delay
-        setTimeout(() => {
-            if (typeof window.preselectedTemplate !== 'undefined') {
-                console.log('Fallback check, preselected template set:', window.preselectedTemplate);
-                logToBackend(`Fallback check, preselected template set: ${window.preselectedTemplate}`);
-                initializeTemplates();
-            } else {
-                console.warn('Fallback check, preselected template still not set, proceeding without it');
-                logToBackend('Fallback check, preselected template still not set, proceeding without it');
-                window.preselectedTemplate = null;
-                initializeTemplates();
-            }
-        }, 1000);
-    }
+    initializeTemplates();
 });
 
 function loadFirewallConfig() {
@@ -1903,3 +1900,5 @@ function loadFirewallConfig() {
         showNotification('Error loading config: ' + error.message, 'error');
     });
 }
+
+})();

@@ -3,7 +3,7 @@ package fgt_confgen
 import (
 	"database/sql"
 	"embed"
-	"html/template"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -18,6 +18,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 //go:embed templates/* static/*
@@ -29,12 +30,13 @@ type Extension struct {
 
 	db     *sql.DB
 	pgPool *pgxpool.Pool
-	tmpl   *template.Template
+	page   *webui.Renderer
 	tz     *time.Location
 	cipher *crypto.Cipher
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+	pageBase    extension.PageBaseProvider
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
@@ -48,8 +50,12 @@ func (e *Extension) Prefix() string { return "/fgt-confgen" }
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtConfGen }
 
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.PageBase == nil {
+		return errors.New("fgt_confgen: shared page context is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.pageBase = d.PageBase
 	e.tz = d.TZ
 	e.pgPool = d.DB
 	e.cipher = d.Cipher
@@ -120,36 +126,6 @@ func (e *Extension) log(r *http.Request, action, details string) {
 		user = e.currentUser(r)
 	}
 	e.logActivity(user, action, details)
-}
-
-type baseData struct {
-	Title               string
-	Username            string
-	ExtEnabled          bool
-	ExtConfigGenEnabled bool
-	ExtPolSplitEnabled  bool
-	ExtConfConvEnabled  bool
-	ExtConfTailEnabled  bool
-	Lang                string
-	Active              string
-}
-
-func (e *Extension) baseData(r *http.Request, title, active string) baseData {
-	username := ""
-	if e.currentUser != nil {
-		username = e.currentUser(r)
-	}
-	return baseData{
-		Title:               title,
-		Username:            username,
-		ExtEnabled:          e.cfg.ExtAdmVpnConf,
-		ExtConfigGenEnabled: e.cfg.ExtFgtConfGen,
-		ExtPolSplitEnabled:  e.cfg.ExtFgtPolSplit,
-		ExtConfConvEnabled:  e.cfg.ExtFgtConfConv,
-		ExtConfTailEnabled:  e.cfg.ExtFgtConfTail,
-		Lang:                "en", // Default lang
-		Active:              active,
-	}
 }
 
 var _ extension.Extension = (*Extension)(nil)

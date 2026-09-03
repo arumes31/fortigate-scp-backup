@@ -261,7 +261,7 @@ type uxExtensionTemplates struct {
 	root       string
 	admVPN     *webui.Renderer
 	admVPNEdit *template.Template
-	confGen    *template.Template
+	confGen    *webui.Renderer
 	polSplit   *template.Template
 	confConv   *template.Template
 	confTail   *template.Template
@@ -289,7 +289,11 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 	if err != nil {
 		return nil, err
 	}
-	confGen, err := parse("extensions/fgt_confgen/templates/fgt_confgen_index.html")
+	confGen, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_confgen/templates/fgt_confgen_index.html",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -415,9 +419,28 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "edge.example.test|203.0.113.7|synthetic-site\n")
 	})
-	mux.HandleFunc("GET /fgt-confgen/{$}", render(templates.confGen, "fgt_confgen_index.html", uxConfGenFixture))
+	mux.HandleFunc("GET /fgt-confgen/{$}", renderShared(templates.confGen, uxConfGenFixture))
 	mux.HandleFunc("GET /fgt-confgen/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
 	mux.HandleFunc("GET /fgt-confgen/load_templates", jsonResponse(`{"templates":["Synthetic baseline"]}`))
+	mux.HandleFunc("GET /fgt-confgen/get_template/{templateName}", jsonResponse(`{
+		"status":"success",
+		"is_global":false,
+		"data":{"policies":[{
+			"policy_id":"fixture-policy","policy_name":"Synthetic allow","policy_comment":"Browser fixture",
+			"src_interfaces":[],"dst_interfaces":[],"src_addresses":[],"src_address_groups":[],
+			"src_internet_services":[],"src_vips":[],"dst_addresses":[],"dst_address_groups":[],
+			"dst_internet_services":[],"dst_vips":[],"services":[],"action":"accept",
+			"inspection_mode":"flow","ssl_ssh_profile":"","webfilter_profile":"","webfilter_enabled":false,
+			"application_list":"","application_list_enabled":false,"av_profile":"","av_enabled":false,
+			"ips_sensor":"","ips_sensor_enabled":false,"logtraffic":"all","logtraffic_start":"enable",
+			"auto_asic_offload":"enable","nat":"disable","ip_pool":"","users":[],"groups":[]
+		}]},
+		"config":{"interfaces":[],"addresses":[],"address_groups":[],"internet_services":[],"vips":[],
+			"ip_pools":[],"services":[],"service_groups":{},"ssl_ssh_profiles":[],"webfilter_profiles":[],
+			"application_lists":[],"av_profiles":[],"ips_sensors":[],"users":[],"groups":[]}
+	}`))
+	mux.HandleFunc("POST /fgt-confgen/parse_config", jsonResponse(`{"interfaces":[],"addresses":[],"address_groups":[],"internet_services":[],"vips":[],"ip_pools":[],"services":[],"service_groups":{},"ssl_ssh_profiles":[],"webfilter_profiles":[],"application_lists":[],"av_profiles":[],"ips_sensors":[],"users":[],"groups":[]}`))
+	mux.HandleFunc("POST /fgt-confgen/generate_policy", jsonResponse(`{"outputs":[{"output1":"config firewall policy\n    edit 1\nend","output2":"config firewall policy\n    edit 2\nend","output3":"config firewall policy\n    edit 3\nend"}]}`))
 	mux.HandleFunc("POST /fgt-confgen/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -464,10 +487,14 @@ func uxADMVPNFixture(scenario uxScenario) any {
 }
 
 func uxConfGenFixture(scenario uxScenario) any {
-	data := uxSimpleExtensionFixture(scenario).(map[string]any)
-	data["Templates"] = []string{"Synthetic baseline"}
-	data["PreselectedTemplate"] = ""
-	return data
+	firewalls := []any{}
+	if scenario != uxScenarioEmpty {
+		firewalls = append(firewalls, map[string]any{"ID": 7, "FQDN": "edge.example.test"})
+	}
+	return map[string]any{
+		"Base": uxBase("Policy Generator", "configgen"), "Firewalls": firewalls,
+		"Templates": []string{"Synthetic baseline"}, "PreselectedTemplate": "",
+	}
 }
 
 func uxSimpleExtensionFixture(scenario uxScenario) any {
@@ -984,6 +1011,9 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "ConfGen", method: http.MethodGet, path: "/fgt-confgen/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfGen firewalls", method: http.MethodGet, path: "/fgt-confgen/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen templates", method: http.MethodGet, path: "/fgt-confgen/load_templates", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfGen template", method: http.MethodGet, path: "/fgt-confgen/get_template/Synthetic%20baseline", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfGen parse", method: http.MethodPost, path: "/fgt-confgen/parse_config", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfGen generate", method: http.MethodPost, path: "/fgt-confgen/generate_policy", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen frontend log", method: http.MethodPost, path: "/fgt-confgen/log", wantStatus: http.StatusNoContent},
 		{name: "Policy Split", method: http.MethodGet, path: "/fgt-polsplit/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Policy Split firewalls", method: http.MethodGet, path: "/fgt-polsplit/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},

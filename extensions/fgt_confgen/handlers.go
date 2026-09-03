@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"math/rand"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // isValidTemplateName rejects only what would break the places a template
@@ -59,16 +59,16 @@ func canManageGlobalTemplates(username string) bool {
 }
 
 func (e *Extension) parseTemplates() error {
-	t, err := template.New("").ParseFS(templatesFS, "templates/*.html")
+	page, err := webui.ParsePage(templatesFS, "templates/"+indexTemplate, nil)
 	if err != nil {
 		return err
 	}
-	e.tmpl = t
+	e.page = page
 	return nil
 }
 
 type indexContext struct {
-	Base                any
+	Base                webui.BaseData
 	Firewalls           []FirewallRef
 	Templates           []string
 	PreselectedTemplate string
@@ -120,7 +120,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	preselected := r.URL.Query().Get("preselected")
 
 	ctx := indexContext{
-		Base:                e.baseData(r, "Policy Generator", "configgen"),
+		Base:                e.pageBase(r, "Policy Generator", "configgen"),
 		Firewalls:           firewalls,
 		Templates:           templates,
 		PreselectedTemplate: preselected,
@@ -141,8 +141,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 		Groups:              config.Groups,
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := e.tmpl.ExecuteTemplate(w, indexTemplate, ctx); err != nil {
+	if err := e.page.RenderHTTP(w, ctx); err != nil {
 		e.logger.Error("Template render failed", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}

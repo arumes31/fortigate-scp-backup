@@ -1,6 +1,6 @@
 /* ConfGen Layout and Form Styling — Adapts to the FortiSafe TTY design system. */
 
-.container {
+.confgen-page .container {
     display: grid;
     grid-template-columns: 280px 1fr;
     gap: 20px;
@@ -8,69 +8,63 @@
     margin-top: 20px;
 }
 
-@media (max-width: 768px) {
-    .container {
-        grid-template-columns: 1fr;
-    }
-}
-
-.sidebar {
+.confgen-page .sidebar {
     display: flex;
     flex-direction: column;
     gap: 15px;
 }
 
-.main-content {
+.confgen-page .main-content {
     display: flex;
     flex-direction: column;
     gap: 15px;
 }
 
 /* Template Select list, buttons and lists */
-.template-section {
+.confgen-page .template-section {
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
 
-.btn-group {
+.confgen-page .btn-group {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
     gap: 8px;
 }
 
-.w-100 {
+.confgen-page .w-100 {
     width: 100%;
 }
 
-.text-center {
+.confgen-page .text-center {
     text-align: center;
 }
 
 /* Form layout inside cards */
-.form-grid {
+.confgen-page .form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
     margin-bottom: 12px;
 }
 
-.field {
+.confgen-page .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
-.field label {
+.confgen-page .field label {
     font-size: 11px;
     color: var(--text-muted);
     font-weight: 500;
 }
 
 /* Form controls matching FortiSafe styling */
-.form-control, 
-input[type="text"], 
-select {
+.confgen-page .form-control,
+.confgen-page input[type="text"],
+.confgen-page select {
     width: 100%;
     background-color: var(--surface-2);
     border: 1px solid var(--border);
@@ -82,14 +76,14 @@ select {
     transition: border-color 0.12s ease;
 }
 
-.form-control:focus, 
-input[type="text"]:focus, 
-select:focus {
+.confgen-page .form-control:focus,
+.confgen-page input[type="text"]:focus,
+.confgen-page select:focus {
     border-color: var(--accent);
 }
 
 /* Checkboxes */
-.checkbox-row {
+.confgen-page .checkbox-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -97,13 +91,13 @@ select:focus {
     text-transform: uppercase;
 }
 
-.checkbox-row input[type="checkbox"] {
+.confgen-page .checkbox-row input[type="checkbox"] {
     accent-color: var(--accent);
     cursor: pointer;
 }
 
 /* Policy Items in Sidebar */
-#policy-list {
+.confgen-page #policy-list {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -111,7 +105,7 @@ select:focus {
     overflow-y: auto;
 }
 
-.policy-item {
+.confgen-page .policy-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -119,20 +113,20 @@ select:focus {
     background-color: var(--surface-2);
     border: 1px solid var(--border);
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.policy-item:hover {
+.confgen-page .policy-item:hover {
     border-color: var(--accent-hover);
 }
 
-.policy-item.active {
+.confgen-page .policy-item.active {
     background-color: var(--accent-soft);
     border-color: var(--accent);
     box-shadow: var(--glow);
 }
 
-.policy-item span {
+.confgen-page .policy-item span {
     flex: 1;
     font-size: 12px;
     white-space: nowrap;
@@ -141,7 +135,7 @@ select:focus {
     text-transform: none;
 }
 
-.policy-item button {
+.confgen-page .policy-item button {
     background: none;
     border: none;
     cursor: pointer;
@@ -151,15 +145,15 @@ select:focus {
     padding: 0 4px;
 }
 
-.policy-item button:hover {
+.confgen-page .policy-item button:hover {
     color: var(--accent);
 }
 
 /* Interface/Address/Service Lists and Items (Chips) */
-.interface-items,
-.address-items,
-.service-items,
-.user-group-items {
+.confgen-page .interface-items,
+.confgen-page .address-items,
+.confgen-page .service-items,
+.confgen-page .user-group-items {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -167,7 +161,7 @@ select:focus {
     min-height: 24px;
 }
 
-.chip-item {
+.confgen-page .chip-item {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -178,7 +172,7 @@ select:focus {
     text-transform: none;
 }
 
-.chip-item .remove-btn {
+.confgen-page .chip-item .remove-btn {
     background: none;
     border: none;
     color: var(--accent);
@@ -188,12 +182,12 @@ select:focus {
     font-size: 12px;
 }
 
-.chip-item .remove-btn:hover {
+.confgen-page .chip-item .remove-btn:hover {
     color: var(--accent-hover);
 }
 
 /* Generated output views */
-.output-section pre {
+.confgen-page .output-section pre {
     margin: 0;
     padding: 15px;
     background-color: var(--surface);
@@ -206,7 +200,7 @@ select:focus {
     text-transform: none;
 }
 
-.card-header {
+.confgen-page .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -215,47 +209,41 @@ select:focus {
     margin-bottom: 12px;
 }
 
-.btn-outline {
+.confgen-page .btn-outline {
     background-color: transparent;
     border: 1px dashed var(--border);
     color: var(--text-muted);
 }
 
-.btn-outline:hover {
+.confgen-page .btn-outline:hover {
     border-color: var(--accent);
     color: var(--accent);
 }
 
-.field-toggle {
+.confgen-page .field-toggle {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 4px;
 }
 
-.field-toggle label {
+.confgen-page .field-toggle label {
     font-size: 11px;
     color: var(--text-muted);
     font-weight: 500;
 }
 
-@media (max-width: 768px) {
-    .container {
-        grid-template-columns: 1fr;
-    }
-}
-
 /* Searchable Select styling */
-.searchable-select-wrapper {
+.confgen-page .searchable-select-wrapper {
     position: relative;
     width: 100%;
 }
 /* Hide the retained native select only while it sits inside the wrapper —
    teardown moves it back out, which restores its normal display. */
-.searchable-select-wrapper > select {
+.confgen-page .searchable-select-wrapper > select {
     display: none;
 }
-.searchable-select-dropdown {
+.confgen-page .searchable-select-dropdown {
     position: absolute;
     top: 100%;
     left: 0;
@@ -268,7 +256,7 @@ select:focus {
     display: none;
     box-shadow: 0 4px 6px rgba(0,0,0,0.3);
 }
-.searchable-optgroup-label {
+.confgen-page .searchable-optgroup-label {
     padding: 6px 12px;
     font-size: 11px;
     color: var(--text-muted);
@@ -276,26 +264,26 @@ select:focus {
     font-weight: bold;
     text-transform: uppercase;
 }
-.searchable-select-option {
+.confgen-page .searchable-select-option {
     padding: 8px 12px;
     cursor: pointer;
     font-size: 13px;
     color: var(--text);
     transition: background-color 0.1s;
 }
-.searchable-select-option:hover {
+.confgen-page .searchable-select-option:hover {
     background-color: var(--surface-3);
 }
-.searchable-select-option.highlighted {
+.confgen-page .searchable-select-option.highlighted {
     background-color: var(--accent-soft);
     color: var(--text);
 }
-.searchable-select-option.selected {
+.confgen-page .searchable-select-option.selected {
     background-color: var(--accent);
     color: var(--text);
 }
 
-.searchable-select-option.disabled {
+.confgen-page .searchable-select-option.disabled {
     opacity: 0.45;
     cursor: not-allowed;
 }
