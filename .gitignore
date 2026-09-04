@@ -28,6 +28,7 @@ temp/
 .agents/
 .kimi-code
 pgdata/
+tasks/
 /secrets/*
 !/secrets/README.md
 
@@ -35,5 +36,3 @@ pgdata/
 /ui-tests/node_modules/
 /ui-tests/playwright-report/
 /ui-tests/test-results/
-
-
