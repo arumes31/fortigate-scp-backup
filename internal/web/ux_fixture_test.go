@@ -639,11 +639,32 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	mux.HandleFunc("GET /licenses", render("licenses.html", func(scenario uxScenario) any {
 		data := licensesData{Base: uxBase("Licenses", "licenses")}
 		if scenario != uxScenarioEmpty {
-			data.Unknown = 2
+			fetched := uxFixtureNow.Add(-30 * time.Minute)
+			data.Rows = []licenseRow{
+				{FwID: 7, FQDN: "edge.example.test", Hostname: "EDGE-FGT", Serial: "FGT-EDGE-001", Model: "FortiGate 100F", Version: "7.4.5", FetchedAt: fetched, Expiry: "2026-09-18", DaysLeft: 16, Level: "warn", Entitlements: []licenseEntitlement{{Service: "FortiGuard IPS", Expiry: "2026-09-18", Result: "Updates Installed"}}},
+				{FwID: 12, FQDN: "branch.example.test", Hostname: "BRANCH-FGT", Serial: "FGT-BRANCH-012", Model: "FortiGate 80F", Version: "7.2.9", FetchedAt: fetched.Add(-time.Hour), Expiry: "2026-08-20", DaysLeft: -13, Level: "expired", Devices: []licenseDevice{{Kind: "switch", Name: "BRANCH-SW01", Serial: "CHILD-EXPIRED-001", Model: "FortiSwitch 108F", Version: "7.4.4", Status: "online"}}, Switches: 1},
+				{FwID: 19, FQDN: "lab.example.test", Hostname: "LAB-FGT", Model: "FortiGate VM", Level: "unknown", FetchError: "Synthetic collection failure"},
+			}
+			data.Expiring, data.Expired, data.Unknown, data.LastFetchedAt = 1, 1, 1, fetched
 		}
 		return data
 	}))
-	mux.HandleFunc("GET /licenses/status", jsonResponse(`{"running":false}`))
+	mux.HandleFunc("GET /licenses/status", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch scenario {
+		case uxScenarioLoading:
+			_, _ = io.WriteString(w, `{"running":true,"done":1,"total":3,"current":"branch.example.test"}`)
+		case uxScenarioError:
+			_, _ = io.WriteString(w, `{`)
+		default:
+			_, _ = io.WriteString(w, `{"running":false}`)
+		}
+	})
 	mux.HandleFunc("GET /ipam", render("ipam.html", func(uxScenario) any {
 		return ipamData{Base: uxBase("IPAM", "ipam")}
 	}))

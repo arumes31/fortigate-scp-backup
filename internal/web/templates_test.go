@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
@@ -214,6 +215,29 @@ func TestAuditManagementUsesLabeledProgressiveControls(t *testing.T) {
 	}
 	if strings.Contains(body, `onclick="recompute(`) || !strings.Contains(body, `data-audit-recheck=`) {
 		t.Error("audit re-check must use the delegated, keyboard-safe action")
+	}
+}
+
+func TestLicenseInventoryUsesCombinedFiltersAndAccessibleHierarchy(t *testing.T) {
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	if err := s.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	s.render(recorder, "licenses.html", licensesData{
+		Base:          BaseData{Title: "Licenses"},
+		Rows:          []licenseRow{{FwID: 7, FQDN: "fw.example", Level: "warn", Devices: []licenseDevice{{Serial: "CHILD-SERIAL"}}}},
+		LastFetchedAt: time.Date(2026, 9, 2, 9, 30, 0, 0, time.UTC),
+	})
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`aria-label="License status filters"`, `data-license-preset="expiring"`, `data-license-preset="expired"`,
+		`data-license-preset="unknown"`, `data-level="warn"`, `aria-expanded="false"`, `aria-controls="license-detail-7"`,
+		`id="license-detail-7"`, `id="licProgress" role="status" aria-live="polite"`, `for="licSearch"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("licenses page missing %q", want)
+		}
 	}
 }
 

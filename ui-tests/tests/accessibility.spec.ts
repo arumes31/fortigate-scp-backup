@@ -8,6 +8,7 @@ const routes = [
   '/?scenario=empty',
   '/search',
   '/audit',
+  '/licenses',
   '/topology',
   '/fgt-adm-vpn-conf/',
   '/fgt-confgen/',

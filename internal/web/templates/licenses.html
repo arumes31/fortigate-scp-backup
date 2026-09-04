@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "lic.title"}}</h1>
 
-{{if .Error}}<div class="card" style="border: 1px solid rgba(239,68,68,0.4); color: #f87171;">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <div class="card">
     <div class="card-header">
@@ -15,14 +15,32 @@
 </div>
 
 <div class="card pad-0">
-    <div class="card-header">
+    <div class="card-header license-worklist-header">
         <h2 class="mt-0 mb-0">{{T .Base.Lang "lic.inventory"}}</h2>
-        <input type="text" id="licSearch" placeholder="{{T .Base.Lang "lic.search"}}" autocomplete="off" style="max-width:280px;">
-        <span class="muted" id="licSearchCount" style="font-size: 0.85em;"></span>
-        <span class="muted" id="licProgress" style="font-size: 0.85em; margin-left:auto;"></span>
+        <div class="license-filter-tools">
+            <div class="license-presets" role="group" aria-label="{{T .Base.Lang "lic.filter_group"}}">
+                <button type="button" class="btn btn-sm" data-license-preset="all" aria-pressed="true">{{T .Base.Lang "lic.filter_all"}}</button>
+                <button type="button" class="btn btn-sm" data-license-preset="expiring" aria-pressed="false">{{T .Base.Lang "lic.filter_expiring"}}</button>
+                <button type="button" class="btn btn-sm" data-license-preset="expired" aria-pressed="false">{{T .Base.Lang "lic.filter_expired"}}</button>
+                <button type="button" class="btn btn-sm" data-license-preset="unknown" aria-pressed="false">{{T .Base.Lang "lic.filter_unknown"}}</button>
+            </div>
+            <label class="license-search-field" for="licSearch"><span>{{T .Base.Lang "lic.search_label"}}</span>
+                <input type="search" id="licSearch" placeholder="{{T .Base.Lang "lic.search"}}" autocomplete="off">
+            </label>
+            <span class="muted" id="licSearchCount" aria-live="polite" data-of="{{T .Base.Lang "lic.of"}}" data-device-label="{{T .Base.Lang "lic.count_suffix"}}"></span>
+        </div>
+        <div class="license-refresh-tools">
+            <span class="license-refresh-state" id="licProgress" role="status" aria-live="polite"
+                data-refreshing="{{T .Base.Lang "lic.refreshing"}}" data-of="{{T .Base.Lang "lic.of"}}"
+                data-unavailable="{{T .Base.Lang "lic.status_unavailable"}}">
+                {{if isZero .LastFetchedAt}}{{T .Base.Lang "lic.never_refreshed"}}{{else}}{{T .Base.Lang "lic.last_refresh"}}: <time datetime="{{fmtMachineTime .LastFetchedAt}}">{{fmtTime .LastFetchedAt}}</time>{{end}}
+            </span>
+            {{if .Rows}}
         <form method="post" action="/licenses/refresh_all">
             <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
         </form>
+            {{end}}
+        </div>
     </div>
     <div class="table-wrap">
         <table class="data sticky-first" id="licTable">
@@ -42,14 +60,14 @@
             </thead>
             <tbody>
             {{range .Rows}}
-                <tr data-fw="{{.FwID}}">
+                <tr data-fw="{{.FwID}}" data-level="{{.Level}}">
                     <td>{{.FQDN}}{{if or .Switches .APs}}<div class="muted" style="font-size:0.8em;">{{if .Switches}}{{.Switches}} SW{{end}}{{if and .Switches .APs}} · {{end}}{{if .APs}}{{.APs}} AP{{end}}</div>{{end}}</td>
-                    <td>{{if .Hostname}}{{.Hostname}}{{else}}<span class="muted">—</span>{{end}}</td>
-                    <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>{{if .Hostname}}{{.Hostname}}{{else}}<span class="muted">-</span>{{end}}</td>
+                    <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
                     <td>{{.Model}}</td>
                     <td>{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{end}}</td>
                     <td>{{.Registration}}</td>
-                    <td>{{if .HAMode}}{{.HAMode}}{{else}}<span class="muted">—</span>{{end}}</td>
+                    <td>{{if .HAMode}}{{.HAMode}}{{else}}<span class="muted">-</span>{{end}}</td>
                     <td>
                         {{if eq .Level "ok"}}<span class="pill pill-success" title="{{.Expiry}}">{{.Expiry}}</span>
                         {{else if eq .Level "warn"}}<span class="pill pill-new">{{.Expiry}} · {{.DaysLeft}}d</span>
@@ -59,16 +77,16 @@
                         {{if and .Lapsed (ne .Level "expired")}}<span class="muted" style="font-size:0.85em;" title="{{T $.Base.Lang "lic.lapsed_hint"}}"> · {{.Lapsed}} {{T $.Base.Lang "lic.lapsed"}}</span>{{end}}
                         {{if .FetchError}}<span class="muted" style="font-size:0.85em;" title="{{.FetchError}}"> ⚠</span>{{end}}
                     </td>
-                    <td class="muted">{{if isZero .FetchedAt}}—{{else}}<time datetime="{{fmtMachineTime .FetchedAt}}">{{fmtTime .FetchedAt}}</time>{{end}}</td>
+                    <td class="muted">{{if isZero .FetchedAt}}-{{else}}<time datetime="{{fmtMachineTime .FetchedAt}}">{{fmtTime .FetchedAt}}</time>{{end}}</td>
                     <td class="actions">
-                        {{if or .Entitlements .Devices}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
+                        {{if or .Entitlements .Devices}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}" aria-expanded="false" aria-controls="license-detail-{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
                         <form method="post" action="/licenses/refresh/{{.FwID}}" style="display:inline">
                             <button type="submit" class="btn btn-sm">{{T $.Base.Lang "lic.refresh"}}</button>
                         </form>
                     </td>
                 </tr>
                 {{if or .Entitlements .Devices}}
-                <tr class="lic-detail" data-detail-for="{{.FwID}}" style="display:none;">
+                <tr class="lic-detail" id="license-detail-{{.FwID}}" data-detail-for="{{.FwID}}" hidden>
                     <td colspan="10" style="padding: 0 14px 14px 28px;">
                         {{if .Entitlements}}
                         <table class="data">
@@ -78,7 +96,7 @@
                                 <tr>
                                     <td>{{.Service}}</td>
                                     <td class="muted">{{.Version}}</td>
-                                    <td>{{if .Expiry}}{{.Expiry}}{{else}}<span class="muted">—</span>{{end}}</td>
+                                    <td>{{if .Expiry}}{{.Expiry}}{{else}}<span class="muted">-</span>{{end}}</td>
                                     <td class="muted">{{.LastUpdate}}</td>
                                     <td class="muted">{{.Result}}</td>
                                 </tr>
@@ -87,8 +105,8 @@
                         </table>
                         {{end}}
                         {{if .Devices}}
-                        <div style="margin: 12px 0 4px; font-weight: 600;">{{T $.Base.Lang "lic.managed_devices"}}
-                            <span class="muted" style="font-weight: 400; font-size: 0.85em;"> — {{T $.Base.Lang "lic.devices_note"}}</span>
+                        <div class="license-managed-heading"><strong>{{T $.Base.Lang "lic.managed_devices"}}</strong>
+                            <span class="muted">{{T $.Base.Lang "lic.devices_note"}}</span>
                         </div>
                         <table class="data">
                             <thead><tr><th>{{T $.Base.Lang "lic.col_type"}}</th><th>{{T $.Base.Lang "lic.col_name"}}</th><th>{{T $.Base.Lang "lic.col_serial"}}</th><th>{{T $.Base.Lang "lic.col_model"}}</th><th>{{T $.Base.Lang "lic.col_firmware"}}</th><th>{{T $.Base.Lang "lic.col_status"}}</th></tr></thead>
@@ -97,12 +115,12 @@
                                 <tr>
                                     <td>{{if eq .Kind "switch"}}<span class="pill pill-new">{{T $.Base.Lang "lic.kind_switch"}}</span>{{else}}<span class="pill pill-muted">{{T $.Base.Lang "lic.kind_ap"}}</span>{{end}}</td>
                                     <td>{{.Name}}{{if and (eq .Origin "logs") (not .Status)}} <span class="pill pill-muted" title="{{T $.Base.Lang "lic.origin_logs_hint"}}{{if .IP}} · {{.IP}}{{end}}">{{T $.Base.Lang "lic.origin_logs"}}</span>{{end}}</td>
-                                    <td>{{if .Serial}}<code{{if and (eq .Origin "logs") .Status}} style="border-bottom:1px dotted #888;" title="{{T $.Base.Lang "lic.serial_from_logs_hint"}}"{{end}}>{{.Serial}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
-                                    <td class="muted">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
-                                    <td class="muted">{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{else}}—{{end}}</td>
+                                    <td>{{if .Serial}}<code{{if and (eq .Origin "logs") .Status}} style="border-bottom:1px dotted #888;" title="{{T $.Base.Lang "lic.serial_from_logs_hint"}}"{{end}}>{{.Serial}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+                                    <td class="muted">{{if .Model}}{{.Model}}{{else}}-{{end}}</td>
+                                    <td class="muted">{{if .Version}}v{{.Version}}{{if .Build}} b{{.Build}}{{end}}{{else}}-{{end}}</td>
                                     <td>{{if eq .Status "online"}}<span class="pill pill-success">{{T $.Base.Lang "lic.online"}}</span>
                                         {{else if eq .Status "offline"}}<span class="pill pill-failed">{{T $.Base.Lang "lic.offline"}}</span>
-                                        {{else}}<span class="muted">—</span>{{end}}</td>
+                                        {{else}}<span class="muted">-</span>{{end}}</td>
                                 </tr>
                             {{end}}
                             </tbody>
@@ -112,7 +130,12 @@
                 </tr>
                 {{end}}
             {{else}}
-                <tr><td colspan="10" class="empty">{{T .Base.Lang "lic.none"}}</td></tr>
+                <tr><td colspan="10" class="empty license-empty-state">
+                    <p>{{T .Base.Lang "lic.none"}}</p>
+                    <form method="post" action="/licenses/refresh_all">
+                        <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
+                    </form>
+                </td></tr>
             {{end}}
             </tbody>
         </table>
@@ -123,38 +146,65 @@
 {{define "scripts"}}
 <script>
 (function () {
-    // Expand/collapse per-service entitlement rows.
-    document.querySelectorAll('.lic-toggle').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var detail = document.querySelector('.lic-detail[data-detail-for="' + btn.dataset.fw + '"]');
-            if (detail) { detail.style.display = detail.style.display === 'none' ? '' : 'none'; }
-        });
-    });
-
-    // Client-side search over the main rows; detail rows collapse on
-    // filtering. Each row's search text includes its detail row, so a child
-    // switch/AP serial or name finds its parent firewall.
     var input = document.getElementById('licSearch');
     var count = document.getElementById('licSearchCount');
     if (!input) { return; }
+    var activePreset = 'all';
     var detailText = {};
     document.querySelectorAll('.lic-detail').forEach(function (d) {
         detailText[d.dataset.detailFor] = d.textContent.toLowerCase();
     });
     var rows = Array.prototype.slice.call(
         document.querySelectorAll('#licTable > tbody > tr[data-fw]'));
-    input.addEventListener('input', function () {
+
+    function closeDetails(row) {
+        var detail = document.getElementById('license-detail-' + row.dataset.fw);
+        var toggle = row.querySelector('.lic-toggle');
+        if (detail) { detail.hidden = true; }
+        if (toggle) { toggle.setAttribute('aria-expanded', 'false'); }
+    }
+
+    function presetMatches(level) {
+        if (activePreset === 'all') { return true; }
+        if (activePreset === 'expiring') { return level === 'warn' || level === 'crit'; }
+        return level === activePreset;
+    }
+
+    function applyFilters() {
         var terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-        document.querySelectorAll('.lic-detail').forEach(function (d) { d.style.display = 'none'; });
         var visible = 0;
         rows.forEach(function (row) {
             var text = row.textContent.toLowerCase() + ' ' + (detailText[row.dataset.fw] || '');
-            var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
-            row.style.display = match ? '' : 'none';
+            var match = presetMatches(row.dataset.level) && terms.every(function (t) { return text.indexOf(t) !== -1; });
+            row.hidden = !match;
+            closeDetails(row);
             if (match) { visible++; }
         });
-        count.textContent = terms.length ? visible + ' / ' + rows.length : '';
+        count.textContent = visible + ' ' + count.dataset.of + ' ' + rows.length + ' ' + count.dataset.deviceLabel;
+    }
+
+    document.querySelectorAll('[data-license-preset]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            activePreset = button.dataset.licensePreset;
+            document.querySelectorAll('[data-license-preset]').forEach(function (candidate) {
+                candidate.setAttribute('aria-pressed', String(candidate === button));
+            });
+            applyFilters();
+        });
     });
+    document.querySelectorAll('.lic-toggle').forEach(function (button) {
+        button.addEventListener('click', function () {
+            var detail = document.getElementById(button.getAttribute('aria-controls'));
+            if (!detail) { return; }
+            var expanded = button.getAttribute('aria-expanded') === 'true';
+            var tableWrap = detail.closest('.table-wrap');
+            if (!expanded && tableWrap) { tableWrap.scrollLeft = 0; }
+            detail.hidden = expanded;
+            button.setAttribute('aria-expanded', String(!expanded));
+        });
+    });
+    input.addEventListener('input', applyFilters);
+    applyFilters();
 })();
 </script>
 <script>
@@ -175,15 +225,17 @@
             retryDelay = 2000;
             if (d.running) {
                 wasRunning = true;
-                el.textContent = '⟳ ' + d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
+                el.className = 'license-refresh-state is-running';
+                el.textContent = el.dataset.refreshing + ' ' + d.done + ' ' + el.dataset.of + ' ' + d.total + (d.current ? ': ' + d.current : '');
                 setTimeout(poll, 2000);
             } else if (wasRunning) {
                 location.reload();
             } else {
-                el.textContent = '';
                 setTimeout(poll, IDLE_POLL_MS);
             }
         }).catch(function () {
+            el.className = 'license-refresh-state is-error';
+            el.textContent = el.dataset.unavailable;
             setTimeout(poll, wasRunning ? retryDelay : IDLE_POLL_MS);
             if (wasRunning) {
                 retryDelay = Math.min(POLL_RETRY_MAX_MS, retryDelay * 2);

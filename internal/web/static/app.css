@@ -972,6 +972,22 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 .toast.error { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--success); }
 
+/* ---------- License inventory ---------- */
+.license-worklist-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: end; }
+.license-filter-tools, .license-presets, .license-refresh-tools { display: flex; align-items: end; gap: 8px; }
+.license-filter-tools { min-width: 0; }
+.license-search-field { display: grid; gap: 5px; min-width: 220px; color: var(--text-muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+.license-search-field input { width: 100%; }
+.license-presets [aria-pressed="true"] { border-color: var(--accent); background: rgba(96,165,250,.18); color: var(--accent); }
+.license-refresh-tools { justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+.license-refresh-state { color: var(--text-muted); font-size: 11px; text-align: right; text-transform: none; letter-spacing: normal; }
+.license-refresh-state.is-running { color: var(--info); }
+.license-refresh-state.is-error { color: var(--danger); }
+.license-empty-state p { margin: 0 0 12px; }
+.license-managed-heading { display: grid; gap: 4px; margin: 12px 0 8px; }
+.license-managed-heading .muted { max-width: 72ch; font-size: 11px; font-weight: 400; }
+.lic-detail:not([hidden]) > td { border-left: 2px solid var(--accent); background: var(--surface-2); }
+
 /* ---------- Audit findings ---------- */
 .audit-load-status { margin: -6px 0 16px; color: var(--text-muted); font-size: 11px; text-transform: none; letter-spacing: normal; }
 .audit-load-status.is-loading { color: var(--info); }
