@@ -1038,6 +1038,10 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 .backup-checksum { display: flex; align-items: center; gap: 8px; max-width: 48ch; }
 .backup-checksum code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .backup-select { display: inline-flex; align-items: center; justify-content: center; margin: 0; }
+.config-diff td { vertical-align: top; text-transform: none; }
+.config-diff code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.config-diff .diff-added td { background: color-mix(in srgb, var(--success) 10%, transparent); }
+.config-diff .diff-removed td { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
 /* Respect users who prefer reduced motion. */
 @media (prefers-reduced-motion: reduce) {

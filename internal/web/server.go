@@ -453,6 +453,7 @@ func (s *Server) Routes() chi.Router {
 		pr.Post("/topology/share/revoke", s.handleTopologyShareRevoke)
 		pr.Get("/download_bundle", s.handleDownloadBundle)
 		pr.Get("/backups/{fwID}", s.handleListBackups)
+		pr.Get("/backups/{fwID}/compare", s.handleBackupCompare)
 		pr.Get("/download/*", s.handleDownload)
 		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)

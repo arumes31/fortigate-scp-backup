@@ -782,6 +782,18 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	})
 	mux.HandleFunc("GET /errors", render("errors.html", uxErrorsFixture))
 	mux.HandleFunc("GET /backups/{fwID}", render("backups.html", uxBackupsFixture))
+	mux.HandleFunc("GET /backups/{fwID}/compare", render("backup_compare.html", func(scenario uxScenario) any {
+		return backupCompareData{
+			Base: uxBase("Compare backups", "firewalls"), Firewall: models.Firewall{ID: 7, FQDN: "edge.example.test"},
+			Left: models.Backup{ID: 1}, Right: models.Backup{ID: 2},
+			Rows: []configDiffRow{
+				{Kind: "unchanged", LeftLine: 1, RightLine: 1, Left: "config system test", Right: "config system test"},
+				{Kind: "removed", LeftLine: 2, Left: "set value old"},
+				{Kind: "added", RightLine: 2, Right: "set value new"},
+			},
+			Truncated: scenario == uxScenarioWarning,
+		}
+	}))
 	mux.HandleFunc("GET /change_password", render("change_password.html", func(uxScenario) any {
 		return changePasswordData{Base: uxBase("Change password", "password")}
 	}))
