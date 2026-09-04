@@ -19,6 +19,7 @@ type Store interface {
 	GetFirstLogin(ctx context.Context, username string) (int, bool, error)
 	ChangePassword(ctx context.Context, username, oldPassword, newPassword string) (bool, error)
 	ListFirewalls(ctx context.Context) ([]models.Firewall, error)
+	GetFirewall(ctx context.Context, id int) (*models.Firewall, error)
 	AddFirewall(ctx context.Context, fw models.Firewall) (int, error)
 	DeleteFirewall(ctx context.Context, id int) (string, error)
 	ListBackups(ctx context.Context, fwID int) ([]models.Backup, error)

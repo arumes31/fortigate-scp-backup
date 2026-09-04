@@ -21,6 +21,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/backup"
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
@@ -34,6 +35,7 @@ import (
 
 type fakeStore struct {
 	firewalls []models.Firewall
+	backups   []models.Backup
 	refs      []models.FirewallRef
 	activity  *[]string
 }
@@ -64,10 +66,19 @@ func (fakeStore) ChangePassword(context.Context, string, string, string) (bool, 
 func (s fakeStore) ListFirewalls(context.Context) ([]models.Firewall, error) {
 	return s.firewalls, nil
 }
-func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error) { return 1, nil }
-func (fakeStore) DeleteFirewall(context.Context, int) (string, error)       { return "", nil }
-func (fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return nil, nil }
-func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)     { return nil, nil }
+func (s fakeStore) GetFirewall(_ context.Context, id int) (*models.Firewall, error) {
+	for index := range s.firewalls {
+		if s.firewalls[index].ID == id {
+			firewall := s.firewalls[index]
+			return &firewall, nil
+		}
+	}
+	return nil, database.ErrNotFound
+}
+func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error)   { return 1, nil }
+func (fakeStore) DeleteFirewall(context.Context, int) (string, error)         { return "", nil }
+func (s fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return s.backups, nil }
+func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)       { return nil, nil }
 func (fakeStore) LastBackupTimes(context.Context) (map[int]time.Time, error) {
 	return map[int]time.Time{}, nil
 }

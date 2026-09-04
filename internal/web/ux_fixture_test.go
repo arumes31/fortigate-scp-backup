@@ -953,9 +953,13 @@ func uxErrorsFixture(scenario uxScenario) any {
 }
 
 func uxBackupsFixture(scenario uxScenario) any {
-	data := backupsData{Base: uxBase("Backups", "firewalls"), FwID: 7}
+	data := backupsData{Base: uxBase("Backups", "firewalls"), FwID: 7, FQDN: "edge.example.test"}
 	if scenario != uxScenarioEmpty {
-		data.Backups = []models.Backup{{ID: 1, FwID: 7, Timestamp: uxFixtureNow, Filename: "edge_20260902.conf", SizeBytes: 214000}}
+		data.Backups = []models.Backup{
+			{ID: 1, FwID: 7, Timestamp: uxFixtureNow, Filename: "edge_20260902_103000.conf", SizeBytes: 214000, Checksum: strings.Repeat("a", 64)},
+			{ID: 2, FwID: 7, Timestamp: uxFixtureNow.Add(-24 * time.Hour), Filename: "edge_20260901_103000.conf", SizeBytes: 212000, Checksum: strings.Repeat("b", 64)},
+			{ID: 3, FwID: 7, Timestamp: uxFixtureNow.Add(-48 * time.Hour), Filename: "edge-with-a-very-long-synthetic-backup-filename_20260831_103000.conf", SizeBytes: 210000},
+		}
 	}
 	if scenario == uxScenarioError {
 		data.Error = "Synthetic backup-list failure."

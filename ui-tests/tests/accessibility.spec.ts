@@ -14,6 +14,7 @@ const routes = [
   '/ipam?scenario=full',
   '/topology',
   '/activity_log?q=deep-synthetic-match&user=automation&action=Configuration&from=2026-09-01&to=2026-09-02',
+  '/backups/7',
   '/fgt-adm-vpn-conf/',
   '/fgt-confgen/',
   '/fgt-polsplit/',

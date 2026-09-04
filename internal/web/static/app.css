@@ -1033,6 +1033,12 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 .activity-filter input { width: 100%; min-width: 0; }
 .activity-filter .filter-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
 
+/* ---------- Backup history ---------- */
+.backup-compare-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border-soft); }
+.backup-checksum { display: flex; align-items: center; gap: 8px; max-width: 48ch; }
+.backup-checksum code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backup-select { display: inline-flex; align-items: center; justify-content: center; margin: 0; }
+
 /* Respect users who prefer reduced motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

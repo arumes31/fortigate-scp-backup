@@ -57,6 +57,7 @@ type indexData struct {
 type backupsData struct {
 	Base    BaseData
 	FwID    int
+	FQDN    string
 	Backups []models.Backup
 	Error   string
 }
@@ -464,14 +465,24 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := s.base(r, "Backups", "firewalls")
+	firewall, err := s.store.GetFirewall(r.Context(), fwID)
+	if errors.Is(err, database.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.Error("failed to retrieve firewall for backups", "fw_id", fwID, "err", err)
+		s.render(w, "backups.html", backupsData{Base: s.base(r, "Backups", "firewalls"), FwID: fwID, Error: "Failed to load firewall details"})
+		return
+	}
+	base := s.base(r, "Backups · "+firewall.FQDN, "firewalls")
 	backups, err := s.store.ListBackups(r.Context(), fwID)
 	if err != nil {
 		s.logger.Error("failed to retrieve backups", "fw", fwID, "err", err)
-		s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, Error: "Failed to load backups"})
+		s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, FQDN: firewall.FQDN, Error: "Failed to load backups"})
 		return
 	}
-	s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, Backups: backups})
+	s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, FQDN: firewall.FQDN, Backups: backups})
 }
 
 // handleDownload serves a stored configuration file, decrypting it on the fly
