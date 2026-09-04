@@ -191,6 +191,17 @@ func TestAuditCacheRoundtrip(t *testing.T) {
 	if !hit || cached.BackupFilename != res.BackupFilename || len(cached.Findings) != len(res.Findings) {
 		t.Fatalf("cache miss after compute: hit=%t", hit)
 	}
+	// A parse-schema bump must recompute instead of mixing cached objects that
+	// predate additive fields such as IPAM VDOM ownership.
+	cached.SchemaVersion = auditSchemaVersion - 1
+	storeAudit(db, 1, cached)
+	refreshed, ok := srv.auditResultFor(db, 1)
+	if !ok || refreshed == nil {
+		t.Fatal("old audit schema was not recomputed")
+	}
+	if refreshed.SchemaVersion != auditSchemaVersion {
+		t.Fatalf("recomputed audit schema = %d, want %d", refreshed.SchemaVersion, auditSchemaVersion)
+	}
 
 	// A newer backup file invalidates the cached entry.
 	fwDir := filepath.Join(srv.cfg.BackupDir, "1")

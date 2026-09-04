@@ -22,13 +22,13 @@ import (
 // entry via RulesFingerprint.
 // auditSchemaVersion invalidates cached results whose parse predates a
 // parser/derivation change (bump when parseConfigData output changes).
-// v7: interface secondary IPs + subnet address objects (fleet IPAM).
+// v8: IPAM sources retain their owning VDOM.
 //
 // Bump checklist — external readers of the results_json blob:
 //   - extensions/graylog_device_data/store.go switchCapableIDs probes the
 //     "switches" key and schema_version; verify it still decodes and raise
 //     auditCacheMaxKnownSchema there.
-const auditSchemaVersion = 7
+const auditSchemaVersion = 8
 
 type auditResult struct {
 	BackupFilename string    `json:"backup_filename"`
