@@ -97,6 +97,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Post("/rename_template", e.renameTemplate)
 		pr.Post("/clone_template/{templateName}", e.cloneTemplate)
 		pr.Post("/clone_policy", e.clonePolicy)
+		pr.Post("/validate_policy", e.validatePolicies)
 		pr.Post("/generate_policy", e.generatePolicy)
 		pr.Post("/import_template", e.importTemplate)
 		pr.Get("/export_template/{templateName}", e.exportTemplate)

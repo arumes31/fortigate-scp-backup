@@ -13,6 +13,7 @@ export const test = base.extend<BrowserQuality>({
     const pageErrors: string[] = [];
     const failedResponses: string[] = [];
     const externalRequests: string[] = [];
+    const expectedHTTPDiagnostics = new Map<number, number>();
 
     page.on('console', message => {
       if (message.type() === 'error' || message.type() === 'warning') {
@@ -27,12 +28,25 @@ export const test = base.extend<BrowserQuality>({
         if (message.text() === 'WebGL: CONTEXT_LOST_WEBGL: loseContext: context lost') {
           return;
         }
+        const statusMatch = message.text().match(/^Failed to load resource: the server responded with a status of (\d+)/);
+        if (statusMatch) {
+          const status = Number(statusMatch[1]);
+          const remaining = expectedHTTPDiagnostics.get(status) || 0;
+          if (remaining > 0) {
+            expectedHTTPDiagnostics.set(status, remaining - 1);
+            return;
+          }
+        }
         consoleProblems.push(`${message.type()}: ${message.text()}`);
       }
     });
     page.on('pageerror', error => pageErrors.push(error.message));
     page.on('response', response => {
-      if (response.status() >= 400) {
+      const expectedFailure = response.headers()['x-fortisafe-test-expected-error'] === '1';
+      if (response.status() >= 400 && expectedFailure) {
+        expectedHTTPDiagnostics.set(response.status(), (expectedHTTPDiagnostics.get(response.status()) || 0) + 1);
+      }
+      if (response.status() >= 400 && !expectedFailure) {
         failedResponses.push(`${response.status()} ${response.url()}`);
       }
     });

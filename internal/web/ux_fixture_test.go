@@ -499,7 +499,8 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 			"application_lists":[],"av_profiles":[],"ips_sensors":[],"users":[],"groups":[]}
 	}`))
 	mux.HandleFunc("POST /fgt-confgen/parse_config", jsonResponse(`{"interfaces":[],"addresses":[],"address_groups":[],"internet_services":[],"vips":[],"ip_pools":[],"services":[],"service_groups":{},"ssl_ssh_profiles":[],"webfilter_profiles":[],"application_lists":[],"av_profiles":[],"ips_sensors":[],"users":[],"groups":[]}`))
-	mux.HandleFunc("POST /fgt-confgen/generate_policy", jsonResponse(`{"outputs":[{"output1":"config firewall policy\n    edit 1\nend","output2":"config firewall policy\n    edit 2\nend","output3":"config firewall policy\n    edit 3\nend"}]}`))
+	mux.HandleFunc("POST /fgt-confgen/validate_policy", jsonResponse(`{"valid":true,"errors":[],"warnings":[{"code":"synthetic_review_warning","message":"Synthetic warning for browser coverage.","policy_id":"fixture-policy","policy_index":0}]}`))
+	mux.HandleFunc("POST /fgt-confgen/generate_policy", jsonResponse(`{"outputs":[{"policy_id":"fixture-policy","policy_name":"Synthetic allow","output1":"config firewall policy\n    edit 1\nend","output2":"config firewall policy\n    edit 2\nend","output3":"config firewall policy\n    edit 3\nend"}],"validation":{"valid":true,"errors":[],"warnings":[]}}`))
 	mux.HandleFunc("POST /fgt-confgen/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -1403,6 +1404,7 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "ConfGen templates", method: http.MethodGet, path: "/fgt-confgen/load_templates", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen template", method: http.MethodGet, path: "/fgt-confgen/get_template/Synthetic%20baseline", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen parse", method: http.MethodPost, path: "/fgt-confgen/parse_config", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfGen validate", method: http.MethodPost, path: "/fgt-confgen/validate_policy", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen generate", method: http.MethodPost, path: "/fgt-confgen/generate_policy", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfGen frontend log", method: http.MethodPost, path: "/fgt-confgen/log", wantStatus: http.StatusNoContent},
 		{name: "Policy Split", method: http.MethodGet, path: "/fgt-polsplit/", wantStatus: http.StatusOK, contentType: "text/html"},

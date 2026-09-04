@@ -2,7 +2,12 @@ package fgt_confgen
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -12,6 +17,123 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
+
+func performConfGenJSONRequest(t *testing.T, handler http.HandlerFunc, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(encoded))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler(recorder, req)
+	return recorder
+}
+
+func decodeConfGenResponse[T any](t *testing.T, recorder *httptest.ResponseRecorder) T {
+	t.Helper()
+	var response T
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v; body=%q", err, recorder.Body.String())
+	}
+	return response
+}
+
+func TestValidatePolicyReturnsStableErrorsAndWarnings(t *testing.T) {
+	e := &Extension{logger: slog.New(slog.DiscardHandler)}
+	valid := minimalPolicy()
+	valid.Services = []Service{{Type: "template", Name: "HTTPS"}}
+	recorder := performConfGenJSONRequest(t, e.validatePolicies, policyRequest{Policies: []Policy{valid}})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeConfGenResponse[validationResponse](t, recorder)
+	if !response.Valid || len(response.Errors) != 0 {
+		t.Fatalf("valid response = %+v", response)
+	}
+	if len(response.Warnings) != 1 || response.Warnings[0].Code != "policy_comment_empty" {
+		t.Fatalf("warnings = %+v, want policy_comment_empty", response.Warnings)
+	}
+
+	invalid := minimalPolicy()
+	invalid.Action = "not-an-action"
+	recorder = performConfGenJSONRequest(t, e.validatePolicies, policyRequest{Policies: []Policy{invalid}})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("invalid validation status = %d, want 200", recorder.Code)
+	}
+	response = decodeConfGenResponse[validationResponse](t, recorder)
+	if response.Valid || len(response.Errors) != 1 || response.Errors[0].Code != "invalid_action" {
+		t.Fatalf("invalid response = %+v", response)
+	}
+}
+
+func TestGeneratePolicyRejectsInvalidWithValidationContract(t *testing.T) {
+	e := &Extension{logger: slog.New(slog.DiscardHandler)}
+	invalid := minimalPolicy()
+	invalid.Action = "SENSITIVE-invalid-action"
+	recorder := performConfGenJSONRequest(t, e.generatePolicy, policyRequest{Policies: []Policy{invalid}})
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeConfGenResponse[apiErrorResponse](t, recorder)
+	if response.Code != "validation_failed" || response.Validation == nil || response.Validation.Errors[0].Code != "invalid_action" {
+		t.Fatalf("response = %+v", response)
+	}
+	if strings.Contains(recorder.Body.String(), invalid.Action) {
+		t.Fatal("validation response leaked the rejected field value")
+	}
+}
+
+func TestGeneratePolicyAcceptsLegacyFormAndIncludesValidation(t *testing.T) {
+	e := &Extension{logger: slog.New(slog.DiscardHandler)}
+	policy := minimalPolicy()
+	policy.Services = []Service{{Type: "template", Name: "HTTPS"}}
+	encodedPolicies, err := json.Marshal([]Policy{policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"policies": {string(encodedPolicies)}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	e.generatePolicy(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeConfGenResponse[generateResponse](t, recorder)
+	if !response.Validation.Valid || len(response.Outputs) != 1 || response.Outputs[0].Output1 == "" {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestValidatePolicyEnforcesRequestLimitAndTimeout(t *testing.T) {
+	e := &Extension{logger: slog.New(slog.DiscardHandler)}
+	oversized := strings.NewReader(`{"policies":[{"policy_comment":"` + strings.Repeat("x", int(maxPolicyRequestBytes)) + `"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/", oversized)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	e.validatePolicies(recorder, req)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status = %d, want 413; body=%q", recorder.Code, recorder.Body.String())
+	}
+	if response := decodeConfGenResponse[apiErrorResponse](t, recorder); response.Code != "request_too_large" {
+		t.Fatalf("oversized code = %q", response.Code)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"policies":[]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	e.validatePolicies(recorder, req)
+	if recorder.Code != http.StatusRequestTimeout {
+		t.Fatalf("timeout status = %d, want 408; body=%q", recorder.Code, recorder.Body.String())
+	}
+	if response := decodeConfGenResponse[apiErrorResponse](t, recorder); response.Code != "request_timeout" {
+		t.Fatalf("timeout code = %q", response.Code)
+	}
+}
 
 func TestIndexTemplateUsesSharedShell(t *testing.T) {
 	e := &Extension{}

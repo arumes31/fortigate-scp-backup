@@ -24,6 +24,18 @@
 .confgen-review-rail .output-section[hidden], .confgen-review-rail .generate-policies-btn[hidden] { display: none; }
 .confgen-review-rail .output-section { display: flex; flex-direction: column; gap: 12px; }
 .confgen-review-rail .output-section .card { margin-top: 0 !important; }
+.confgen-review-actions { display: grid; gap: 8px; margin-top: 14px; }
+.confgen-review-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); background: var(--surface); }
+.confgen-review-tabs [role="tab"] { min-width: 0; padding: 9px 6px; border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
+.confgen-review-tabs [role="tab"]:last-child { border-right: 0; }
+.confgen-review-tabs [role="tab"][aria-selected="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 -2px 0 var(--accent); }
+.confgen-review-tabs [role="tab"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.confgen-review-tabs .pill { margin-left: 3px; padding: 1px 4px; font-size: 9px; }
+.confgen-review-panel[hidden] { display: none; }
+.confgen-review-panel { min-width: 0; }
+.confgen-issue-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.confgen-issue-list li { padding: 9px 10px; border-left: 2px solid var(--accent); background: var(--surface-2); color: var(--text); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.confgen-output-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 
 @media (max-width: 1279px) {
     .confgen-page .confgen-workspace { grid-template-columns: minmax(190px, .65fr) minmax(420px, 1.35fr); }

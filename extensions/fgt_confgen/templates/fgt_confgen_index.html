@@ -262,32 +262,59 @@
                 </div>
 
                 <aside class="confgen-review-rail" aria-labelledby="confgen-review-title">
-                <div class="card"><span class="eyebrow">Validation & output</span><h2 id="confgen-review-title">Review</h2><p class="muted">Review the selected target and policy state before generation.</p><button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" hidden>Generate All Policies</button><button type="button" class="btn w-100 confgen-reset-workspace" data-action="clear-form">Reset current policy</button></div>
-
-                <!-- Output section -->
-                <div class="output-section" hidden>
                     <div class="card">
-                        <div class="card-header">
-                            <h3 class="mb-0">Output 1: All-in-One Policies</h3>
-                            <button type="button" data-action="copy-output" data-output-id="output1" class="btn btn-sm">Copy</button>
+                        <span class="eyebrow">Validation & output</span>
+                        <h2 id="confgen-review-title">Review</h2>
+                        <p class="muted">Server checks are authoritative. Review warnings before generation.</p>
+                        <div class="confgen-review-actions">
+                            <button type="button" class="btn w-100" data-action="validate-policies">Validate policies</button>
+                            <button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" hidden>Generate All Policies</button>
+                            <button type="button" class="btn w-100 confgen-reset-workspace" data-action="clear-form">Reset current policy</button>
                         </div>
-                        <pre id="output1" class="code-block"></pre>
                     </div>
-                    <div class="card" style="margin-top: 15px;">
-                        <div class="card-header">
-                            <h3 class="mb-0">Output 2: One Policy Per Service</h3>
-                            <button type="button" data-action="copy-output" data-output-id="output2" class="btn btn-sm">Copy</button>
+
+                    <div class="confgen-review-tabs" role="tablist" aria-label="Policy review">
+                        <button type="button" id="review-validation-tab" role="tab" aria-selected="true" aria-controls="review-validation-panel" tabindex="0" data-review-tab="validation">Validation <span id="validation-count" class="pill">0</span></button>
+                        <button type="button" id="review-warnings-tab" role="tab" aria-selected="false" aria-controls="review-warnings-panel" tabindex="-1" data-review-tab="warnings">Warnings <span id="warning-count" class="pill">0</span></button>
+                        <button type="button" id="review-cli-tab" role="tab" aria-selected="false" aria-controls="review-cli-panel" tabindex="-1" data-review-tab="cli">CLI output</button>
+                    </div>
+
+                    <section id="review-validation-panel" class="card confgen-review-panel" role="tabpanel" aria-labelledby="review-validation-tab" tabindex="0">
+                        <p id="validation-summary" class="muted" role="status">Run validation to review this policy set.</p>
+                        <ul id="validation-list" class="confgen-issue-list"></ul>
+                    </section>
+
+                    <section id="review-warnings-panel" class="card confgen-review-panel" role="tabpanel" aria-labelledby="review-warnings-tab" tabindex="0" hidden>
+                        <p id="warning-summary" class="muted" role="status">No warnings have been reported.</p>
+                        <ul id="warning-list" class="confgen-issue-list"></ul>
+                    </section>
+
+                    <section id="review-cli-panel" class="confgen-review-panel" role="tabpanel" aria-labelledby="review-cli-tab" tabindex="0" hidden>
+                        <p id="output-placeholder" class="card muted">Generate policies to inspect and export CLI output.</p>
+                        <div class="output-section" hidden>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3 class="mb-0">Output 1: All-in-One Policies</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output1" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output1" class="btn btn-sm">Download</button></div>
+                                </div>
+                                <pre id="output1" class="code-block"></pre>
+                            </div>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3 class="mb-0">Output 2: One Policy Per Service</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output2" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output2" class="btn btn-sm">Download</button></div>
+                                </div>
+                                <pre id="output2" class="code-block"></pre>
+                            </div>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3 class="mb-0">Output 3: Per Src/Dst Interface and Service</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output3" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output3" class="btn btn-sm">Download</button></div>
+                                </div>
+                                <pre id="output3" class="code-block"></pre>
+                            </div>
                         </div>
-                        <pre id="output2" class="code-block"></pre>
-                    </div>
-                    <div class="card" style="margin-top: 15px;">
-                        <div class="card-header">
-                            <h3 class="mb-0">Output 3: Per Src/Dst Interface and Service</h3>
-                            <button type="button" data-action="copy-output" data-output-id="output3" class="btn btn-sm">Copy</button>
-                        </div>
-                        <pre id="output3" class="code-block"></pre>
-                    </div>
-                </div>
+                    </section>
                 </aside>
             </div>
         </div>

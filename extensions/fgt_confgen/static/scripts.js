@@ -34,7 +34,11 @@ function setWorkspaceDirty(dirty) {
     confGenRoot.dataset.dirty = String(dirty);
 }
 
-function markWorkspaceDirty() { setWorkspaceDirty(true); }
+function markWorkspaceDirty() {
+    if (!dirtyTrackingReady) return;
+    setWorkspaceDirty(true);
+    resetReviewResults();
+}
 function markWorkspaceClean() { setWorkspaceDirty(false); }
 
 window.addEventListener('beforeunload', event => {
@@ -1022,6 +1026,7 @@ function clearForm(button) {
         policy.ip_pool = '';
         renderPolicyList();
     }
+    resetReviewResults();
     markWorkspaceClean();
 }
 
@@ -1243,6 +1248,7 @@ function loadTemplate() {
                         }
                         showNotification(`Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        resetReviewResults();
                         markWorkspaceClean();
                     })
                     .catch(() => {
@@ -1257,6 +1263,7 @@ function loadTemplate() {
                         }
                         showNotification(`Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        resetReviewResults();
                         markWorkspaceClean();
                     });
             } catch (error) {
@@ -1273,6 +1280,7 @@ function loadTemplate() {
                 }
                 showNotification(`Template '${templateName}' loaded successfully`, 'success');
                 logToBackend(`Template '${templateName}' loaded successfully`);
+                resetReviewResults();
                 markWorkspaceClean();
             }
         } else {
@@ -1614,15 +1622,8 @@ function importConfig() {
     });
 }
 
-function generatePolicies() {
-    if (!policies.length) {
-        console.error('No policies to generate');
-        logToBackend('No policies to generate');
-        showNotification('No policies to generate', 'error');
-        return;
-    }
-    const formData = new FormData();
-    formData.append('policies', JSON.stringify(policies.map(p => ({
+function policyRequestPayload() {
+    return { policies: policies.map(p => ({
         policy_id: p.id,
         policy_name: p.name,
         policy_comment: p.comment,
@@ -1655,37 +1656,142 @@ function generatePolicies() {
         ip_pool: p.ip_pool,
         users: p.users,
         groups: p.groups
-    }))));
+    })) };
+}
 
-    fetch('/fgt-confgen/generate_policy', {
-        method: 'POST',
-        body: formData
-    })
-    .then(async response => {
+function setReviewTab(name, focus = false) {
+    const tabs = Array.from(confGenRoot.querySelectorAll('[data-review-tab]'));
+    tabs.forEach(tab => {
+        const selected = tab.dataset.reviewTab === name;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(tab.getAttribute('aria-controls'));
+        if (panel) panel.hidden = !selected;
+        if (selected && focus) tab.focus();
+    });
+}
+
+function renderIssueList(listID, issues) {
+    const list = document.getElementById(listID);
+    if (!list) return;
+    const items = issues.map(issue => {
+        const item = document.createElement('li');
+        item.textContent = `${issue.code}: ${issue.message}`;
+        return item;
+    });
+    list.replaceChildren(...items);
+}
+
+function renderValidationReview(validation) {
+    const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+    const warnings = Array.isArray(validation?.warnings) ? validation.warnings : [];
+    document.getElementById('validation-count').textContent = String(errors.length);
+    document.getElementById('warning-count').textContent = String(warnings.length);
+    document.getElementById('validation-summary').textContent = errors.length
+        ? `${errors.length} blocking ${errors.length === 1 ? 'issue' : 'issues'} found.`
+        : 'Server validation passed.';
+    document.getElementById('warning-summary').textContent = warnings.length
+        ? `${warnings.length} non-blocking ${warnings.length === 1 ? 'warning' : 'warnings'} found.`
+        : 'No warnings reported.';
+    renderIssueList('validation-list', errors);
+    renderIssueList('warning-list', warnings);
+    return { errors, warnings };
+}
+
+function resetReviewResults() {
+    renderValidationReview({ errors: [], warnings: [] });
+    const validationSummary = document.getElementById('validation-summary');
+    if (validationSummary) validationSummary.textContent = 'Run validation to review this policy set.';
+    const outputSection = document.querySelector('.output-section');
+    if (outputSection) outputSection.hidden = true;
+    const outputPlaceholder = document.getElementById('output-placeholder');
+    if (outputPlaceholder) outputPlaceholder.hidden = false;
+    ['output1', 'output2', 'output3'].forEach(id => {
+        const output = document.getElementById(id);
+        if (output) output.textContent = '';
+    });
+    setReviewTab('validation');
+}
+
+async function requestPolicyReview(path) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 3500);
+    try {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(policyRequestPayload()),
+            signal: controller.signal
+        });
+        const data = await response.json().catch(() => ({ code: 'invalid_response', message: 'The server returned an unreadable response.' }));
         if (!response.ok) {
-            // Validation failures come back as plain text — surface the
-            // server's message instead of a JSON parse error.
-            const text = await response.text();
-            throw new Error(text.trim() || `HTTP ${response.status}`);
+            const error = new Error(data.message || `Request failed with HTTP ${response.status}.`);
+            error.apiResponse = data;
+            throw error;
         }
-        return response.json();
-    })
-    .then(data => {
+        return data;
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            const timeoutError = new Error('Policy processing timed out. Try a smaller policy set.');
+            timeoutError.apiResponse = { code: 'request_timeout', message: timeoutError.message };
+            throw timeoutError;
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timeout);
+    }
+}
+
+function showReviewFailure(error) {
+    const response = error.apiResponse || { code: 'request_failed', message: 'Policy review failed.' };
+    const validation = response.validation || {
+        valid: false,
+        errors: [{ code: response.code || 'request_failed', message: response.message || 'Policy review failed.' }],
+        warnings: []
+    };
+    renderValidationReview(validation);
+    setReviewTab('validation');
+    logToBackend(`Policy review failed (${response.code || 'request_failed'})`);
+    showNotification(response.message || 'Policy review failed.', 'error');
+}
+
+async function validatePoliciesOnServer() {
+    showNotification('Validating policies…', 'info');
+    try {
+        const validation = await requestPolicyReview('/fgt-confgen/validate_policy');
+        const result = renderValidationReview(validation);
+        setReviewTab(result.errors.length ? 'validation' : (result.warnings.length ? 'warnings' : 'validation'));
+        showNotification(validation.valid ? 'Server validation passed' : 'Server validation found blocking issues', validation.valid ? 'success' : 'error');
+        logToBackend(`Policy validation completed (errors=${result.errors.length}, warnings=${result.warnings.length})`);
+    } catch (error) {
+        showReviewFailure(error);
+    }
+}
+
+async function generatePolicies() {
+    if (!policies.length) {
+        showNotification('No policies to generate', 'error');
+        return;
+    }
+
+    showNotification('Generating policies…', 'info');
+    try {
+        const data = await requestPolicyReview('/fgt-confgen/generate_policy');
+        renderValidationReview(data.validation || { valid: true, errors: [], warnings: [] });
         document.getElementById('output1').textContent = data.outputs.map(o => o.output1).join('\n\n');
         document.getElementById('output2').textContent = data.outputs.map(o => o.output2).join('\n\n');
         document.getElementById('output3').textContent = data.outputs.map(o => o.output3).join('\n\n');
-        showNotification('Policies generated successfully', 'success');
         const outSec = document.querySelector('.output-section');
         if (outSec) outSec.hidden = false;
+        const outputPlaceholder = document.getElementById('output-placeholder');
+        if (outputPlaceholder) outputPlaceholder.hidden = true;
+        setReviewTab('cli');
+        showNotification('Policies generated successfully', 'success');
         logToBackend('Policies generated successfully');
         markWorkspaceClean();
-    })
-    .catch(error => {
-        // Validation responses may identify policy fields. Keep that detail in
-        // the transient UI only; browser and application logs stay metadata-only.
-        logToBackend('Policy generation failed validation');
-        showNotification(`Error generating policies: ${error.message}`, 'error');
-    });
+    } catch (error) {
+        showReviewFailure(error);
+    }
 }
 
 function copyOutput(outputId) {
@@ -1731,6 +1837,26 @@ function itemIndex(control) {
     return Number.parseInt(control.dataset.itemIndex, 10);
 }
 
+function downloadOutput(outputId) {
+    const outputElement = document.getElementById(outputId);
+    const text = outputElement?.textContent || '';
+    if (!text) {
+        showNotification('No content to download', 'error');
+        return;
+    }
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `fortisafe-confgen-${outputId}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    logToBackend(`Downloaded generated output ${outputId}`);
+    showNotification('Output download started', 'success');
+}
+
 function bindPageActions() {
     const clickActions = {
         'load-template': () => loadTemplate(),
@@ -1752,8 +1878,10 @@ function bindPageActions() {
         'save-policy': button => savePolicy(button),
         'clear-form': button => clearForm(button),
         'clone-policy': button => clonePolicy(button),
+        'validate-policies': () => validatePoliciesOnServer(),
         'generate-policies': () => generatePolicies(),
         'copy-output': button => copyOutput(button.dataset.outputId),
+        'download-output': button => downloadOutput(button.dataset.outputId),
         'delete-interface': button => deleteInterface(button.dataset.itemType, itemIndex(button)),
         'delete-address': button => deleteAddressOrInternetService(button.dataset.itemType, itemIndex(button)),
         'delete-service': button => deleteService(itemIndex(button)),
@@ -1771,6 +1899,10 @@ function bindPageActions() {
     };
 
     confGenRoot.addEventListener('click', event => {
+        const reviewTab = event.target.closest('[data-review-tab]');
+        if (reviewTab && confGenRoot.contains(reviewTab)) {
+            setReviewTab(reviewTab.dataset.reviewTab);
+        }
         const button = event.target.closest('[data-action]');
         if (!button || !confGenRoot.contains(button)) return;
         const action = clickActions[button.dataset.action];
@@ -1791,6 +1923,19 @@ function bindPageActions() {
     });
     confGenRoot.addEventListener('input', event => {
         if (event.target.closest('#policy-form')) markWorkspaceDirty();
+    });
+    confGenRoot.addEventListener('keydown', event => {
+        const current = event.target.closest('[data-review-tab]');
+        if (!current || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = Array.from(confGenRoot.querySelectorAll('[data-review-tab]'));
+        const currentIndex = tabs.indexOf(current);
+        let nextIndex = currentIndex;
+        if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        event.preventDefault();
+        setReviewTab(tabs[nextIndex].dataset.reviewTab, true);
     });
 }
 
@@ -1908,6 +2053,7 @@ function loadFirewallConfig() {
             document.getElementById('policy-form-placeholder').style.display = 'block';
         }
         showNotification('Configuration loaded successfully', 'success');
+        resetReviewResults();
         markWorkspaceClean();
     })
     .catch(error => {

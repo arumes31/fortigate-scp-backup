@@ -1,6 +1,7 @@
 package fgt_confgen
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -48,6 +50,13 @@ func isValidTemplateName(name string) bool {
 var templatesFS embed.FS
 
 const indexTemplate = "fgt_confgen_index.html"
+
+const (
+	maxPolicyRequestBytes int64 = 1 << 20
+	maxPoliciesPerRequest       = 100
+	maxPolicyCombinations       = 10_000
+	policyRequestTimeout        = 2 * time.Second
+)
 
 // canManageGlobalTemplates gates writes to __global__ templates. The app has
 // no role system — the seeded "admin" account is currently the only global
@@ -876,47 +885,216 @@ func (e *Extension) logFrontend(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (e *Extension) generatePolicy(w http.ResponseWriter, r *http.Request) {
+type policyRequestError struct {
+	Code   string
+	Status int
+	Err    error
+}
+
+func (e *policyRequestError) Error() string { return e.Err.Error() }
+
+func writeConfGenJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func decodePolicyRequest(w http.ResponseWriter, r *http.Request) (policyRequest, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxPolicyRequestBytes)
+	var request policyRequest
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&request); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				return policyRequest{}, &policyRequestError{Code: "request_too_large", Status: http.StatusRequestEntityTooLarge, Err: errors.New("request exceeds the size limit")}
+			}
+			return policyRequest{}, &policyRequestError{Code: "invalid_request", Status: http.StatusBadRequest, Err: errors.New("request must contain valid JSON")}
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return policyRequest{}, &policyRequestError{Code: "invalid_request", Status: http.StatusBadRequest, Err: errors.New("request must contain one JSON object")}
+		}
+		return request, nil
+	}
+
+	var formErr error
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		formErr = r.ParseMultipartForm(maxPolicyRequestBytes)
+	} else {
+		formErr = r.ParseForm()
+	}
+	if formErr != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(formErr, &maxBytesErr) || strings.Contains(strings.ToLower(formErr.Error()), "request body too large") {
+			return policyRequest{}, &policyRequestError{Code: "request_too_large", Status: http.StatusRequestEntityTooLarge, Err: errors.New("request exceeds the size limit")}
+		}
+		return policyRequest{}, &policyRequestError{Code: "invalid_request", Status: http.StatusBadRequest, Err: errors.New("request form is invalid")}
+	}
 	policiesJSON := r.FormValue("policies")
 	if policiesJSON == "" {
-		http.Error(w, "policies are required", http.StatusBadRequest)
+		return policyRequest{}, nil
+	}
+	if err := json.Unmarshal([]byte(policiesJSON), &request.Policies); err != nil {
+		return policyRequest{}, &policyRequestError{Code: "invalid_request", Status: http.StatusBadRequest, Err: errors.New("policies must contain valid JSON")}
+	}
+	return request, nil
+}
+
+func countNonEmpty(values []string) int {
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func policyCombinationCount(policy Policy) int {
+	sources := max(1, countNonEmpty(policy.SrcInterfaces))
+	destinations := max(1, countNonEmpty(policy.DstInterfaces))
+	services := 1
+	if !hasAnyEntry(policy.DstInternetServices) {
+		services = max(1, countNonEmptyServices(policy.Services))
+	}
+	return sources * destinations * services
+}
+
+func countNonEmptyServices(services []Service) int {
+	count := 0
+	for _, service := range services {
+		if strings.TrimSpace(service.Name) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func validatePolicySet(ctx context.Context, policies []Policy) (validationResponse, error) {
+	result := validationResponse{
+		Valid:    true,
+		Errors:   make([]validationIssue, 0),
+		Warnings: make([]validationIssue, 0),
+	}
+	if len(policies) == 0 {
+		result.Valid = false
+		result.Errors = append(result.Errors, validationIssue{Code: "policies_required", Message: "Add at least one policy before validation.", PolicyIndex: -1})
+		return result, nil
+	}
+	if len(policies) > maxPoliciesPerRequest {
+		result.Valid = false
+		result.Errors = append(result.Errors, validationIssue{Code: "too_many_policies", Message: "A request can contain at most 100 policies.", PolicyIndex: -1})
+		return result, nil
+	}
+
+	for index, policy := range policies {
+		if err := ctx.Err(); err != nil {
+			return validationResponse{}, err
+		}
+		policy = normalizePolicy(policy)
+		if policyCombinationCount(policy) > maxPolicyCombinations {
+			result.Valid = false
+			result.Errors = append(result.Errors, validationIssue{Code: "policy_too_complex", Message: "A policy can generate at most 10000 CLI combinations.", PolicyID: policy.PolicyID, PolicyIndex: index})
+			continue
+		}
+		if err := validatePolicy(policy, policy.Services); err != nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, validationIssue{Code: policyValidationCode(err), Message: err.Error(), PolicyID: policy.PolicyID, PolicyIndex: index})
+			continue
+		}
+		if strings.TrimSpace(policy.PolicyComment) == "" {
+			result.Warnings = append(result.Warnings, validationIssue{Code: "policy_comment_empty", Message: "Policy comment is empty.", PolicyID: policy.PolicyID, PolicyIndex: index})
+		}
+		if strings.EqualFold(policy.LogTraffic, "disable") {
+			result.Warnings = append(result.Warnings, validationIssue{Code: "traffic_logging_disabled", Message: "Traffic logging is disabled.", PolicyID: policy.PolicyID, PolicyIndex: index})
+		}
+	}
+	return result, nil
+}
+
+func policyRequestContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), policyRequestTimeout)
+}
+
+func handlePolicyRequestError(w http.ResponseWriter, err error) {
+	var requestErr *policyRequestError
+	if errors.As(err, &requestErr) {
+		writeConfGenJSON(w, requestErr.Status, apiErrorResponse{Code: requestErr.Code, Message: requestErr.Error()})
+		return
+	}
+	writeConfGenJSON(w, http.StatusBadRequest, apiErrorResponse{Code: "invalid_request", Message: "Request could not be processed."})
+}
+
+func writePolicyTimeout(w http.ResponseWriter) {
+	writeConfGenJSON(w, http.StatusRequestTimeout, apiErrorResponse{Code: "request_timeout", Message: "Policy processing exceeded its time limit."})
+}
+
+func (e *Extension) validatePolicies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := policyRequestContext(r)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		writePolicyTimeout(w)
+		return
+	}
+	request, err := decodePolicyRequest(w, r)
+	if err != nil {
+		handlePolicyRequestError(w, err)
+		return
+	}
+	validation, err := validatePolicySet(ctx, request.Policies)
+	if err != nil {
+		writePolicyTimeout(w)
+		return
+	}
+	writeConfGenJSON(w, http.StatusOK, validation)
+}
+
+func (e *Extension) generatePolicy(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := policyRequestContext(r)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		writePolicyTimeout(w)
+		return
+	}
+	request, err := decodePolicyRequest(w, r)
+	if err != nil {
+		handlePolicyRequestError(w, err)
+		return
+	}
+	validation, err := validatePolicySet(ctx, request.Policies)
+	if err != nil {
+		writePolicyTimeout(w)
+		return
+	}
+	if !validation.Valid {
+		writeConfGenJSON(w, http.StatusUnprocessableEntity, apiErrorResponse{Code: "validation_failed", Message: "Policy validation failed.", Validation: &validation})
 		return
 	}
 
-	var policies []Policy
-	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
-		http.Error(w, "Invalid policies JSON", http.StatusBadRequest)
-		return
+	outputs := make([]generatedPolicyOutputs, 0, len(request.Policies))
+	for _, policy := range request.Policies {
+		if err := ctx.Err(); err != nil {
+			writePolicyTimeout(w)
+			return
+		}
+		output1, err := GenerateOutput1(policy)
+		if err != nil {
+			writeConfGenJSON(w, http.StatusUnprocessableEntity, apiErrorResponse{Code: "generation_failed", Message: "Policy generation failed validation."})
+			return
+		}
+		output2, err := GenerateOutput2(policy)
+		if err != nil {
+			writeConfGenJSON(w, http.StatusUnprocessableEntity, apiErrorResponse{Code: "generation_failed", Message: "Policy generation failed validation."})
+			return
+		}
+		output3, err := GenerateOutput3(policy)
+		if err != nil {
+			writeConfGenJSON(w, http.StatusUnprocessableEntity, apiErrorResponse{Code: "generation_failed", Message: "Policy generation failed validation."})
+			return
+		}
+		outputs = append(outputs, generatedPolicyOutputs{PolicyID: policy.PolicyID, PolicyName: policy.PolicyName, Output1: output1, Output2: output2, Output3: output3})
 	}
-
-	var outputs []map[string]any
-	for _, p := range policies {
-		o1, err1 := GenerateOutput1(p)
-		if err1 != nil {
-			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err1), http.StatusBadRequest)
-			return
-		}
-		o2, err2 := GenerateOutput2(p)
-		if err2 != nil {
-			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err2), http.StatusBadRequest)
-			return
-		}
-		o3, err3 := GenerateOutput3(p)
-		if err3 != nil {
-			http.Error(w, fmt.Sprintf("Validation error for policy %s: %v", p.PolicyName, err3), http.StatusBadRequest)
-			return
-		}
-		outputs = append(outputs, map[string]any{
-			"policy_id":   p.PolicyID,
-			"policy_name": p.PolicyName,
-			"output1":     o1,
-			"output2":     o2,
-			"output3":     o3,
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"outputs": outputs})
+	writeConfGenJSON(w, http.StatusOK, generateResponse{Outputs: outputs, Validation: validation})
 }
 
 func randHex(n int) string {
