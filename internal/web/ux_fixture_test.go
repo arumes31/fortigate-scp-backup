@@ -254,6 +254,26 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 			http.Error(w, "render interaction primitives", http.StatusInternalServerError)
 		}
 	})
+	mux.HandleFunc("GET /__ux/error/{code}", func(w http.ResponseWriter, r *http.Request) {
+		code, err := strconv.Atoi(r.PathValue("code"))
+		if err != nil || (code != http.StatusNotFound && code != http.StatusInternalServerError) {
+			http.Error(w, "unknown error fixture", http.StatusBadRequest)
+			return
+		}
+		title, message := errorPageCopy("en", code)
+		data := errorData{
+			Base: uxBase(title, ""), Code: code, Title: title, Message: message,
+			RequestID: fmt.Sprintf("ux-request-%d", code), BackURL: "/dashboard",
+		}
+		if code == http.StatusInternalServerError {
+			data.RetryURL = "/__ux/error/500"
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(code)
+		if err := webServer.pages["error.html"].render(w, data); err != nil {
+			panic(err)
+		}
+	})
 	registerUXCoreRoutes(mux, webServer, defaultScenario)
 	registerUXExtensionRoutes(mux, extensionTemplates, defaultScenario)
 	return mux

@@ -397,13 +397,16 @@ func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData 
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(exposeRequestID)
 	r.Use(s.accessLog)
-	r.Use(middleware.Recoverer)
 	// gzip/deflate for HTML/JSON/JS/CSS: the fleet-sized JSON payloads (IPAM
 	// snapshot, topology data) compress ~10×. SSE is unaffected — chi only
 	// compresses its default content types, which exclude text/event-stream.
 	r.Use(middleware.Compress(5))
 	r.Use(securityHeaders(s.cfg.EnableHSTS))
+	// Keep recovery inside response/security middleware so a generated 500 page
+	// retains the same headers and compression behavior as every other page.
+	r.Use(s.recoverer)
 
 	r.NotFound(s.handleNotFound)
 	r.MethodNotAllowed(s.handleMethodNotAllowed)

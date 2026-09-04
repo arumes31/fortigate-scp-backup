@@ -56,3 +56,12 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		)
 	})
 }
+
+// exposeRequestID mirrors the correlation ID into the response so operators
+// can copy the exact value shown on an error page from browser tooling too.
+func exposeRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", middleware.GetReqID(r.Context()))
+		next.ServeHTTP(w, r)
+	})
+}

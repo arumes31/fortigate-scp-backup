@@ -65,6 +65,21 @@ func (s *Server) handleSetLang(w http.ResponseWriter, r *http.Request) {
 
 // uiMsgs is the UI chrome catalog: key -> lang -> text.
 var uiMsgs = map[string]map[string]string{
+	// Generic error recovery
+	"error.code":                   {"en": "Error", "de": "Fehler"},
+	"error.not_found_title":        {"en": "Page not found", "de": "Seite nicht gefunden"},
+	"error.not_found_message":      {"en": "The requested page does not exist or may have moved.", "de": "Die angeforderte Seite existiert nicht oder wurde verschoben."},
+	"error.method_title":           {"en": "Action not allowed", "de": "Aktion nicht erlaubt"},
+	"error.method_message":         {"en": "This page does not accept the requested action.", "de": "Diese Seite akzeptiert die angeforderte Aktion nicht."},
+	"error.internal_title":         {"en": "Something went wrong", "de": "Etwas ist schiefgelaufen"},
+	"error.internal_message":       {"en": "FortiSafe could not complete this request. No internal details were exposed.", "de": "FortiSafe konnte diese Anfrage nicht abschließen. Interne Details wurden nicht offengelegt."},
+	"error.request_id":             {"en": "Request ID", "de": "Anfrage-ID"},
+	"error.request_id_unavailable": {"en": "Unavailable", "de": "Nicht verfügbar"},
+	"error.support_hint":           {"en": "Include the request ID when reporting this problem.", "de": "Geben Sie beim Melden dieses Problems die Anfrage-ID an."},
+	"error.retry":                  {"en": "Retry", "de": "Erneut versuchen"},
+	"error.back":                   {"en": "Back", "de": "Zurück"},
+	"error.dashboard":              {"en": "Dashboard", "de": "Dashboard"},
+
 	// Audit page
 	"audit.title":                      {"en": "Audit & Compliance Insights", "de": "Audit & Compliance Insights"},
 	"audit.critical":                   {"en": "Critical findings", "de": "Kritische Findings"},

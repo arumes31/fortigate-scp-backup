@@ -683,6 +683,16 @@ table.data code { font-family: var(--mono); font-size: 12px; color: var(--accent
 .password-caps-warning { margin: 0; padding: 9px 12px; }
 .password-settings .toolbar { margin-top: 22px; }
 
+/* ---------- Generic error recovery ---------- */
+.error-page { max-width: 680px; margin: 60px auto; border-top: 3px solid var(--danger); }
+.error-page .eyebrow { margin: 0 0 10px; color: var(--danger); }
+.error-page h1 { margin: 0; font-size: clamp(24px, 4vw, 38px); }
+.error-page__message { max-width: 58ch; margin: 14px 0 24px; color: var(--text-muted); font-size: 14px; line-height: 1.65; }
+.error-page__reference { display: grid; gap: 6px; padding: 13px 15px; border: 1px solid var(--border-soft); background: var(--surface-2); }
+.error-page__reference span { color: var(--text-dim); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.error-page__reference code { overflow-wrap: anywhere; color: var(--text); }
+.error-page__actions { margin-top: 22px; }
+
 /* Pinned first column (opt-in via .sticky-first): keeps the row's identifier
    visible while scrolling a wide table sideways. Layering: sticky header row = 2,
    sticky first column = 1, top-left corner cell = 3 (above both). */
