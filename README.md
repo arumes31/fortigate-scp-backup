@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8.svg?style=flat-square&logo=go" alt="Go Version"></a>
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.27.1+-00ADD8.svg?style=flat-square&logo=go" alt="Go Version"></a>
   <a href="https://github.com/arumes31/fortigate-scp-backup/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arumes31/fortigate-scp-backup/ci.yml?branch=main&style=flat-square&logo=github" alt="CI Build Status"></a>
   <a href="https://github.com/arumes31/fortigate-scp-backup/pkgs/container/fortigate-scp-backup"><img src="https://img.shields.io/badge/Container-GHCR-blue?style=flat-square&logo=docker" alt="Docker Registry"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/arumes31/fortigate-scp-backup?style=flat-square" alt="License"></a>
@@ -516,7 +516,7 @@ An optional module (`EXT_FGT_CONFCONV=true`) for restructuring a firewall's conf
 
 ## 🛠️ Development & Building from Source
 
-Requires **Go 1.26+**. Because the application embeds its static assets and timezone data, CGO is disabled — you can build a native binary without a C toolchain:
+Requires **Go 1.27.1+**. Because the application embeds its static assets and timezone data, CGO is disabled — you can build a native binary without a C toolchain:
 
 ```bash
 CGO_ENABLED=0 go build -ldflags="-s -w" -o fortisafe ./cmd/fortisafe

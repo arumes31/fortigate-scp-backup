@@ -4,7 +4,7 @@ Thanks for helping improve FortiSafe. This project is a single Go module.
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.27.1+
 - Docker (for building the image and running an integration Postgres)
 
 ## Development loop
