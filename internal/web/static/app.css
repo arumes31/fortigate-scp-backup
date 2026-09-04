@@ -676,6 +676,38 @@ table.data .ssh-key-warning {
 }
 table.data .ssh-key-warning code { display: block; margin: 4px 0; overflow-wrap: anywhere; }
 
+/* ---------- Firewall operator worklist ---------- */
+.firewall-filter-toolbar { flex-wrap: nowrap; align-items: center; }
+.firewall-filter-toolbar label { margin: 0; flex: none; color: var(--text-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.firewall-filter-toolbar input { width: min(320px, 28vw); min-width: 190px; }
+.firewall-worklist { min-width: 840px; }
+.firewall-worklist th:first-child { width: 34%; }
+.firewall-worklist .fw-fqdn { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+.firewall-worklist .fw-fqdn > strong { display: block; }
+.fw-secondary { margin-top: 5px; color: var(--text-muted); font-size: 10px; white-space: normal; }
+.fw-secondary > summary { cursor: pointer; width: max-content; color: var(--action); }
+.fw-secondary dl { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 18px; margin: 8px 0 0; }
+.fw-secondary dl > div { display: flex; gap: 6px; }
+.fw-secondary dt { color: var(--text-dim); }
+.fw-secondary dd { margin: 0; color: var(--text-muted); }
+.fw-schedule { white-space: nowrap; }
+.fw-schedule > span, .fw-schedule > small { display: block; }
+.fw-schedule > small { margin-top: 5px; color: var(--text-muted); }
+.firewall-worklist td:nth-child(4) { white-space: nowrap; }
+.firewall-worklist .actions { align-items: flex-start; flex-wrap: wrap; min-width: 210px; }
+.primary-actions { display: flex; gap: 8px; }
+.firewall-worklist .primary-actions form { margin: 0; }
+.firewall-worklist .primary-actions .btn { padding: 5px 8px; border: 1px solid var(--border); }
+.firewall-worklist .primary-actions .btn-primary { border-color: var(--action); background: var(--action-soft); color: var(--action-hover); }
+.row-actions-menu { position: relative; }
+.row-actions-menu > summary { list-style: none; cursor: pointer; }
+.row-actions-menu > summary::-webkit-details-marker { display: none; }
+.row-actions-menu > summary::after { content: " ▾"; }
+.row-actions-menu[open] > summary::after { content: " ▴"; }
+.row-actions-menu > div { display: flex; gap: 8px; margin-top: 7px; }
+.firewall-worklist .ui-dialog .btn { padding: 7px 11px; border: 1px solid var(--border); background: var(--surface-3); color: var(--text); }
+.firewall-worklist .ui-dialog .btn-danger { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+
 /* ---------- Status pills ---------- */
 .pill {
   display: inline-flex; align-items: center; gap: 6px;

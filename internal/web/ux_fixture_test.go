@@ -702,6 +702,7 @@ func uxFirewalls() []models.Firewall {
 	return []models.Firewall{
 		{ID: 7, FQDN: "edge.example.test", Username: "backup", IntervalMin: 360, RetentionCount: 30, LastBackup: uxFixtureNow.Add(-20 * time.Minute), Status: "Success", SSHPort: 22},
 		{ID: 12, FQDN: "branch.example.test", Username: "backup", IntervalMin: 60, RetentionCount: 14, LastBackup: uxFixtureNow.Add(-8 * time.Hour), Status: "Failed: synthetic connection timeout", SSHPort: 22},
+		{ID: 23, FQDN: "fortigate-branch-north-industrial-campus-building-a.example.test", Username: "backup", IntervalMin: 180, RetentionCount: 21, LastBackup: uxFixtureNow.Add(-2 * time.Hour), Status: "In Progress", SSHPort: 9422},
 	}
 }
 

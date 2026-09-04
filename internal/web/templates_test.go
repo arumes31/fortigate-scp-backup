@@ -117,6 +117,36 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 	}
 }
 
+func TestIndexRendersOperatorWorklist(t *testing.T) {
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	if err := s.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	s.render(recorder, "index.html", indexData{
+		Base:      BaseData{Title: "Firewalls"},
+		Firewalls: []models.Firewall{{ID: 7, FQDN: "edge-with-a-long-site-name.example.test", Status: "Failed: timeout", IntervalMin: 60, SSHPort: 22}},
+	})
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`<label for="fwFilter">Filter firewalls</label>`,
+		`class="data firewall-worklist"`,
+		`<th>FQDN</th><th>Status</th><th>Schedule</th><th>Last Backup</th><th>Actions</th>`,
+		`class="primary-actions"`,
+		`data-dialog-open="deleteFirewall7"`,
+		`<dialog class="ui-dialog" id="deleteFirewall7" data-ui-dialog data-confirm-text="edge-with-a-long-site-name.example.test"`,
+		`data-confirm-input`,
+		`data-confirm-action disabled`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("firewall worklist missing %q", want)
+		}
+	}
+	if strings.Contains(body, `onsubmit="return confirm('Delete firewall`) {
+		t.Error("firewall deletion still uses an inaccessible native confirm")
+	}
+}
+
 func TestIndexOmitsSSHHostKeyAcceptanceWithoutPendingKey(t *testing.T) {
 	tests := []struct {
 		name            string

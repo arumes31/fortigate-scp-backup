@@ -61,18 +61,18 @@
 <div class="card pad-0">
     <div class="card-header">
         <h2 class="mt-0 mb-0">Configured Firewalls</h2>
-        <div class="toolbar">
+        <div class="toolbar firewall-filter-toolbar">
+            <label for="fwFilter">Filter firewalls</label>
             <input type="search" id="fwFilter" placeholder="Filter by FQDN or status…">
             <a href="/errors" class="btn btn-sm">View Errors</a>
         </div>
     </div>
     {{if .Firewalls}}
     <div class="table-wrap">
-        <table class="data" id="fwTable">
+        <table class="data firewall-worklist" id="fwTable">
             <thead>
                 <tr>
-                    <th>ID</th><th>FQDN</th><th>User</th><th>Interval</th><th>Retention</th>
-                    <th>Last Backup</th><th>Next Run</th><th>Status</th><th>SSH Port</th><th>Actions</th>
+                    <th>FQDN</th><th>Status</th><th>Schedule</th><th>Last Backup</th><th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -80,35 +80,49 @@
             {{range .Firewalls}}
                 {{$firewall := .}}
                 <tr data-fw="{{.ID}}">
-                    <td>{{.ID}}</td>
-                    <td class="fw-fqdn">{{.FQDN}}</td>
-                    <td class="muted">{{.Username}}</td>
-                    <td>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}{{.IntervalMin}} min{{end}}</td>
-                    <td>{{.RetentionCount}}</td>
-                    <td class="muted">{{if isZero .LastBackup}}—{{else}}<time datetime="{{fmtMachineTime .LastBackup}}">{{fmtTime .LastBackup}}</time>{{end}}</td>
-                    {{$nextRun := index $root.NextRuns .ID}}<td class="muted">{{if isZero $nextRun}}—{{else}}<time datetime="{{fmtMachineTime $nextRun}}">{{fmtTime $nextRun}}</time>{{end}}</td>
+                    <td class="fw-fqdn">
+                        <strong>{{.FQDN}}</strong>
+                        <details class="fw-secondary"><summary>Details</summary>
+                            <dl><div><dt>ID</dt><dd>{{.ID}}</dd></div><div><dt>User</dt><dd>{{if .Username}}{{.Username}}{{else}}default{{end}}</dd></div><div><dt>Retention</dt><dd>{{.RetentionCount}} copies</dd></div><div><dt>SSH port</dt><dd>{{.SSHPort}}</dd></div></dl>
+                        </details>
+                    </td>
                     <td class="fw-status">{{template "statusPill" .Status}}</td>
-                    <td>{{.SSHPort}}</td>
+                    {{$nextRun := index $root.NextRuns .ID}}
+                    <td class="fw-schedule"><span>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}Every {{.IntervalMin}} min{{end}}</span><small>Next: {{if isZero $nextRun}}—{{else}}<time datetime="{{fmtMachineTime $nextRun}}">{{fmtTime $nextRun}}</time>{{end}}</small></td>
+                    <td class="muted">{{if isZero .LastBackup}}—{{else}}<time datetime="{{fmtMachineTime .LastBackup}}">{{fmtTime .LastBackup}}</time>{{end}}</td>
                     <td>
                         <div class="actions">
-                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline">
-                                <button type="submit" class="btn btn-sm">Backup Now</button>
-                            </form>
-                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
+                            <div class="primary-actions">
+                                <form method="post" action="/backup_now/{{.ID}}"><button type="submit" class="btn btn-sm btn-primary">Backup Now</button></form>
+                                <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
+                            </div>
+                            <details class="row-actions-menu"><summary class="btn btn-sm">More</summary><div>
+                                <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
+                                <button type="button" class="btn btn-sm btn-danger" data-dialog-open="deleteFirewall{{.ID}}">Delete</button>
+                            </div></details>
                             {{with index $root.PendingHostKeys .ID}}
                             <div class="ssh-key-warning" role="alert">
                                 <strong>SSH host key changed</strong><br>
                                 <code title="{{.Algorithm}}">{{.Fingerprint}}</code>
-                                <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" style="display:inline" onsubmit="return confirm('Accept the detected SSH key {{.Fingerprint}}?');">
-                                    <button type="submit" class="btn btn-sm btn-danger">Accept new SSH key</button>
-                                </form>
+                                <button type="button" class="btn btn-sm btn-danger" data-dialog-open="acceptHostKey{{$firewall.ID}}">Accept new SSH key</button>
                             </div>
+                            <dialog class="ui-dialog" id="acceptHostKey{{$firewall.ID}}" data-ui-dialog aria-labelledby="acceptHostKeyTitle{{$firewall.ID}}">
+                                <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" class="ui-dialog__body">
+                                    <h2 id="acceptHostKeyTitle{{$firewall.ID}}">Accept SSH host key for {{$firewall.FQDN}}</h2>
+                                    <p>Confirm fingerprint <code>{{.Fingerprint}}</code> before replacing the trusted key.</p>
+                                    <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>Cancel</button><button type="submit" class="btn btn-danger">Accept new SSH key</button></div>
+                                </form>
+                            </dialog>
                             {{end}}
-                            <form method="post" action="/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Delete firewall {{.FQDN}}?');">
-                                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
-                            </form>
                         </div>
+                        <dialog class="ui-dialog" id="deleteFirewall{{.ID}}" data-ui-dialog data-confirm-text="{{.FQDN}}" aria-labelledby="deleteFirewallTitle{{.ID}}">
+                            <form method="post" action="/delete/{{.ID}}" class="ui-dialog__body">
+                                <h2 id="deleteFirewallTitle{{.ID}}">Delete {{.FQDN}}</h2>
+                                <p>This removes the firewall, its scheduled job, and its stored backups.</p>
+                                <label>Type {{.FQDN}} to confirm<input type="text" data-confirm-input autocomplete="off"></label>
+                                <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>Cancel</button><button type="submit" class="btn btn-danger" data-confirm-action disabled>Delete firewall</button></div>
+                            </form>
+                        </dialog>
                     </td>
                 </tr>
             {{end}}
@@ -176,31 +190,33 @@
             applyFilter();
         }
         // Status pill markup, mirrored from the server for live updates.
+        function escapeHTML(value) {
+            return String(value || '').replace(/[&<>"']/g, function (char) {
+                return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char];
+            });
+        }
         function pill(status) {
             if (status === 'Success') { return '<span class="pill pill-success">Success</span>'; }
             if (status === 'New') { return '<span class="pill pill-new">New</span>'; }
             if (status === 'In Progress') { return '<span class="pill pill-info">In Progress</span>'; }
-            if (status.indexOf('Failed') === 0) { return '<span class="pill pill-failed" title="' + status.replace(/"/g, '&quot;') + '">Failed</span>'; }
-            return '<span class="pill pill-muted">' + status + '</span>';
+            if (status.indexOf('Failed') === 0) { return '<span class="pill pill-failed" title="' + escapeHTML(status) + '">Failed</span>'; }
+            return '<span class="pill pill-muted">' + escapeHTML(status) + '</span>';
         }
         // Live status updates via SSE (#70).
-        if (window.EventSource) {
-            var es = new EventSource('/events');
-            es.onmessage = function (e) {
-                try {
-                    var d = JSON.parse(e.data);
-                    // Only backup status changes drive the status pills; the
-                    // operation lifecycle events (analysis, sshdiag, …) would
-                    // otherwise overwrite a firewall's status with "started".
-                    if (d.kind && d.kind !== 'backup') { return; }
-                    var row = table && table.querySelector('tr[data-fw="' + d.fw_id + '"]');
-                    if (row) {
-                        var cell = row.querySelector('.fw-status');
-                        if (cell) { cell.innerHTML = pill(d.status); }
-                    }
-                } catch (err) {}
-            };
-        }
+        window.addEventListener('fortisafe:message', function (event) {
+            try {
+                var d = JSON.parse(event.detail.data);
+                // Only backup status changes drive the status pills; the
+                // operation lifecycle events (analysis, sshdiag, …) would
+                // otherwise overwrite a firewall's status with "started".
+                if (d.kind && d.kind !== 'backup') { return; }
+                var row = table && table.querySelector('tr[data-fw="' + d.fw_id + '"]');
+                if (row) {
+                    var cell = row.querySelector('.fw-status');
+                    if (cell) { cell.innerHTML = pill(d.status); }
+                }
+            } catch (err) {}
+        });
         // Test connection buttons (#34).
         document.querySelectorAll('.test-conn').forEach(function (b) {
             b.addEventListener('click', function () {
