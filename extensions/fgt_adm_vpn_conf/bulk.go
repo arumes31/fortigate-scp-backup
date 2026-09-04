@@ -25,6 +25,10 @@ var configCSVHeader = []string{
 	"Firewallname", "CID", "graylog_enabled", "cluster_hostnames",
 }
 
+type bulkSelectionError string
+
+func (e bulkSelectionError) Error() string { return string(e) }
+
 func (e *Extension) bulkGenerate(w http.ResponseWriter, r *http.Request) {
 	ids, configs, ok := e.validatedBulkSelection(w, r)
 	if !ok {
@@ -123,7 +127,7 @@ func parseBulkIDs(w http.ResponseWriter, r *http.Request) ([]int64, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBulkFormBytes)
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
-		return nil, fmt.Errorf("Invalid selection.")
+		return nil, bulkSelectionError("Invalid selection.")
 	}
 	switch mediaType {
 	case "multipart/form-data":
@@ -131,33 +135,33 @@ func parseBulkIDs(w http.ResponseWriter, r *http.Request) ([]int64, error) {
 	case "application/x-www-form-urlencoded":
 		err = r.ParseForm()
 	default:
-		return nil, fmt.Errorf("Invalid selection.")
+		return nil, bulkSelectionError("Invalid selection.")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("Invalid selection.")
+		return nil, bulkSelectionError("Invalid selection.")
 	}
 	if r.MultipartForm != nil {
 		defer func() { _ = r.MultipartForm.RemoveAll() }()
 		if len(r.MultipartForm.File) != 0 {
-			return nil, fmt.Errorf("Invalid selection.")
+			return nil, bulkSelectionError("Invalid selection.")
 		}
 	}
 	values := r.PostForm["id"]
 	if len(values) == 0 {
-		return nil, fmt.Errorf("Select at least one entry.")
+		return nil, bulkSelectionError("Select at least one entry.")
 	}
 	if len(values) > maxBulkEntries {
-		return nil, fmt.Errorf("A maximum of %d entries can be processed at once.", maxBulkEntries)
+		return nil, bulkSelectionError(fmt.Sprintf("A maximum of %d entries can be processed at once.", maxBulkEntries))
 	}
 	ids := make([]int64, 0, len(values))
 	seen := make(map[int64]struct{}, len(values))
 	for _, value := range values {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return nil, fmt.Errorf("Invalid selection.")
+			return nil, bulkSelectionError("Invalid selection.")
 		}
 		if _, duplicate := seen[id]; duplicate {
-			return nil, fmt.Errorf("Invalid selection.")
+			return nil, bulkSelectionError("Invalid selection.")
 		}
 		seen[id] = struct{}{}
 		ids = append(ids, id)

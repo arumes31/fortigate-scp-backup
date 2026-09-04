@@ -6,7 +6,6 @@ package security
 
 import (
 	"crypto/subtle"
-	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -20,13 +19,17 @@ const (
 	MaxPasswordBytes = 72
 )
 
+type passwordValidationError string
+
+func (e passwordValidationError) Error() string { return string(e) }
+
 var (
-	ErrPasswordRequired    = errors.New("Enter a new password.")
-	ErrPasswordInvalidUTF8 = errors.New("New password must be valid UTF-8.")
-	ErrPasswordTooShort    = errors.New("New password must contain at least 16 UTF-8 bytes.")
-	ErrPasswordTooLong     = errors.New("New password must contain at most 72 UTF-8 bytes.")
-	ErrPasswordUnchanged   = errors.New("New password must be different from your current password.")
-	ErrPasswordMismatch    = errors.New("New password confirmation does not match.")
+	ErrPasswordRequired    error = passwordValidationError("Enter a new password.")
+	ErrPasswordInvalidUTF8 error = passwordValidationError("New password must be valid UTF-8.")
+	ErrPasswordTooShort    error = passwordValidationError("New password must contain at least 16 UTF-8 bytes.")
+	ErrPasswordTooLong     error = passwordValidationError("New password must contain at most 72 UTF-8 bytes.")
+	ErrPasswordUnchanged   error = passwordValidationError("New password must be different from your current password.")
+	ErrPasswordMismatch    error = passwordValidationError("New password confirmation does not match.")
 )
 
 // ValidateNewPassword applies the complete local-password change policy. Byte
