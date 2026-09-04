@@ -595,7 +595,18 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	})
 	mux.HandleFunc("GET /{$}", render("index.html", uxFirewallFixture))
 	mux.HandleFunc("GET /search", render("search.html", uxSearchFixture))
-	mux.HandleFunc("POST /search", render("search.html", uxSearchFixture))
+	mux.HandleFunc("POST /search", func(w http.ResponseWriter, r *http.Request) {
+		data := uxSearchFixture(uxScenarioFull).(searchData)
+		if query := r.FormValue("query"); query != "" {
+			data.Query = query
+			line := query + ` "<sentinel-config>"`
+			data.Results = []searchResult{{
+				FQDN: "edge.example.test", Filename: "edge.conf", Line: line,
+				Segments: []searchSegment{{Text: query, Match: true}, {Text: ` "<sentinel-config>"`}},
+			}}
+		}
+		webServer.render(w, "search.html", data)
+	})
 	mux.HandleFunc("GET /audit", render("audit.html", uxAuditFixture))
 	mux.HandleFunc("GET /audit/results/{fwID}", jsonResponse(`{"status":"ok","score":73,"findings":[{"severity":"critical","text":"Synthetic administrative account has no MFA","remediation":"Enable two-factor authentication."}]}`))
 	mux.HandleFunc("GET /licenses", render("licenses.html", func(scenario uxScenario) any {
@@ -719,9 +730,23 @@ func uxFirewallFixture(scenario uxScenario) any {
 }
 
 func uxSearchFixture(scenario uxScenario) any {
-	data := searchData{Base: uxBase("Search", "search"), Query: "config system admin"}
+	data := searchData{Base: uxBase("Search", "search"), Query: "admin-name"}
+	if scenario == uxScenarioEmpty {
+		data.Query = ""
+	}
 	if scenario != uxScenarioEmpty {
-		data.Results = []searchResult{{FQDN: "edge.example.test", Filename: "edge.conf", Line: "config system admin"}}
+		data.Results = []searchResult{{
+			FQDN: "edge.example.test", Filename: "edge.conf", Line: `set admin-name "<sentinel-config>"`,
+			Segments: []searchSegment{{Text: "set "}, {Text: "admin-name", Match: true}, {Text: ` "<sentinel-config>"`}},
+		}}
+	}
+	if scenario == uxScenarioWarning {
+		row := data.Results[0]
+		data.Results = make([]searchResult, maxSearchResults)
+		for i := range data.Results {
+			data.Results[i] = row
+		}
+		data.Truncated = true
 	}
 	if scenario == uxScenarioError {
 		data.Error = "Synthetic search failure."

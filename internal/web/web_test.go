@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -33,13 +34,14 @@ import (
 
 type fakeStore struct {
 	firewalls []models.Firewall
+	refs      []models.FirewallRef
 	activity  *[]string
 }
 
 func (fakeStore) Ping(context.Context) error { return nil }
-func (s fakeStore) LogActivity(_ string, action, details string) {
+func (s fakeStore) LogActivity(username, action, details string) {
 	if s.activity != nil {
-		*s.activity = append(*s.activity, action+": "+details)
+		*s.activity = append(*s.activity, "actor="+username+" operation="+action+" "+details)
 	}
 }
 func (fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
@@ -73,7 +75,7 @@ func (fakeStore) CountActivityLogs(context.Context) (int, error) { return 0, nil
 func (fakeStore) DashboardStats(context.Context) (models.DashboardStats, error) {
 	return models.DashboardStats{}, nil
 }
-func (fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) { return nil, nil }
+func (s fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) { return s.refs, nil }
 func (fakeStore) ListActivityLogs(context.Context, int, int) ([]models.ActivityLog, error) {
 	return nil, nil
 }
@@ -409,6 +411,79 @@ func FuzzBuildSearchPattern(f *testing.F) {
 			t.Fatalf("pattern should always compile, query=%q err=%v", q, err)
 		}
 	})
+}
+
+func TestSearchLineSegmentsRemainEscaped(t *testing.T) {
+	pattern, err := buildSearchPattern("admin*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := searchLineSegments(`set admin-name "<script>alert(1)</script>"`, pattern)
+	if len(segments) < 2 || !segments[1].Match {
+		t.Fatalf("segments = %#v, want a highlighted match", segments)
+	}
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.render(rr, "search.html", searchData{
+		Base: BaseData{Title: "Search"}, Query: "admin*",
+		Results: []searchResult{{FQDN: "fw.example", Filename: "1/test.conf", Line: `<script>alert(1)</script>`, Segments: segments}},
+	})
+	body := rr.Body.String()
+	if !strings.Contains(body, "<mark>") || !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatalf("highlighted search result was not safely rendered: %s", body)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Fatal("matched configuration text was rendered as executable markup")
+	}
+}
+
+func TestSearchCapsResultsAndLogsOnlyMetadata(t *testing.T) {
+	srv := testServer(t)
+	root := t.TempDir()
+	srv.cfg.BackupDir = root
+	dir := filepath.Join(root, "7")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const querySentinel = "sentinel-query-secret"
+	const configSentinel = "sentinel-config-secret"
+	var plain strings.Builder
+	for range maxSearchResults + 1 {
+		fmt.Fprintf(&plain, "set note %s %s\n", querySentinel, configSentinel)
+	}
+	encrypted, err := srv.cipher.Encrypt([]byte(plain.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "latest.conf"), encrypted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activity := []string{}
+	srv.store = fakeStore{refs: []models.FirewallRef{{ID: 7, FQDN: "fw.example"}}, activity: &activity}
+	var appLog bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&appLog, nil))
+	form := url.Values{"query": {querySentinel}}
+	req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.handleSearch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if count := strings.Count(rr.Body.String(), `<tr>`); count != maxSearchResults+1 {
+		t.Fatalf("rendered table rows = %d, want header + %d capped results", count, maxSearchResults)
+	}
+	logs := appLog.String() + strings.Join(activity, "\n")
+	for _, forbidden := range []string{querySentinel, configSentinel} {
+		if strings.Contains(logs, forbidden) {
+			t.Fatalf("search logs leaked sentinel %q: %s", forbidden, logs)
+		}
+	}
+	for _, required := range []string{"actor=unknown", "operation=Configuration Search", "outcome", "results=1000", "truncated=true", "duration"} {
+		if !strings.Contains(logs, required) {
+			t.Errorf("search logs missing metadata %q: %s", required, logs)
+		}
+	}
 }
 
 func TestFmtBytes(t *testing.T) {

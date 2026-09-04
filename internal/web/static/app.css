@@ -862,6 +862,12 @@ table.data .ssh-key-warning code { display: block; margin: 4px 0; overflow-wrap:
   transition: all .12s ease;
 }
 .chip:hover { background: var(--surface-3); color: #fff; border-color: var(--accent); }
+.chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.search-help { padding: 0; }
+.search-help > summary { cursor: pointer; padding: 16px 20px; color: var(--text-muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.search-help[open] > summary { border-bottom: 1px solid var(--border-soft); color: var(--accent); }
+.search-help-body { padding: 20px; }
+.search-results mark { padding: 1px 2px; background: var(--warning-soft); color: var(--warning); }
 
 /* ---------- Utilities ---------- */
 .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }

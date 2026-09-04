@@ -6,6 +6,7 @@ const routes = [
   '/login',
   '/dashboard?scenario=warning',
   '/?scenario=empty',
+  '/search',
   '/audit',
   '/topology',
   '/fgt-adm-vpn-conf/',

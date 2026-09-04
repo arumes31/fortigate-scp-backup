@@ -82,6 +82,12 @@ type searchResult struct {
 	FQDN     string
 	Filename string
 	Line     string
+	Segments []searchSegment
+}
+
+type searchSegment struct {
+	Text  string
+	Match bool
 }
 
 type searchData struct {
@@ -568,13 +574,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	data := searchData{Base: s.base(r, "Search", "search")}
 
 	if r.Method == http.MethodPost {
+		started := time.Now()
+		actor := s.sess.User(r).Username
+		if actor == "" {
+			actor = "unknown"
+		}
+		outcome := "empty"
+		defer func() {
+			duration := time.Since(started)
+			details := fmt.Sprintf("outcome=%s results=%d truncated=%t duration_ms=%d", outcome, len(data.Results), data.Truncated, duration.Milliseconds())
+			s.store.LogActivity(actor, "Configuration Search", details)
+			s.logger.Info("configuration search completed", "actor", actor, "outcome", outcome,
+				"result_count", len(data.Results), "truncated", data.Truncated, "dur_ms", duration.Milliseconds())
+		}()
 		query := r.FormValue("query")
 		data.Query = query
 		if query != "" {
-			s.store.LogActivity(s.sess.User(r).Username, "Search", "Performed search for: "+query)
-
 			pattern, err := buildSearchPattern(query)
 			if err != nil {
+				outcome = "invalid"
 				data.Error = "Invalid search pattern: " + err.Error()
 				s.render(w, "search.html", data)
 				return
@@ -582,18 +600,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 			refs, err := s.store.ListFirewallRefs(ctx)
 			if err != nil {
+				outcome = "error"
 				data.Error = "An error occurred during search: " + err.Error()
 				s.render(w, "search.html", data)
 				return
 			}
 			for _, ref := range refs {
-				results := s.searchFirewall(ref, pattern)
+				results := s.searchFirewall(ref, pattern, maxSearchResults-len(data.Results))
 				data.Results = append(data.Results, results...)
 				if len(data.Results) >= maxSearchResults {
-					data.Results = data.Results[:maxSearchResults]
 					data.Truncated = true
 					break
 				}
+			}
+			if data.Truncated {
+				outcome = "truncated"
+			} else if len(data.Results) > 0 {
+				outcome = "success"
 			}
 		}
 	}
@@ -617,7 +640,10 @@ func buildSearchPattern(query string) (*regexp.Regexp, error) {
 }
 
 // searchFirewall scans the newest .conf file of one firewall for pattern matches.
-func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) []searchResult {
+func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp, limit int) []searchResult {
+	if limit <= 0 {
+		return nil
+	}
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(ref.ID))
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
@@ -662,14 +688,41 @@ func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) 
 	for sc.Scan() {
 		line := sc.Text()
 		if pattern.MatchString(line) {
+			trimmed := strings.TrimSpace(line)
 			results = append(results, searchResult{
 				FQDN:     ref.FQDN,
 				Filename: relName,
-				Line:     strings.TrimSpace(line),
+				Line:     trimmed,
+				Segments: searchLineSegments(trimmed, pattern),
 			})
+			if len(results) >= limit {
+				break
+			}
 		}
 	}
 	return results
+}
+
+func searchLineSegments(line string, pattern *regexp.Regexp) []searchSegment {
+	indexes := pattern.FindAllStringIndex(line, -1)
+	if len(indexes) == 0 {
+		return []searchSegment{{Text: line}}
+	}
+	segments := make([]searchSegment, 0, len(indexes)*2+1)
+	last := 0
+	for _, index := range indexes {
+		if index[0] > last {
+			segments = append(segments, searchSegment{Text: line[last:index[0]]})
+		}
+		if index[1] > index[0] {
+			segments = append(segments, searchSegment{Text: line[index[0]:index[1]], Match: true})
+		}
+		last = index[1]
+	}
+	if last < len(line) {
+		segments = append(segments, searchSegment{Text: line[last:]})
+	}
+	return segments
 }
 
 const activityPageSize = 100
