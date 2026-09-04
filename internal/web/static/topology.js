@@ -10,6 +10,15 @@
 //   { dataBase: "/topology/data/" }        — id appended from #topoSelect
 //   { staticUrl: "/topology/shared/x/data" } — fixed endpoint, no selector
 // ---------------------------------------------------------------------------
+const topologyPageConfig = document.getElementById("topologyPage");
+if (topologyPageConfig) {
+    window.TOPO_CONFIG = {
+        dataBase: topologyPageConfig.dataset.dataBase || undefined,
+        devicesBase: topologyPageConfig.dataset.devicesBase || undefined,
+        staticUrl: topologyPageConfig.dataset.staticUrl || undefined,
+        sharedDevicesUrl: topologyPageConfig.dataset.sharedDevicesUrl || undefined,
+    };
+}
 let topo = null;        // current topology JSON
 let topoDevices = null; // device inventory from the graylog_device_data extension (null = unavailable)
 let topoStp = [];       // STP/guard/link port states from the extension (switch-controller event logs)

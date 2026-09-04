@@ -203,8 +203,8 @@ func TestAuditManagementUsesLabeledProgressiveControls(t *testing.T) {
 		`id="auditLoadStatus" role="status" aria-live="polite"`,
 		`class="card audit-management audit-exemptions"`,
 		`<label>Rule name`, `<label>Search pattern`,
-		`class="audit-filter"`, `aria-expanded="false" aria-controls="detail-`,
-		`severity === "high"`, `Results are incomplete.`, `Math.min(4, ids.length)`,
+		`class="audit-filter"`,
+		`<script src="/static/audit.js"></script>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("audit page missing %q", want)
@@ -213,8 +213,17 @@ func TestAuditManagementUsesLabeledProgressiveControls(t *testing.T) {
 	if strings.Contains(body, `class="card audit-management audit-exemptions" open`) {
 		t.Error("empty exemptions must be collapsed")
 	}
-	if strings.Contains(body, `onclick="recompute(`) || !strings.Contains(body, `data-audit-recheck=`) {
+	if strings.Contains(body, `onclick="recompute(`) {
 		t.Error("audit re-check must use the delegated, keyboard-safe action")
+	}
+	auditScript, err := staticFS.ReadFile("static/audit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`severity === "high"`, `Results are incomplete.`, `Math.min(4, ids.length)`, `aria-expanded="false" aria-controls="detail-`, `data-audit-recheck=`, `[data-audit-recheck]`} {
+		if !strings.Contains(string(auditScript), want) {
+			t.Errorf("audit script missing %q", want)
+		}
 	}
 }
 
@@ -313,7 +322,7 @@ func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 			if test.name == "ipam.html" {
 				blob, err = staticFS.ReadFile("static/ipam.js")
 			} else {
-				blob, err = templatesFS.ReadFile("templates/" + test.name)
+				blob, err = staticFS.ReadFile("static/licenses.js")
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -321,7 +330,7 @@ func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 			body := string(blob)
 			for _, want := range test.wants {
 				if !strings.Contains(body, want) {
-					t.Errorf("template missing polling safeguard %q", want)
+					t.Errorf("asset missing polling safeguard %q", want)
 				}
 			}
 		})

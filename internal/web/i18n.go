@@ -578,6 +578,13 @@ func i18nJSON(lang string) template.JS {
 	return template.JS(blob) //nolint:gosec // values come from the static catalog above
 }
 
+// i18nJSONAttr returns the static browser catalog as an ordinary string so
+// html/template applies attribute-context escaping when it is carried in a
+// meta element rather than executable inline JavaScript.
+func i18nJSONAttr(lang string) string {
+	return string(i18nJSON(lang))
+}
+
 // tr renders a UI catalog message in the given language, falling back to
 // English, then to the key itself.
 func tr(lang, key string, args ...any) string {

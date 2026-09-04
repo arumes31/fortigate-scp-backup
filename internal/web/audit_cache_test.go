@@ -669,8 +669,12 @@ func TestAuditShellRendersFirewalls(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, "/audit/results/") {
+	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, `/static/audit.js`) {
 		t.Error("audit shell missing firewall row or async loader")
+	}
+	auditScript, err := staticFS.ReadFile("static/audit.js")
+	if err != nil || !strings.Contains(string(auditScript), "/audit/results/") {
+		t.Error("external audit loader missing results endpoint")
 	}
 	// The shell must not contain computed findings (they load async).
 	if strings.Contains(body, "admin-no-2fa") {

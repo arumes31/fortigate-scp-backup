@@ -16,13 +16,15 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return netutil.ClientIP(r, trustProxy)
 }
 
-// securityHeaders sets a conservative set of security response headers. The CSP
-// allows inline styles/scripts (used by the login animation and small page
-// scripts) and same-origin SSE; tighten with nonces if those are refactored.
+// securityHeaders sets a single explicit policy for Core, public, and extension
+// routes. Scripts and style elements must be same-origin external resources.
+// Trusted runtime positioning (notably the topology canvas) still requires
+// style attributes, which are isolated in style-src-attr.
 func securityHeaders(hsts bool) func(http.Handler) http.Handler {
-	const csp = "default-src 'self'; img-src 'self' data:; " +
-		"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
-		"connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	const csp = "default-src 'self'; script-src 'self'; script-src-attr 'none'; " +
+		"style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
+		"base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := w.Header()

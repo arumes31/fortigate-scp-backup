@@ -343,8 +343,17 @@ func TestSecurityHeaders(t *testing.T) {
 	if rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Error("missing X-Frame-Options")
 	}
-	if rr.Header().Get("Content-Security-Policy") == "" {
-		t.Error("missing CSP")
+	const wantCSP = "default-src 'self'; script-src 'self'; script-src-attr 'none'; " +
+		"style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
+		"base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+	if got := rr.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	}
+	for _, forbidden := range []string{"script-src 'self' 'unsafe-inline'", "script-src 'self' 'unsafe-eval'", "style-src-elem 'self' 'unsafe-inline'"} {
+		if strings.Contains(rr.Header().Get("Content-Security-Policy"), forbidden) {
+			t.Errorf("CSP contains forbidden relaxation %q", forbidden)
+		}
 	}
 }
 
@@ -1205,6 +1214,15 @@ func TestLoginPageAnimation(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	html := rr.Body.String()
+	loginCSS, err := staticFS.ReadFile("static/login.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginJS, err := staticFS.ReadFile("static/login.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := html + string(loginCSS) + string(loginJS)
 	for _, want := range []string{
 		`<link rel="stylesheet" href="/static/app.css">`,
 		`class="background-animation"`,
@@ -1221,7 +1239,7 @@ func TestLoginPageAnimation(t *testing.T) {
 		`Math.random() < 0.1 ? fsFlow : fsBeams`,
 		`prefers-reduced-motion`,
 	} {
-		if !strings.Contains(html, want) {
+		if !strings.Contains(assets, want) {
 			t.Errorf("login page missing %q", want)
 		}
 	}
@@ -1231,7 +1249,7 @@ func TestLoginPageAnimation(t *testing.T) {
 	// Every ring must have a position rule: children 3..12 of the container.
 	for i := 3; i <= 12; i++ {
 		sel := fmt.Sprintf(".pulse-circle:nth-child(%d)", i)
-		if !strings.Contains(html, sel) {
+		if !strings.Contains(string(loginCSS), sel) {
 			t.Errorf("missing position rule %s", sel)
 		}
 	}

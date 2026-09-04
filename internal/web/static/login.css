@@ -1,0 +1,165 @@
+        /* Center the login panel over the animated backdrop. Overrides the
+           app.css body (which is a flex column app shell) for this page only. */
+        body {
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background:
+                radial-gradient(circle at 50% 34%, #1c0e0e 0%, var(--bg) 68%);
+        }
+
+        /* WebGL shader backdrop: bottom layer, under the radar animation.
+           When WebGL is unavailable the body's radial gradient shows instead. */
+        .shader-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: -2;
+        }
+        .shader-backdrop canvas { display: block; width: 100%; height: 100%; }
+
+        /* ---------- Animated background ---------- */
+        .background-animation {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        /* Grid overlay with diagonal lines — tinted with the app's red glow. */
+        .grid-overlay {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background:
+                repeating-linear-gradient(45deg,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
+                    transparent 1px, transparent 25px),
+                repeating-linear-gradient(-45deg,
+                    rgba(255, 43, 43, 0.16) 0px,
+                    rgba(255, 43, 43, 0.16) 1px,
+                    transparent 1px, transparent 25px);
+            opacity: 0.55;
+            animation: pulse-grid 8s infinite ease-in-out;
+        }
+
+        /* Scan sweep. */
+        .scan-effect {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom,
+                transparent 0%,
+                rgba(255, 43, 43, 0.22) 50%,
+                transparent 100%);
+            animation: scan 5s infinite linear;
+        }
+
+        /* Radar pulse circles — salmon accent to match the primary colour. */
+        .pulse-circle {
+            position: absolute;
+            width: 0; height: 0;
+            border: 2px solid rgba(255, 180, 171, 0.8);
+            border-radius: 50%;
+            box-shadow: 0 0 12px rgba(255, 43, 43, 0.45);
+            animation: pulse-circle 4s infinite ease-out;
+            transform: translate(-50%, -50%);
+        }
+        .pulse-circle:nth-child(3)  { top: 50%; left: 50%; animation-delay: 0s; }
+        .pulse-circle:nth-child(4)  { top: 20%; left: 20%; animation-delay: -0.8s; }
+        .pulse-circle:nth-child(5)  { top: 20%; left: 80%; animation-delay: -1.6s; }
+        .pulse-circle:nth-child(6)  { top: 80%; left: 20%; animation-delay: -2.4s; }
+        .pulse-circle:nth-child(7)  { top: 80%; left: 80%; animation-delay: -3.2s; }
+        .pulse-circle:nth-child(8)  { top: 30%; left: 30%; animation-delay: -0.4s; }
+        .pulse-circle:nth-child(9)  { top: 30%; left: 70%; animation-delay: -1.2s; }
+        .pulse-circle:nth-child(10) { top: 70%; left: 30%; animation-delay: -2.0s; }
+        .pulse-circle:nth-child(11) { top: 70%; left: 70%; animation-delay: -2.8s; }
+        .pulse-circle:nth-child(12) { top: 40%; left: 60%; animation-delay: -3.6s; }
+
+        @keyframes pulse-circle {
+            0%   { transform: translate(-50%, -50%) scale(0);  opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(15); opacity: 0; }
+        }
+        @keyframes pulse-grid {
+            0%   { opacity: 0.45; transform: scale(1); }
+            50%  { opacity: 0.7;  transform: scale(1.02); }
+            100% { opacity: 0.45; transform: scale(1); }
+        }
+        @keyframes scan {
+            0%   { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+
+        /* Matrix animated text logo. */
+        .logo-text {
+            position: absolute;
+            top: 19%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: var(--mono);
+            font-weight: 700;
+            font-size: clamp(2.6em, 8vw, 5.4em);
+            color: var(--accent);
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            text-shadow: var(--glow);
+            z-index: 0;
+            white-space: nowrap;
+        }
+
+        /* ---------- Login panel ---------- */
+        .container {
+            position: relative;
+            z-index: 1;
+            width: min(400px, 92vw);
+            padding: 30px 30px 34px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            box-shadow: 0 0 40px rgba(255, 43, 43, 0.12);
+            text-align: center;
+        }
+
+        .login-title {
+            justify-content: center;
+            border-bottom: none;
+            margin: 0 0 22px;
+            padding-bottom: 0;
+            font-size: 22px;
+        }
+
+        #login-form { display: flex; flex-direction: column; gap: 14px; text-align: left; }
+        #login-form .field label { margin-bottom: 6px; }
+
+        .login-submit { width: 100%; justify-content: center; padding: 11px 12px; font-size: 13px; margin-top: 4px; }
+
+        .password-field { display: flex; gap: 8px; align-items: stretch; }
+        .password-field input { min-width: 0; flex: 1; }
+        .password-toggle { flex: none; min-width: 72px; }
+
+        /* Prose blocks reset the global UPPERCASE chrome for readability, the same
+           way toasts / stdout do in app.css. Account-specific authentication
+           details are intentionally not inferred from the entered username. */
+        .radius-banner {
+            margin-bottom: 4px;
+            padding: 12px 14px;
+            text-align: left;
+            text-transform: none;
+            letter-spacing: normal;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .radius-banner b { color: var(--accent); }
+
+        .login-wait {
+            display: none;
+            margin-top: 16px;
+            color: var(--text-muted);
+            text-transform: none;
+            letter-spacing: normal;
+            font-size: 12px;
+        }
+        .login-wait.show { display: block; }

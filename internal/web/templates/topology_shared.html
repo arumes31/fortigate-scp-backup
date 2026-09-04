@@ -8,6 +8,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
     <link rel="stylesheet" href="/static/topology.css">
+    <meta name="fortisafe-i18n" content="{{i18nJSONAttr .Lang}}">
 </head>
 <body class="topology-shared-view">
     <a class="skip-link" href="#main-content">{{T .Lang "topo.skip"}}</a>
@@ -38,7 +39,7 @@
             </div>
         </section>
 
-        <section id="topologyPage" class="topology-page" data-topology-mode="shared">
+        <section id="topologyPage" class="topology-page" data-topology-mode="shared" data-static-url="/topology/shared/{{.Token}}/data"{{if .IncludeDevices}} data-shared-devices-url="/topology/shared/{{.Token}}/devices"{{end}}>
             <section class="shared-topology__controls" aria-labelledby="sharedViewTitle">
                 <fieldset class="topology-control-group" id="topologyViewControls">
                     <legend id="sharedViewTitle">{{T .Lang "topo.view"}}</legend>
@@ -84,7 +85,6 @@
     </main>
     <footer class="shared-topology__footer"><span>FortiSafe</span><span>{{T .Lang "topo.shared_footer"}}</span></footer>
 
-    <script>window.TOPO_CONFIG = { staticUrl: "/topology/shared/{{.Token}}/data"{{if .IncludeDevices}}, sharedDevicesUrl: "/topology/shared/{{.Token}}/devices"{{end}} }; window.I18N = {{i18nJSON .Lang}};</script>
     <script src="/static/ui.js"></script>
     <script src="/static/d3.v7.min.js"></script>
     <script src="/static/topology.js"></script>

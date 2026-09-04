@@ -279,7 +279,16 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 	})
 	registerUXCoreRoutes(mux, webServer, defaultScenario)
 	registerUXExtensionRoutes(mux, extensionTemplates, defaultScenario)
-	return mux
+	return securityHeaders(false)(uxFixtureScenarioCookie(mux))
+}
+
+func uxFixtureScenarioCookie(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if value := strings.TrimSpace(r.URL.Query().Get("scenario")); value != "" && validUXScenario(uxScenario(value)) {
+			http.SetCookie(w, &http.Cookie{Name: "fortisafe_ux_scenario", Value: value, Path: "/", SameSite: http.SameSiteStrictMode})
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type uxExtensionTemplates struct {
@@ -1432,6 +1441,11 @@ func uxScenarioFromRequest(r *http.Request, fallback uxScenario) (uxScenario, bo
 	if rawValue == "" && r.Referer() != "" {
 		if refererURL, err := url.Parse(r.Referer()); err == nil {
 			rawValue = strings.TrimSpace(refererURL.Query().Get("scenario"))
+		}
+	}
+	if rawValue == "" {
+		if cookie, err := r.Cookie("fortisafe_ux_scenario"); err == nil {
+			rawValue = strings.TrimSpace(cookie.Value)
 		}
 	}
 	value := uxScenario(rawValue)

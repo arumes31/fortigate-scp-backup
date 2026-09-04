@@ -168,7 +168,8 @@
                         return response.text();
                     })
                     .then(function (html) {
-                        modalBody.innerHTML = html;
+                        const parsed = new DOMParser().parseFromString(html, 'text/html');
+                        modalBody.replaceChildren(...parsed.body.childNodes);
                         editFeedback.hidden = true;
                         var form = modalBody.querySelector('form');
                         if (!form) { throw new Error(t('Edit form is unavailable')); }

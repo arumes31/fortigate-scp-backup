@@ -256,6 +256,7 @@ var funcMap = template.FuncMap{
 	"T":              tr,
 	"L":              webui.Localize,
 	"i18nJSON":       i18nJSON,
+	"i18nJSONAttr":   i18nJSONAttr,
 	"isZero":         func(t time.Time) bool { return t.IsZero() },
 }
 

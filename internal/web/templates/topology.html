@@ -1,4 +1,4 @@
-{{define "head"}}<link rel="stylesheet" href="/static/topology.css">{{end}}
+{{define "head"}}<link rel="stylesheet" href="/static/topology.css"><meta name="fortisafe-i18n" content="{{i18nJSONAttr .Base.Lang}}">{{end}}
 
 {{define "content"}}
 <section id="topologyPage" class="topology-page" data-data-base="/topology/data/" data-devices-base="/graylog-devices">
@@ -114,7 +114,6 @@
     <div class="ui-dialog__body"><div><p class="eyebrow">{{T .Base.Lang "topo.tools"}}</p><h2 id="topoDebugTitle">{{T .Base.Lang "topo.debug_title"}}</h2></div><div id="topoDebugBody"></div><div class="ui-dialog__actions"><button class="btn" type="button" data-dialog-close data-dialog-initial>{{T .Base.Lang "topo.close"}}</button></div></div>
 </dialog>
 
-<script>window.TOPO_CONFIG = { dataBase: "/topology/data/", devicesBase: "/graylog-devices" }; window.I18N = {{i18nJSON .Base.Lang}};</script>
 {{end}}
 
 {{define "scripts"}}<script src="/static/d3.v7.min.js"></script><script src="/static/topology.js"></script><script src="/static/searchable.js"></script><script src="/static/topology-page.js"></script>{{end}}

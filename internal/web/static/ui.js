@@ -12,6 +12,10 @@ function esc(s) {
 // tt looks up a UI string injected by the page as window.I18N (the catalog's
 // own fallback is English, so a missing key rendering as its raw name is a
 // bug, not a translation gap).
+var fortiSafeI18nMeta = document.querySelector('meta[name="fortisafe-i18n"]');
+if (fortiSafeI18nMeta) {
+    try { window.I18N = JSON.parse(fortiSafeI18nMeta.content || '{}'); } catch (error) { window.I18N = {}; }
+}
 function tt(key) { return (window.I18N && window.I18N[key]) || key; }
 
 // One shared live connection per authenticated page. Consumers such as the
