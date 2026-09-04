@@ -4,10 +4,18 @@
 
 {{define "content"}}
     <div class="page confgen-page" id="confgen-page" data-preselected-template="{{.PreselectedTemplate}}">
-        <h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Generator</h1>
+        <header class="confgen-page-header"><h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Generator</h1><span id="confgen-dirty" class="pill pill-new" hidden>Unsaved changes</span></header>
         <p id="confgen-feedback" class="page-feedback" data-feedback="success"></p>
 
-        <div class="container">
+        <section class="card confgen-target-context" aria-labelledby="confgen-target-title">
+            <div><span class="eyebrow">Target context</span><h2 id="confgen-target-title">Load configuration from firewall</h2><p class="muted">Use a source backup to populate validated interfaces, objects, and profiles.</p></div>
+            <div class="confgen-target-controls">
+                <div class="field"><label for="firewall-select">Select Firewall</label><select id="firewall-select" class="form-control"><option value="">Select Firewall</option>{{range .Firewalls}}<option value="{{.ID}}">{{.FQDN}}</option>{{end}}</select></div>
+                <button type="button" data-action="load-firewall-config" class="btn btn-primary">Load Config</button>
+            </div>
+        </section>
+
+        <div class="container confgen-workspace">
             <!-- Sidebar for templates and policy list -->
             <div class="sidebar">
                 <div class="card">
@@ -57,23 +65,6 @@
 
             <!-- Main configuration panel -->
             <div class="main-content">
-                <!-- Select Firewall Backup -->
-                <div class="card">
-                    <h2>Load Config from Firewall</h2>
-                    <div class="form-grid" style="grid-template-columns: 1fr auto; gap: 12px; align-items: end;">
-                        <div class="field">
-                            <label for="firewall-select">Select Firewall</label>
-                            <select id="firewall-select" class="form-control">
-                                <option value="">Select Firewall</option>
-                                {{range .Firewalls}}
-                                    <option value="{{.ID}}">{{.FQDN}}</option>
-                                {{end}}
-                            </select>
-                        </div>
-                        <button type="button" data-action="load-firewall-config" class="btn btn-primary">Load Config</button>
-                    </div>
-                </div>
-
                 <!-- Policy configuration form -->
                 <div class="card policy-form" id="policy-form" style="display: none;">
                     <h2>Policy Configuration</h2>
@@ -270,10 +261,11 @@
                     <div class="muted">Select a policy on the left or add a new one to configure rules.</div>
                 </div>
 
-                <button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" style="margin-top: 20px; display: none;">Generate All Policies</button>
+                <aside class="confgen-review-rail" aria-labelledby="confgen-review-title">
+                <div class="card"><span class="eyebrow">Validation & output</span><h2 id="confgen-review-title">Review</h2><p class="muted">Review the selected target and policy state before generation.</p><button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" hidden>Generate All Policies</button><button type="button" class="btn w-100 confgen-reset-workspace" data-action="clear-form">Reset current policy</button></div>
 
                 <!-- Output section -->
-                <div class="output-section" style="margin-top: 25px; display: none;">
+                <div class="output-section" hidden>
                     <div class="card">
                         <div class="card-header">
                             <h3 class="mb-0">Output 1: All-in-One Policies</h3>
@@ -296,6 +288,7 @@
                         <pre id="output3" class="code-block"></pre>
                     </div>
                 </div>
+                </aside>
             </div>
         </div>
     </div>

@@ -23,6 +23,25 @@ let avProfiles = [];
 let ipsSensors = [];
 let users = [];
 let groups = [];
+let workspaceDirty = false;
+let dirtyTrackingReady = false;
+
+function setWorkspaceDirty(dirty) {
+    if (!dirtyTrackingReady && dirty) return;
+    workspaceDirty = dirty;
+    const marker = document.getElementById('confgen-dirty');
+    if (marker) marker.hidden = !dirty;
+    confGenRoot.dataset.dirty = String(dirty);
+}
+
+function markWorkspaceDirty() { setWorkspaceDirty(true); }
+function markWorkspaceClean() { setWorkspaceDirty(false); }
+
+window.addEventListener('beforeunload', event => {
+    if (!workspaceDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+});
 
 function showNotification(message, type = 'success') {
     const feedback = document.getElementById('confgen-feedback');
@@ -92,6 +111,7 @@ function addPolicy() {
     });
     renderPolicyList();
     selectPolicy(policyId);
+    markWorkspaceDirty();
 }
 
 function renderPolicyList() {
@@ -132,13 +152,13 @@ function renderPolicyList() {
     });
     const genBtn = document.querySelector('.generate-policies-btn');
     if (genBtn) {
-        genBtn.style.display = policies.length > 0 ? 'block' : 'none';
+        genBtn.hidden = policies.length === 0;
     }
     if (policies.length === 0) {
         document.getElementById('policy-form').style.display = 'none';
         document.getElementById('policy-form-placeholder').style.display = 'block';
         const outSec = document.querySelector('.output-section');
-        if (outSec) outSec.style.display = 'none';
+        if (outSec) outSec.hidden = true;
     }
 }
 
@@ -799,10 +819,10 @@ function deletePolicy(policyId) {
     } else {
         clearForm();
     }
+    markWorkspaceDirty();
 }
 
 function savePolicy(button) {
-    console.log('savePolicy triggered');
     logToBackend('savePolicy triggered');
     try {
         const policyId = button.closest('#policy-form')?.dataset.policyId;
@@ -812,7 +832,6 @@ function savePolicy(button) {
             showNotification('Error: Policy ID not found', 'error');
             return;
         }
-        console.log('Policy ID:', policyId);
         logToBackend(`Policy ID: ${policyId}`);
 
         const policy = policies.find(p => p.id === policyId);
@@ -822,7 +841,6 @@ function savePolicy(button) {
             showNotification('Error: Policy not found', 'error');
             return;
         }
-        console.log('Policy found:', policy);
         logToBackend(`Policy found with ID: ${policyId}`);
 
         const form = button.closest('#policy-form');
@@ -832,7 +850,6 @@ function savePolicy(button) {
             showNotification('Error: Policy form not found', 'error');
             return;
         }
-        console.log('Form found');
         logToBackend('Form found');
 
         const policyName = form.querySelector('.policy-name')?.value || '';
@@ -854,27 +871,6 @@ function savePolicy(button) {
         const nat = form.querySelector('.nat')?.value || 'disable';
         const ipPool = nat === 'enable' ? (form.querySelector('.ip-pool')?.value || '') : '';
 
-        console.log('Form values:', {
-            policyName,
-            policyComment,
-            action,
-            inspectionMode,
-            sslSshProfile,
-            webfilterProfile: webfilterProfile.value,
-            webfilterEnabled,
-            applicationList: applicationList.value,
-            applicationListEnabled,
-            avProfile: avProfile.value,
-            avEnabled,
-            ipsSensor: ipsSensor.value,
-            ipsSensorEnabled,
-            logtraffic,
-            logtrafficStart,
-            autoAsicOffload,
-            nat,
-            ipPool
-        });
-
         policy.name = policyName;
         policy.comment = policyComment;
         policy.action = action;
@@ -894,12 +890,10 @@ function savePolicy(button) {
         policy.nat = nat;
         policy.ip_pool = ipPool;
 
-        console.log('Policy updated:', policy);
         logToBackend(`Policy updated with ID: ${policyId}`);
 
         renderPolicyList();
         selectPolicy(policyId);
-        console.log('Policy saved successfully');
         logToBackend('Policy saved successfully');
         showNotification('Policy saved successfully', 'success');
     } catch (error) {
@@ -935,10 +929,11 @@ function clonePolicy(button) {
     selectPolicy(clone.id);
     showNotification('Policy cloned successfully', 'success');
     logToBackend('Policy cloned successfully (client-side)');
+    markWorkspaceDirty();
 }
 
 function clearForm(button) {
-    const form = button ? button.closest('#policy-form') : document.getElementById('policy-form');
+    const form = button?.closest('#policy-form') || document.getElementById('policy-form');
     if (!form) {
         console.error('Policy form not found for clearing');
         logToBackend('Policy form not found for clearing');
@@ -1027,6 +1022,7 @@ function clearForm(button) {
         policy.ip_pool = '';
         renderPolicyList();
     }
+    markWorkspaceClean();
 }
 
 function saveTemplate() {
@@ -1247,6 +1243,7 @@ function loadTemplate() {
                         }
                         showNotification(`Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        markWorkspaceClean();
                     })
                     .catch(() => {
                         updateDropdowns();
@@ -1260,6 +1257,7 @@ function loadTemplate() {
                         }
                         showNotification(`Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        markWorkspaceClean();
                     });
             } catch (error) {
                 console.error('Error merging config data:', error);
@@ -1275,6 +1273,7 @@ function loadTemplate() {
                 }
                 showNotification(`Template '${templateName}' loaded successfully`, 'success');
                 logToBackend(`Template '${templateName}' loaded successfully`);
+                markWorkspaceClean();
             }
         } else {
             console.error('Error loading template:', data.error);
@@ -1677,12 +1676,14 @@ function generatePolicies() {
         document.getElementById('output3').textContent = data.outputs.map(o => o.output3).join('\n\n');
         showNotification('Policies generated successfully', 'success');
         const outSec = document.querySelector('.output-section');
-        if (outSec) outSec.style.display = 'block';
+        if (outSec) outSec.hidden = false;
         logToBackend('Policies generated successfully');
+        markWorkspaceClean();
     })
     .catch(error => {
-        console.error('Error generating policies:', error);
-        logToBackend(`Error generating policies: ${error.message}`);
+        // Validation responses may identify policy fields. Keep that detail in
+        // the transient UI only; browser and application logs stay metadata-only.
+        logToBackend('Policy generation failed validation');
         showNotification(`Error generating policies: ${error.message}`, 'error');
     });
 }
@@ -1773,13 +1774,23 @@ function bindPageActions() {
         const button = event.target.closest('[data-action]');
         if (!button || !confGenRoot.contains(button)) return;
         const action = clickActions[button.dataset.action];
-        if (action) action(button, event);
+        if (action) {
+            action(button, event);
+            if (['add-src-interface', 'add-src-address', 'add-src-user-group', 'add-dst-interface', 'add-dst-address', 'add-service'].includes(button.dataset.action)) {
+                markWorkspaceDirty();
+            }
+        }
+        if (event.target.closest('.remove-btn, .delete-btn')) markWorkspaceDirty();
     });
     confGenRoot.addEventListener('change', event => {
         const control = event.target.closest('[data-change-action]');
         if (!control || !confGenRoot.contains(control)) return;
         const action = changeActions[control.dataset.changeAction];
         if (action) action(control, event);
+        if (event.target.closest('#policy-form')) markWorkspaceDirty();
+    });
+    confGenRoot.addEventListener('input', event => {
+        if (event.target.closest('#policy-form')) markWorkspaceDirty();
     });
 }
 
@@ -1847,6 +1858,9 @@ document.addEventListener('DOMContentLoaded', () => {
             logToBackend(`Failed to initialize templates: ${error.message}`);
             addPolicy();
             updateDropdowns();
+        }).finally(() => {
+            dirtyTrackingReady = true;
+            markWorkspaceClean();
         });
     };
 
@@ -1894,6 +1908,7 @@ function loadFirewallConfig() {
             document.getElementById('policy-form-placeholder').style.display = 'block';
         }
         showNotification('Configuration loaded successfully', 'success');
+        markWorkspaceClean();
     })
     .catch(error => {
         console.error('Error loading config:', error);

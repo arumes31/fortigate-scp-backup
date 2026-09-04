@@ -1,5 +1,7 @@
 import { expect, test } from './quality-fixture';
 
+test.use({ trace: 'off', screenshot: 'off' });
+
 test('ConfGen uses the shared shell and preserves template-to-generation workflow', async ({ page }, testInfo) => {
   await page.goto('/fgt-confgen/', { waitUntil: 'networkidle' });
 
@@ -25,6 +27,8 @@ test('ConfGen uses the shared shell and preserves template-to-generation workflo
   const screenshot = await page.screenshot({
     path: testInfo.outputPath('confgen-generated.png'),
     animations: 'disabled',
+    maskColor: '#181518',
+    mask: [page.locator('#policy-form'), page.locator('.output-section')],
   });
   expect(screenshot.byteLength).toBeGreaterThan(10_000);
 });

@@ -8,6 +8,32 @@
     margin-top: 20px;
 }
 
+.confgen-page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.confgen-page #confgen-dirty[hidden] { display: none; }
+.confgen-target-context { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(360px, 1.3fr); gap: 20px; align-items: end; }
+.confgen-target-context h2 { margin: 4px 0; }
+.confgen-target-context p { margin: 0; }
+.confgen-target-controls { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 10px; align-items: end; }
+.confgen-page .confgen-workspace { grid-template-columns: minmax(190px, .7fr) minmax(360px, 1.4fr) minmax(260px, .85fr); gap: 14px; }
+.confgen-page .confgen-workspace .main-content { display: contents; }
+.confgen-workspace .sidebar { grid-column: 1; min-width: 0; }
+.confgen-workspace .policy-form, .confgen-workspace #policy-form-placeholder { grid-column: 2; min-width: 0; }
+.confgen-review-rail { grid-column: 3; display: flex; flex-direction: column; gap: 12px; min-width: 0; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+.confgen-review-rail .generate-policies-btn { margin-top: 14px; }
+.confgen-reset-workspace { margin-top: 8px; }
+.confgen-review-rail .output-section[hidden], .confgen-review-rail .generate-policies-btn[hidden] { display: none; }
+.confgen-review-rail .output-section { display: flex; flex-direction: column; gap: 12px; }
+.confgen-review-rail .output-section .card { margin-top: 0 !important; }
+
+@media (max-width: 1279px) {
+    .confgen-page .confgen-workspace { grid-template-columns: minmax(190px, .65fr) minmax(420px, 1.35fr); }
+    .confgen-review-rail { grid-column: 1 / -1; position: static; max-height: none; overflow: visible; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .confgen-page *, .confgen-page *::before, .confgen-page *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
 .confgen-page .sidebar {
     display: flex;
     flex-direction: column;
