@@ -3,7 +3,19 @@ name: CI
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_quality_failure:
+        description: Exercise the publication guard by forcing CI to fail
+        required: false
+        default: false
+        type: boolean
   workflow_call:
+    inputs:
+      force_quality_failure:
+        description: Exercise the publication guard by forcing CI to fail
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -43,6 +55,12 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.13.2
+
+      - name: Forced publication-guard rehearsal
+        if: inputs.force_quality_failure
+        run: |
+          echo "Intentional quality failure: downstream image jobs must remain blocked."
+          exit 1
 
   govulncheck:
     name: Vulnerability scan (govulncheck)
@@ -109,13 +127,13 @@ jobs:
       - name: Run desktop browser and accessibility gates
         run: npm --prefix ui-tests run test:desktop
 
-      - name: Upload synthetic browser failure evidence
-        if: failure()
+      - name: Upload synthetic browser evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: desktop-ux-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          name: synthetic-desktop-ux-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ui-tests/test-results/
             ui-tests/playwright-report/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
