@@ -2,6 +2,8 @@ import AxeBuilder from '@axe-core/playwright';
 
 import { expect, test } from './quality-fixture';
 
+test.setTimeout(90_000);
+
 const routes = [
   '/login',
   '/dashboard?scenario=warning',
@@ -9,6 +11,7 @@ const routes = [
   '/search',
   '/audit',
   '/licenses',
+  '/ipam?scenario=full',
   '/topology',
   '/fgt-adm-vpn-conf/',
   '/fgt-confgen/',

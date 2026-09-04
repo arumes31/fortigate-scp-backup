@@ -241,6 +241,47 @@ func TestLicenseInventoryUsesCombinedFiltersAndAccessibleHierarchy(t *testing.T)
 	}
 }
 
+func TestIPAMTemplateUsesExternalFilterWorkspace(t *testing.T) {
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	if err := s.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	s.render(recorder, "ipam.html", ipamData{Base: BaseData{Title: "IPAM"}})
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`<link rel="stylesheet" href="/static/ipam.css">`,
+		`<script src="/static/ipam.js"></script>`,
+		`id="ipamFilters"`, `id="ipamSearch"`, `id="ipamSearchMode"`,
+		`id="ipamFirewallFilter"`, `id="ipamVDOMFilter"`, `id="ipamActiveFilters"`,
+		`id="ipamExportCSV"`, `id="ipamSearchCount" role="status" aria-live="polite"`,
+		`data-ipam-source="route"`, `data-ipam-source="dhcp"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("IPAM page missing %q", want)
+		}
+	}
+	if strings.Contains(body, `window.I18N`) || strings.Contains(body, `<script>(function`) {
+		t.Error("IPAM page still contains an inline JavaScript bootstrap")
+	}
+}
+
+func TestIPAMStaticAssetsPreserveCapsAndSafeFilteredExport(t *testing.T) {
+	blob, err := staticFS.ReadFile("static/ipam.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(blob)
+	for _, want := range []string{
+		"ENTRY_RENDER_CAP = 1000", "OVERLAP_RENDER_CAP = 500",
+		"sanitizeCSVCell", "filteredEntries", "text/csv;charset=utf-8",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("IPAM script missing %q", want)
+		}
+	}
+}
+
 func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -267,7 +308,13 @@ func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			blob, err := templatesFS.ReadFile("templates/" + test.name)
+			var blob []byte
+			var err error
+			if test.name == "ipam.html" {
+				blob, err = staticFS.ReadFile("static/ipam.js")
+			} else {
+				blob, err = templatesFS.ReadFile("templates/" + test.name)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

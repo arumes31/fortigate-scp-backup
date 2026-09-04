@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -566,6 +567,37 @@ func uxConfTailChainFixture(uxScenario) any {
 	}
 }
 
+func ipamDataOutFixture(snapshot ipamSnapshot) map[string]any {
+	return map[string]any{
+		"running": false, "computed_at": uxFixtureNow.Format(time.RFC3339), "snapshot": snapshot,
+	}
+}
+
+func uxIPAMSnapshotFixture() ipamSnapshot {
+	entries := []ipamEntry{
+		{Prefix: "10.10.0.0/16", FwID: 7, FQDN: "edge.example.test", VDOM: "root", Source: "interface", Name: `=HYPERLINK("https://example.invalid","open")`},
+		{Prefix: "10.10.10.0/24", FwID: 12, FQDN: "branch.example.test", VDOM: "tenant-a", Source: "route", Name: "route 1 via port2"},
+		{Prefix: "172.16.20.0/24", FwID: 12, FQDN: "branch.example.test", VDOM: "root", Source: "dhcp", Name: "lan (172.16.20.10-172.16.20.200)"},
+	}
+	for i := 0; i < 1202; i++ {
+		entries = append(entries, ipamEntry{
+			Prefix: fmt.Sprintf("192.0.%d.%d/32", i/256, i%256), FwID: 19,
+			FQDN: "lab.example.test", VDOM: "lab", Source: "address", Name: fmt.Sprintf("fixture-host-%04d", i),
+		})
+	}
+	overlaps := []ipamOverlap{{
+		Kind: "containment", Prefix: "10.10.0.0/16", Inner: "10.10.10.0/24", Count: 2,
+		Firewalls: []string{"edge.example.test (=HYPERLINK)", "branch.example.test (route 1 via port2)"},
+	}}
+	for i := 0; i < 501; i++ {
+		overlaps = append(overlaps, ipamOverlap{
+			Kind: "duplicate", Prefix: fmt.Sprintf("198.18.%d.%d/32", i/256, i%256), Count: 2,
+			Firewalls: []string{"fixture-a.example.test", "fixture-b.example.test"},
+		})
+	}
+	return ipamSnapshot{Firewalls: 3, Scanned: 3, Prefixes: len(entries), Entries: entries, Overlaps: overlaps}
+}
+
 func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario uxScenario) {
 	render := func(name string, data func(uxScenario) any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -668,7 +700,25 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	mux.HandleFunc("GET /ipam", render("ipam.html", func(uxScenario) any {
 		return ipamData{Base: uxBase("IPAM", "ipam")}
 	}))
-	mux.HandleFunc("GET /ipam/data", jsonResponse(`{"running":false,"snapshot":{"entries":[],"overlaps":[],"prefixes":0}}`))
+	mux.HandleFunc("GET /ipam/data", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch scenario {
+		case uxScenarioLoading:
+			_, _ = io.WriteString(w, `{"running":true,"done":1,"total":3,"current":"branch.example.test"}`)
+		case uxScenarioError:
+			_, _ = io.WriteString(w, `{`)
+		case uxScenarioEmpty:
+			_ = json.NewEncoder(w).Encode(ipamDataOutFixture(ipamSnapshot{}))
+		default:
+			_ = json.NewEncoder(w).Encode(ipamDataOutFixture(uxIPAMSnapshotFixture()))
+		}
+	})
+	mux.HandleFunc("POST /ipam/refresh", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
 	mux.HandleFunc("GET /topology", render("topology.html", uxTopologyFixture))
 	mux.HandleFunc("GET /topology/data/{fwID}", jsonResponse(`{"fw_id":7,"fqdn":"edge.example.test","has_config":true,"model":"FortiGate-VM","interfaces":[]}`))
 	mux.HandleFunc("GET /topology/shares", jsonResponse(`[]`))
