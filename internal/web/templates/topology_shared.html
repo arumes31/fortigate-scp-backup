@@ -7,61 +7,87 @@
     <title>{{T .Lang "topo.title"}} · FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/topology.css">
 </head>
-<body>
-    <div class="app">
-        <header class="topbar">
-            <span class="brand">FORTISAFE_SYS</span>
-            <div class="sysinfo">
-                <span class="muted">{{T .Lang "topo.shared_view"}}</span>
+<body class="topology-shared-view">
+    <a class="skip-link" href="#main-content">{{T .Lang "topo.skip"}}</a>
+    <main id="main-content" class="shared-topology" tabindex="-1">
+        <header class="shared-topology__header">
+            <div>
+                <span class="brand">FortiSafe</span>
+                <p class="eyebrow">{{T .Lang "topo.shared_view"}}</p>
+                <h1 class="page-title"><span class="accent-bar"></span>{{T .Lang "topo.title"}}</h1>
             </div>
+            <p id="topoMeta" class="topology-meta muted" role="status" aria-live="polite"></p>
         </header>
 
-        <main>
-            <h1 class="page-title"><span class="accent-bar"></span>{{T .Lang "topo.title"}} <span id="topoMeta" class="muted" style="font-size: 0.55em; margin-left: 10px;"></span></h1>
-
-            <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin: 4px 0 12px; font-size: 0.85em;">
-                {{if .IncludeDevices}}<label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('devices', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.devices"}}</label>{{end}}
-                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('vlans', this.checked)" style="vertical-align: -2px;"> VLANs</label>
-                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('routes', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.routes"}}</label>
-                <label style="cursor: pointer;"><input type="checkbox" checked onchange="setTopoFilter('edge', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.edge_switches"}}</label>
-                {{if .IncludeDevices}}<label style="cursor: pointer;"><input type="checkbox" onchange="setTopoFilter('hideStale', this.checked)" style="vertical-align: -2px;"> {{T .Lang "topo.hide_stale"}}</label>{{end}}
+        <section class="shared-topology__access" aria-labelledby="sharedAccessTitle">
+            <div>
+                <h2 id="sharedAccessTitle">{{T .Lang "topo.shared_access"}}</h2>
+                <strong>{{T .Lang "topo.shared_readonly"}}</strong>
+                <span class="muted">{{T .Lang "topo.shared_readonly_hint"}}</span>
             </div>
+            <div>
+                <h2>{{T .Lang "topo.shared_expiry"}}</h2>
+                {{if .NeverExpires}}<strong>{{T .Lang "topo.shared_never"}}</strong>{{else}}<strong>{{T .Lang "topo.shared_expires"}} <time datetime="{{fmtMachineTime .ExpiresAt}}">{{fmtTime .ExpiresAt}}</time></strong>{{end}}
+                <span class="muted">{{T .Lang "topo.shared_expiry_hint"}}</span>
+            </div>
+            <div>
+                <h2>{{T .Lang "topo.shared_data"}}</h2>
+                {{if .IncludeDevices}}<strong>{{T .Lang "topo.shared_devices_on"}}</strong><span class="muted">{{T .Lang "topo.shared_devices_on_hint"}}</span>{{else}}<strong>{{T .Lang "topo.shared_devices_off"}}</strong><span class="muted">{{T .Lang "topo.shared_devices_off_hint"}}</span>{{end}}
+            </div>
+        </section>
 
-            <div class="card pad-0" style="position: relative; overflow: hidden;">
-                <svg id="topoSvg" width="100%" height="640" style="background: radial-gradient(ellipse at 30% 20%, rgba(59,130,246,0.05), transparent 60%), rgba(0,0,0,0.25); display: block; cursor: grab;"></svg>
-
-                <div id="topoTip" style="position: absolute; display: none; background: rgba(10,12,18,0.95); border: 1px solid rgba(255,255,255,0.12); padding: 8px 12px; border-radius: 6px; font-size: 0.82em; max-width: 320px; pointer-events: none; z-index: 20; box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
-                    <strong id="topoTipTitle" style="color: #fff;"></strong>
-                    <div id="topoTipBody" class="muted" style="margin-top: 4px; white-space: pre-wrap;"></div>
-                </div>
-
-                <div id="facePanel" style="position: absolute; top: 0; right: -480px; width: 460px; max-width: 90%; height: 100%; background: rgba(8,10,15,0.97); border-left: 1px solid rgba(255,255,255,0.1); transition: right 0.25s ease; z-index: 30; display: flex; flex-direction: column;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);">
-                        <div>
-                            <strong id="faceTitle" style="color: #fff;"></strong>
-                            <div id="faceSub" class="muted" style="font-size: 0.82em; margin-top: 2px;"></div>
-                        </div>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <button id="faceWidthBtn" onclick="toggleFacePanelWidth()" title="Widen / restore panel" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px; font-family: monospace;">⤢</button>
-                            <button onclick="closeFaceplate()" style="background: none; border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; cursor: pointer; padding: 4px 10px;">✕</button>
-                        </div>
+        <section id="topologyPage" class="topology-page" data-topology-mode="shared">
+            <section class="shared-topology__controls" aria-labelledby="sharedViewTitle">
+                <fieldset class="topology-control-group" id="topologyViewControls">
+                    <legend id="sharedViewTitle">{{T .Lang "topo.view"}}</legend>
+                    <div class="topology-filter-grid">
+                        {{if .IncludeDevices}}<label><input type="checkbox" checked data-topology-filter="devices"> {{T .Lang "topo.devices"}}</label>{{end}}
+                        <label><input type="checkbox" checked data-topology-filter="vlans"> VLANs</label>
+                        <label><input type="checkbox" checked data-topology-filter="routes"> {{T .Lang "topo.routes"}}</label>
+                        <label><input type="checkbox" checked data-topology-filter="edge"> {{T .Lang "topo.edge_switches"}}</label>
+                        <label><input type="checkbox" checked data-topology-filter="aps"> {{T .Lang "topo.aps"}}</label>
+                        {{if .IncludeDevices}}<label><input type="checkbox" data-topology-filter="hideStale"> {{T .Lang "topo.hide_stale"}}</label>{{end}}
                     </div>
-                    <div id="faceBody" style="padding: 16px; overflow-y: auto; flex: 1;"></div>
-                </div>
-            </div>
-            <p id="topoHint" class="muted" style="font-size: 0.8em; margin-top: 10px;">{{T .Lang "topo.hint"}}</p>
-        </main>
+                    <div class="topology-group-actions"><button class="btn btn-small" type="button" data-topology-action="reset">{{T .Lang "topo.reset"}}</button></div>
+                </fieldset>
+                <p id="topoHint" class="muted">{{T .Lang "topo.hint"}}</p>
+            </section>
 
-        <footer class="sysfooter">
-            <div>EOF // (C) FORTISAFE_SEC</div>
-            <div class="sysfooter-links"><span>SHARED_TOPOLOGY_VIEW</span></div>
-        </footer>
-    </div>
+            <section class="topology-legend" id="topologyLegend" aria-labelledby="topologyLegendTitle">
+                <h2 id="topologyLegendTitle">{{T .Lang "topo.legend"}}</h2>
+                <ul>
+                    <li><span class="topology-legend__mark topology-legend__mark--firewall" aria-hidden="true"></span>{{T .Lang "topo.legend_firewall"}}</li>
+                    <li><span class="topology-legend__mark topology-legend__mark--network" aria-hidden="true"></span>{{T .Lang "topo.legend_network"}}</li>
+                    <li><span class="topology-legend__mark topology-legend__mark--switch" aria-hidden="true"></span>{{T .Lang "topo.legend_switch"}}</li>
+                    {{if .IncludeDevices}}<li><span class="topology-legend__mark topology-legend__mark--client" aria-hidden="true"></span>{{T .Lang "topo.legend_client"}}</li>{{end}}
+                </ul>
+            </section>
+
+            <section class="card pad-0 topology-canvas" aria-label="{{T .Lang "topo.canvas"}}">
+                <svg id="topoSvg" width="100%" height="640" role="group" aria-label="{{T .Lang "topo.canvas"}}"></svg>
+                <div id="topoTip" class="topology-tooltip" role="tooltip" hidden><strong id="topoTipTitle"></strong><div id="topoTipBody" class="muted"></div></div>
+                <aside id="facePanel" class="topology-faceplate" aria-labelledby="faceTitle" aria-hidden="true" tabindex="-1" inert>
+                    <header class="topology-faceplate__header">
+                        <div><strong id="faceTitle"></strong><div id="faceSub" class="muted"></div></div>
+                        <div class="topology-faceplate__actions">
+                            <button id="faceWidthBtn" class="btn btn-small" type="button" data-face-action="width" title="{{T .Lang "topo.face_width"}}" aria-label="{{T .Lang "topo.face_width"}}" aria-pressed="false">⤢</button>
+                            <button class="btn btn-small" type="button" data-face-action="close" aria-label="{{T .Lang "topo.face_close"}}">✕</button>
+                        </div>
+                    </header>
+                    <div id="faceBody" class="topology-faceplate__body"></div>
+                </aside>
+                <div id="topoCtx" class="topology-context-menu" role="menu" hidden></div>
+            </section>
+        </section>
+    </main>
+    <footer class="shared-topology__footer"><span>FortiSafe</span><span>{{T .Lang "topo.shared_footer"}}</span></footer>
 
     <script>window.TOPO_CONFIG = { staticUrl: "/topology/shared/{{.Token}}/data"{{if .IncludeDevices}}, sharedDevicesUrl: "/topology/shared/{{.Token}}/devices"{{end}} }; window.I18N = {{i18nJSON .Lang}};</script>
     <script src="/static/ui.js"></script>
     <script src="/static/d3.v7.min.js"></script>
     <script src="/static/topology.js"></script>
+    <script src="/static/topology-page.js"></script>
 </body>
 </html>

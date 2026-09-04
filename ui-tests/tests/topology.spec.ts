@@ -96,8 +96,7 @@ test('topology keeps the graph primary and makes share, debug, maximize, and fac
   await expect(debugOpener).toBeFocused();
 
   const firewallNode = page.getByRole('button', { name: 'edge.example.test', exact: true });
-  await firewallNode.focus();
-  await page.keyboard.press('Enter');
+  await firewallNode.press('Enter');
   const faceplate = page.locator('#facePanel');
   await expect(faceplate).toHaveAttribute('aria-hidden', 'false');
   await expect(page.getByRole('button', { name: 'Close faceplate' })).toBeFocused();

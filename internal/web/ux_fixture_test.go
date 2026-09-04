@@ -764,9 +764,21 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	mux.HandleFunc("GET /topology/data/{fwID}", jsonResponse(`{"fw_id":7,"fqdn":"edge.example.test","has_config":true,"model":"FortiGate-VM","interfaces":[]}`))
 	mux.HandleFunc("GET /topology/shares", jsonResponse(`[]`))
 	mux.HandleFunc("GET /graylog-devices/data/{fwID}", jsonResponse(`{"devices":[]}`))
-	mux.HandleFunc("GET /topology/shared/{token}", render("topology_shared.html", func(uxScenario) any {
-		return topologySharedPage{Token: "fixture-token", Lang: "en", IncludeDevices: true}
-	}))
+	mux.HandleFunc("GET /topology/shared/{token}", func(w http.ResponseWriter, r *http.Request) {
+		token := r.PathValue("token")
+		if token == "expired-token" || token == "revoked-token" || token == "invalid-token" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		data := topologySharedPage{Token: token, Lang: "en"}
+		if token == "fixture-token" {
+			data.IncludeDevices = true
+			data.ExpiresAt = uxFixtureNow.Add(7 * 24 * time.Hour)
+		} else {
+			data.NeverExpires = true
+		}
+		webServer.render(w, "topology_shared.html", data)
+	})
 	mux.HandleFunc("GET /topology/shared/{token}/data", jsonResponse(`{"fw_id":7,"fqdn":"edge.example.test","has_config":true,"interfaces":[]}`))
 	mux.HandleFunc("GET /topology/shared/{token}/devices", jsonResponse(`{"devices":[]}`))
 	mux.HandleFunc("GET /activity_log", func(w http.ResponseWriter, r *http.Request) {

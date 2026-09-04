@@ -409,8 +409,27 @@ func TestTopologyShareLifecycle(t *testing.T) {
 	// Public page renders.
 	rr = httptest.NewRecorder()
 	srv.handleTopologyShared(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", share.Token))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), share.Token) {
+	sharedBody := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(sharedBody, share.Token) {
 		t.Fatalf("shared page: code=%d", rr.Code)
+	}
+	for _, want := range []string{
+		`data-topology-mode="shared"`, `READ-ONLY`, `Expires`,
+		`datetime="`, `Network structure only`, `/static/topology.css`, `/static/topology-page.js`,
+	} {
+		if !strings.Contains(sharedBody, want) {
+			t.Errorf("shared topology page missing metadata %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Primary navigation", "Change password", `id="topologyShareDialog"`, `id="topoDebugDialog"`, " data-live-status"} {
+		if strings.Contains(sharedBody, forbidden) {
+			t.Errorf("shared topology page exposes authenticated chrome %q", forbidden)
+		}
+	}
+	for _, forbidden := range []string{" onclick=", " onchange=", " oninput=", " onkeydown=", " style="} {
+		if strings.Contains(sharedBody, forbidden) {
+			t.Errorf("shared topology page contains inline presentation/behavior %q", forbidden)
+		}
 	}
 
 	// Bad token 404s.
@@ -478,6 +497,11 @@ func TestTopologyShareDeviceInclusion(t *testing.T) {
 	if !on.IncludeDevices {
 		t.Error("share created with include_devices=1 must be flagged")
 	}
+	page := httptest.NewRecorder()
+	srv.handleTopologyShared(page, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", on.Token))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Live client devices included") {
+		t.Fatalf("device-inclusive public page missing scope metadata: code=%d", page.Code)
+	}
 	rr = devicesResp(on.Token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("on devices: want 200, got %d", rr.Code)
@@ -493,6 +517,25 @@ func TestTopologyShareDeviceInclusion(t *testing.T) {
 	// Bad token still 404s on the devices endpoint.
 	if rr := devicesResp("deadbeef"); rr.Code != http.StatusNotFound {
 		t.Fatalf("bad token devices: want 404, got %d", rr.Code)
+	}
+}
+
+func TestSharedTopologyUnlimitedLinkMetadata(t *testing.T) {
+	srv := testServerData(t)
+	form := url.Values{"fw_id": {"1"}, "expiry_hours": {"0"}}
+	req := httptest.NewRequest(http.MethodPost, "/topology/share", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	created := httptest.NewRecorder()
+	srv.handleTopologyShareCreate(created, req)
+	var share topologyShare
+	if err := json.Unmarshal(created.Body.Bytes(), &share); err != nil {
+		t.Fatal(err)
+	}
+
+	page := httptest.NewRecorder()
+	srv.handleTopologyShared(page, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", share.Token))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Does not expire") {
+		t.Fatalf("unlimited public page missing explicit expiry metadata: code=%d body=%s", page.Code, page.Body.String())
 	}
 }
 
