@@ -312,6 +312,45 @@
     margin-bottom: 14px;
 }
 
+.polsplit-page .ps-result-tabs {
+    padding: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+}
+
+.polsplit-page .ps-result-tabs [role="tab"][aria-selected="true"] {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.polsplit-page .ps-result-tabs [role="tab"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.polsplit-page .ps-export-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.polsplit-page .ps-export-actions [hidden],
+.polsplit-page #ps-panel-state[hidden],
+.polsplit-page #ps-traffic-panel[hidden],
+.polsplit-page #ps-strategy-panel[hidden] {
+    display: none;
+}
+
+.polsplit-page .ps-panel-state {
+    border-left: 2px solid var(--accent);
+}
+
+.polsplit-page .ps-panel-state p {
+    margin: 0 0 8px;
+}
+
 .polsplit-page .ps-badge {
     background: var(--accent);
     color: var(--surface, #000);

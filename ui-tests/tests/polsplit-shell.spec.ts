@@ -23,6 +23,7 @@ test('Policy Split uses the shared shell and completes one analysis', async ({ p
 
   await expect(page.getByRole('heading', { name: 'Observed Traffic' })).toBeVisible();
   await expect(page.locator('#ps-tuples-table')).toContainText('10.0.0.10');
+  await page.getByRole('tab', { name: /Per service/ }).click();
   await expect(page.locator('#ps-strategy-panels')).toContainText('config firewall policy');
 
   const screenshot = await page.screenshot({

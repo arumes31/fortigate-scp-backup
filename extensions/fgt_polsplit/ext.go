@@ -22,9 +22,10 @@ import (
 //go:embed templates/* static/*
 var extensionFS embed.FS
 
-// Extension is the policy split advisor. It is stateless: firewalls/backups
-// come from the shared PostgreSQL database, traffic data from Graylog; only
-// the shared activity log is written.
+// Extension is the policy split advisor. Firewalls/backups come from the
+// shared PostgreSQL database and traffic data from Graylog. Generated results
+// are retained briefly in a bounded, owner-scoped in-memory store for lazy
+// review and export; only metadata is written to the shared activity log.
 type Extension struct {
 	cfg    *config.Config
 	logger *slog.Logger
@@ -43,6 +44,10 @@ type Extension struct {
 	// Live progress of running analyses, polled by the UI (see progress.go).
 	progressMu   sync.Mutex
 	progressByID map[string]*progressState
+
+	resultMu  sync.Mutex
+	results   map[string]*storedAnalysisResult
+	resultNow func() time.Time
 }
 
 // broadcast publishes an operation lifecycle event to the core SSE stream
@@ -87,6 +92,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	}
 
 	e.progressByID = map[string]*progressState{}
+	e.results = map[string]*storedAnalysisResult{}
 	liveExt.Store(e) // publish for the core dashboard's running-queries card
 
 	r.Group(func(pr chi.Router) {
@@ -96,6 +102,8 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Get("/policy_info", e.policyInfo)
 		pr.Post("/analyze", e.analyze)
 		pr.Get("/progress", e.progressHandler)
+		pr.Get("/results/{resultID}/panels/{panelKey}", e.resultPanel)
+		pr.Get("/results/{resultID}/export/{exportType}", e.exportResult)
 	})
 
 	staticSub, err := fs.Sub(extensionFS, "static")

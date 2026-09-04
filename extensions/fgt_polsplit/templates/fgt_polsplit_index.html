@@ -148,12 +148,29 @@
         </dialog>
 
         <div id="ps-results" hidden>
+            <div class="card ps-result-summary">
+                <span class="eyebrow">Analysis result</span>
+                <h2>Review summary</h2>
+                <div class="ps-stats" id="ps-summary-stats"></div>
+                <div class="ps-export-actions">
+                    <button type="button" class="btn btn-sm" data-export-type="summary">Export summary JSON</button>
+                    <button type="button" class="btn btn-sm" data-export-type="traffic">Export traffic CSV</button>
+                    <button type="button" class="btn btn-sm" id="ps-export-config" data-export-type="config" hidden>Export selected config</button>
+                </div>
+            </div>
+
             <div class="card" id="ps-warnings-card" hidden>
                 <h2>Warnings</h2>
                 <ul id="ps-warnings" class="ps-warnings"></ul>
             </div>
 
-            <div class="card">
+            <div class="ps-tabs ps-result-tabs" id="ps-result-tabs" role="tablist" aria-label="Analysis result details"></div>
+            <div class="card ps-panel-state" id="ps-panel-state" role="status" hidden>
+                <p id="ps-panel-state-text" class="ps-muted"></p>
+                <button type="button" id="ps-panel-retry" class="btn btn-sm" hidden>Retry</button>
+            </div>
+
+            <div class="card" id="ps-traffic-panel" role="tabpanel" tabindex="0" hidden>
                 <h2>Observed Traffic</h2>
                 <div class="ps-stats" id="ps-stats"></div>
                 <div class="ps-table-wrap">
@@ -245,9 +262,8 @@
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" id="ps-strategy-panel" role="tabpanel" tabindex="0" hidden>
                 <h2>Split Recommendations</h2>
-                <div class="ps-tabs" id="ps-strategy-tabs"></div>
                 <div id="ps-strategy-panels"></div>
             </div>
         </div>

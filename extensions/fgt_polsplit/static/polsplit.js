@@ -6,7 +6,10 @@
 const psRoot = document.getElementById('polsplit-page');
 if (!psRoot) return;
 
-const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null };
+const psState = {
+    rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null,
+    resultID: '', resultSummary: null, resultPanels: [], panelCache: new Map(), activePanel: ''
+};
 
 function $(id) { return psRoot.querySelector('#' + CSS.escape(id)); }
 
@@ -301,6 +304,11 @@ function hideProgress() {
 
 function clearResults() {
     $('ps-results').hidden = true;
+    psState.resultID = '';
+    psState.resultSummary = null;
+    psState.resultPanels = [];
+    psState.panelCache.clear();
+    psState.activePanel = '';
 }
 
 async function analyze() {
@@ -417,23 +425,105 @@ async function analyze() {
     }
 }
 
+function setPanelState(message, retry = false) {
+    $('ps-panel-state-text').textContent = message;
+    $('ps-panel-retry').hidden = !retry;
+    $('ps-panel-state').hidden = !message;
+}
+
 function renderResults(data) {
-    // warnings
+    psState.resultID = data.result_id;
+    psState.resultSummary = data;
+    psState.resultPanels = Array.isArray(data.panels) ? data.panels : [];
+    psState.panelCache.clear();
     const warn = data.warnings || [];
     $('ps-warnings-card').hidden = warn.length === 0;
     $('ps-warnings').innerHTML = warn.map(w => `<li>${esc(w)}</li>`).join('');
+    $('ps-summary-stats').innerHTML = [
+        ['Sources', data.src_count], ['Targets', data.dst_count], ['Services', data.svc_count],
+        ['Warnings', data.warning_count], ['Missing objects', data.unresolved_count], ['Artifacts', data.artifact_count]
+    ].map(([key, value]) => `<div class="ps-stat"><div class="ps-stat-val">${esc(value)}</div><div class="ps-stat-key">${esc(key)}</div></div>`).join('');
+    renderResultTabs();
+    $('ps-results').hidden = false;
+    const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    $('ps-results').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    if (psState.resultPanels.length) activateResultPanel(psState.resultPanels[0].key);
+    else setPanelState('No detailed result panels were generated.');
+}
 
-    // stats
+function renderResultTabs() {
+    const tabs = $('ps-result-tabs');
+    tabs.replaceChildren();
+    psState.resultPanels.forEach((panel, index) => {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'btn btn-sm';
+        tab.id = `ps-result-tab-${panel.key}`;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', 'false');
+        tab.setAttribute('aria-controls', panel.kind === 'traffic' ? 'ps-traffic-panel' : 'ps-strategy-panel');
+        tab.tabIndex = index === 0 ? 0 : -1;
+        tab.dataset.panelKey = panel.key;
+        tab.textContent = `${panel.label} (${panel.count})${panel.recommended ? ' · Recommended' : ''}`;
+        tab.addEventListener('click', () => activateResultPanel(panel.key));
+        tabs.appendChild(tab);
+    });
+}
+
+async function activateResultPanel(key, force = false) {
+    const meta = psState.resultPanels.find(panel => panel.key === key);
+    if (!meta || !psState.resultID) return;
+    psState.activePanel = key;
+    $('ps-result-tabs').querySelectorAll('[role="tab"]').forEach(tab => {
+        const selected = tab.dataset.panelKey === key;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+    });
+    $('ps-traffic-panel').hidden = true;
+    $('ps-strategy-panel').hidden = true;
+    $('ps-export-config').hidden = meta.kind !== 'strategy';
+    if (psState.panelCache.has(key) && !force) {
+        renderResultPanel(psState.panelCache.get(key));
+        return;
+    }
+    setPanelState(`Loading ${meta.label}…`);
+    try {
+        const response = await fetchJSON(`/fgt-polsplit/results/${encodeURIComponent(psState.resultID)}/panels/${encodeURIComponent(key)}`);
+        if (psState.activePanel !== key) return;
+        psState.panelCache.set(key, response);
+        renderResultPanel(response);
+    } catch (error) {
+        if (psState.activePanel !== key) return;
+        setPanelState(`Failed to load ${meta.label}: ${error.message}`, true);
+    }
+}
+
+function renderResultPanel(response) {
+    setPanelState('');
+    if (response.kind === 'traffic') {
+        renderTrafficPanel(response.data || {});
+        $('ps-traffic-panel').setAttribute('aria-labelledby', `ps-result-tab-${response.key}`);
+        $('ps-traffic-panel').hidden = false;
+        return;
+    }
+    if (response.kind === 'strategy') {
+        renderStrategy(response.data || null);
+        $('ps-strategy-panel').setAttribute('aria-labelledby', `ps-result-tab-${response.key}`);
+        $('ps-strategy-panel').hidden = false;
+        return;
+    }
+    setPanelState('This result panel is empty.');
+}
+
+function renderTrafficPanel(data) {
+    const summary = psState.resultSummary || {};
     const tuples = data.tuples || [];
-    const srcs = data.src_count !== undefined ? data.src_count : new Set(tuples.map(t => t.srcip)).size;
-    const dsts = data.dst_count !== undefined ? data.dst_count : new Set(tuples.map(t => t.dstip)).size;
-    const svcs = data.svc_count !== undefined ? data.svc_count : new Set(tuples.map(t => t.proto + '/' + t.port)).size;
     $('ps-stats').innerHTML = [
-        ['Log messages', data.total_messages],
-        ['Traffic tuples', data.tuple_count],
-        ['Distinct sources', srcs],
-        ['Distinct destinations', dsts],
-        ['Distinct services', svcs],
+        ['Log messages', summary.total_messages],
+        ['Traffic tuples', summary.tuple_count],
+        ['Distinct sources', summary.src_count],
+        ['Distinct destinations', summary.dst_count],
+        ['Distinct services', summary.svc_count],
     ].map(([k, v]) => `<div class="ps-stat"><div class="ps-stat-val">${esc(v)}</div><div class="ps-stat-key">${esc(k)}</div></div>`).join('');
 
     // tuple table
@@ -444,8 +534,8 @@ function renderResults(data) {
         <td>${esc(t.service || '—')}</td><td class="ps-num">${esc(t.hits)}</td>
         <td>${esc(fmtTime(t.last_seen))}</td>
         <td>${t.flow === 'new' ? '<span class="ps-badge-new">NEW</span>' : ''}</td></tr>`).join('');
-    $('ps-tuples-note').textContent = data.tuple_count > tuples.length
-        ? `Showing top ${tuples.length} of ${data.tuple_count} tuples by hits.` : '';
+    $('ps-tuples-note').textContent = summary.tuple_count > tuples.length
+        ? `Showing top ${tuples.length} of ${summary.tuple_count} tuples by hits.` : '';
 
     // baseline-only (stale) flows
     const stale = data.stale_tuples || [];
@@ -493,9 +583,6 @@ function renderResults(data) {
     $('ps-utm-table').querySelector('tbody').innerHTML = utm.map(u => `<tr>
         <td>${esc(u.ip)}</td><td class="ps-num">${esc(u.hits)}</td></tr>`).join('');
 
-    renderStrategies(data.strategies || []);
-    $('ps-results').hidden = false;
-    $('ps-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // copyText copies to the clipboard, falling back to a hidden textarea when the
@@ -536,32 +623,22 @@ function svcList(svcs) {
     return svcs.map(s => esc(s.log_name || s.key)).join(', ');
 }
 
-function renderStrategies(strategies) {
-    const tabs = $('ps-strategy-tabs');
+function renderStrategy(strategy) {
     const panels = $('ps-strategy-panels');
-    tabs.innerHTML = '';
-    panels.innerHTML = '';
-    strategies.forEach((s, i) => {
-        const tab = document.createElement('button');
-        tab.className = 'btn btn-sm ps-tab' + (i === 0 ? ' active' : '');
-        tab.innerHTML = esc(s.label)
-            + ` <span class="ps-count">${(s.policies || []).length}</span>`
-            + (s.recommended ? ' <span class="ps-badge">RECOMMENDED</span>' : '');
-        tab.addEventListener('click', () => {
-            tabs.querySelectorAll('.ps-tab').forEach(t => t.classList.remove('active'));
-            panels.querySelectorAll('.ps-panel').forEach(p => p.hidden = true);
-            tab.classList.add('active');
-            $('ps-panel-' + i).hidden = false;
-        });
-        tabs.appendChild(tab);
-
-        const panel = document.createElement('div');
-        panel.className = 'ps-panel';
-        panel.id = 'ps-panel-' + i;
-        panel.hidden = i !== 0;
-        panel.innerHTML = strategyPanel(s, i);
-        panels.appendChild(panel);
-    });
+    panels.replaceChildren();
+    if (!strategy) {
+        const empty = document.createElement('p');
+        empty.className = 'ps-muted';
+        empty.textContent = 'No strategy data is available.';
+        panels.appendChild(empty);
+        return;
+    }
+    const heading = document.createElement('h3');
+    heading.textContent = `${strategy.label}${strategy.recommended ? ' · Recommended' : ''}`;
+    const panel = document.createElement('div');
+    panel.className = 'ps-panel';
+    panel.innerHTML = strategyPanel(strategy, 0);
+    panels.append(heading, panel);
     panels.querySelectorAll('.ps-copy').forEach(btn => {
         btn.addEventListener('click', () => {
             const pre = $(btn.dataset.target);
@@ -604,6 +681,29 @@ function strategyPanel(s, i) {
     return html;
 }
 
+function downloadResult(type) {
+    if (!psState.resultID) {
+        showFeedback('Run an analysis before exporting results.', 'error');
+        return;
+    }
+    let url = `/fgt-polsplit/results/${encodeURIComponent(psState.resultID)}/export/${encodeURIComponent(type)}`;
+    if (type === 'config') {
+        const panel = psState.resultPanels.find(item => item.key === psState.activePanel);
+        if (!panel || panel.kind !== 'strategy') {
+            showFeedback('Select a strategy before exporting configuration.', 'error');
+            return;
+        }
+        url += `?strategy=${encodeURIComponent(panel.key)}`;
+    }
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    showFeedback('Export download started.', 'success');
+}
+
 /* ---------------- wiring ---------------- */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -639,6 +739,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     $('ps-options-card').addEventListener('input', updateOptionsSummary);
     $('ps-options-card').addEventListener('change', updateOptionsSummary);
+    $('ps-result-tabs').addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = Array.from($('ps-result-tabs').querySelectorAll('[role="tab"]'));
+        const current = tabs.indexOf(document.activeElement);
+        if (current < 0 || tabs.length === 0) return;
+        let next = current;
+        if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+        if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+        if (event.key === 'Home') next = 0;
+        if (event.key === 'End') next = tabs.length - 1;
+        event.preventDefault();
+        tabs[next].focus();
+        activateResultPanel(tabs[next].dataset.panelKey);
+    });
+    $('ps-panel-retry').addEventListener('click', () => activateResultPanel(psState.activePanel, true));
+    psRoot.querySelectorAll('[data-export-type]').forEach(button => {
+        button.addEventListener('click', () => downloadResult(button.dataset.exportType));
+    });
     updateTargetContext();
     updateOptionsSummary();
 });

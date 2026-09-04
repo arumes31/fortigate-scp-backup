@@ -779,27 +779,32 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		logMsg += " [ticket " + t + "]"
 	}
 	e.log(r, "PolSplit Analyze", logMsg)
-	e.writeJSON(w, map[string]any{
-		"firewall":         FirewallRef{ID: req.FwID, FQDN: fqdn},
-		"policy":           parsed.Policy,
-		"action_display":   displayAction(parsed.Policy.Action),
-		"backup_time":      ts.In(e.tz).Format("2006-01-02 15:04"),
-		"total_messages":   totalMessages,
-		"tuple_count":      len(analysis.Tuples),
-		"src_count":        len(srcsMap),
-		"dst_count":        len(dstsMap),
-		"svc_count":        len(svcsMap),
-		"tuples":           respTuples,
-		"stale_tuples":     staleTuples,
-		"dns_suggestions":  dnsSuggestions,
-		"isdb_suggestions": isdbSugg,
-		"utm_blocked":      utmDsts,
-		"user_activity":    users,
-		"app_usage":        apps,
-		"wan_as_all":       wanAsAll,
-		"strategies":       strategies,
-		"warnings":         warnings,
+	owner := ""
+	if e.currentUser != nil {
+		owner = e.currentUser(r)
+	}
+	if owner == "" {
+		e.jsonError(w, http.StatusUnauthorized, "authenticated user is required for result storage")
+		return
+	}
+	_, summary, err := e.storeResult(owner, analysisResult{
+		Firewall: FirewallRef{ID: req.FwID, FQDN: fqdn}, Policy: parsed.Policy,
+		BackupTime: ts.In(e.tz).Format("2006-01-02 15:04"), TotalMessages: totalMessages,
+		TupleCount: len(analysis.Tuples), SrcCount: len(srcsMap), DstCount: len(dstsMap), ServiceCount: len(svcsMap),
+		Warnings: warnings,
+		Traffic: trafficResultPanel{
+			Tuples: respTuples, StaleTuples: staleTuples, DNSSuggestions: dnsSuggestions,
+			ISDBSuggestions: isdbSugg, UTMBlocked: utmDsts, UserActivity: users, AppUsage: apps,
+		},
+		Strategies: strategies,
 	})
+	if err != nil {
+		e.logger.Warn("polsplit: result exceeds bounded review store", "err", err, "policy_id", req.PolicyID, "firewall_id", req.FwID)
+		e.jsonError(w, http.StatusRequestEntityTooLarge, "analysis result is too large to review safely")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	e.writeJSON(w, summary)
 }
 
 // markRecommended flags the strategy with the lowest score: policy count

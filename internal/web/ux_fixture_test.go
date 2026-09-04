@@ -512,11 +512,24 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		"action_display":"accept","backup_time":"2026-09-02 10:30","used_policy_id_count":1,"wan_bound":true,"warnings":[]
 	}`))
 	mux.HandleFunc("POST /fgt-polsplit/analyze", jsonResponse(`{
-		"warnings":[],"total_messages":24,"tuple_count":1,"src_count":1,"dst_count":1,"svc_count":1,
-		"tuples":[{"srcip":"10.0.0.10","dstip":"203.0.113.10","proto":"tcp","port":443,"service":"HTTPS","hits":24,"last_seen":"2026-09-02T10:30:00Z","flow":""}],
-		"stale_tuples":[],"dns_suggestions":[],"isdb_suggestions":[],"user_activity":[],"app_usage":[],"utm_blocked":[],
-		"strategies":[{"key":"per_service","label":"Per service","recommended":true,"policies":[{"id":100,"name":"PS42_HTTPS","tags":[],"src":[{"value":"10.0.0.10/32","is_net":false,"hosts":1}],"dst":[{"value":"203.0.113.10/32","is_net":false,"hosts":1}],"services":[{"key":"tcp/443","log_name":"HTTPS"}],"hits":24}],"new_objects":[],"config":"config firewall policy\n    edit 100\n        set name PS42_HTTPS\n    next\nend"}]
+		"result_id":"00000000-0000-4000-8000-000000000035","warnings":[],"warning_count":0,"unresolved_count":0,"artifact_count":1,
+		"total_messages":24,"tuple_count":1,"src_count":1,"dst_count":1,"svc_count":1,
+		"panels":[{"key":"traffic","label":"Observed traffic","kind":"traffic","count":1},{"key":"per_service","label":"Per service","kind":"strategy","count":1,"recommended":true}]
 	}`))
+	mux.HandleFunc("GET /fgt-polsplit/results/{resultID}/panels/traffic", jsonResponse(`{"key":"traffic","kind":"traffic","data":{"tuples":[{"srcip":"10.0.0.10","dstip":"203.0.113.10","proto":"tcp","port":443,"service":"HTTPS","hits":24,"last_seen":"2026-09-02T10:30:00Z","flow":""}],"stale_tuples":[],"dns_suggestions":[],"isdb_suggestions":[],"user_activity":[],"app_usage":[],"utm_blocked":[]}}`))
+	mux.HandleFunc("GET /fgt-polsplit/results/{resultID}/panels/per_service", jsonResponse(`{"key":"per_service","kind":"strategy","data":{"key":"per_service","label":"Per service","recommended":true,"policies":[{"id":100,"name":"PS42_HTTPS","tags":[],"src":[{"value":"10.0.0.10/32","is_net":false,"hosts":1}],"dst":[{"value":"203.0.113.10/32","is_net":false,"hosts":1}],"services":[{"key":"tcp/443","log_name":"HTTPS"}],"hits":24}],"new_objects":[],"config":"config firewall policy\n    edit 100\n        set name PS42_HTTPS\n    next\nend"}}`))
+	mux.HandleFunc("GET /fgt-polsplit/results/{resultID}/export/{exportType}", func(w http.ResponseWriter, r *http.Request) {
+		kind := r.PathValue("exportType")
+		filename, contentType := "polsplit-policy-42-summary.json", "application/json"
+		if kind == "traffic" {
+			filename, contentType = "polsplit-policy-42-traffic.csv", "text/csv; charset=utf-8"
+		} else if kind == "config" {
+			filename, contentType = "polsplit-policy-42-"+r.URL.Query().Get("strategy")+".conf", "text/plain; charset=utf-8"
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		w.Header().Set("Content-Type", contentType)
+		_, _ = io.WriteString(w, "synthetic "+kind+" export")
+	})
 	mux.HandleFunc("GET /fgt-polsplit/progress", jsonResponse(`{"state":"complete","progress":100}`))
 	mux.HandleFunc("GET /fgt-confconv/{$}", renderShared(templates.confConv, uxConfConvFixture))
 	mux.HandleFunc("GET /fgt-confconv/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
@@ -1410,6 +1423,10 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "Policy Split", method: http.MethodGet, path: "/fgt-polsplit/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "Policy Split firewalls", method: http.MethodGet, path: "/fgt-polsplit/list_firewalls", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Policy Split policy", method: http.MethodGet, path: "/fgt-polsplit/policy_info?fw_id=7&policy_id=42", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Policy Split result panel", method: http.MethodGet, path: "/fgt-polsplit/results/00000000-0000-4000-8000-000000000035/panels/traffic", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Policy Split summary export", method: http.MethodGet, path: "/fgt-polsplit/results/00000000-0000-4000-8000-000000000035/export/summary", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "Policy Split traffic export", method: http.MethodGet, path: "/fgt-polsplit/results/00000000-0000-4000-8000-000000000035/export/traffic", wantStatus: http.StatusOK, contentType: "text/csv"},
+		{name: "Policy Split config export", method: http.MethodGet, path: "/fgt-polsplit/results/00000000-0000-4000-8000-000000000035/export/config?strategy=per_service", wantStatus: http.StatusOK, contentType: "text/plain"},
 		{name: "Policy Split analyze", method: http.MethodPost, path: "/fgt-polsplit/analyze", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Policy Split progress", method: http.MethodGet, path: "/fgt-polsplit/progress?id=fixture", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Config Converter", method: http.MethodGet, path: "/fgt-confconv/", wantStatus: http.StatusOK, contentType: "text/html"},
