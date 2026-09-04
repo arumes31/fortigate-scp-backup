@@ -18,6 +18,7 @@ const routes = [
   '/fgt-polsplit/',
   '/fgt-confconv/',
   '/fgt-conftail/?scenario=warning',
+  '/fgt-conftail/chain/fixture-chain',
   '/__ux/primitives',
 ];
 

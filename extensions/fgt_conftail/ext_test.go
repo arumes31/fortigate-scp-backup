@@ -66,7 +66,7 @@ func TestExtensionMountRejectsMissingHostDependencies(t *testing.T) {
 	}
 }
 
-func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing.T) {
+func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *testing.T) {
 	var jobs []scheduledConftailJob
 	registeredHealth := map[string]func(context.Context) string{}
 	authCalls := 0
@@ -159,6 +159,21 @@ func TestExtensionMountRegistersAuthenticatedReadOnlyDashboardAndJobs(t *testing
 			"authenticated GET /chain/{id} = %d/header %q, want 404/auth marker",
 			chainResponse.Code,
 			chainResponse.Header().Get("X-Test-Authenticated"),
+		)
+	}
+	ignoreRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/ignore-rules",
+		strings.NewReader("event_id=999&kind=attribute"),
+	)
+	ignoreRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ignoreResponse := httptest.NewRecorder()
+	router.ServeHTTP(ignoreResponse, ignoreRequest)
+	if ignoreResponse.Code != http.StatusNotFound || ignoreResponse.Header().Get("X-Test-Authenticated") != "yes" {
+		t.Fatalf(
+			"authenticated POST /ignore-rules = %d/header %q, want 404/auth marker",
+			ignoreResponse.Code,
+			ignoreResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
 	if len(jobs) != 4 {

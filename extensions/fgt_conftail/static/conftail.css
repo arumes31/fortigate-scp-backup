@@ -351,3 +351,42 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: .08em;
 }
+
+.conftail-page .ct-ignore-management > summary {
+    cursor: pointer;
+}
+
+.conftail-page .ct-notice {
+    border-left: 2px solid var(--success);
+    color: var(--text);
+    padding: 10px 12px;
+    background: var(--success-soft);
+}
+
+.conftail-page .ct-ignore-actions,
+.conftail-page .ct-event-actions,
+.conftail-page .ct-dialog-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.conftail-page .ct-ignore-actions form { margin: 0; }
+.conftail-page .ct-event-actions { margin-top: 10px; }
+
+.ct-ignore-dialog {
+    width: min(720px, calc(100vw - 48px));
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    padding: 20px;
+}
+
+.ct-ignore-dialog::backdrop { background: rgba(0, 0, 0, .72); }
+.ct-ignore-dialog form { display: grid; gap: 16px; }
+.ct-ignore-dialog h2, .ct-ignore-dialog p { margin: 0; }
+.ct-ignore-dialog fieldset { display: grid; gap: 10px; border: 1px solid var(--border); padding: 12px; }
+.ct-ignore-dialog label { display: grid; grid-template-columns: auto 1fr; gap: 5px 9px; align-items: center; margin: 0; }
+.ct-ignore-dialog label code { grid-column: 2; color: var(--text-muted); overflow-wrap: anywhere; text-transform: none; }
+.ct-ignore-dialog .ct-dialog-actions { justify-content: flex-end; }

@@ -33,6 +33,7 @@ type pollCycleStats struct {
 	Skipped     int
 	Inserted    int
 	Duplicates  int
+	Ignored     int
 	Sealed      int
 }
 
@@ -192,6 +193,7 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	}
 	stats.Inserted = result.Inserted
 	stats.Duplicates = result.Duplicates
+	stats.Ignored = result.Ignored
 	stats.Sealed = result.Sealed
 	return stats, nil
 }

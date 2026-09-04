@@ -26,7 +26,7 @@ const (
 	deliveryStateFailed       = "failed"
 	deliveryStateAccepted     = "accepted"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 2
+	conftailSchemaVersion     = 3
 )
 
 type store struct {
@@ -59,6 +59,7 @@ type pollBatch struct {
 type pollResult struct {
 	Inserted   int
 	Duplicates int
+	Ignored    int
 	Sealed     int
 }
 
@@ -194,6 +195,32 @@ var conftailSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS outbox_due
 		ON outbox(state, next_attempt_at_ns)`,
+	`CREATE TABLE IF NOT EXISTS global_ignore_rules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL CHECK (kind IN ('attribute','operation')),
+		action TEXT NOT NULL DEFAULT '',
+		config_path TEXT NOT NULL DEFAULT '',
+		config_attribute TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+		created_by TEXT NOT NULL,
+		created_at_ns INTEGER NOT NULL,
+		CHECK (
+			(kind = 'attribute' AND action = '' AND config_path = '' AND config_attribute != '') OR
+			(kind = 'operation' AND action != '' AND config_path != '' AND config_attribute = '')
+		),
+		UNIQUE(kind, action, config_path, config_attribute)
+	)`,
+	`CREATE INDEX IF NOT EXISTS global_ignore_rules_enabled
+		ON global_ignore_rules(enabled, kind)`,
+	`CREATE TABLE IF NOT EXISTS ignored_events (
+		semantic_hash TEXT PRIMARY KEY,
+		graylog_id TEXT NOT NULL DEFAULT '',
+		rule_id INTEGER REFERENCES global_ignore_rules(id) ON DELETE SET NULL,
+		event_at_ns INTEGER NOT NULL,
+		ignored_at_ns INTEGER NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS ignored_events_graylog_identity
+		ON ignored_events(graylog_id) WHERE graylog_id != ''`,
 	`CREATE TABLE IF NOT EXISTS poll_state (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		activation_at_ns INTEGER NOT NULL,
@@ -323,6 +350,12 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO event_search(event_search) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild conftail event search index: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 2 WHERE id = 1`); err != nil {
+			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = 2
+	}
+	if version == 2 {
 		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
 			return fmt.Errorf("upgrade conftail schema version: %w", err)
 		}
@@ -458,6 +491,10 @@ func (s *store) applyPoll(
 	}
 	defer func() { _ = tx.Rollback() }()
 	result := pollResult{}
+	ignoreRules, err := listEnabledGlobalIgnoreRulesTx(ctx, tx)
+	if err != nil {
+		return pollResult{}, err
+	}
 	for i := range events {
 		if err := validatePersistentEvent(events[i]); err != nil {
 			return pollResult{}, fmt.Errorf("validate conftail event: %w", err)
@@ -484,6 +521,26 @@ func (s *store) applyPoll(
 		}
 		if exists {
 			result.Duplicates++
+			continue
+		}
+		ignored, err := ignoredEventExists(ctx, tx, events[i])
+		if err != nil {
+			return pollResult{}, err
+		}
+		if ignored {
+			result.Duplicates++
+			continue
+		}
+		if rule, ok := matchingGlobalIgnoreRule(ignoreRules, events[i]); ok {
+			inserted, err := recordIgnoredEvent(ctx, tx, rule.ID, events[i], batch.EndedAt.UTC())
+			if err != nil {
+				return pollResult{}, err
+			}
+			if inserted {
+				result.Ignored++
+			} else {
+				result.Duplicates++
+			}
 			continue
 		}
 		sealed, err = placeEvent(
@@ -618,6 +675,18 @@ func eventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, error) {
 	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check conftail event identity: %w", err)
+	}
+	return exists, nil
+}
+
+func ignoredEventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM ignored_events
+		WHERE semantic_hash = ? OR (? != '' AND graylog_id = ?)
+	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check ignored conftail event identity: %w", err)
 	}
 	return exists, nil
 }
@@ -1635,6 +1704,9 @@ func (s *store) prune(ctx context.Context, now time.Time, retentionDays int) (in
 		return 0, nil
 	}
 	cutoff := now.UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ignored_events WHERE ignored_at_ns < ?`, unixNanos(cutoff)); err != nil {
+		return 0, fmt.Errorf("prune ignored conftail event identities: %w", err)
+	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM chains WHERE id IN (
 		SELECT chains.id FROM chains
 		JOIN outbox ON outbox.chain_id = chains.id

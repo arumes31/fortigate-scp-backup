@@ -28,6 +28,7 @@
 
         {{if .Chain.Unattributed}}<div class="ct-warning" role="status"><strong>No unique administrator could be attributed to this session.</strong></div>{{end}}
         {{if .Chain.Late}}<div class="ct-warning" role="status"><strong>This session contains late-arriving Graylog events.</strong></div>{{end}}
+        {{if .IgnoreNotice}}<p class="ct-notice" role="status">{{.IgnoreNotice}}</p>{{end}}
 
         <section class="card" aria-labelledby="ct-complete-title">
             <div class="card-header">
@@ -36,8 +37,8 @@
             </div>
             <ol class="ct-timeline ct-complete-timeline">
                 {{range .Chain.Events}}
-                <li class="ct-virtual-item">
-                    <div class="ct-event-head">{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}</div>
+                <li class="ct-virtual-item" id="ct-event-{{.ID}}">
+                    <div class="ct-event-head">{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}{{if .GlobalIgnoreID}}<span class="pill ct-state-accepted">global {{.GlobalIgnoreKind}} ignore active</span>{{end}}</div>
                     <div class="ct-event-body no-caps">
                         {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}
                         {{if .DeviceName}}<span><b>device:</b> {{.DeviceName}}</span>{{end}}
@@ -52,6 +53,13 @@
                         <span><b>log ID:</b> {{.LogID}}</span>
                         <span><b>attribution:</b> {{.UserAttribution}}</span>
                     </div>
+                    {{if or .ConfigAttribute (and .Action .Path)}}
+                    <div class="ct-event-actions">
+                        <button type="button" class="btn btn-sm" data-ct-ignore-open
+                            data-event-id="{{.ID}}" data-attribute="{{.ConfigAttribute}}"
+                            data-operation="{{.Action}} {{.Path}}">Ignore globally…</button>
+                    </div>
+                    {{end}}
                 </li>
                 {{end}}
             </ol>
@@ -60,6 +68,23 @@
                 {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
             </nav>
         </section>
+
+        <dialog class="ct-ignore-dialog" id="ct-ignore-dialog" aria-labelledby="ct-ignore-title">
+            <form method="post" action="/fgt-conftail/ignore-rules">
+                <h2 id="ct-ignore-title">Confirm global ignore</h2>
+                <p>This affects every firewall and all future sessions. Existing events remain in history.</p>
+                <input type="hidden" name="event_id" id="ct-ignore-event-id">
+                <fieldset>
+                    <legend>Ignore future events matching:</legend>
+                    <label id="ct-ignore-attribute-option"><input type="radio" name="kind" value="attribute"> <span>Exact attribute change</span><code data-ct-ignore-attribute></code></label>
+                    <label id="ct-ignore-operation-option"><input type="radio" name="kind" value="operation"> <span>Operation and path</span><code data-ct-ignore-operation></code></label>
+                </fieldset>
+                <div class="ct-dialog-actions">
+                    <button type="button" class="btn" data-ct-ignore-cancel>Cancel</button>
+                    <button type="submit" class="btn btn-danger">Confirm global ignore</button>
+                </div>
+            </form>
+        </dialog>
     </div>
 {{end}}
 

@@ -482,6 +482,15 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("GET /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
 	mux.HandleFunc("GET /fgt-conftail/status", jsonResponse(`{"running":false,"signature":"fixture"}`))
 	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", renderShared(templates.confTailChain, uxConfTailChainFixture))
+	mux.HandleFunc("POST /fgt-conftail/ignore-rules", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/fgt-conftail/?ignore=created#ct-global-ignores", http.StatusSeeOther)
+	})
+	mux.HandleFunc("POST /fgt-conftail/ignore-rules/{ruleID}/toggle", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/fgt-conftail/?ignore=updated#ct-global-ignores", http.StatusSeeOther)
+	})
+	mux.HandleFunc("POST /fgt-conftail/ignore-rules/{ruleID}/delete", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/fgt-conftail/?ignore=deleted#ct-global-ignores", http.StatusSeeOther)
+	})
 
 	serveStatic("/fgt-confgen/static/", "extensions/fgt_confgen/static")
 	serveStatic("/fgt-polsplit/static/", "extensions/fgt_polsplit/static")
@@ -552,6 +561,10 @@ func uxConfTailFixture(scenario uxScenario) any {
 		"Filters": map[string]any{"State": "all", "Page": 1}, "NextPollRun": uxFixtureNow.Add(time.Minute),
 		"PollRunning": scenario == uxScenarioLoading, "PollSignature": "fixture", "CoverageEnabled": true,
 		"Coverage": []any{}, "Firewalls": []any{}, "Warnings": []string{},
+		"IgnoreRules": []any{map[string]any{
+			"ID": 17, "Kind": "operation", "DisplayValue": "Edit system.central-management",
+			"Enabled": true, "CreatedBy": "fixture-operator", "CreatedAt": uxFixtureNow.Add(-time.Hour),
+		}},
 	}
 }
 
@@ -562,7 +575,13 @@ func uxConfTailChainFixture(uxScenario) any {
 			"ID": "fixture-chain", "FirewallID": 7, "FirewallName": "edge.example.test",
 			"User": "synthetic-admin", "State": "sealed", "DeliveryState": "accepted",
 			"FirstEventAt": uxFixtureNow.Add(-time.Minute), "LastEventAt": uxFixtureNow,
-			"EventCount": 0, "VDOMs": []string{"root"}, "Events": []any{}, "AcceptedAt": uxFixtureNow,
+			"EventCount": 1, "VDOMs": []string{"root"}, "Events": []any{map[string]any{
+				"ID": 41, "EventAt": uxFixtureNow, "Source": "FGT-SITE-A", "VDOM": "root",
+				"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
+				"Path": "system.central-management", "Object": "-",
+				"ConfigAttribute": `type[fortimanager->fortimanager]fmg["manager.example.test"->"manager.example.test"]serial-number["FMGVMTEST00000001"->"FMGVMTEST00000001"]`,
+				"LogID":           "0100044546", "LogDescription": "Attribute configured",
+			}}, "AcceptedAt": uxFixtureNow,
 		},
 	}
 }

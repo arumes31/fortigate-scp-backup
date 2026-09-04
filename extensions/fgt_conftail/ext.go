@@ -55,6 +55,7 @@ type Extension struct {
 	indexPage     *webui.Renderer
 	chainPage     *webui.Renderer
 	currentUser   func(*http.Request) string
+	logActivity   func(username, action, details string)
 	pageBase      extension.PageBaseProvider
 	catalogLoader func(context.Context) (sourceCatalog, error)
 
@@ -88,8 +89,8 @@ func (e *Extension) Prefix() string { return "/fgt-conftail" }
 
 func (e *Extension) Enabled() bool { return e.cfg.ExtFgtConfTail }
 
-// Mount initializes private storage, registers authenticated read-only routes,
-// and schedules non-overlapping poll and delivery jobs on the host scheduler.
+// Mount initializes private storage, registers authenticated dashboard and
+// global-ignore routes, and schedules non-overlapping poll and delivery jobs.
 func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	if deps.DB == nil {
 		return errors.New("shared database is required")
@@ -150,6 +151,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	e.indexPage = indexPage
 	e.chainPage = chainPage
 	e.currentUser = deps.CurrentUser
+	e.logActivity = deps.LogActivity
 	e.pageBase = deps.PageBase
 	e.tz = deps.TZ
 	if e.tz == nil {
@@ -176,6 +178,9 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 		protected.Get("/", e.dashboard)
 		protected.Get("/status", e.dashboardStatus)
 		protected.Get("/chain/{chainID}", e.dashboardChain)
+		protected.Post("/ignore-rules", e.createGlobalIgnoreRule)
+		protected.Post("/ignore-rules/{ruleID}/toggle", e.toggleGlobalIgnoreRule)
+		protected.Post("/ignore-rules/{ruleID}/delete", e.deleteGlobalIgnoreRule)
 		protected.Get(
 			"/static/*",
 			http.StripPrefix("/fgt-conftail/static/", http.FileServer(http.FS(staticFS))).ServeHTTP,
@@ -363,6 +368,7 @@ func (e *Extension) runPoll() {
 		"skipped", stats.Skipped,
 		"inserted", stats.Inserted,
 		"duplicates", stats.Duplicates,
+		"ignored", stats.Ignored,
 		"sealed", stats.Sealed,
 	)
 

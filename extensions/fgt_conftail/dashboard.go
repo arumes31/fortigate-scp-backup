@@ -92,6 +92,7 @@ type dashboardCounts struct {
 }
 
 type dashboardEvent struct {
+	ID               int64
 	EventAt          time.Time
 	Source           string
 	DeviceName       string
@@ -110,6 +111,8 @@ type dashboardEvent struct {
 	LogDescription   string
 	Message          string
 	Late             bool
+	GlobalIgnoreID   int64
+	GlobalIgnoreKind string
 }
 
 type dashboardChain struct {
@@ -185,17 +188,20 @@ type dashboardPageData struct {
 	Firewalls       []sourceCoverage
 	Warnings        []string
 	ActiveOmitted   int
+	IgnoreRules     []globalIgnoreRule
+	IgnoreNotice    string
 	PrevURL         string
 	NextURL         string
 }
 
 type dashboardChainPageData struct {
-	Base       webui.BaseData
-	Chain      dashboardChain
-	Page       int
-	TotalPages int
-	PrevURL    string
-	NextURL    string
+	Base         webui.BaseData
+	Chain        dashboardChain
+	Page         int
+	TotalPages   int
+	PrevURL      string
+	NextURL      string
+	IgnoreNotice string
 }
 
 type dashboardStatusResponse struct {
@@ -578,6 +584,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 	var eventAt int64
 	var late int
 	if err := scanner.Scan(
+		&event.ID,
 		&eventAt,
 		&event.Source,
 		&event.DeviceName,
@@ -684,7 +691,7 @@ func (s *store) dashboardEventPage(
 	page int,
 ) ([]dashboardEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		event_at_ns, source, device_name, device_id, vdom, user_attribution,
+		id, event_at_ns, source, device_name, device_id, vdom, user_attribution,
 		ui, action, transaction_id, config_path, config_object, config_attribute,
 		log_id, log_description, message, late
 		FROM events WHERE chain_id = ?
@@ -741,6 +748,14 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	for index := range data.Active {
 		data.Active[index].QuietEligibleAt = data.Active[index].LastEventAt.Add(e.dashboardIdleDuration())
 	}
+	ignoreRules, err := e.store.listGlobalIgnoreRules(r.Context())
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Error("conftail: global ignore query failed", "code", codeDashboardQueryFailed, "err", err)
+		}
+		http.Error(w, "Unable to load global ignore rules", http.StatusInternalServerError)
+		return
+	}
 
 	e.catalogMu.RLock()
 	coverage := e.catalog.coverage()
@@ -768,6 +783,8 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		Firewalls:       coverage,
 		Warnings:        warnings,
 		ActiveOmitted:   max(0, data.ActiveTotal-len(data.Active)),
+		IgnoreRules:     ignoreRules,
+		IgnoreNotice:    dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
 	}
 	if filters.Page > 1 {
 		page.PrevURL = dashboardPageURL(filters, filters.Page-1)
@@ -874,15 +891,32 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	if chain.State == chainStateActive {
 		chain.QuietEligibleAt = chain.LastEventAt.Add(e.dashboardIdleDuration())
 	}
+	ignoreRules, err := e.store.listGlobalIgnoreRules(r.Context())
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Error("conftail: session global ignore query failed", "code", codeSessionQueryFailed, "err", sanitizeDeliveryError(err))
+		}
+		http.Error(w, "Unable to load global ignore rules", http.StatusInternalServerError)
+		return
+	}
+	for eventIndex := range chain.Events {
+		event := &chain.Events[eventIndex]
+		candidate := Event{Action: event.Action, Path: event.Path, ConfigAttribute: event.ConfigAttribute}
+		if rule, ok := matchingGlobalIgnoreRule(ignoreRules, candidate); ok {
+			event.GlobalIgnoreID = rule.ID
+			event.GlobalIgnoreKind = rule.Kind
+		}
+	}
 	username := ""
 	if e.currentUser != nil {
 		username = e.currentUser(r)
 	}
 	view := dashboardChainPageData{
-		Base:       e.pageBase(r, "Configuration Change Session", "conftail"),
-		Chain:      chain,
-		Page:       pageNumber,
-		TotalPages: totalPages,
+		Base:         e.pageBase(r, "Configuration Change Session", "conftail"),
+		Chain:        chain,
+		Page:         pageNumber,
+		TotalPages:   totalPages,
+		IgnoreNotice: dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
 	}
 	if pageNumber > 1 {
 		view.PrevURL = dashboardChainPageURL(chainID, pageNumber-1)
@@ -914,6 +948,19 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = output.WriteTo(w)
+}
+
+func dashboardIgnoreNotice(value string) string {
+	switch value {
+	case "created":
+		return "Global ignore rule created. Future matching events will not enter sessions or tickets."
+	case "updated":
+		return "Global ignore rule status updated."
+	case "deleted":
+		return "Global ignore rule deleted. Previously ignored events remain suppressed."
+	default:
+		return ""
+	}
 }
 
 func parseDashboardChainRequest(r *http.Request) (string, int, error) {

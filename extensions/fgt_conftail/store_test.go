@@ -1010,6 +1010,48 @@ func TestStoreMigratesVersionOneAndRebuildsRedactedSearchIndex(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesVersionTwoAndCreatesGlobalIgnoreTables(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if _, err := s.db.Exec(`DROP TABLE ignored_events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE global_ignore_rules`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = 2 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.initSchema(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, conftailSchemaVersion)
+	}
+	event := testEvent(1, "fw-migration.example.test", "operator", "global-ignore-migration", base.Add(time.Minute))
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(2 * time.Minute),
+		Events:  []Event{event},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := s.createGlobalIgnoreRule(
+		context.Background(),
+		storedEventID(t, s, event.GraylogID),
+		ignoreRuleKindAttribute,
+		"operator",
+		base.Add(3*time.Minute),
+	); err != nil || !created {
+		t.Fatalf("create rule after v2 migration: created=%t err=%v", created, err)
+	}
+}
+
 func testEvent(firewallID int, firewallName, user, graylogID string, eventAt time.Time) Event {
 	event := Event{
 		GraylogID:       graylogID,

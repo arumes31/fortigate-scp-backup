@@ -90,6 +90,41 @@
         </details>
         {{end}}
 
+        <details class="card ct-ignore-management" id="ct-global-ignores"{{if .IgnoreNotice}} open{{end}}>
+            <summary class="ct-coverage-summary">
+                <span class="ct-coverage-title">Global ignore rules</span>
+                <span class="ct-count">{{len .IgnoreRules}} rule(s)</span>
+            </summary>
+            <div class="ct-coverage-body">
+                {{if .IgnoreNotice}}<p class="ct-notice" role="status">{{.IgnoreNotice}}</p>{{end}}
+                <p class="ct-help">Enabled rules suppress future matching events across every firewall before they enter a session or Hookwise ticket. Existing history is retained.</p>
+                {{if .IgnoreRules}}
+                <div class="ct-table-wrap" role="region" aria-label="Global ignore rules" tabindex="0">
+                    <table class="data">
+                        <thead><tr><th>Scope</th><th>Exact match</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                        <tbody>{{range .IgnoreRules}}
+                            <tr>
+                                <td><span class="pill">{{.Kind}}</span></td>
+                                <td class="no-caps"><code>{{.DisplayValue}}</code></td>
+                                <td>{{if .Enabled}}<span class="pill ct-state-accepted">enabled</span>{{else}}<span class="pill">disabled</span>{{end}}</td>
+                                <td><span class="no-caps">{{.CreatedBy}}</span><br>{{template "dashboardTime" .CreatedAt}}</td>
+                                <td class="ct-ignore-actions">
+                                    <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/toggle">
+                                        <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
+                                        <button type="submit" class="btn btn-sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+                                    </form>
+                                    <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/delete" data-ct-ignore-delete>
+                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {{end}}</tbody>
+                    </table>
+                </div>
+                {{else}}<p class="empty">No global ignore rules. Add one from an event in a complete timeline.</p>{{end}}
+            </div>
+        </details>
+
         <section class="card" aria-labelledby="ct-filter-title">
             <h2 id="ct-filter-title">Timeline filters</h2>
             <form method="get" action="/fgt-conftail/" class="ct-filter" role="search">

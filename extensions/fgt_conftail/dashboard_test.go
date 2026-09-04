@@ -135,6 +135,15 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	chainID := chainIDForUser(t, s, "alice")
+	if _, _, err := s.createGlobalIgnoreRule(
+		context.Background(),
+		storedEventID(t, s, "message-000"),
+		ignoreRuleKindAttribute,
+		"reviewer",
+		base.Add(40*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.markDeliveryFailure(
 		context.Background(),
 		chainID,
@@ -197,12 +206,14 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		!strings.Contains(body, "Delivery attempts") {
 		t.Fatalf("detail page did not safely render delivery retry state: %q", body)
 	}
-	if strings.Count(body, `method="post"`) != 2 ||
-		!strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) {
-		t.Fatal("detail page contains a state-changing form outside the shared language and logout controls")
+	if strings.Count(body, `method="post"`) != 3 ||
+		!strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) ||
+		!strings.Contains(body, `action="/fgt-conftail/ignore-rules"`) {
+		t.Fatal("detail page does not contain exactly the shared forms and confirmed global-ignore action")
 	}
 	for _, want := range []string{
 		`class="ct-attribute-diff"`, "<del>before</del>", "<ins>after</ins>",
+		`global attribute ignore active`, `data-ct-ignore-open`, `id="ct-ignore-dialog"`, `Confirm global ignore`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail page does not contain structured cfgattr diff %q", want)
@@ -604,6 +615,44 @@ func TestDashboardRendersLocalColumnControlsAndProgressiveRows(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard does not contain %q", want)
 		}
+	}
+}
+
+func TestDashboardRendersGlobalIgnoreManagementSafely(t *testing.T) {
+	t.Parallel()
+	indexPage, _ := testDashboardRenderers(t)
+	page := dashboardPageData{
+		Dashboard:    dashboardData{TotalPages: 1},
+		Filters:      dashboardFilterView{State: dashboardStateAll, Page: 1},
+		IgnoreNotice: "Global ignore rule created.",
+		IgnoreRules: []globalIgnoreRule{{
+			ID:              17,
+			Kind:            ignoreRuleKindAttribute,
+			ConfigAttribute: `name[before-><script>alert("unsafe")</script>]`,
+			Enabled:         true,
+			CreatedBy:       `operator<script>`,
+			CreatedAt:       time.Date(2026, 9, 4, 9, 30, 0, 0, time.UTC),
+		}},
+	}
+	var output bytes.Buffer
+	if err := indexPage.Render(&output, page); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		`id="ct-global-ignores" open`,
+		`name[before-&gt;&lt;script&gt;alert(&#34;unsafe&#34;)&lt;/script&gt;]`,
+		`operator&lt;script&gt;`,
+		`action="/fgt-conftail/ignore-rules/17/toggle"`,
+		`action="/fgt-conftail/ignore-rules/17/delete"`,
+		`data-ct-ignore-delete`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("global ignore management does not contain %q", want)
+		}
+	}
+	if strings.Contains(body, `<script>alert("unsafe")</script>`) {
+		t.Fatal("global ignore management rendered an unescaped match value")
 	}
 }
 

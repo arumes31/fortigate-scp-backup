@@ -140,4 +140,52 @@
             }
         });
     });
+
+    const ignoreDialog = root.querySelector("#ct-ignore-dialog");
+    if (ignoreDialog) {
+        const eventID = ignoreDialog.querySelector("#ct-ignore-event-id");
+        const attributeOption = ignoreDialog.querySelector("#ct-ignore-attribute-option");
+        const operationOption = ignoreDialog.querySelector("#ct-ignore-operation-option");
+        const configureOption = (option, value, output) => {
+            const available = Boolean(value.trim());
+            option.hidden = !available;
+            option.querySelector("input").disabled = !available;
+            output.textContent = value;
+            return available;
+        };
+        root.querySelectorAll("[data-ct-ignore-open]").forEach((button) => {
+            button.addEventListener("click", () => {
+                eventID.value = button.dataset.eventId || "";
+                const hasAttribute = configureOption(
+                    attributeOption,
+                    button.dataset.attribute || "",
+                    attributeOption.querySelector("[data-ct-ignore-attribute]"),
+                );
+                const hasOperation = configureOption(
+                    operationOption,
+                    button.dataset.operation || "",
+                    operationOption.querySelector("[data-ct-ignore-operation]"),
+                );
+                const selected = hasAttribute
+                    ? attributeOption.querySelector("input")
+                    : hasOperation ? operationOption.querySelector("input") : null;
+                if (!selected) return;
+                selected.checked = true;
+                ignoreDialog.showModal();
+                selected.focus();
+            });
+        });
+        ignoreDialog.querySelector("[data-ct-ignore-cancel]").addEventListener("click", () => ignoreDialog.close());
+        ignoreDialog.addEventListener("click", (event) => {
+            if (event.target === ignoreDialog) ignoreDialog.close();
+        });
+    }
+
+    root.querySelectorAll("[data-ct-ignore-delete]").forEach((form) => {
+        form.addEventListener("submit", (event) => {
+            if (!window.confirm("Delete this global ignore rule? Future matching events will enter sessions again.")) {
+                event.preventDefault();
+            }
+        });
+    });
 })();

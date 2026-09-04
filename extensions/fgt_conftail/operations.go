@@ -28,6 +28,8 @@ const (
 	codeSessionQueryFailed      diagnosticCode = "CT-UI-002"
 	codeDashboardQueried        diagnosticCode = "CT-UI-003"
 	codeSessionQueried          diagnosticCode = "CT-UI-004"
+	codeGlobalIgnoreChanged     diagnosticCode = "CT-UI-005"
+	codeGlobalIgnoreFailed      diagnosticCode = "CT-UI-006"
 )
 
 func (c diagnosticCode) String() string {
