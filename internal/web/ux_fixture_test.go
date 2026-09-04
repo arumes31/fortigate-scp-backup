@@ -650,6 +650,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			"clusterAlert": "", "running": []runningView{}, "stale": []staleBackup{},
 			"blockedPorts": []blockedPortIssue{}, "graylogIssues": []graylogIssue{},
 			"dnsIssues": []dnsIssue{}, "licenseIssues": []licenseIssue{},
+			"attention": []attentionItem{}, "attentionMore": 0, "attentionAll": 0, "loadError": false,
 		}
 		switch scenario {
 		case uxScenarioEmpty:
@@ -659,6 +660,12 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 		case uxScenarioWarning, uxScenarioError:
 			payload["healthy"] = 2
 			payload["failed"] = 1
+			payload["loadError"] = scenario == uxScenarioError
+			payload["attention"] = []attentionItem{{
+				Source: "Backup", Severity: "Critical", Title: "branch.example.test",
+				Detail: "synthetic connection timeout", Age: "8h", Action: "Retry or inspect", Href: "/backups/12",
+			}}
+			payload["attentionAll"] = 1
 		case uxScenarioLoading:
 			payload["running"] = []runningView{{
 				Kind: "backup", FwID: 7, FQDN: "edge.example.test",
@@ -834,6 +841,12 @@ func uxDashboardFixture(scenario uxScenario) dashboardData {
 			SinceISO: uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
 		}}
 	}
+	if scenario == uxScenarioError {
+		data.LoadError = true
+	}
+	data.Attention, data.AttentionMore, data.AttentionAll = buildDashboardAttention(
+		uxFixtureNow, data.Failures, data.Stale, data.BlockedPorts, data.GraylogIssues, data.DNSIssues, data.LicenseIssues,
+	)
 	return data
 }
 

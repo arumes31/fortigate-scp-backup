@@ -850,6 +850,35 @@ a.stat-tile:hover .l { color: var(--accent); }
 .dash-actions { margin-bottom: 18px; }
 .refresh-ctl { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .refresh-ctl select { width: auto; padding: 5px 8px; }
+.dashboard-refresh-status { margin: -8px 0 18px; color: var(--text-dim); font-size: 11px; text-transform: none; letter-spacing: normal; }
+.dashboard-refresh-status.is-loading { color: var(--info); }
+.dashboard-refresh-status.is-error { color: var(--danger); }
+.attention-card { padding: 0; overflow: hidden; }
+.attention-card .card-header { padding: 18px 20px; }
+.attention-card .eyebrow { margin: 0 0 4px; color: var(--text-dim); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.attention-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-soft); }
+.attention-item { display: grid; grid-template-columns: 82px minmax(0, 1fr) 58px max-content; gap: 16px; align-items: center; min-height: 62px; padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
+.attention-item:last-child { border-bottom: 0; }
+.attention-copy { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; min-width: 0; text-transform: none; letter-spacing: normal; }
+.attention-copy strong, .attention-copy .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attention-copy .muted { grid-column: 1 / -1; }
+.attention-source { color: var(--text-dim); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.attention-severity { border-left: 3px solid currentColor; padding-left: 8px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.attention-severity.severity-Critical { color: var(--danger); }
+.attention-severity.severity-Warning { color: var(--warning); }
+.attention-age { color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: right; }
+.attention-more { margin: 0; padding: 10px 20px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 11px; text-transform: none; letter-spacing: normal; }
+.metric-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
+.metric-group { min-width: 0; padding: 16px 18px; border: 1px solid var(--border-soft); background: var(--surface); }
+.metric-group > h2 { margin: 0 0 16px; padding-bottom: 9px; border-bottom: 1px solid var(--border-soft); color: var(--text-muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; }
+.metric-grid .stat-tile .n { font-size: clamp(18px, 1.7vw, 25px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metric-grid .stat-tile .l { font-size: 9px; }
+.issue-details { margin-bottom: 20px; border: 1px solid var(--border-soft); background: var(--surface); }
+.issue-details > summary, .diagnostic-console > summary { cursor: pointer; padding: 14px 18px; color: var(--text-muted); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.issue-details[open] > summary, .diagnostic-console[open] > summary { border-bottom: 1px solid var(--border-soft); color: var(--accent); }
+.issue-details-body { padding: 18px; }
+.issue-details-body > .card:last-child { margin-bottom: 0; }
 
 /* ---------- SSE live indicator ---------- */
 .sse-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block; }
@@ -860,6 +889,9 @@ a.stat-tile:hover .l { color: var(--accent); }
 
 /* ---------- Terminal panel (SYS_STDOUT) ---------- */
 .panel { border: 1px solid var(--border-soft); background: var(--surface); padding: 18px 20px; margin-bottom: 20px; }
+.diagnostic-console { padding: 0; }
+.diagnostic-console .stdout { padding: 16px 20px 20px; }
+.diagnostic-console .panel-head { margin: 0; border-bottom: 0; }
 
 /* ---------- Topology embed mode (?embed=1) ----------
    Strips ALL page chrome so only the topology canvas remains — used when the

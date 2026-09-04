@@ -107,6 +107,20 @@ type staleBackup struct {
 	Cadence     string    `json:"cadence"`   // humanized schedule cadence, e.g. "6h"
 }
 
+// attentionItem normalizes issues from different subsystems into one
+// prioritized, server-rendered queue. The unexported fields are sort keys.
+type attentionItem struct {
+	Source     string `json:"source"`
+	Severity   string `json:"severity"`
+	Title      string `json:"title"`
+	Detail     string `json:"detail"`
+	Age        string `json:"age"`
+	Action     string `json:"action"`
+	Href       string `json:"href"`
+	rank       int
+	observedAt time.Time
+}
+
 // dashboardData is the full overview payload: DB health counts plus live
 // operational metrics (storage, durations, next run, running backups).
 type dashboardData struct {
@@ -130,6 +144,95 @@ type dashboardData struct {
 	GraylogIssues []graylogIssue
 	DNSIssues     []dnsIssue
 	LicenseIssues []licenseIssue
+	Attention     []attentionItem
+	AttentionMore int
+	AttentionAll  int
+	LoadError     bool
+}
+
+const dashboardAttentionLimit = 5
+
+func buildDashboardAttention(now time.Time, failures []failureView, stale []staleBackup, blocked []blockedPortIssue, graylog []graylogIssue, dns []dnsIssue, licenses []licenseIssue) ([]attentionItem, int, int) {
+	items := make([]attentionItem, 0, len(failures)+len(stale)+len(blocked)+len(graylog)+len(dns)+len(licenses))
+	add := func(item attentionItem) {
+		item.Age = dashboardAttentionAge(now, item.observedAt)
+		items = append(items, item)
+	}
+	for _, issue := range failures {
+		add(attentionItem{Source: "Backup", Severity: "Critical", Title: issue.FQDN, Detail: issue.Error,
+			Action: "Retry or inspect", Href: fmt.Sprintf("/backups/%d", issue.ID), rank: 3, observedAt: issue.LastSuccess})
+	}
+	for _, issue := range stale {
+		add(attentionItem{Source: "Schedule", Severity: "Warning", Title: issue.FQDN,
+			Detail: "Expected every " + issue.Cadence, Action: "Run backup", Href: fmt.Sprintf("/backups/%d", issue.ID), rank: 2, observedAt: issue.LastSuccess})
+	}
+	for _, issue := range blocked {
+		name := issue.FQDN
+		if name == "" {
+			name = fmt.Sprintf("Firewall #%d", issue.FwID)
+		}
+		observed, _ := time.Parse(time.RFC3339, issue.Since)
+		add(attentionItem{Source: "Topology", Severity: "Critical", Title: name,
+			Detail: issue.Switch + " / " + issue.Port + " · " + issue.Reason, Action: "Check topology",
+			Href: fmt.Sprintf("/topology?fw=%d", issue.FwID), rank: 3, observedAt: observed})
+	}
+	for _, issue := range graylog {
+		rank, severity := 2, "Warning"
+		if issue.Status == "offline" || issue.Status == "error" {
+			rank, severity = 3, "Critical"
+		}
+		add(attentionItem{Source: "Graylog", Severity: severity, Title: issue.Firewall,
+			Detail: issue.Status, Action: "Review logging", Href: "/fgt-adm-vpn-conf/", rank: rank, observedAt: issue.LastCheckTime})
+	}
+	for _, issue := range dns {
+		rank, severity := 2, "Warning"
+		if issue.Status == "unresolved" {
+			rank, severity = 3, "Critical"
+		}
+		add(attentionItem{Source: "DNS", Severity: severity, Title: issue.Firewall,
+			Detail: issue.DNSName + " · " + issue.Status, Action: "Review DNS record", Href: "/fgt-adm-vpn-conf/", rank: rank, observedAt: issue.LastCheckTime})
+	}
+	for _, issue := range licenses {
+		rank, severity := 2, "Warning"
+		if issue.Level == "expired" || issue.Level == "crit" {
+			rank, severity = 3, "Critical"
+		}
+		observed := now.Add(time.Duration(issue.DaysLeft) * 24 * time.Hour)
+		add(attentionItem{Source: "License", Severity: severity, Title: issue.FQDN,
+			Detail: issue.Service + " · " + issue.Expiry, Action: "Review license", Href: "/licenses", rank: rank, observedAt: observed})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].rank != items[j].rank {
+			return items[i].rank > items[j].rank
+		}
+		if items[i].observedAt.IsZero() != items[j].observedAt.IsZero() {
+			return items[i].observedAt.IsZero()
+		}
+		return items[i].observedAt.Before(items[j].observedAt)
+	})
+	total := len(items)
+	if len(items) > dashboardAttentionLimit {
+		items = items[:dashboardAttentionLimit]
+	}
+	return items, total - len(items), total
+}
+
+func dashboardAttentionAge(now, observed time.Time) string {
+	if observed.IsZero() {
+		return "Unknown"
+	}
+	delta := now.Sub(observed)
+	if delta < 0 {
+		days := int((-delta).Hours()/24) + 1
+		return fmt.Sprintf("in %dd", days)
+	}
+	if delta < time.Hour {
+		return fmt.Sprintf("%dm", max(1, int(delta.Minutes())))
+	}
+	if delta < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(delta.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(delta.Hours()/24))
 }
 
 // blockedPortIssue is one switch port currently blocked by STP or a
@@ -360,22 +463,27 @@ func humanizeInterval(d time.Duration) string {
 // computeDashboard gathers everything the overview page and its live JSON feed
 // need. It never fails: individual lookup errors are logged and left at zero.
 func (s *Server) computeDashboard(ctx context.Context) dashboardData {
+	loadError := false
 	stats, err := s.store.DashboardStats(ctx)
 	if err != nil {
+		loadError = true
 		s.logger.Error("dashboard stats failed", "err", err)
 	}
 	failedFws, err := s.store.ListErrors(ctx)
 	if err != nil {
+		loadError = true
 		s.logger.Error("dashboard failures failed", "err", err)
 	}
 	fws, err := s.store.ListFirewalls(ctx)
 	if err != nil {
+		loadError = true
 		s.logger.Error("dashboard firewall list failed", "err", err)
 	}
 	// Last SUCCESSFUL backup per firewall (the backups table holds successes
 	// only); powers the failing-table "last success" column and stale detection.
 	lastSuccess, err := s.store.LastBackupTimes(ctx)
 	if err != nil {
+		loadError = true
 		s.logger.Error("dashboard last-backup times failed", "err", err)
 	}
 
@@ -475,11 +583,17 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 	// Seed the live log panel with the most recent activity entries.
 	events, err := s.store.ListActivityLogs(ctx, 12, 0)
 	if err != nil {
+		loadError = true
 		s.logger.Error("dashboard activity seed failed", "err", err)
 	}
 
 	clusterAlert := stats.Failed >= clusterFailThreshold && stats.TotalFirewalls > 0 &&
 		stats.Failed*100 >= stats.TotalFirewalls*clusterFailRatioPct
+	blocked := s.blockedPortIssues(fqdnByID)
+	graylog := s.graylogIssues()
+	dns := s.dnsIssues()
+	licenses := s.licenseIssues(fqdnByID)
+	attention, attentionMore, attentionAll := buildDashboardAttention(time.Now(), failures, stale, blocked, graylog, dns, licenses)
 
 	return dashboardData{
 		Stats:         stats,
@@ -496,10 +610,14 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 		NextBackupISO: nextISO,
 		Running:       running,
 		ClusterAlert:  clusterAlert,
-		BlockedPorts:  s.blockedPortIssues(fqdnByID),
-		GraylogIssues: s.graylogIssues(),
-		DNSIssues:     s.dnsIssues(),
-		LicenseIssues: s.licenseIssues(fqdnByID),
+		BlockedPorts:  blocked,
+		GraylogIssues: graylog,
+		DNSIssues:     dns,
+		LicenseIssues: licenses,
+		Attention:     attention,
+		AttentionMore: attentionMore,
+		AttentionAll:  attentionAll,
+		LoadError:     loadError,
 	}
 }
 
@@ -538,6 +656,10 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"graylogIssues": d.GraylogIssues,
 		"dnsIssues":     d.DNSIssues,
 		"licenseIssues": d.LicenseIssues,
+		"attention":     d.Attention,
+		"attentionMore": d.AttentionMore,
+		"attentionAll":  d.AttentionAll,
+		"loadError":     d.LoadError,
 	})
 }
 

@@ -1011,8 +1011,17 @@ func TestDashboardRenders(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	// Template must execute end-to-end (not just parse) with the new fields.
-	if body := rr.Body.String(); !strings.Contains(body, "Failing Firewalls") || !strings.Contains(body, "SYS_STDOUT") {
-		t.Error("dashboard missing expected sections")
+	body := rr.Body.String()
+	for _, want := range []string{"Needs attention", `id="metricHealth"`, `id="metricOperations"`, `id="metricStorage"`, "Failing Firewalls", "SYS_STDOUT", `<details class="panel diagnostic-console">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+	if strings.Contains(body, `<details class="panel diagnostic-console" open`) {
+		t.Error("SYS_STDOUT diagnostics must be closed by default")
+	}
+	if strings.Contains(body, "skeleton-row") {
+		t.Error("dashboard must server-render known running work instead of a skeleton")
 	}
 }
 
