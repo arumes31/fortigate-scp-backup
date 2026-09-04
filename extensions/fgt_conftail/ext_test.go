@@ -16,6 +16,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 type scheduledConftailJob struct {
@@ -51,6 +52,7 @@ func TestExtensionMountRejectsMissingHostDependencies(t *testing.T) {
 		{name: "authentication", mutate: func(deps *extension.Deps) { deps.LoginRequired = nil }},
 		{name: "scheduler", mutate: func(deps *extension.Deps) { deps.Schedule = nil }},
 		{name: "data directory", mutate: func(deps *extension.Deps) { deps.DataDir = "" }},
+		{name: "page context", mutate: func(deps *extension.Deps) { deps.PageBase = nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -325,5 +327,15 @@ func validConftailDeps(t *testing.T) extension.Deps {
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TZ:            time.UTC,
 		DataDir:       t.TempDir(),
+		PageBase: func(r *http.Request, title, active string) webui.BaseData {
+			return webui.BaseData{
+				Title: title, Username: "admin", Lang: "en", Active: active, ReturnTo: r.URL.RequestURI(),
+				Shell: webui.ShellText("en"),
+				Navigation: webui.Navigation(webui.NavigationOptions{
+					Lang: "en", Active: active, AdmVPN: true, ConfGen: true, PolSplit: true,
+					ConfConv: true, ConfTail: true,
+				}),
+			}
+		},
 	}
 }

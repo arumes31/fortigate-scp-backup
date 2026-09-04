@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 const (
@@ -52,8 +52,10 @@ type Extension struct {
 	graylog       *graylogClient
 	hookwise      *hookwiseClient
 	poller        *pollWorker
-	tmpl          *template.Template
+	indexPage     *webui.Renderer
+	chainPage     *webui.Renderer
 	currentUser   func(*http.Request) string
+	pageBase      extension.PageBaseProvider
 	catalogLoader func(context.Context) (sourceCatalog, error)
 
 	catalogMu            sync.RWMutex
@@ -101,10 +103,13 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	if strings.TrimSpace(deps.DataDir) == "" {
 		return errors.New("extension data directory is required")
 	}
+	if deps.PageBase == nil {
+		return errors.New("shared page context is required")
+	}
 
-	tmpl, err := parseDashboardTemplate()
+	indexPage, chainPage, err := parseDashboardPages()
 	if err != nil {
-		return fmt.Errorf("parse conftail dashboard template: %w", err)
+		return fmt.Errorf("parse conftail dashboard pages: %w", err)
 	}
 	staticFS, err := dashboardStaticFS()
 	if err != nil {
@@ -142,8 +147,10 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	e.store = store
 	e.graylog = graylog
 	e.hookwise = hookwise
-	e.tmpl = tmpl
+	e.indexPage = indexPage
+	e.chainPage = chainPage
 	e.currentUser = deps.CurrentUser
+	e.pageBase = deps.PageBase
 	e.tz = deps.TZ
 	if e.tz == nil {
 		e.tz = time.UTC

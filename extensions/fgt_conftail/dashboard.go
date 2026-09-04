@@ -20,6 +20,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 const (
@@ -168,34 +170,27 @@ type dashboardHealth struct {
 	Code   diagnosticCode
 }
 
-type conftailBaseData struct {
-	Username            string
-	ExtAdmVPNEnabled    bool
-	ExtConfigGenEnabled bool
-	ExtPolSplitEnabled  bool
-	ExtConfConvEnabled  bool
-}
-
 type dashboardPageData struct {
-	Base           conftailBaseData
-	Dashboard      dashboardData
-	Filters        dashboardFilterView
-	Health         dashboardHealth
-	SessionHealth  dashboardHealth
-	DeliveryHealth dashboardHealth
-	NextPollRun    time.Time
-	PollRunning    bool
-	PollSignature  string
-	Coverage       []sourceCoverage
-	Firewalls      []sourceCoverage
-	Warnings       []string
-	ActiveOmitted  int
-	PrevURL        string
-	NextURL        string
+	Base            webui.BaseData
+	Dashboard       dashboardData
+	Filters         dashboardFilterView
+	Health          dashboardHealth
+	SessionHealth   dashboardHealth
+	DeliveryHealth  dashboardHealth
+	NextPollRun     time.Time
+	PollRunning     bool
+	PollSignature   string
+	CoverageEnabled bool
+	Coverage        []sourceCoverage
+	Firewalls       []sourceCoverage
+	Warnings        []string
+	ActiveOmitted   int
+	PrevURL         string
+	NextURL         string
 }
 
 type dashboardChainPageData struct {
-	Base       conftailBaseData
+	Base       webui.BaseData
 	Chain      dashboardChain
 	Page       int
 	TotalPages int
@@ -208,12 +203,21 @@ type dashboardStatusResponse struct {
 	Signature string `json:"signature"`
 }
 
-func parseDashboardTemplate() (*template.Template, error) {
-	return template.New("index.html").Funcs(template.FuncMap{
+func parseDashboardPages() (*webui.Renderer, *webui.Renderer, error) {
+	funcs := template.FuncMap{
 		"fmtTime":        formatDashboardTime,
 		"fmtMachineTime": formatDashboardMachineTime,
 		"fmtDuration":    formatDashboardDuration,
-	}).ParseFS(dashboardFS, "templates/*.html")
+	}
+	indexPage, err := webui.ParsePage(dashboardFS, "templates/index.html", funcs)
+	if err != nil {
+		return nil, nil, err
+	}
+	chainPage, err := webui.ParsePage(dashboardFS, "templates/chain.html", funcs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return indexPage, chainPage, nil
 }
 
 func dashboardStaticFS() (fs.FS, error) {
@@ -718,7 +722,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid dashboard filters", http.StatusBadRequest)
 		return
 	}
-	if e.store == nil || e.tmpl == nil {
+	if e.store == nil || e.indexPage == nil || e.pageBase == nil {
 		http.Error(w, "Configuration change dashboard unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -750,19 +754,20 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	pollInterval := adaptivePollInterval(data.Poll, data.Poll.LastIngestedAt, now)
 	page := dashboardPageData{
-		Base:           e.conftailBaseData(username),
-		Dashboard:      data,
-		Filters:        dashboardFiltersView(filters),
-		Health:         dashboardPollHealth(data.Poll, now, pollInterval),
-		SessionHealth:  dashboardSessionHealth(data.Counts),
-		DeliveryHealth: dashboardDeliveryHealth(data.Counts),
-		NextPollRun:    dashboardNextPollRun(data.Poll, pollInterval),
-		PollRunning:    dashboardPollRunning(data.Poll),
-		PollSignature:  dashboardPollSignature(data.Poll),
-		Coverage:       coverage,
-		Firewalls:      coverage,
-		Warnings:       warnings,
-		ActiveOmitted:  max(0, data.ActiveTotal-len(data.Active)),
+		Base:            e.pageBase(r, "Configuration Change Tail", "conftail"),
+		Dashboard:       data,
+		Filters:         dashboardFiltersView(filters),
+		Health:          dashboardPollHealth(data.Poll, now, pollInterval),
+		SessionHealth:   dashboardSessionHealth(data.Counts),
+		DeliveryHealth:  dashboardDeliveryHealth(data.Counts),
+		NextPollRun:     dashboardNextPollRun(data.Poll, pollInterval),
+		PollRunning:     dashboardPollRunning(data.Poll),
+		PollSignature:   dashboardPollSignature(data.Poll),
+		CoverageEnabled: e.cfg != nil && e.cfg.ExtAdmVpnConf,
+		Coverage:        coverage,
+		Firewalls:       coverage,
+		Warnings:        warnings,
+		ActiveOmitted:   max(0, data.ActiveTotal-len(data.Active)),
 	}
 	if filters.Page > 1 {
 		page.PrevURL = dashboardPageURL(filters, filters.Page-1)
@@ -772,7 +777,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var output bytes.Buffer
-	if err := e.tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+	if err := e.indexPage.Render(&output, page); err != nil {
 		if e.logger != nil {
 			e.logger.Error("conftail: dashboard template failed", "code", codeDashboardRenderFailed, "err", err)
 		}
@@ -846,7 +851,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid configuration change session", http.StatusBadRequest)
 		return
 	}
-	if e.store == nil || e.tmpl == nil {
+	if e.store == nil || e.chainPage == nil || e.pageBase == nil {
 		http.Error(w, "Configuration change dashboard unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -874,7 +879,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		username = e.currentUser(r)
 	}
 	view := dashboardChainPageData{
-		Base:       e.conftailBaseData(username),
+		Base:       e.pageBase(r, "Configuration Change Session", "conftail"),
 		Chain:      chain,
 		Page:       pageNumber,
 		TotalPages: totalPages,
@@ -886,7 +891,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		view.NextURL = dashboardChainPageURL(chainID, pageNumber+1)
 	}
 	var output bytes.Buffer
-	if err := e.tmpl.ExecuteTemplate(&output, "chain.html", view); err != nil {
+	if err := e.chainPage.Render(&output, view); err != nil {
 		if e.logger != nil {
 			e.logger.Error("conftail: chain dashboard template failed", "code", codeDashboardRenderFailed, "err", err)
 		}
@@ -932,18 +937,6 @@ func dashboardLogTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
-}
-
-func (e *Extension) conftailBaseData(username string) conftailBaseData {
-	base := conftailBaseData{Username: username}
-	if e.cfg == nil {
-		return base
-	}
-	base.ExtAdmVPNEnabled = e.cfg.ExtAdmVpnConf
-	base.ExtConfigGenEnabled = e.cfg.ExtFgtConfGen
-	base.ExtPolSplitEnabled = e.cfg.ExtFgtPolSplit
-	base.ExtConfConvEnabled = e.cfg.ExtFgtConfConv
-	return base
 }
 
 func (e *Extension) dashboardIdleDuration() time.Duration {

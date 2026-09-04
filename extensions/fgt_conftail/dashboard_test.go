@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,12 +13,100 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
+
+func TestDashboardPagesUseIndependentSharedShellRenderers(t *testing.T) {
+	t.Parallel()
+
+	indexPage, chainPage, err := parseDashboardPages()
+	if err != nil {
+		t.Fatalf("parseDashboardPages() error = %v", err)
+	}
+	base := webui.BaseData{
+		Title: "Configuration Change Tail", Username: "reviewer", Lang: "de", Active: "conftail",
+		ReturnTo: "/fgt-conftail/", Shell: webui.ShellText("de"),
+		Navigation: webui.Navigation(webui.NavigationOptions{Lang: "de", Active: "conftail", ConfTail: true}),
+	}
+	tests := []struct {
+		name     string
+		renderer *webui.Renderer
+		data     any
+		want     string
+	}{
+		{
+			name: "index", renderer: indexPage,
+			data: dashboardPageData{
+				Base: base, Dashboard: dashboardData{TotalPages: 1},
+				Filters: dashboardFilterView{State: dashboardStateAll, Page: 1},
+			},
+			want: "Configuration Change Tail",
+		},
+		{
+			name: "chain", renderer: chainPage,
+			data: dashboardChainPageData{
+				Base: base, Chain: dashboardChain{ID: "fixture-chain", FirewallName: "edge.example.test"},
+				Page: 1, TotalPages: 1,
+			},
+			want: "Complete Redacted Timeline",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := test.renderer.Render(&output, test.data); err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			body := output.String()
+			for _, want := range []string{
+				`<html lang="de">`, `class="app-rail"`, `aria-current="page"`,
+				`class="page conftail-page"`, test.want,
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("rendered %s page missing %q", test.name, want)
+				}
+			}
+			for _, asset := range []string{"/fgt-conftail/static/conftail.css", "/fgt-conftail/static/conftail.js"} {
+				if count := strings.Count(body, asset); count != 1 {
+					t.Errorf("%s asset %q rendered %d times, want exactly once", test.name, asset, count)
+				}
+			}
+			for _, unwanted := range []string{`class="topbar"`, `class="sysfooter"`, "FORTISAFE_SYS"} {
+				if strings.Contains(body, unwanted) {
+					t.Errorf("standalone ConfTail shell remains on %s page: %q", test.name, unwanted)
+				}
+			}
+		})
+	}
+}
+
+func testDashboardRenderers(t *testing.T) (*webui.Renderer, *webui.Renderer) {
+	t.Helper()
+	indexPage, chainPage, err := parseDashboardPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return indexPage, chainPage
+}
+
+func testDashboardPageBase(username string) func(*http.Request, string, string) webui.BaseData {
+	return func(r *http.Request, title, active string) webui.BaseData {
+		return webui.BaseData{
+			Title: title, Username: username, Lang: "en", Active: active, ReturnTo: r.URL.RequestURI(),
+			Shell: webui.ShellText("en"),
+			Navigation: webui.Navigation(webui.NavigationOptions{
+				Lang: "en", Active: active, AdmVPN: true, ConfGen: true, PolSplit: true,
+				ConfConv: true, ConfTail: true,
+			}),
+		}
+	}
+}
 
 func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	t.Parallel()
@@ -82,17 +169,15 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		t.Fatalf("out-of-range detail page error = %v", err)
 	}
 
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, chainPage := testDashboardRenderers(t)
 	var logs bytes.Buffer
 	extension := &Extension{
 		cfg:         &config.Config{ExtFgtConfTail: true, FgtConfTailIdleSeconds: 1800},
 		logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
 		store:       s,
-		tmpl:        tmpl,
+		chainPage:   chainPage,
 		currentUser: func(*http.Request) string { return "reviewer" },
+		pageBase:    testDashboardPageBase("reviewer"),
 	}
 	router := chi.NewRouter()
 	router.Get("/chain/{chainID}", extension.dashboardChain)
@@ -112,8 +197,9 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		!strings.Contains(body, "Delivery attempts") {
 		t.Fatalf("detail page did not safely render delivery retry state: %q", body)
 	}
-	if strings.Contains(body, `method="post"`) {
-		t.Fatal("detail page contains a state-changing form")
+	if strings.Count(body, `method="post"`) != 2 ||
+		!strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) {
+		t.Fatal("detail page contains a state-changing form outside the shared language and logout controls")
 	}
 	for _, want := range []string{
 		`class="ct-attribute-diff"`, "<del>before</del>", "<ins>after</ins>",
@@ -169,11 +255,8 @@ func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
 		if err := s.db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		tmpl, err := parseDashboardTemplate()
-		if err != nil {
-			t.Fatal(err)
-		}
-		extension := &Extension{store: s, tmpl: tmpl}
+		_, chainPage := testDashboardRenderers(t)
+		extension := &Extension{store: s, chainPage: chainPage, pageBase: testDashboardPageBase("")}
 		response := serveDashboardChain(
 			t,
 			extension,
@@ -193,10 +276,17 @@ func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
 		}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
 			t.Fatal(err)
 		}
+		brokenPage, err := webui.ParsePage(fstest.MapFS{
+			"broken.html": &fstest.MapFile{Data: []byte(`{{define "content"}}{{.Missing}}{{end}}`)},
+		}, "broken.html", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 		extension := &Extension{
-			cfg:   &config.Config{ExtFgtConfTail: true},
-			store: s,
-			tmpl:  template.New("root"),
+			cfg:       &config.Config{ExtFgtConfTail: true},
+			store:     s,
+			chainPage: brokenPage,
+			pageBase:  testDashboardPageBase(""),
 		}
 		response := serveDashboardChain(t, extension, chainIDForUser(t, s, "alice"))
 		if response.Code != http.StatusInternalServerError {
@@ -206,14 +296,12 @@ func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
 }
 
 func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	page := dashboardPageData{
-		Base:      conftailBaseData{ExtAdmVPNEnabled: true},
-		Dashboard: dashboardData{TotalPages: 1},
-		Filters:   dashboardFilterView{State: dashboardStateAll, Page: 1},
+		Base:            testDashboardPageBase("reviewer")(httptest.NewRequest(http.MethodGet, "/fgt-conftail/", nil), "Configuration Change Tail", "conftail"),
+		CoverageEnabled: true,
+		Dashboard:       dashboardData{TotalPages: 1},
+		Filters:         dashboardFilterView{State: dashboardStateAll, Page: 1},
 		Coverage: []sourceCoverage{{
 			FirewallID:   1,
 			FirewallName: "fw-a.example.com",
@@ -221,7 +309,7 @@ func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
 		}},
 	}
 	var output bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+	if err := indexPage.Render(&output, page); err != nil {
 		t.Fatal(err)
 	}
 	body := output.String()
@@ -240,9 +328,9 @@ func TestDashboardCoverageIsGatedAndCollapsedByDefault(t *testing.T) {
 		}
 	}
 
-	page.Base.ExtAdmVPNEnabled = false
+	page.CoverageEnabled = false
 	output.Reset()
-	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+	if err := indexPage.Render(&output, page); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), "Graylog source coverage") {
@@ -319,15 +407,13 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 	if err := s.markPollFailed(context.Background(), started, failed, errors.New("Graylog unavailable")); err != nil {
 		t.Fatal(err)
 	}
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	extension := &Extension{
-		cfg:    &config.Config{ExtFgtConfTail: true, FgtConfTailPollSeconds: 900},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		store:  s,
-		tmpl:   tmpl,
+		cfg:       &config.Config{ExtFgtConfTail: true, FgtConfTailPollSeconds: 900},
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:     s,
+		indexPage: indexPage,
+		pageBase:  testDashboardPageBase(""),
 	}
 	response := httptest.NewRecorder()
 	extension.dashboard(response, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -367,15 +453,13 @@ func TestDashboardShowsRunningPollAndStatusRefreshContract(t *testing.T) {
 	if err := s.markPollStarted(context.Background(), base.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	extension := &Extension{
-		cfg:    &config.Config{ExtFgtConfTail: true},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		store:  s,
-		tmpl:   tmpl,
+		cfg:       &config.Config{ExtFgtConfTail: true},
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:     s,
+		indexPage: indexPage,
+		pageBase:  testDashboardPageBase(""),
 	}
 	response := httptest.NewRecorder()
 	extension.dashboard(response, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -473,7 +557,7 @@ func TestDashboardScriptPollsStatusAndTogglesBrowserTime(t *testing.T) {
 		`fetch("/fgt-conftail/status"`,
 		"2000",
 		"30000",
-		`document.querySelectorAll("[data-ct-time]")`,
+		`root.querySelectorAll("[data-ct-time]")`,
 		"Intl.DateTimeFormat",
 		"fortisafe.conftail.timezone.v1",
 	} {
@@ -496,10 +580,7 @@ func TestDashboardStylesKeepTimeToggleClearOfIntro(t *testing.T) {
 
 func TestDashboardRendersLocalColumnControlsAndProgressiveRows(t *testing.T) {
 	t.Parallel()
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	page := dashboardPageData{
 		Dashboard: dashboardData{
 			Active:     []dashboardChain{{ID: "chain-1", FirewallID: 1, FirewallName: "fw-a"}},
@@ -509,7 +590,7 @@ func TestDashboardRendersLocalColumnControlsAndProgressiveRows(t *testing.T) {
 		Filters: dashboardFilterView{State: dashboardStateAll, Page: 1},
 	}
 	var output bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&output, "index.html", page); err != nil {
+	if err := indexPage.Render(&output, page); err != nil {
 		t.Fatal(err)
 	}
 	body := output.String()
@@ -891,16 +972,14 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
 		t.Fatal(err)
 	}
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	extension := &Extension{
 		cfg:         &config.Config{ExtFgtConfTail: true},
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		store:       s,
-		tmpl:        tmpl,
+		indexPage:   indexPage,
 		currentUser: func(*http.Request) string { return `<img src=x onerror=alert(1)>` },
+		pageBase:    testDashboardPageBase(`<img src=x onerror=alert(1)>`),
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/fgt-conftail/?user=script", nil)
@@ -914,10 +993,14 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 		t.Fatalf("content type = %q", got)
 	}
 	body := response.Body.String()
-	for _, unsafe := range []string{"<script>", "<img src=x", `method="post"`, "Accept new key", "Retry delivery"} {
+	for _, unsafe := range []string{"<script>", "<img src=x", "Accept new key", "Retry delivery"} {
 		if strings.Contains(body, unsafe) {
 			t.Fatalf("read-only page contains unsafe or mutating content %q", unsafe)
 		}
+	}
+	if strings.Count(body, `method="post"`) != 2 ||
+		!strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) {
+		t.Fatal("page contains a state-changing form outside the shared language and logout controls")
 	}
 	for _, escaped := range []string{"&lt;script&gt;", "&lt;img src=x"} {
 		if !strings.Contains(body, escaped) {
@@ -937,17 +1020,15 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 
 	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	s := newTestStore(t, base)
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	var output bytes.Buffer
 	extension := &Extension{
 		cfg:         &config.Config{ExtFgtConfTail: true},
 		logger:      slog.New(slog.NewJSONHandler(&output, nil)),
 		store:       s,
-		tmpl:        tmpl,
+		indexPage:   indexPage,
 		currentUser: func(*http.Request) string { return "operator" },
+		pageBase:    testDashboardPageBase("operator"),
 	}
 	request := httptest.NewRequest(
 		http.MethodGet,
@@ -992,15 +1073,13 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 
 func TestDashboardHandlerRejectsInvalidFilters(t *testing.T) {
 	s := newTestStore(t, time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
-	tmpl, err := parseDashboardTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	indexPage, _ := testDashboardRenderers(t)
 	extension := &Extension{
-		cfg:    &config.Config{ExtFgtConfTail: true},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		store:  s,
-		tmpl:   tmpl,
+		cfg:       &config.Config{ExtFgtConfTail: true},
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:     s,
+		indexPage: indexPage,
+		pageBase:  testDashboardPageBase(""),
 	}
 	response := httptest.NewRecorder()
 	extension.dashboard(response, httptest.NewRequest(http.MethodGet, "/?state=not-valid", nil))

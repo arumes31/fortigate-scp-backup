@@ -1,7 +1,10 @@
 (() => {
     "use strict";
 
-    const countdown = document.getElementById("ct-next-poll-countdown");
+    const root = document.querySelector(".conftail-page");
+    if (!root) return;
+
+    const countdown = root.querySelector("#ct-next-poll-countdown");
     if (countdown) {
         const target = Date.parse(countdown.dataset.nextPoll || "");
         if (!Number.isFinite(target)) {
@@ -28,7 +31,7 @@
         }
     }
 
-    const pollStatus = document.querySelector("[data-ct-poll-status]");
+    const pollStatus = root.querySelector("[data-ct-poll-status]");
     if (pollStatus) {
         const initialSignature = pollStatus.dataset.pollSignature || "";
         let pollRunning = pollStatus.dataset.pollRunning === "true";
@@ -55,8 +58,8 @@
     }
 
     const timeStorageKey = "fortisafe.conftail.timezone.v1";
-    const timeNodes = Array.from(document.querySelectorAll("[data-ct-time]"));
-    const timeToggles = Array.from(document.querySelectorAll("[data-ct-time-toggle]"));
+    const timeNodes = Array.from(root.querySelectorAll("[data-ct-time]"));
+    const timeToggles = Array.from(root.querySelectorAll("[data-ct-time-toggle]"));
     let timeMode = "utc";
     try {
         if (window.localStorage.getItem(timeStorageKey) === "local") timeMode = "local";
@@ -113,14 +116,14 @@
     }
 
     const applyColumn = (tableName, columnName, visible) => {
-        const table = document.querySelector(`[data-ct-table="${tableName}"]`);
+        const table = root.querySelector(`[data-ct-table="${tableName}"]`);
         if (!table) return;
         table.querySelectorAll(`[data-ct-column="${columnName}"]`).forEach((cell) => {
             cell.hidden = !visible;
         });
     };
 
-    document.querySelectorAll("[data-ct-column-toggle]").forEach((toggle) => {
+    root.querySelectorAll("[data-ct-column-toggle]").forEach((toggle) => {
         const [tableName, columnName] = toggle.dataset.ctColumnToggle.split(":", 2);
         const preferenceKey = `${tableName}:${columnName}`;
         const visible = preferences[preferenceKey] !== false;

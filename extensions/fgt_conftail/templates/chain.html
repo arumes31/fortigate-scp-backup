@@ -1,37 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration Change Session · FortiSafe</title>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="/static/app.css">
+{{define "head"}}
     <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
-    <script defer src="/fgt-conftail/static/conftail.js"></script>
-</head>
-<body>
-<div class="app">
-    <header class="topbar">
-        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
-        <nav class="nav" aria-label="Primary navigation">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/">Firewalls</a>
-            <a href="/search">Search</a>
-            <a href="/audit">Audit</a>
-            <a href="/topology">Topology</a>
-            <a href="/ipam">IPAM</a>
-            <a href="/licenses">Licenses</a>
-            <a href="/activity_log">Act_Log</a>
-            {{if .Base.ExtAdmVPNEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
-            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
-            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
-            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
-            <a href="/fgt-conftail/" class="active" aria-current="page">Conf_Tail</a>
-        </nav>
-        <div class="sysinfo"><span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}-{{end}}</span></div>
-    </header>
+{{end}}
 
-    <main>
+{{define "content"}}
+    <div class="page conftail-page">
         <a class="ct-back" href="/fgt-conftail/">← Back to configuration change sessions</a>
         <div class="ct-page-heading">
             <h1 class="page-title"><span class="accent-bar"></span>Complete Redacted Timeline</h1>
@@ -88,9 +60,11 @@
                 {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
             </nav>
         </section>
-    </main>
+    </div>
+{{end}}
 
-    <footer class="sysfooter"><div>EOF // FGT_CONFTAIL // READ_ONLY</div></footer>
-</div>
-</body>
-</html>
+{{define "scripts"}}
+    <script src="/fgt-conftail/static/conftail.js"></script>
+{{end}}
+
+{{define "dashboardTime"}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{end}}

@@ -1,37 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration Change Tail · FortiSafe</title>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="/static/app.css">
+{{define "head"}}
     <link rel="stylesheet" href="/fgt-conftail/static/conftail.css">
-    <script defer src="/fgt-conftail/static/conftail.js"></script>
-</head>
-<body>
-<div class="app">
-    <header class="topbar">
-        <a class="brand" href="/dashboard">FORTISAFE_SYS</a>
-        <nav class="nav" aria-label="Primary navigation">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/">Firewalls</a>
-            <a href="/search">Search</a>
-            <a href="/audit">Audit</a>
-            <a href="/topology">Topology</a>
-            <a href="/ipam">IPAM</a>
-            <a href="/licenses">Licenses</a>
-            <a href="/activity_log">Act_Log</a>
-            {{if .Base.ExtAdmVPNEnabled}}<a href="/fgt-adm-vpn-conf/">VPN_Conf</a>{{end}}
-            {{if .Base.ExtConfigGenEnabled}}<a href="/fgt-confgen/">Policy_Gen</a>{{end}}
-            {{if .Base.ExtPolSplitEnabled}}<a href="/fgt-polsplit/">Pol_Split</a>{{end}}
-            {{if .Base.ExtConfConvEnabled}}<a href="/fgt-confconv/">Conf_Conv</a>{{end}}
-            <a href="/fgt-conftail/" class="active" aria-current="page">Conf_Tail</a>
-        </nav>
-        <div class="sysinfo"><span>SYS_USER: {{if .Base.Username}}{{.Base.Username}}{{else}}-{{end}}</span></div>
-    </header>
+{{end}}
 
-    <main>
+{{define "content"}}
+    <div class="page conftail-page">
         <div class="ct-page-heading">
             <h1 class="page-title"><span class="accent-bar"></span>Configuration Change Tail</h1>
             <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
@@ -82,7 +54,7 @@
             </article>
         </section>
 
-        {{if .Base.ExtAdmVPNEnabled}}
+        {{if .CoverageEnabled}}
         <details class="card ct-coverage">
             <summary class="ct-coverage-summary">
                 <span class="ct-coverage-title">Graylog source coverage</span>
@@ -251,12 +223,12 @@
             </nav>
         </section>
         {{end}}
-    </main>
+    </div>
+{{end}}
 
-    <footer class="sysfooter"><div>EOF // FGT_CONFTAIL // READ_ONLY</div></footer>
-</div>
-</body>
-</html>
+{{define "scripts"}}
+    <script src="/fgt-conftail/static/conftail.js"></script>
+{{end}}
 
 {{define "chainRow"}}
 <tr class="ct-virtual-row">

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -258,13 +257,14 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 }
 
 type uxExtensionTemplates struct {
-	root       string
-	admVPN     *webui.Renderer
-	admVPNEdit *template.Template
-	confGen    *webui.Renderer
-	polSplit   *webui.Renderer
-	confConv   *webui.Renderer
-	confTail   *template.Template
+	root          string
+	admVPN        *webui.Renderer
+	admVPNEdit    *template.Template
+	confGen       *webui.Renderer
+	polSplit      *webui.Renderer
+	confConv      *webui.Renderer
+	confTailIndex *webui.Renderer
+	confTailChain *webui.Renderer
 }
 
 func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
@@ -313,17 +313,30 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 	if err != nil {
 		return nil, err
 	}
-	confTail, err := template.New("index.html").Funcs(template.FuncMap{
+	confTailFuncs := template.FuncMap{
 		"fmtTime":        uxFormatTemplateTime,
 		"fmtMachineTime": uxFormatTemplateMachineTime,
 		"fmtDuration":    uxFormatTemplateDuration,
-	}).ParseGlob(filepath.Join(root, "extensions/fgt_conftail/templates/*.html"))
+	}
+	confTailIndex, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_conftail/templates/index.html",
+		confTailFuncs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	confTailChain, err := webui.ParsePage(
+		os.DirFS(root),
+		"extensions/fgt_conftail/templates/chain.html",
+		confTailFuncs,
+	)
 	if err != nil {
 		return nil, err
 	}
 	return &uxExtensionTemplates{
 		root: root, admVPN: admVPN, admVPNEdit: admVPNEdit, confGen: confGen, polSplit: polSplit,
-		confConv: confConv, confTail: confTail,
+		confConv: confConv, confTailIndex: confTailIndex, confTailChain: confTailChain,
 	}, nil
 }
 
@@ -349,22 +362,6 @@ func uxFormatTemplateDuration(value any) string {
 }
 
 func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplates, defaultScenario uxScenario) {
-	render := func(tmpl *template.Template, name string, data func(uxScenario) any) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			scenario, ok := uxScenarioFromRequest(r, defaultScenario)
-			if !ok {
-				http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
-				return
-			}
-			var output bytes.Buffer
-			if err := tmpl.ExecuteTemplate(&output, name, data(scenario)); err != nil {
-				http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = output.WriteTo(w)
-		}
-	}
 	renderShared := func(renderer *webui.Renderer, data func(uxScenario) any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			scenario, ok := uxScenarioFromRequest(r, defaultScenario)
@@ -481,22 +478,14 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		"warnings":[],"appliedOrder":["sdwan-routes-to-rules"],
 		"combined":"config system sdwan\n    config service\n        edit 1\n        next\n    end\nend"
 	}`))
-	mux.HandleFunc("GET /fgt-conftail/{$}", render(templates.confTail, "index.html", uxConfTailFixture))
+	mux.HandleFunc("GET /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
 	mux.HandleFunc("GET /fgt-conftail/status", jsonResponse(`{"running":false,"signature":"fixture"}`))
-	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", render(templates.confTail, "chain.html", uxConfTailChainFixture))
+	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", renderShared(templates.confTailChain, uxConfTailChainFixture))
 
 	serveStatic("/fgt-confgen/static/", "extensions/fgt_confgen/static")
 	serveStatic("/fgt-polsplit/static/", "extensions/fgt_polsplit/static")
 	serveStatic("/fgt-confconv/static/", "extensions/fgt_confconv/static")
 	serveStatic("/fgt-conftail/static/", "extensions/fgt_conftail/static")
-}
-
-func uxExtensionBase() map[string]any {
-	return map[string]any{
-		"Username": "reviewer", "ExtEnabled": true, "ExtAdmVPNEnabled": true,
-		"ExtConfigGenEnabled": true, "ExtPolSplitEnabled": true,
-		"ExtConfConvEnabled": true, "ExtConfTailEnabled": true,
-	}
 }
 
 func uxADMVPNFixture(scenario uxScenario) any {
@@ -544,14 +533,6 @@ func uxConfConvFixture(scenario uxScenario) any {
 	return map[string]any{"Base": uxBase("Configuration Conversions", "confconv"), "Firewalls": firewalls}
 }
 
-func uxSimpleExtensionFixture(scenario uxScenario) any {
-	firewalls := []any{}
-	if scenario != uxScenarioEmpty {
-		firewalls = append(firewalls, map[string]any{"ID": 7, "FQDN": "edge.example.test"})
-	}
-	return map[string]any{"Base": uxExtensionBase(), "Firewalls": firewalls}
-}
-
 func uxConfTailFixture(scenario uxScenario) any {
 	health := map[string]any{"State": "healthy", "Label": "Healthy", "Detail": "Synthetic fixture data"}
 	if scenario == uxScenarioWarning {
@@ -561,20 +542,21 @@ func uxConfTailFixture(scenario uxScenario) any {
 		health = map[string]any{"State": "failed", "Label": "Failed", "Detail": "Synthetic Graylog failure", "Action": "Retry poll"}
 	}
 	return map[string]any{
-		"Base": uxExtensionBase(), "Health": health, "SessionHealth": health, "DeliveryHealth": health,
+		"Base": uxBase("Configuration Change Tail", "conftail"), "Health": health, "SessionHealth": health, "DeliveryHealth": health,
 		"Dashboard": map[string]any{
 			"Poll":   map[string]any{"LastStartedAt": uxFixtureNow.Add(-time.Minute), "LastSuccessAt": uxFixtureNow.Add(-time.Minute), "LastDuration": 250 * time.Millisecond, "Watermark": uxFixtureNow, "LastPages": 1, "LastFetched": 6, "LastInserted": 6},
 			"Counts": map[string]any{}, "Active": []any{}, "ActiveTotal": 0,
 			"History": []any{}, "HistoryTotal": 0, "TotalPages": 1,
 		},
 		"Filters": map[string]any{"State": "all", "Page": 1}, "NextPollRun": uxFixtureNow.Add(time.Minute),
-		"PollRunning": scenario == uxScenarioLoading, "PollSignature": "fixture", "Coverage": []any{}, "Firewalls": []any{}, "Warnings": []string{},
+		"PollRunning": scenario == uxScenarioLoading, "PollSignature": "fixture", "CoverageEnabled": true,
+		"Coverage": []any{}, "Firewalls": []any{}, "Warnings": []string{},
 	}
 }
 
 func uxConfTailChainFixture(uxScenario) any {
 	return map[string]any{
-		"Base": uxExtensionBase(), "Page": 1, "TotalPages": 1,
+		"Base": uxBase("Configuration Change Session", "conftail"), "Page": 1, "TotalPages": 1,
 		"Chain": map[string]any{
 			"ID": "fixture-chain", "FirewallID": 7, "FirewallName": "edge.example.test",
 			"User": "synthetic-admin", "State": "sealed", "DeliveryState": "accepted",
