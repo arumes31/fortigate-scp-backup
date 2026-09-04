@@ -539,9 +539,10 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("GET /fgt-polsplit/results/{resultID}/export/{exportType}", func(w http.ResponseWriter, r *http.Request) {
 		kind := r.PathValue("exportType")
 		filename, contentType := "polsplit-policy-42-summary.json", "application/json"
-		if kind == "traffic" {
+		switch kind {
+		case "traffic":
 			filename, contentType = "polsplit-policy-42-traffic.csv", "text/csv; charset=utf-8"
-		} else if kind == "config" {
+		case "config":
 			filename, contentType = "polsplit-policy-42-"+r.URL.Query().Get("strategy")+".conf", "text/plain; charset=utf-8"
 		}
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -1081,13 +1082,14 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			From: r.URL.Query().Get("from"), To: r.URL.Query().Get("to"),
 		}
 		data.HasFilters = data.Filters.hasFilters()
-		if data.Filters.Query == "deep-synthetic-match" {
+		switch data.Filters.Query {
+		case "deep-synthetic-match":
 			data.Logs = []models.ActivityLog{{
 				Username: "automation", Action: "Configuration Change",
 				Details: "Synthetic match originally beyond the first 100 rows", Timestamp: uxFixtureNow,
 			}}
 			data.Total, data.TotalPages = 101, 2
-		} else if data.Filters.Query == "no-match" {
+		case "no-match":
 			data.Logs, data.Total, data.TotalPages = nil, 0, 1
 		}
 		if page, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && page > 0 {
