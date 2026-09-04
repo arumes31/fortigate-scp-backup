@@ -10,6 +10,27 @@ const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: nul
 
 function $(id) { return psRoot.querySelector('#' + CSS.escape(id)); }
 
+function setPhase(phase) {
+    $('ps-context-phase').textContent = phase;
+}
+
+function updateTargetContext(policy) {
+    const firewall = $('ps-firewall');
+    const fqdn = firewall.selectedOptions[0]?.textContent?.trim();
+    const policyID = $('ps-policy-id').value.trim();
+    $('ps-context-target').textContent = fqdn && firewall.value && policyID
+        ? `${fqdn} · Policy ${policyID}`
+        : 'No policy loaded';
+    $('ps-context-vdom').textContent = policy?.vdom || psState.vdom || 'Auto';
+}
+
+function showFeedback(message, type = 'info') {
+    const feedback = $('ps-feedback');
+    feedback.textContent = message;
+    feedback.dataset.feedback = type;
+    feedback.setAttribute('role', type === 'error' ? 'alert' : 'status');
+}
+
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -28,52 +49,132 @@ async function fetchJSON(url, opts) {
 
 /* ---------------- target policy ---------------- */
 
+function chooseVDOM(vdoms) {
+    const dialog = $('ps-vdom-dialog');
+    const options = $('ps-vdom-options');
+    const confirm = $('ps-vdom-confirm');
+    const cancel = $('ps-vdom-cancel');
+    const returnFocus = $('ps-load-btn');
+    const uniqueVDOMs = Array.from(new Set(vdoms.map(value => String(value).trim()).filter(Boolean)));
+    options.replaceChildren();
+    uniqueVDOMs.forEach((vdom, index) => {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        const text = document.createElement('span');
+        radio.type = 'radio';
+        radio.name = 'ps-vdom-choice';
+        radio.value = vdom;
+        radio.checked = index === 0;
+        text.textContent = vdom;
+        label.append(radio, text);
+        options.appendChild(label);
+    });
+    confirm.disabled = uniqueVDOMs.length === 0;
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = choice => {
+            if (settled) return;
+            settled = true;
+            dialog.removeEventListener('submit', onSubmit);
+            dialog.removeEventListener('cancel', onCancel);
+            dialog.removeEventListener('keydown', onKeydown);
+            cancel.removeEventListener('click', onCancelClick);
+            if (dialog.open) dialog.close();
+            window.setTimeout(() => returnFocus.focus(), 0);
+            resolve(choice);
+        };
+        const onSubmit = event => {
+            event.preventDefault();
+            finish(options.querySelector('input[name="ps-vdom-choice"]:checked')?.value || null);
+        };
+        const onCancel = event => {
+            event.preventDefault();
+            finish(null);
+        };
+        const onCancelClick = () => finish(null);
+        const onKeydown = event => {
+            if (event.key !== 'Tab') return;
+            const focusable = Array.from(dialog.querySelectorAll('input:not(:disabled), button:not(:disabled)'));
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        dialog.addEventListener('submit', onSubmit);
+        dialog.addEventListener('cancel', onCancel);
+        dialog.addEventListener('keydown', onKeydown);
+        cancel.addEventListener('click', onCancelClick);
+        dialog.showModal();
+        options.querySelector('input')?.focus();
+    });
+}
+
 async function loadPolicy() {
     const fwID = $('ps-firewall').value;
     const polID = $('ps-policy-id').value;
-    if (!fwID || polID === '') { alert('Select a firewall and enter a policy ID'); return; }
+    if (!fwID || polID === '') {
+        showFeedback('Select a firewall and enter a policy ID.', 'error');
+        setPhase('Select target');
+        return;
+    }
     if (psState.abortCtrl) psState.abortCtrl.abort();
     psState.abortCtrl = new AbortController();
     const signal = psState.abortCtrl.signal;
     const btn = $('ps-load-btn');
     btn.disabled = true;
+    setPhase('Loading policy');
+    showFeedback('Loading the latest policy definition…', 'info');
     try {
-        let url = `/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`;
-        if (psState.vdom) {
-            url += `&vdom=${encodeURIComponent(psState.vdom)}`;
-        }
-        const resp = await fetch(url, { signal });
-        let body = null;
-        try { body = await resp.json(); } catch { }
-        if (!resp.ok) {
-            if (body && body.ambiguous && body.vdoms) {
-                const choice = prompt(`Policy ID ${polID} is ambiguous. Please select a VDOM from the following options:\n${body.vdoms.join(', ')}`);
-                if (choice) {
-                    const matchedVdom = body.vdoms.find(v => v.toLowerCase() === choice.trim().toLowerCase());
-                    if (matchedVdom) {
-                        psState.vdom = matchedVdom;
-                        setTimeout(loadPolicy, 0);
-                        return;
-                    } else {
-                        alert('Invalid VDOM selected');
-                    }
+        while (true) {
+            let url = `/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`;
+            if (psState.vdom) url += `&vdom=${encodeURIComponent(psState.vdom)}`;
+            const resp = await fetch(url, { signal });
+            let body = null;
+            try { body = await resp.json(); } catch { /* handled below */ }
+            if (!resp.ok && body?.ambiguous && Array.isArray(body.vdoms)) {
+                setPhase('Choose VDOM');
+                const choice = await chooseVDOM(body.vdoms);
+                if (!choice) {
+                    setPhase('VDOM selection cancelled');
+                    showFeedback('VDOM selection cancelled. No policy was loaded.', 'info');
+                    return;
                 }
+                psState.vdom = choice;
+                updateTargetContext();
+                setPhase('Loading policy');
+                continue;
             }
-            throw new Error((body && body.error) || ('HTTP ' + resp.status));
-        }
+            if (!resp.ok) throw new Error((body && body.error) || ('HTTP ' + resp.status));
 
-        renderPolicy(body);
-        psState.policyLoaded = true;
-        $('ps-options-card').hidden = false;
-        $('ps-prefix').placeholder = 'PS' + polID;
-        $('ps-results').hidden = true;
+            renderPolicy(body);
+            psState.policyLoaded = true;
+            $('ps-options-card').hidden = false;
+            $('ps-prefix').placeholder = 'PS' + polID;
+            $('ps-results').hidden = true;
+            updateOptionsSummary();
+            updateTargetContext(body.policy);
+            setPhase('Ready to analyze');
+            if (body.warnings?.length) {
+                showFeedback(body.warnings.join(' '), 'warning');
+            } else {
+                showFeedback('Policy loaded from the latest backup.', 'success');
+            }
+            return;
+        }
     } catch (err) {
         if (err.name === 'AbortError') return;
         psState.policyLoaded = false;
-        psState.vdom = '';
         $('ps-policy-card').hidden = true;
         $('ps-options-card').hidden = true;
-        alert('Failed to load policy: ' + err.message);
+        setPhase('Load failed');
+        showFeedback('Failed to load policy: ' + err.message, 'error');
     } finally {
         btn.disabled = false;
     }
@@ -100,9 +201,6 @@ function renderPolicy(data) {
     $('ps-policy-summary').innerHTML = html;
     $('ps-backup-time').textContent = `(backup from ${data.backup_time})`;
     $('ps-policy-card').hidden = false;
-    if (data.warnings && data.warnings.length) {
-        alert(data.warnings.join('\n'));
-    }
 }
 
 /* ---------------- analysis ---------------- */
@@ -116,6 +214,26 @@ function selectedRange() {
         from: new Date(from).toISOString(),
         to: new Date(to).toISOString(),
     };
+}
+
+function updateOptionsSummary() {
+    const rangeLabel = $('ps-range-row').querySelector('.ps-range.active')?.textContent?.trim() || 'Custom';
+    const comparison = $('ps-compare').selectedOptions[0]?.textContent?.trim() || 'Off';
+    const prefix = $('ps-prefix').value.trim() || $('ps-prefix').placeholder;
+    const ticket = $('ps-ticket').value.trim() || 'none';
+    const parts = [
+        `Window ${rangeLabel}`,
+        `source rollup ${$('ps-rollup-src').checked ? 'on' : 'off'}`,
+        `destination rollup ${$('ps-rollup-dst').checked ? 'on' : 'off'}`,
+        `threshold ${$('ps-rollup-threshold').value} at /${$('ps-rollup-mask').value}`,
+        `baseline ${comparison}`,
+        `DNS ${$('ps-resolve-dns').checked ? 'on' : 'off'}`,
+        `prefix ${prefix}`,
+        `ticket ${ticket}`,
+        `WAN mode ${$('ps-wan-mode').value}`,
+        `fallthrough deny ${$('ps-emit-deny').checked ? 'on' : 'off'}`,
+    ];
+    $('ps-options-summary').textContent = parts.join(' · ');
 }
 
 /* ---------------- progress display ----------------
@@ -149,6 +267,7 @@ function renderProgress(prog) {
     if (p.total > 0) text += ` (${p.step}/${p.total})`;
     const t = $('ps-progress-text');
     if (t.textContent !== text) t.textContent = text; // aria-live fires on real changes only
+    setPhase(p.message || 'Analyzing traffic');
     renderProgressMeta(prog);
 }
 
@@ -185,9 +304,18 @@ function clearResults() {
 }
 
 async function analyze() {
-    if (!psState.policyLoaded) { alert('Load a policy first'); return; }
+    if (!psState.policyLoaded) {
+        showFeedback('Load a policy first.', 'error');
+        setPhase('Select target');
+        return;
+    }
     let range;
-    try { range = selectedRange(); } catch (err) { alert(err.message); return; }
+    try { range = selectedRange(); } catch (err) {
+        showFeedback(err.message, 'error');
+        setPhase('Review options');
+        return;
+    }
+    updateOptionsSummary();
 
     if (psState.abortCtrl) psState.abortCtrl.abort();
     const ctrl = new AbortController();
@@ -268,9 +396,12 @@ async function analyze() {
         doneLine.textContent = `Analysis complete in ${((Date.now() - prog.startedAt) / 1000).toFixed(1)}s`;
         logEl.appendChild(doneLine);
         renderResults(data);
+        setPhase('Review results');
+        showFeedback('Analysis complete. Review the observed traffic and generated strategies.', 'success');
     } catch (err) {
         if (err.name === 'AbortError') return;
-        alert('Analysis failed: ' + err.message);
+        setPhase('Analysis failed');
+        showFeedback('Analysis failed: ' + err.message, 'error');
     } finally {
         clearInterval(poll);
         if (anim) clearInterval(anim);
@@ -490,6 +621,9 @@ document.addEventListener('DOMContentLoaded', () => {
         $('ps-policy-card').hidden = true;
         $('ps-options-card').hidden = true;
         $('ps-results').hidden = true;
+        updateTargetContext();
+        setPhase('Select target');
+        showFeedback('', 'info');
     };
     $('ps-firewall').addEventListener('change', invalidatePolicy);
     $('ps-policy-id').addEventListener('input', invalidatePolicy);
@@ -500,8 +634,13 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('active');
             psState.rangeSec = parseInt(btn.dataset.sec, 10);
             $('ps-custom-range').hidden = psState.rangeSec !== 0;
+            updateOptionsSummary();
         });
     });
+    $('ps-options-card').addEventListener('input', updateOptionsSummary);
+    $('ps-options-card').addEventListener('change', updateOptionsSummary);
+    updateTargetContext();
+    updateOptionsSummary();
 });
 
 })();

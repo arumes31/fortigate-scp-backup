@@ -6,8 +6,15 @@
     <div class="page polsplit-page" id="polsplit-page">
         <h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Split Advisor</h1>
         <p class="ps-intro">Analyze the traffic an open policy actually carries and split it into tightly-scoped policies. Traffic data comes from Graylog; the policy definition from the latest config backup.</p>
+        <p id="ps-feedback" class="page-feedback" role="status" aria-live="polite"></p>
 
-        <div class="card">
+        <div class="card ps-context-bar" aria-label="Current Policy Split context">
+            <div><span class="ps-context-label">Target</span><strong id="ps-context-target">No policy loaded</strong></div>
+            <div><span class="ps-context-label">VDOM</span><strong id="ps-context-vdom">Auto</strong></div>
+            <div><span class="ps-context-label">Phase</span><strong id="ps-context-phase">Select target</strong></div>
+        </div>
+
+        <div class="card" id="ps-target-card">
             <h2>Target Policy</h2>
             <div class="form-grid">
                 <div class="field">
@@ -36,6 +43,7 @@
 
         <div class="card" id="ps-options-card" hidden>
             <h2>Analysis Window &amp; Options</h2>
+            <span class="eyebrow">Basic options</span>
             <div class="field">
                 <label>Time range</label>
                 <div class="ps-range-row" id="ps-range-row">
@@ -61,23 +69,10 @@
                     <input type="datetime-local" id="ps-to" class="form-control">
                 </div>
             </div>
-            <div class="form-grid">
+            <div class="form-grid ps-basic-options">
                 <div class="field">
                     <label class="checkbox-row"><input type="checkbox" id="ps-rollup-src" checked> Roll up source hosts into subnets</label>
                     <label class="checkbox-row"><input type="checkbox" id="ps-rollup-dst"> Roll up destination hosts into subnets</label>
-                    <label class="checkbox-row"><input type="checkbox" id="ps-resolve-dns"> Resolve destination DNS names (PTR)</label>
-                </div>
-                <div class="field">
-                    <label for="ps-rollup-threshold">Rollup threshold (hosts per net)</label>
-                    <input type="number" id="ps-rollup-threshold" class="form-control" min="2" max="256" value="5">
-                </div>
-                <div class="field">
-                    <label for="ps-rollup-mask">Rollup mask (/bits)</label>
-                    <input type="number" id="ps-rollup-mask" class="form-control" min="8" max="30" value="24">
-                </div>
-                <div class="field">
-                    <label for="ps-prefix">New object prefix</label>
-                    <input type="text" id="ps-prefix" class="form-control" placeholder="PS<policyid>">
                 </div>
                 <div class="field">
                     <label for="ps-compare">Compare with baseline (flags new/stale flows)</label>
@@ -89,18 +84,44 @@
                     </select>
                 </div>
                 <div class="field">
-                    <label for="ps-wan-mode">Internet destinations (WAN) as "all"</label>
-                    <select id="ps-wan-mode" class="form-control">
-                        <option value="auto">Auto (when dstintf is WAN)</option>
-                        <option value="on">Force on</option>
-                        <option value="off">Force off</option>
-                    </select>
-                </div>
-                <div class="field">
                     <label for="ps-ticket">Change ticket (optional, added to comments)</label>
                     <input type="text" id="ps-ticket" class="form-control" maxlength="64" placeholder="e.g. CHG-1234">
-                    <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="ps-emit-deny"> Add explicit fallthrough deny+log policy</label>
                 </div>
+            </div>
+
+            <details class="ps-advanced" id="ps-advanced-options">
+                <summary>Advanced options</summary>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="ps-rollup-threshold">Rollup threshold (hosts per net)</label>
+                        <input type="number" id="ps-rollup-threshold" class="form-control" min="2" max="256" value="5">
+                    </div>
+                    <div class="field">
+                        <label for="ps-rollup-mask">Rollup mask (/bits)</label>
+                        <input type="number" id="ps-rollup-mask" class="form-control" min="8" max="30" value="24">
+                    </div>
+                    <div class="field">
+                        <label for="ps-prefix">New object prefix</label>
+                        <input type="text" id="ps-prefix" class="form-control" placeholder="PS<policyid>">
+                    </div>
+                    <div class="field">
+                        <label for="ps-wan-mode">Internet destinations (WAN) as "all"</label>
+                        <select id="ps-wan-mode" class="form-control">
+                            <option value="auto">Auto (when dstintf is WAN)</option>
+                            <option value="on">Force on</option>
+                            <option value="off">Force off</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label class="checkbox-row"><input type="checkbox" id="ps-resolve-dns"> Resolve destination DNS names (PTR)</label>
+                        <label class="checkbox-row"><input type="checkbox" id="ps-emit-deny"> Add explicit fallthrough deny+log policy</label>
+                    </div>
+                </div>
+            </details>
+
+            <div class="ps-option-review" aria-labelledby="ps-option-review-title">
+                <strong id="ps-option-review-title">Options to apply</strong>
+                <p id="ps-options-summary" class="ps-muted"></p>
             </div>
             <div class="ps-analyze-row">
                 <button id="ps-analyze-btn" class="btn btn-primary">Analyze Traffic</button>
@@ -112,6 +133,19 @@
             </div>
             <div id="ps-progress-log" class="ps-progress-log" hidden></div>
         </div>
+
+        <dialog id="ps-vdom-dialog" class="ps-dialog" aria-labelledby="ps-vdom-title" aria-describedby="ps-vdom-description">
+            <form method="dialog">
+                <span class="eyebrow">Policy ID collision</span>
+                <h2 id="ps-vdom-title">Choose a VDOM</h2>
+                <p id="ps-vdom-description" class="ps-muted">This policy ID exists in more than one VDOM. Choose the definition to analyze.</p>
+                <fieldset id="ps-vdom-options"><legend>Available VDOMs</legend></fieldset>
+                <div class="ps-dialog-actions">
+                    <button type="button" id="ps-vdom-cancel" class="btn">Cancel</button>
+                    <button type="submit" id="ps-vdom-confirm" class="btn btn-primary" value="confirm">Load selected VDOM</button>
+                </div>
+            </form>
+        </dialog>
 
         <div id="ps-results" hidden>
             <div class="card" id="ps-warnings-card" hidden>
