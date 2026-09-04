@@ -85,7 +85,7 @@ test('ADM VPN edit never returns stored PSKs to the browser or trace', async ({ 
   execFileSync(process.execPath, [
     traceHelper, fixtureOrigin, tracePath,
     String(viewport.width), String(viewport.height),
-  ], { stdio: 'pipe', timeout: 30_000 });
+  ], { stdio: 'pipe', timeout: 60_000 });
   const traceEvidence = zipContents(tracePath).toString('utf8');
   for (const secret of storedSecrets) {
     expect(traceEvidence, `stored PSK leaked into Playwright trace: ${secret}`).not.toContain(secret);

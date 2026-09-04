@@ -2,7 +2,7 @@ import { expect, test } from './quality-fixture';
 
 test('ConfTail session separates session and delivery facts across lifecycle states', async ({ page }) => {
   const states = [
-    { path: '/fgt-conftail/chain/fixture-chain', label: 'Accepted by Hookwise', preview: true },
+    { path: '/fgt-conftail/chain/fixture-chain?scenario=full', label: 'Accepted by Hookwise', preview: true },
     { path: '/fgt-conftail/chain/fixture-chain?scenario=warning', label: 'Queued', preview: true },
     { path: '/fgt-conftail/chain/fixture-chain?scenario=error', label: 'Delivery failed', preview: true },
     { path: '/fgt-conftail/chain/fixture-chain?scenario=loading', label: 'Not queued', preview: false },
@@ -21,7 +21,7 @@ test('ConfTail session separates session and delivery facts across lifecycle sta
     expect(horizontalOverflow).toBe(false);
   }
 
-  await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
+  await page.goto('/fgt-conftail/chain/fixture-chain?scenario=full', { waitUntil: 'networkidle' });
   const ticketLink = page.getByRole('link', { name: 'Open Hookwise ticket' });
   await expect(ticketLink).toHaveAttribute('href', 'https://tickets.example.test/ticket/123');
   await page.getByText('View plain-text description preview').click();
