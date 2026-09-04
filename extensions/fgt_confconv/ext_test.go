@@ -65,3 +65,48 @@ func TestTemplatesParseAndRender(t *testing.T) {
 		}
 	}
 }
+
+func TestRecipeWorkspaceRendersCanonicalPreviewAndNativePortDialog(t *testing.T) {
+	e := &Extension{}
+	if err := e.parseTemplates(); err != nil {
+		t.Fatalf("templates failed to parse: %v", err)
+	}
+
+	data := indexData{
+		Base: webui.BaseData{
+			Title: "Configuration Conversions", Username: "tester", Lang: "en", Active: "confconv", ReturnTo: "/fgt-confconv/",
+			Shell:      webui.ShellText("en"),
+			Navigation: webui.Navigation(webui.NavigationOptions{Lang: "en", Active: "confconv", ConfConv: true}),
+		},
+		Firewalls: []FirewallRef{{ID: 1, FQDN: "edge.example.test"}},
+	}
+
+	var buf bytes.Buffer
+	if err := e.page.Render(&buf, data); err != nil {
+		t.Fatalf("template failed to render: %v", err)
+	}
+	out := buf.String()
+
+	for _, key := range canonicalOrder {
+		if count := strings.Count(out, `data-recipe-key="`+key+`"`); count != 1 {
+			t.Errorf("recipe %q rendered %d times, want exactly once", key, count)
+		}
+	}
+	for _, want := range []string{
+		`id="cc-pipeline-preview"`,
+		`<dialog class="ui-dialog cc-port-dialog" id="cc-port-dialog"`,
+		`aria-labelledby="cc-port-dialog-title"`,
+		`<label for="cc-port-search">Search physical ports</label>`,
+		`id="cc-port-dialog-cancel"`,
+		`id="cc-port-dialog-apply"`,
+		`id="cc-primary-impact"`,
+		`aria-live="polite"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered recipe workspace missing %q", want)
+		}
+	}
+	if strings.Contains(out, `id="cc-port-modal"`) {
+		t.Error("legacy custom port overlay remains")
+	}
+}

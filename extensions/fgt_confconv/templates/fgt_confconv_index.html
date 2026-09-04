@@ -4,7 +4,7 @@
 
 {{define "content"}}
     <div class="page confconv-page" id="confconv-page">
-        <h1 class="page-title"><span class="accent-bar"></span>Configuration Conversions <span class="cc-alpha" title="Alpha — under active development; review all generated CLI before applying">Alpha</span></h1>
+        <h1 class="page-title"><span class="accent-bar"></span>Configuration Conversions</h1>
         <p class="cc-intro">Pick a firewall and one or more structural migration recipes. Recipes run as a chained pipeline against the latest config backup and produce one reviewable, copy-paste FortiGate CLI script — nothing is applied to the device automatically.</p>
 
         <div class="card">
@@ -24,13 +24,22 @@
             <p class="cc-error" id="cc-version-warning" hidden></p>
         </div>
 
-        <div class="card cc-recipe" id="cc-card-fortilink">
-            <h2><label><input type="checkbox" id="cc-fl-enable"> Interface(s) → FortiLink</label></h2>
+        <div class="cc-recipe-grid" aria-label="Conversion recipes">
+        <article class="card cc-recipe" id="cc-card-fortilink" data-recipe-key="iface-to-fortilink">
+            <div class="cc-recipe-heading">
+                <h2><label><input type="checkbox" id="cc-fl-enable"> Interface(s) → FortiLink</label></h2>
+                <p class="cc-recipe-step">Pipeline step 1</p>
+            </div>
+            <dl class="cc-recipe-brief">
+                <div><dt>Intent</dt><dd>Build or extend a FortiLink interface and carry selected VLANs onto it.</dd></div>
+                <div><dt>Prerequisites</dt><dd>Unused physical member ports and a recent configuration backup.</dd></div>
+                <div><dt>Expected impact</dt><dd>Changes interface roles, FortiLink membership, and optionally VLAN parents.</dd></div>
+            </dl>
             <div class="cc-options" id="cc-fl-options" hidden>
                 <label>FortiLink member ports</label>
-                <div class="chips cc-chips" id="cc-fl-members-chips"></div>
-                <button type="button" class="btn btn-sm" id="cc-fl-add-port">+ Add FortiLink Port</button>
-                <div class="form-grid" style="margin-top: 15px;">
+                <div class="chips cc-chips" id="cc-fl-members-chips" aria-live="polite" aria-label="Selected FortiLink ports"></div>
+                <button type="button" class="btn btn-sm" id="cc-fl-add-port">Choose FortiLink ports</button>
+                <div class="form-grid cc-options-grid">
                     <div class="field">
                         <label for="cc-fl-name">FortiLink interface name</label>
                         <input type="text" id="cc-fl-name" class="form-control" placeholder="fortilink1">
@@ -53,23 +62,18 @@
                 <div class="cc-checklist" id="cc-fl-bulkvlan"></div>
             </div>
 
-            <!-- FortiLink member-port picker -->
-            <div class="modal" id="cc-port-modal">
-                <div class="modal-content" style="width: min(560px, 100%);">
-                    <button type="button" class="modal-close" id="cc-port-modal-close" aria-label="Close">×</button>
-                    <h2>Select FortiLink member ports</h2>
-                    <p class="cc-intro">Pick the physical port(s) that become FortiLink members.</p>
-                    <input type="text" id="cc-port-search" class="form-control" placeholder="Filter ports…" style="margin-bottom: 10px;">
-                    <div class="cc-checklist" id="cc-fl-port-list"></div>
-                    <div class="cc-actions" style="margin-top: 16px;">
-                        <button type="button" class="btn btn-primary" id="cc-port-modal-done">Done</button>
-                    </div>
-                </div>
-            </div>
-        </div>
+        </article>
 
-        <div class="card cc-recipe" id="cc-card-sdwan">
-            <h2><label><input type="checkbox" id="cc-sw-enable"> WAN interface(s) → SD-WAN</label></h2>
+        <article class="card cc-recipe" id="cc-card-sdwan" data-recipe-key="wan-to-sdwan">
+            <div class="cc-recipe-heading">
+                <h2><label><input type="checkbox" id="cc-sw-enable"> WAN interface(s) → SD-WAN</label></h2>
+                <p class="cc-recipe-step">Pipeline step 2</p>
+            </div>
+            <dl class="cc-recipe-brief">
+                <div><dt>Intent</dt><dd>Move two or more WAN interfaces into an SD-WAN zone.</dd></div>
+                <div><dt>Prerequisites</dt><dd>FortiOS 7.4+ and at least two eligible WAN interfaces.</dd></div>
+                <div><dt>Expected impact</dt><dd>Creates SD-WAN members and updates dependent policy and route references.</dd></div>
+            </dl>
             <div class="cc-options" id="cc-sw-options" hidden>
                 <p class="cc-intro">WAN interfaces to bundle as SD-WAN members (pick at least 2):</p>
                 <div class="cc-checklist" id="cc-sw-members"></div>
@@ -83,10 +87,18 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </article>
 
-        <div class="card cc-recipe" id="cc-card-zone">
-            <h2><label><input type="checkbox" id="cc-zn-enable"> Interface-based → zone-based policies</label></h2>
+        <article class="card cc-recipe" id="cc-card-zone" data-recipe-key="iface-to-zone">
+            <div class="cc-recipe-heading">
+                <h2><label><input type="checkbox" id="cc-zn-enable"> Interface-based → zone-based policies</label></h2>
+                <p class="cc-recipe-step">Pipeline step 3</p>
+            </div>
+            <dl class="cc-recipe-brief">
+                <div><dt>Intent</dt><dd>Group interfaces into a zone and migrate policies to the zone.</dd></div>
+                <div><dt>Prerequisites</dt><dd>At least two interfaces that are not claimed by another selected recipe.</dd></div>
+                <div><dt>Expected impact</dt><dd>Creates or extends a zone and rewrites matching interface policy references.</dd></div>
+            </dl>
             <div class="cc-options" id="cc-zn-options" hidden>
                 <p class="cc-intro">Interfaces to group into a zone (pick at least 2):</p>
                 <div class="cc-checklist" id="cc-zn-members"></div>
@@ -103,10 +115,18 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </article>
 
-        <div class="card cc-recipe" id="cc-card-sdwanrules">
-            <h2><label><input type="checkbox" id="cc-sr-enable"> SD-WAN static routes → SD-WAN rules</label></h2>
+        <article class="card cc-recipe" id="cc-card-sdwanrules" data-recipe-key="sdwan-routes-to-rules">
+            <div class="cc-recipe-heading">
+                <h2><label><input type="checkbox" id="cc-sr-enable"> SD-WAN static routes → SD-WAN rules</label></h2>
+                <p class="cc-recipe-step">Pipeline step 4</p>
+            </div>
+            <dl class="cc-recipe-brief">
+                <div><dt>Intent</dt><dd>Translate eligible static-route intent into explicit SD-WAN service rules.</dd></div>
+                <div><dt>Prerequisites</dt><dd>FortiOS 7.4+ and SD-WAN members in the backup or created earlier in this run.</dd></div>
+                <div><dt>Expected impact</dt><dd>Adds SD-WAN rules and may leave source routes for manual review.</dd></div>
+            </dl>
             <div class="cc-options" id="cc-sr-options" hidden>
                 <p class="cc-intro">Requires SD-WAN members already present — either in the backup, or created above in this same run.</p>
                 <div class="field">
@@ -117,11 +137,45 @@
                     </select>
                 </div>
             </div>
+        </article>
         </div>
 
-        <div class="cc-actions">
+        <section class="card cc-pipeline-card" aria-labelledby="cc-pipeline-title">
+            <div>
+                <p class="cc-recipe-step">Execution preview</p>
+                <h2 id="cc-pipeline-title">Canonical pipeline order</h2>
+                <p class="cc-intro">Selected recipes always run in this server-defined order, regardless of the order in which you select them.</p>
+            </div>
+            <ol class="cc-pipeline-preview" id="cc-pipeline-preview" aria-live="polite">
+                <li class="cc-muted">Select a recipe to build the preview.</li>
+            </ol>
+        </section>
+
+        <div class="cc-primary-action">
+            <div class="cc-primary-copy">
+                <span class="cc-alpha" title="Alpha — under active development; review all generated CLI before applying">Alpha</span>
+                <p id="cc-primary-impact" role="status" aria-live="polite"><strong>Review required.</strong> Generated CLI changes configuration when run on a FortiGate. Nothing is applied automatically.</p>
+                <p class="cc-action-feedback" id="cc-action-feedback" role="status" aria-live="polite"></p>
+            </div>
             <button type="button" class="btn btn-primary" id="cc-generate-btn" disabled>Generate</button>
         </div>
+
+        <dialog class="ui-dialog cc-port-dialog" id="cc-port-dialog" data-ui-dialog aria-labelledby="cc-port-dialog-title" aria-describedby="cc-port-dialog-description">
+            <div class="ui-dialog__body">
+                <h2 id="cc-port-dialog-title">Select FortiLink member ports</h2>
+                <p class="cc-intro" id="cc-port-dialog-description">Pick the physical port or ports that become FortiLink members.</p>
+                <div class="field">
+                    <label for="cc-port-search">Search physical ports</label>
+                    <input type="search" id="cc-port-search" class="form-control" autocomplete="off" placeholder="Port name or role" data-dialog-initial>
+                </div>
+                <div class="cc-checklist cc-port-list" id="cc-fl-port-list"></div>
+                <p class="cc-muted" id="cc-port-empty" role="status" hidden>No physical ports match this search.</p>
+                <div class="ui-dialog__actions">
+                    <button type="button" class="btn" id="cc-port-dialog-cancel" data-dialog-close>Cancel</button>
+                    <button type="button" class="btn btn-primary" id="cc-port-dialog-apply">Apply selection</button>
+                </div>
+            </div>
+        </dialog>
 
         <div class="card" id="cc-results" hidden>
             <h2>Results</h2>

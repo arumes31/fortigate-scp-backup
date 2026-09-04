@@ -23,12 +23,21 @@
     min-height: 24px;
     align-items: center;
 }
-.confconv-page .cc-port-chip { cursor: pointer; }
+.confconv-page .cc-port-chip {
+    cursor: pointer;
+    appearance: none;
+    font: inherit;
+    color: inherit;
+}
 .confconv-page .cc-chip-x { color: var(--text-dim); font-weight: 700; margin-left: 2px; }
 .confconv-page .cc-port-chip:hover { border-color: var(--danger); color: #fff; }
 .confconv-page .cc-port-chip:hover .cc-chip-x { color: var(--danger); }
+.confconv-page .cc-port-chip:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
 
-/* Pre-release marker in the page title — flags this extension as Alpha. */
+/* Pre-release marker kept beside the primary conversion action. */
 .confconv-page .cc-alpha {
     display: inline-flex;
     align-items: center;
@@ -45,6 +54,65 @@
 
 .confconv-page .card {
     margin-bottom: 20px;
+}
+
+.confconv-page .cc-recipe-grid {
+    display: grid;
+    gap: 16px;
+}
+
+.confconv-page .cc-recipe {
+    margin-bottom: 0;
+    border-left: 3px solid var(--border);
+}
+
+.confconv-page .cc-recipe:has(h2 input:checked) {
+    border-left-color: var(--accent);
+}
+
+.confconv-page .cc-recipe-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.confconv-page .cc-recipe-step {
+    margin: 0;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.confconv-page .cc-recipe-brief {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin: 14px 0 0;
+}
+
+.confconv-page .cc-recipe-brief div {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+
+.confconv-page .cc-recipe-brief dt {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.confconv-page .cc-recipe-brief dd {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
 }
 
 .confconv-page .form-grid {
@@ -105,7 +173,13 @@
 }
 
 .confconv-page .cc-options {
-    margin-top: 8px;
+    margin-top: 16px;
+    border-top: 1px dashed var(--border);
+    padding-top: 16px;
+}
+
+.confconv-page .cc-options-grid {
+    margin-top: 15px;
 }
 
 .confconv-page .cc-checklist {
@@ -145,6 +219,127 @@
     display: flex;
     justify-content: flex-start;
     margin: 20px 0;
+}
+
+.confconv-page .cc-pipeline-card {
+    display: grid;
+    grid-template-columns: minmax(260px, .75fr) minmax(360px, 1.25fr);
+    gap: 24px;
+    margin-top: 20px;
+}
+
+.confconv-page .cc-pipeline-card h2 {
+    margin-top: 4px;
+}
+
+.confconv-page .cc-pipeline-preview {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding-left: 28px;
+}
+
+.confconv-page .cc-pipeline-preview li {
+    border-left: 2px solid var(--accent);
+    padding: 7px 10px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12px;
+}
+
+.confconv-page .cc-pipeline-preview li::marker {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-weight: 700;
+}
+
+.confconv-page .cc-pipeline-preview strong {
+    display: block;
+    margin-bottom: 2px;
+}
+
+.confconv-page .cc-primary-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    margin: 20px 0;
+    border: 1px solid var(--warning);
+    border-left-width: 3px;
+    background: var(--warning-soft);
+    padding: 14px 16px;
+}
+
+.confconv-page .cc-primary-copy {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 6px 12px;
+}
+
+.confconv-page #cc-primary-impact,
+.confconv-page .cc-action-feedback {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.confconv-page .cc-action-feedback {
+    grid-column: 2;
+    min-height: 1.45em;
+}
+
+.confconv-page .cc-action-feedback[data-state="error"] {
+    color: var(--danger);
+}
+
+.confconv-page .cc-port-dialog {
+    width: min(580px, calc(100% - 48px));
+    max-height: min(720px, calc(100vh - 48px));
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-1);
+    color: var(--text);
+}
+
+.confconv-page .cc-port-dialog::backdrop {
+    background: rgba(1, 8, 15, .74);
+}
+
+.confconv-page .cc-port-dialog .ui-dialog__body {
+    padding: 22px;
+}
+
+.confconv-page .cc-port-list {
+    margin-top: 12px;
+    min-height: 84px;
+}
+
+.confconv-page .cc-port-list .cc-check-item[hidden] {
+    display: none;
+}
+
+.confconv-page .cc-port-dialog .ui-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+@media (max-width: 1120px) {
+    .confconv-page .cc-recipe-brief,
+    .confconv-page .cc-pipeline-card {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .confconv-page .form-control,
+    .confconv-page input,
+    .confconv-page select {
+        transition: none;
+    }
 }
 
 .confconv-page .cc-warning-list {

@@ -535,7 +535,12 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("GET /fgt-confconv/list_firewalls", jsonResponse(`[{"id":7,"fqdn":"edge.example.test"}]`))
 	mux.HandleFunc("GET /fgt-confconv/config_summary", jsonResponse(`{
 		"version":"7.6.1","versionOK":true,
-		"interfaces":[{"name":"wan1","type":"physical","parent":"","vlanId":0,"ip":"203.0.113.2 255.255.255.0","allowaccess":"ping","role":"wan","members":[],"fortilink":false}],
+		"interfaces":[
+			{"name":"wan1","type":"physical","parent":"","vlanId":0,"ip":"203.0.113.2 255.255.255.0","allowaccess":"ping","role":"wan","members":[],"fortilink":false},
+			{"name":"port1","type":"physical","parent":"","vlanId":0,"ip":"","allowaccess":"","role":"lan","members":[],"fortilink":false},
+			{"name":"port2","type":"physical","parent":"","vlanId":0,"ip":"","allowaccess":"","role":"lan","members":[],"fortilink":false},
+			{"name":"lan1","type":"physical","parent":"","vlanId":0,"ip":"10.0.0.1 255.255.255.0","allowaccess":"ping","role":"lan","members":[],"fortilink":false}
+		],
 		"zones":[],"sdwanZones":[{"name":"virtual-wan-link"}],
 		"sdwanMembers":[{"seq":1,"interface":"wan1","gateway":"203.0.113.1","zone":"virtual-wan-link"}],
 		"staticRoutes":[{"seq":1,"dst":"","device":"wan1","gateway":"203.0.113.1","disabled":false}],

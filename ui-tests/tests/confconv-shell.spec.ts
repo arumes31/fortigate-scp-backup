@@ -6,7 +6,7 @@ test('Config Converter uses the shared shell and completes one conversion', asyn
   await expect(page.locator('.app-rail')).toBeVisible();
   await expect(page.locator('.app-rail [aria-current="page"]')).toHaveText(/Config Converter/);
   await expect(page.getByRole('heading', { level: 1, name: /Configuration Conversions/ })).toBeVisible();
-  await expect(page.locator('.page-title .cc-alpha')).toHaveText('Alpha');
+  await expect(page.locator('.cc-primary-action .cc-alpha')).toHaveText('Alpha');
   await expect.poll(() => page.evaluate(() => ({
     loadSummary: typeof (window as unknown as { loadSummary?: unknown }).loadSummary,
     generate: typeof (window as unknown as { generate?: unknown }).generate,
