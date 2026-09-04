@@ -76,6 +76,8 @@ func TestBuildSourceCatalog_NormalizesHAAndIgnoresUnregisteredRows(t *testing.T)
 			DNSName:          "cluster-fw",
 			DNSNameFull:      " CLUSTER-FW.EXAMPLE.COM ",
 			ClusterHostnames: " Node-A , node-b, NODE-A ",
+			Company:          "Example Customer GmbH",
+			CID:              "CW-4711",
 		},
 		{
 			FirewallName:     "rogue-firewall",
@@ -104,6 +106,9 @@ func TestBuildSourceCatalog_NormalizesHAAndIgnoresUnregisteredRows(t *testing.T)
 		resolved, ok := catalog.resolve(source)
 		if !ok || resolved.ID != 7 {
 			t.Fatalf("resolve(%q) = (%+v, %t), want registered firewall 7", source, resolved, ok)
+		}
+		if resolved.Company != "Example Customer GmbH" || resolved.CID != "CW-4711" {
+			t.Fatalf("resolve(%q) metadata = %+v", source, resolved)
 		}
 	}
 	for _, source := range []string{"rogue-firewall", "rogue-a", "rogue-b"} {
@@ -406,6 +411,8 @@ type admTestRow struct {
 	DNSName          string
 	DNSNameFull      string
 	ClusterHostnames string
+	Company          string
+	CID              string
 	GraylogDisabled  bool
 }
 
@@ -422,6 +429,8 @@ func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 		dns_name TEXT,
 		dns_name_full TEXT,
 		cluster_hostnames TEXT,
+		kundenname TEXT,
+		cid TEXT,
 		graylog_enabled BOOLEAN DEFAULT 1
 	)`); err != nil {
 		_ = db.Close()
@@ -430,12 +439,14 @@ func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 	for _, row := range rows {
 		if _, err := db.Exec(
 			`INSERT INTO vpn_config
-			 (firewallname, dns_name, dns_name_full, cluster_hostnames, graylog_enabled)
-			 VALUES (?, ?, ?, ?, ?)`,
+			 (firewallname, dns_name, dns_name_full, cluster_hostnames, kundenname, cid, graylog_enabled)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			row.FirewallName,
 			row.DNSName,
 			row.DNSNameFull,
 			row.ClusterHostnames,
+			row.Company,
+			row.CID,
 			!row.GraylogDisabled,
 		); err != nil {
 			_ = db.Close()

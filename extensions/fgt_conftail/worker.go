@@ -26,12 +26,15 @@ type graylogFetcher interface {
 }
 
 type pollCycleStats struct {
-	Pages      int
-	Fetched    int
-	Skipped    int
-	Inserted   int
-	Duplicates int
-	Sealed     int
+	Pages       int
+	Fetched     int
+	Quarantined int
+	Retries     int
+	Skipped     int
+	Inserted    int
+	Duplicates  int
+	Ignored     int
+	Sealed      int
 }
 
 type pollWorker struct {
@@ -119,6 +122,9 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 		}
 		rawEvents, fetchStats, fetchErr := w.graylog.fetch(ctx, w.query, sources, from, pollEnd)
 		stats.Pages += fetchStats.Pages
+		stats.Fetched += fetchStats.Rows
+		stats.Quarantined += fetchStats.Quarantined
+		stats.Retries += fetchStats.Retries
 		if fetchErr != nil {
 			return pollCycleStats{}, w.recordFailure(ctx, startedAt, fetchErr)
 		}
@@ -132,9 +138,10 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 				"to", pollEnd,
 				"pages", fetchStats.Pages,
 				"rows", fetchStats.Rows,
+				"quarantined_rows", fetchStats.Quarantined,
+				"retries", fetchStats.Retries,
 			)
 		}
-		stats.Fetched += len(rawEvents)
 		if stats.Fetched > maxEvents {
 			return pollCycleStats{}, w.recordFailure(
 				ctx,
@@ -145,8 +152,8 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 		for index := range rawEvents {
 			eventTime := rawEvents[index].Timestamp.UTC()
 			if eventTime.Before(from) || eventTime.After(pollEnd) {
-				err := fmt.Errorf("graylog row %d is outside the requested time range", index+1)
-				return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+				stats.Quarantined++
+				continue
 			}
 			firewall, ok := catalog.resolve(rawEvents[index].Source)
 			if !ok {
@@ -155,8 +162,8 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 			}
 			event, normalizeErr := normalizeRawEvent(rawEvents[index], firewall, pollEnd)
 			if normalizeErr != nil {
-				err := fmt.Errorf("validate graylog row %d: %w", index+1, normalizeErr)
-				return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+				stats.Quarantined++
+				continue
 			}
 			normalizedBytes += normalizedEventBytes(event)
 			if normalizedBytes > maxNormalizedBytes {
@@ -186,6 +193,7 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	}
 	stats.Inserted = result.Inserted
 	stats.Duplicates = result.Duplicates
+	stats.Ignored = result.Ignored
 	stats.Sealed = result.Sealed
 	return stats, nil
 }

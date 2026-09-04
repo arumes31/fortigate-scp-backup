@@ -14,6 +14,8 @@ ignored by Git and excluded from container build contexts.
   empty file while TOTP is disabled.
 - `radius_secret`: at least 16 bytes when RADIUS is enabled; it may be an empty
   file while RADIUS is disabled.
+- `mail_password`: the SMTP authentication password; it may be an empty file
+  only when email notifications are intentionally disabled.
 
 The optional `fgt_conftail` extension does not require another secret file when
 `FGT_CONFTAIL_HOOKWISE_TOKEN` is set directly. To use the file fallback instead,
@@ -37,15 +39,17 @@ sudo chown 0:65532 \
   ./secrets/encryption_key \
   ./secrets/bootstrap_admin_password \
   ./secrets/totp_secret \
-  ./secrets/radius_secret
+  ./secrets/radius_secret \
+  ./secrets/mail_password
 sudo chmod 0440 \
   ./secrets/postgres_password \
   ./secrets/session_key \
   ./secrets/encryption_key \
   ./secrets/bootstrap_admin_password \
   ./secrets/totp_secret \
-  ./secrets/radius_secret
-stat -c '%u:%g %a %n' ./secrets/{postgres_password,session_key,encryption_key,bootstrap_admin_password,totp_secret,radius_secret}
+  ./secrets/radius_secret \
+  ./secrets/mail_password
+stat -c '%u:%g %a %n' ./secrets/{postgres_password,session_key,encryption_key,bootstrap_admin_password,totp_secret,radius_secret,mail_password}
 ```
 
 The files should report owner/group/mode `0:65532 440`; the application runs as

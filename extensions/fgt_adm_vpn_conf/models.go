@@ -358,6 +358,31 @@ func (e *Extension) allConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("")
 }
 
+func (e *Extension) configsByIDs(ids []int64) ([]*VpnConfig, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		args[index] = id
+	}
+	rows, err := e.db.Query("SELECT "+selectCols+" FROM vpn_config WHERE id IN ("+placeholders+") ORDER BY id", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	configs := make([]*VpnConfig, 0, len(ids))
+	for rows.Next() {
+		config, err := scanConfig(rows)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	return configs, rows.Err()
+}
+
 func (e *Extension) enabledConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("WHERE graylog_enabled = 1")
 }
@@ -372,7 +397,7 @@ func boolToInt(b bool) int {
 // insertConfig inserts a new row. last_graylog_status/last_graylog_check take
 // their column defaults (unknown / NULL), matching the Python insert path.
 func (e *Extension) insertConfig(c *VpnConfig) error {
-	_, err := e.db.Exec(`INSERT INTO vpn_config
+	result, err := e.db.Exec(`INSERT INTO vpn_config
 		(kundenname, standort, remoteip_full, remoteip_full_1st, ike2_username,
 		 wan_interface, lan_interface, dns_name, firewallname, cid,
 		 ipsec_psk_ro, ipsec_psk_hci, radiusmgt, dns_name_full,
@@ -382,6 +407,10 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.Cid,
 		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames)
+	if err != nil {
+		return err
+	}
+	c.ID, err = result.LastInsertId()
 	return err
 }
 

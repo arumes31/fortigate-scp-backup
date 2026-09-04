@@ -2,7 +2,9 @@ package web
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNvdCpeRange(t *testing.T) {
@@ -166,13 +168,29 @@ func TestEncodeDecodeRanges(t *testing.T) {
 }
 
 func TestCVEFingerprint(t *testing.T) {
-	a := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
-	b := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
-	c := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 4}}}}
+	a := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
+	b := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
+	c := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 4}}}}
+	d := []cveDef{{id: "CVE-2024-1", summaryEN: "updated summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
 	if cveFingerprint(a) != cveFingerprint(b) {
 		t.Error("identical defs should fingerprint the same")
 	}
 	if cveFingerprint(a) == cveFingerprint(c) {
 		t.Error("different ranges should change the fingerprint")
+	}
+	if cveFingerprint(a) == cveFingerprint(d) {
+		t.Error("different displayed summaries should change the fingerprint")
+	}
+}
+
+func TestTruncateCVESummaryPreservesUTF8RuneBoundaries(t *testing.T) {
+	t.Parallel()
+	input := strings.Repeat("界", 241)
+	got := truncateCVESummary(input)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated summary is invalid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 241 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated summary has %d runes and value %q", utf8.RuneCountInString(got), got)
 	}
 }

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -20,6 +21,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/backup"
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
@@ -33,13 +35,17 @@ import (
 
 type fakeStore struct {
 	firewalls []models.Firewall
+	backups   []models.Backup
+	errors    []models.BackupError
+	errorsErr error
+	refs      []models.FirewallRef
 	activity  *[]string
 }
 
 func (fakeStore) Ping(context.Context) error { return nil }
-func (s fakeStore) LogActivity(_ string, action, details string) {
+func (s fakeStore) LogActivity(username, action, details string) {
 	if s.activity != nil {
-		*s.activity = append(*s.activity, action+": "+details)
+		*s.activity = append(*s.activity, "actor="+username+" operation="+action+" "+details)
 	}
 }
 func (fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
@@ -62,19 +68,34 @@ func (fakeStore) ChangePassword(context.Context, string, string, string) (bool, 
 func (s fakeStore) ListFirewalls(context.Context) ([]models.Firewall, error) {
 	return s.firewalls, nil
 }
-func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error) { return 1, nil }
-func (fakeStore) DeleteFirewall(context.Context, int) (string, error)       { return "", nil }
-func (fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return nil, nil }
-func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)     { return nil, nil }
+func (s fakeStore) GetFirewall(_ context.Context, id int) (*models.Firewall, error) {
+	for index := range s.firewalls {
+		if s.firewalls[index].ID == id {
+			firewall := s.firewalls[index]
+			return &firewall, nil
+		}
+	}
+	return nil, database.ErrNotFound
+}
+func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error)   { return 1, nil }
+func (fakeStore) DeleteFirewall(context.Context, int) (string, error)         { return "", nil }
+func (s fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return s.backups, nil }
+func (s fakeStore) ListErrors(context.Context) ([]models.BackupError, error) {
+	return s.errors, s.errorsErr
+}
 func (fakeStore) LastBackupTimes(context.Context) (map[int]time.Time, error) {
 	return map[int]time.Time{}, nil
 }
-func (fakeStore) CountActivityLogs(context.Context) (int, error) { return 0, nil }
+func (fakeStore) CountActivityLogs(context.Context, models.ActivityLogFilter) (int, error) {
+	return 0, nil
+}
 func (fakeStore) DashboardStats(context.Context) (models.DashboardStats, error) {
 	return models.DashboardStats{}, nil
 }
-func (fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) { return nil, nil }
-func (fakeStore) ListActivityLogs(context.Context, int, int) ([]models.ActivityLog, error) {
+func (s fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) {
+	return s.refs, nil
+}
+func (fakeStore) ListActivityLogs(context.Context, models.ActivityLogFilter, int, int) ([]models.ActivityLog, error) {
 	return nil, nil
 }
 func (fakeStore) GetAuditFindings(context.Context, int) ([]models.AuditFinding, error) {
@@ -281,10 +302,37 @@ func TestUnauthenticatedRedirect(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	srv := testServer(t)
+	var probeHasBoundedDeadline bool
+	srv.RegisterHealth("conftail.graylog", func(context.Context) string { return "stale" })
+	srv.RegisterHealth("untrusted", func(context.Context) string { return "contains secret detail" })
+	srv.RegisterHealth("bounded", func(ctx context.Context) string {
+		deadline, ok := ctx.Deadline()
+		probeHasBoundedDeadline = ok && time.Until(deadline) > 0 && time.Until(deadline) <= 3*time.Second
+		return "healthy"
+	})
 	rr := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	var response struct {
+		Status     string `json:"status"`
+		Components map[string]struct {
+			Status string `json:"status"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if response.Status != "ok" || response.Components["conftail.graylog"].Status != "stale" {
+		t.Fatalf("healthz response = %+v", response)
+	}
+	if response.Components["untrusted"].Status != "unknown" ||
+		strings.Contains(rr.Body.String(), "secret detail") {
+		t.Fatalf("healthz exposed an unbounded component status: %s", rr.Body.String())
+	}
+	if !probeHasBoundedDeadline {
+		t.Fatal("health probe did not receive the three-second bounded request context")
 	}
 }
 
@@ -295,8 +343,17 @@ func TestSecurityHeaders(t *testing.T) {
 	if rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Error("missing X-Frame-Options")
 	}
-	if rr.Header().Get("Content-Security-Policy") == "" {
-		t.Error("missing CSP")
+	const wantCSP = "default-src 'self'; script-src 'self'; script-src-attr 'none'; " +
+		"style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
+		"base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+	if got := rr.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	}
+	for _, forbidden := range []string{"script-src 'self' 'unsafe-inline'", "script-src 'self' 'unsafe-eval'", "style-src-elem 'self' 'unsafe-inline'"} {
+		if strings.Contains(rr.Header().Get("Content-Security-Policy"), forbidden) {
+			t.Errorf("CSP contains forbidden relaxation %q", forbidden)
+		}
 	}
 }
 
@@ -384,6 +441,79 @@ func FuzzBuildSearchPattern(f *testing.F) {
 	})
 }
 
+func TestSearchLineSegmentsRemainEscaped(t *testing.T) {
+	pattern, err := buildSearchPattern("admin*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := searchLineSegments(`set admin-name "<script>alert(1)</script>"`, pattern)
+	if len(segments) < 2 || !segments[1].Match {
+		t.Fatalf("segments = %#v, want a highlighted match", segments)
+	}
+	srv := testServer(t)
+	rr := httptest.NewRecorder()
+	srv.render(rr, "search.html", searchData{
+		Base: BaseData{Title: "Search"}, Query: "admin*",
+		Results: []searchResult{{FQDN: "fw.example", Filename: "1/test.conf", Line: `<script>alert(1)</script>`, Segments: segments}},
+	})
+	body := rr.Body.String()
+	if !strings.Contains(body, "<mark>") || !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatalf("highlighted search result was not safely rendered: %s", body)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Fatal("matched configuration text was rendered as executable markup")
+	}
+}
+
+func TestSearchCapsResultsAndLogsOnlyMetadata(t *testing.T) {
+	srv := testServer(t)
+	root := t.TempDir()
+	srv.cfg.BackupDir = root
+	dir := filepath.Join(root, "7")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const querySentinel = "sentinel-query-secret"
+	const configSentinel = "sentinel-config-secret"
+	var plain strings.Builder
+	for range maxSearchResults + 1 {
+		fmt.Fprintf(&plain, "set note %s %s\n", querySentinel, configSentinel)
+	}
+	encrypted, err := srv.cipher.Encrypt([]byte(plain.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "latest.conf"), encrypted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activity := []string{}
+	srv.store = fakeStore{refs: []models.FirewallRef{{ID: 7, FQDN: "fw.example"}}, activity: &activity}
+	var appLog bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&appLog, nil))
+	form := url.Values{"query": {querySentinel}}
+	req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.handleSearch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if count := strings.Count(rr.Body.String(), `<tr>`); count != maxSearchResults+1 {
+		t.Fatalf("rendered table rows = %d, want header + %d capped results", count, maxSearchResults)
+	}
+	logs := appLog.String() + strings.Join(activity, "\n")
+	for _, forbidden := range []string{querySentinel, configSentinel} {
+		if strings.Contains(logs, forbidden) {
+			t.Fatalf("search logs leaked sentinel %q: %s", forbidden, logs)
+		}
+	}
+	for _, required := range []string{"actor=unknown", "operation=Configuration Search", "outcome", "results=1000", "truncated=true", "duration"} {
+		if !strings.Contains(logs, required) {
+			t.Errorf("search logs missing metadata %q: %s", required, logs)
+		}
+	}
+}
+
 func TestFmtBytes(t *testing.T) {
 	cases := map[int64]string{0: "0 B", 512: "512 B", 1024: "1.0 KB", 1048576: "1.0 MB"}
 	for in, want := range cases {
@@ -396,6 +526,26 @@ func TestFmtBytes(t *testing.T) {
 func TestFmtTimeZero(t *testing.T) {
 	if got := fmtTime(time.Time{}); got != "—" {
 		t.Fatalf("zero time should render as em dash, got %q", got)
+	}
+}
+
+func TestFmtMachineTimeUsesRFC3339UTC(t *testing.T) {
+	instant := time.Date(2026, 9, 2, 12, 30, 0, 0, time.FixedZone("CEST", 2*60*60))
+	if got := fmtMachineTime(instant); got != "2026-09-02T10:30:00Z" {
+		t.Fatalf("fmtMachineTime() = %q, want RFC3339 UTC", got)
+	}
+	if got := fmtMachineTime(time.Time{}); got != "" {
+		t.Fatalf("fmtMachineTime(zero) = %q, want empty", got)
+	}
+}
+
+func TestParseADMVPNCheckTimeNormalizesLegacyUTC(t *testing.T) {
+	got := parseADMVPNCheckTime("2026-09-02 10:30:00.000000")
+	if got.IsZero() || got.Location() != time.UTC || got.Format(time.RFC3339) != "2026-09-02T10:30:00Z" {
+		t.Fatalf("parseADMVPNCheckTime() = %v, want RFC3339-equivalent UTC", got)
+	}
+	if got := parseADMVPNCheckTime("not-a-timestamp"); !got.IsZero() {
+		t.Fatalf("malformed timestamp parsed as %v", got)
 	}
 }
 
@@ -964,8 +1114,17 @@ func TestDashboardRenders(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	// Template must execute end-to-end (not just parse) with the new fields.
-	if body := rr.Body.String(); !strings.Contains(body, "Failing Firewalls") || !strings.Contains(body, "SYS_STDOUT") {
-		t.Error("dashboard missing expected sections")
+	body := rr.Body.String()
+	for _, want := range []string{"Needs attention", `id="metricHealth"`, `id="metricOperations"`, `id="metricStorage"`, "Failing Firewalls", "SYS_STDOUT", `<details class="panel diagnostic-console">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+	if strings.Contains(body, `<details class="panel diagnostic-console" open`) {
+		t.Error("SYS_STDOUT diagnostics must be closed by default")
+	}
+	if strings.Contains(body, "skeleton-row") {
+		t.Error("dashboard must server-render known running work instead of a skeleton")
 	}
 }
 
@@ -1055,6 +1214,15 @@ func TestLoginPageAnimation(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	html := rr.Body.String()
+	loginCSS, err := staticFS.ReadFile("static/login.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginJS, err := staticFS.ReadFile("static/login.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := html + string(loginCSS) + string(loginJS)
 	for _, want := range []string{
 		`<link rel="stylesheet" href="/static/app.css">`,
 		`class="background-animation"`,
@@ -1071,7 +1239,7 @@ func TestLoginPageAnimation(t *testing.T) {
 		`Math.random() < 0.1 ? fsFlow : fsBeams`,
 		`prefers-reduced-motion`,
 	} {
-		if !strings.Contains(html, want) {
+		if !strings.Contains(assets, want) {
 			t.Errorf("login page missing %q", want)
 		}
 	}
@@ -1081,7 +1249,7 @@ func TestLoginPageAnimation(t *testing.T) {
 	// Every ring must have a position rule: children 3..12 of the container.
 	for i := 3; i <= 12; i++ {
 		sel := fmt.Sprintf(".pulse-circle:nth-child(%d)", i)
-		if !strings.Contains(html, sel) {
+		if !strings.Contains(string(loginCSS), sel) {
 			t.Errorf("missing position rule %s", sel)
 		}
 	}
@@ -1090,5 +1258,55 @@ func TestLoginPageAnimation(t *testing.T) {
 	}
 	if strings.Contains(html, "src=\"http") || strings.Contains(html, "cdn.") {
 		t.Error("login page must not reference external scripts (same-origin CSP)")
+	}
+}
+
+func TestLoginPageFormSemantics(t *testing.T) {
+	srv := testServer(t)
+	srv.cfg.TOTPEnabled = true
+	srv.cfg.RadiusEnabled = true
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	html := rr.Body.String()
+	for _, want := range []string{
+		`id="username" autocomplete="username" required`,
+		`id="password" autocomplete="current-password" required`,
+		`type="button" class="password-toggle" data-password-toggle="password"`,
+		`aria-controls="password" aria-pressed="false"`,
+		`id="totp_code" inputmode="numeric" autocomplete="one-time-code"`,
+		`pattern="[0-9]{6}" minlength="6" maxlength="6"`,
+		`role="status" aria-live="polite" aria-atomic="true"`,
+		`<script src="/static/ui.js"></script>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("login page missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`u === 'admin'`,
+		`u !== 'admin'`,
+		`usernameInput.addEventListener`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("login page discloses account type through username-dependent UI: %q", forbidden)
+		}
+	}
+}
+
+func TestLoginPageErrorIsAnnounced(t *testing.T) {
+	srv := testServer(t)
+	form := url.Values{"username": {"admin"}, "password": {"wrong"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if html := rr.Body.String(); !strings.Contains(html, `class="alert alert-error" role="alert"`) {
+		t.Error("login error is not exposed as an assertive alert")
 	}
 }

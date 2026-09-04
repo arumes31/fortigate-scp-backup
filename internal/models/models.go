@@ -31,6 +31,17 @@ type Backup struct {
 	Checksum  string
 }
 
+// BackupError is the credential-free projection used by failure views. The
+// last attempt is the timestamp of the status update that recorded the failure;
+// LastSuccess is zero when the firewall has never completed a backup.
+type BackupError struct {
+	ID          int
+	FQDN        string
+	Reason      string
+	LastAttempt time.Time
+	LastSuccess time.Time
+}
+
 // User mirrors a row of the `users` table.
 type User struct {
 	ID           int
@@ -47,6 +58,16 @@ type ActivityLog struct {
 	Action    string
 	Details   string
 	Timestamp time.Time
+}
+
+// ActivityLogFilter is the validated database filter shared by activity-log
+// count and page queries. To is an exclusive upper bound.
+type ActivityLogFilter struct {
+	Query    string
+	Username string
+	Action   string
+	From     time.Time
+	To       time.Time
 }
 
 // FirewallSchedule is the minimal projection used to (re)build backup jobs.

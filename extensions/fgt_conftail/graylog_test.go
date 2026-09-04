@@ -235,6 +235,174 @@ func TestGraylogFetchPaginatesAndDecodesSchemaOrder(t *testing.T) {
 	}
 }
 
+func TestGraylogFetchRetriesTransientStatusesAndHonorsRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch attempts.Add(1) {
+		case 1:
+			w.Header().Set("Retry-After", "3")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+		case 2:
+			http.Error(w, "temporary outage", http.StatusBadGateway)
+		default:
+			writeGraylogPage(w, testGraylogFields, []map[string]any{{
+				"timestamp":      "2026-08-01T00:01:00Z",
+				"gl2_message_id": "message-1",
+			}})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newGraylogClient(server.URL, "token", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryBase = 100 * time.Millisecond
+	client.retryMax = 10 * time.Second
+	client.retryJitter = func(time.Duration) time.Duration { return 25 * time.Millisecond }
+	delays := []time.Duration{}
+	client.sleep = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+
+	events, stats, err := client.fetch(
+		context.Background(),
+		"type:event",
+		nil,
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	}
+	if !reflect.DeepEqual(delays, []time.Duration{3 * time.Second, 225 * time.Millisecond}) {
+		t.Fatalf("retry delays = %v, want [3s 225ms]", delays)
+	}
+	if len(events) != 1 || stats != (FetchStats{Pages: 1, Rows: 1, Retries: 2}) {
+		t.Fatalf("result events=%d stats=%+v", len(events), stats)
+	}
+}
+
+func TestGraylogFetchDoesNotRetryPermanentStatus(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		http.Error(w, "bad query", http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newGraylogClient(server.URL, "token", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.sleep = func(context.Context, time.Duration) error {
+		t.Fatal("permanent response must not sleep for a retry")
+		return nil
+	}
+	_, _, err = client.fetch(
+		context.Background(),
+		"type:event",
+		nil,
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC),
+	)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("error = %v, want HTTP 400", err)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts.Load())
+	}
+}
+
+func TestGraylogFetchRetriesTransportFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeGraylogPage(w, testGraylogFields, []map[string]any{{
+			"timestamp":      "2026-08-01T00:01:00Z",
+			"gl2_message_id": "message-1",
+		}})
+	}))
+	t.Cleanup(server.Close)
+	baseTransport := server.Client().Transport
+	var attempts atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if attempts.Add(1) == 1 {
+			return nil, errors.New("temporary transport failure")
+		}
+		return baseTransport.RoundTrip(request)
+	})}
+	client, err := newGraylogClient(server.URL, "token", httpClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryJitter = func(time.Duration) time.Duration { return 0 }
+	client.sleep = func(context.Context, time.Duration) error { return nil }
+
+	_, stats, err := client.fetch(
+		context.Background(),
+		"type:event",
+		nil,
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts.Load() != 2 || stats.Retries != 1 {
+		t.Fatalf("attempts=%d stats=%+v, want one retry", attempts.Load(), stats)
+	}
+}
+
+func TestGraylogFetchQuarantinesMalformedRows(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeGraylogPage(w, testGraylogFields, []map[string]any{
+			{
+				"timestamp":      "2026-08-01T00:01:00Z",
+				"gl2_message_id": "message-good",
+			},
+			{
+				"timestamp":      "2026-08-01T00:02:00Z",
+				"gl2_message_id": "message-bad",
+				"eventtime":      -1,
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newGraylogClient(server.URL, "token", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, stats, err := client.fetch(
+		context.Background(),
+		"type:event",
+		nil,
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(events) != 1 || events[0].MessageID != "message-good" {
+		t.Fatalf("events = %+v, want only message-good", events)
+	}
+	wantStats := FetchStats{Pages: 1, Rows: 2, Quarantined: 1}
+	if stats != wantStats {
+		t.Fatalf("stats = %+v, want %+v", stats, wantStats)
+	}
+}
+
 func TestGraylogFetchPaginatesMoreThanOneThousandResults(t *testing.T) {
 	t.Parallel()
 
@@ -394,6 +562,18 @@ func TestGraylogLogIDRejectsInvalidRepresentations(t *testing.T) {
 	}
 }
 
+func TestGraylogScalarStringTreatsFortiGateDashAsMissing(t *testing.T) {
+	t.Parallel()
+
+	got, err := graylogScalarString("-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("graylogScalarString(%q) = %q, want an empty missing value", "-", got)
+	}
+}
+
 func TestGraylogFetchRejectsUntrustedResponses(t *testing.T) {
 	t.Parallel()
 
@@ -449,34 +629,6 @@ func TestGraylogFetchRejectsUntrustedResponses(t *testing.T) {
 				writeGraylogPage(w, []string{"timestamp"}, []map[string]any{validRecord})
 			},
 			wantContains: "schema",
-		},
-		{
-			name:   "row width mismatch",
-			status: http.StatusOK,
-			body: func(w http.ResponseWriter) {
-				schema := make([]map[string]any, 0, len(testGraylogFields))
-				for _, field := range testGraylogFields {
-					schema = append(schema, map[string]any{"column_type": "field", "field": field})
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"schema":   schema,
-					"datarows": [][]any{{"too", "short"}},
-				})
-			},
-			wantContains: "columns",
-		},
-		{
-			name:   "invalid eventtime type",
-			status: http.StatusOK,
-			body: func(w http.ResponseWriter) {
-				bad := map[string]any{
-					"timestamp":      "2026-08-01T00:00:00Z",
-					"gl2_message_id": "message-1",
-					"eventtime":      map[string]any{"value": 1},
-				}
-				writeGraylogPage(w, testGraylogFields, []map[string]any{bad})
-			},
-			wantContains: "eventtime",
 		},
 	}
 

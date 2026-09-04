@@ -92,6 +92,11 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 			nextSeq = rt.Seq
 		}
 	}
+	for _, existingRule := range cfg.SDWANRules {
+		if existingRule.Seq > nextSeq {
+			nextSeq = existingRule.Seq
+		}
+	}
 
 	var ruleCount int
 	for _, rt := range cfg.StaticRoutes {
@@ -117,6 +122,13 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 
 		ruleCount++
 		dst := rt.Dst
+		rule := &SDWANRule{
+			Seq:  nextSeq + ruleCount,
+			Name: fmt.Sprintf("ConfConv-Rule-%d", nextSeq+ruleCount),
+			Mode: opts.Strategy,
+			Dst:  dst,
+			Src:  "all",
+		}
 		lines := []string{
 			"config system sdwan",
 			"    config service",
@@ -125,6 +137,7 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 			fmt.Sprintf("            set mode %s", opts.Strategy),
 		}
 		if dst == "" {
+			rule.Dst = "all"
 			lines = append(lines, `            set dst "all"`)
 		} else {
 			lines = append(lines, fmt.Sprintf("            set dst %q", dst))
@@ -138,8 +151,10 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 				}
 				seqs += fmt.Sprintf("%d", m.Seq)
 			}
+			rule.PriorityMembers = seqs
 			lines = append(lines, fmt.Sprintf("            set priority-members %s", seqs))
 		} else {
+			rule.HealthCheck = healthCheck
 			lines = append(lines, fmt.Sprintf("            set health-check %q", healthCheck))
 		}
 		lines = append(lines, "        next", "    end", "end")
@@ -149,6 +164,7 @@ func (r sdwanRulesRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBloc
 			Label:  fmt.Sprintf("SD-WAN rule for zone %q (was route seq %d)", rt.Device, rt.Seq),
 			Lines:  lines,
 		})
+		cfg.SDWANRules = append(cfg.SDWANRules, rule)
 	}
 
 	if ruleCount == 0 {

@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
@@ -27,7 +26,7 @@ const (
 	deliveryStateFailed       = "failed"
 	deliveryStateAccepted     = "accepted"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 1
+	conftailSchemaVersion     = 3
 )
 
 type store struct {
@@ -35,16 +34,17 @@ type store struct {
 }
 
 type PollState struct {
-	ActivationAt  time.Time
-	Watermark     time.Time
-	LastStartedAt time.Time
-	LastSuccessAt time.Time
-	LastFailureAt time.Time
-	LastDuration  time.Duration
-	LastPages     int
-	LastFetched   int
-	LastInserted  int
-	LastError     string
+	ActivationAt   time.Time
+	Watermark      time.Time
+	LastStartedAt  time.Time
+	LastSuccessAt  time.Time
+	LastFailureAt  time.Time
+	LastDuration   time.Duration
+	LastPages      int
+	LastFetched    int
+	LastInserted   int
+	LastError      string
+	LastIngestedAt time.Time
 }
 
 type pollBatch struct {
@@ -59,26 +59,8 @@ type pollBatch struct {
 type pollResult struct {
 	Inserted   int
 	Duplicates int
+	Ignored    int
 	Sealed     int
-}
-
-type ticketFirewall struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-type ticketPayload struct {
-	Status       string         `json:"status"`
-	ChainID      string         `json:"chain_id"`
-	Summary      string         `json:"summary"`
-	Description  string         `json:"description"`
-	Firewall     ticketFirewall `json:"firewall"`
-	Admin        string         `json:"admin"`
-	StartedAt    time.Time      `json:"started_at"`
-	LastChangeAt time.Time      `json:"last_change_at"`
-	ChangeCount  int            `json:"change_count"`
-	Late         bool           `json:"late,omitempty"`
-	Unattributed bool           `json:"unattributed,omitempty"`
 }
 
 type chainRecord struct {
@@ -153,6 +135,53 @@ var conftailSchema = []string{
 		ON events(correlation_hash) WHERE user_was_missing = 1`,
 	`CREATE INDEX IF NOT EXISTS events_chain_timeline
 		ON events(chain_id, event_at_ns, semantic_hash)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS event_search USING fts5(
+		firewall_name, user, source, device_name, device_id, vdom, action,
+		config_path, config_object, config_attribute, log_description, message,
+		content='events', content_rowid='id', tokenize='unicode61'
+	)`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_insert AFTER INSERT ON events BEGIN
+		INSERT INTO event_search(
+			rowid, firewall_name, user, source, device_name, device_id, vdom,
+			action, config_path, config_object, config_attribute,
+			log_description, message
+		) VALUES (
+			new.id, new.firewall_name, new.user, new.source, new.device_name,
+			new.device_id, new.vdom, new.action, new.config_path,
+			new.config_object, new.config_attribute, new.log_description, new.message
+		);
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_delete AFTER DELETE ON events BEGIN
+		INSERT INTO event_search(
+			event_search, rowid, firewall_name, user, source, device_name,
+			device_id, vdom, action, config_path, config_object,
+			config_attribute, log_description, message
+		) VALUES (
+			'delete', old.id, old.firewall_name, old.user, old.source,
+			old.device_name, old.device_id, old.vdom, old.action, old.config_path,
+			old.config_object, old.config_attribute, old.log_description, old.message
+		);
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS events_search_update AFTER UPDATE ON events BEGIN
+		INSERT INTO event_search(
+			event_search, rowid, firewall_name, user, source, device_name,
+			device_id, vdom, action, config_path, config_object,
+			config_attribute, log_description, message
+		) VALUES (
+			'delete', old.id, old.firewall_name, old.user, old.source,
+			old.device_name, old.device_id, old.vdom, old.action, old.config_path,
+			old.config_object, old.config_attribute, old.log_description, old.message
+		);
+		INSERT INTO event_search(
+			rowid, firewall_name, user, source, device_name, device_id, vdom,
+			action, config_path, config_object, config_attribute,
+			log_description, message
+		) VALUES (
+			new.id, new.firewall_name, new.user, new.source, new.device_name,
+			new.device_id, new.vdom, new.action, new.config_path,
+			new.config_object, new.config_attribute, new.log_description, new.message
+		);
+	END`,
 	`CREATE TABLE IF NOT EXISTS outbox (
 		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
 		payload_json BLOB NOT NULL,
@@ -166,6 +195,32 @@ var conftailSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS outbox_due
 		ON outbox(state, next_attempt_at_ns)`,
+	`CREATE TABLE IF NOT EXISTS global_ignore_rules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL CHECK (kind IN ('attribute','operation')),
+		action TEXT NOT NULL DEFAULT '',
+		config_path TEXT NOT NULL DEFAULT '',
+		config_attribute TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+		created_by TEXT NOT NULL,
+		created_at_ns INTEGER NOT NULL,
+		CHECK (
+			(kind = 'attribute' AND action = '' AND config_path = '' AND config_attribute != '') OR
+			(kind = 'operation' AND action != '' AND config_path != '' AND config_attribute = '')
+		),
+		UNIQUE(kind, action, config_path, config_attribute)
+	)`,
+	`CREATE INDEX IF NOT EXISTS global_ignore_rules_enabled
+		ON global_ignore_rules(enabled, kind)`,
+	`CREATE TABLE IF NOT EXISTS ignored_events (
+		semantic_hash TEXT PRIMARY KEY,
+		graylog_id TEXT NOT NULL DEFAULT '',
+		rule_id INTEGER REFERENCES global_ignore_rules(id) ON DELETE SET NULL,
+		event_at_ns INTEGER NOT NULL,
+		ignored_at_ns INTEGER NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS ignored_events_graylog_identity
+		ON ignored_events(graylog_id) WHERE graylog_id != ''`,
 	`CREATE TABLE IF NOT EXISTS poll_state (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		activation_at_ns INTEGER NOT NULL,
@@ -179,6 +234,11 @@ var conftailSchema = []string{
 		last_inserted INTEGER NOT NULL DEFAULT 0,
 		last_error TEXT NOT NULL DEFAULT '',
 		updated_at_ns INTEGER NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS managed_indexes (
+		name TEXT PRIMARY KEY,
+		created_at_ns INTEGER NOT NULL,
+		last_needed_at_ns INTEGER NOT NULL
 	)`,
 }
 
@@ -221,6 +281,7 @@ func openStore(ctx context.Context, path string, activation time.Time) (*store, 
 		return nil, err
 	}
 	for _, statement := range []string{
+		"PRAGMA auto_vacuum=INCREMENTAL",
 		"PRAGMA journal_mode=WAL",
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -285,6 +346,21 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
 		return fmt.Errorf("read conftail schema version: %w", err)
 	}
+	if version == 1 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO event_search(event_search) VALUES('rebuild')`); err != nil {
+			return fmt.Errorf("rebuild conftail event search index: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 2 WHERE id = 1`); err != nil {
+			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = 2
+	}
+	if version == 2 {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = conftailSchemaVersion
+	}
 	if version != conftailSchemaVersion {
 		return fmt.Errorf("unsupported conftail schema version %d", version)
 	}
@@ -302,12 +378,13 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 }
 
 func (s *store) pollState(ctx context.Context) (PollState, error) {
-	var activation, watermark, started, success, failure, duration int64
+	var activation, watermark, started, success, failure, duration, lastIngested int64
 	var state PollState
 	err := s.db.QueryRowContext(ctx, `SELECT
 		activation_at_ns, watermark_ns, last_started_at_ns, last_success_at_ns,
 		last_failure_at_ns, last_duration_ns, last_pages, last_fetched,
-		last_inserted, last_error
+		last_inserted, last_error,
+		(SELECT COALESCE(MAX(ingested_at_ns), 0) FROM events)
 		FROM poll_state WHERE id = 1`).Scan(
 		&activation,
 		&watermark,
@@ -319,6 +396,7 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 		&state.LastFetched,
 		&state.LastInserted,
 		&state.LastError,
+		&lastIngested,
 	)
 	if err != nil {
 		return PollState{}, fmt.Errorf("read conftail poll state: %w", err)
@@ -329,7 +407,16 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 	state.LastSuccessAt = timeFromNanos(success)
 	state.LastFailureAt = timeFromNanos(failure)
 	state.LastDuration = time.Duration(duration) * time.Nanosecond
+	state.LastIngestedAt = timeFromNanos(lastIngested)
 	return state, nil
+}
+
+func (s *store) pollScheduleState(ctx context.Context) (PollState, time.Time, error) {
+	state, err := s.pollState(ctx)
+	if err != nil {
+		return PollState{}, time.Time{}, err
+	}
+	return state, state.LastIngestedAt, nil
 }
 
 func (s *store) markPollStarted(ctx context.Context, startedAt time.Time) error {
@@ -404,6 +491,10 @@ func (s *store) applyPoll(
 	}
 	defer func() { _ = tx.Rollback() }()
 	result := pollResult{}
+	ignoreRules, err := listEnabledGlobalIgnoreRulesTx(ctx, tx)
+	if err != nil {
+		return pollResult{}, err
+	}
 	for i := range events {
 		if err := validatePersistentEvent(events[i]); err != nil {
 			return pollResult{}, fmt.Errorf("validate conftail event: %w", err)
@@ -430,6 +521,26 @@ func (s *store) applyPoll(
 		}
 		if exists {
 			result.Duplicates++
+			continue
+		}
+		ignored, err := ignoredEventExists(ctx, tx, events[i])
+		if err != nil {
+			return pollResult{}, err
+		}
+		if ignored {
+			result.Duplicates++
+			continue
+		}
+		if rule, ok := matchingGlobalIgnoreRule(ignoreRules, events[i]); ok {
+			inserted, err := recordIgnoredEvent(ctx, tx, rule.ID, events[i], batch.EndedAt.UTC())
+			if err != nil {
+				return pollResult{}, err
+			}
+			if inserted {
+				result.Ignored++
+			} else {
+				result.Duplicates++
+			}
 			continue
 		}
 		sealed, err = placeEvent(
@@ -564,6 +675,18 @@ func eventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, error) {
 	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check conftail event identity: %w", err)
+	}
+	return exists, nil
+}
+
+func ignoredEventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM ignored_events
+		WHERE semantic_hash = ? OR (? != '' AND graylog_id = ?)
+	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check ignored conftail event identity: %w", err)
 	}
 	return exists, nil
 }
@@ -1385,7 +1508,7 @@ func eventsForChain(
 		device_id, vdom, user, user_attribution, ui, action, transaction_id,
 		config_path, config_object, config_attribute, log_id, log_description,
 		message, uuid, event_at_ns, ingested_at_ns, late
-		FROM events WHERE chain_id = ? ORDER BY event_at_ns, semantic_hash`,
+		FROM events WHERE chain_id = ? ORDER BY event_at_ns, id`,
 		chainID,
 	)
 	if err != nil {
@@ -1447,146 +1570,6 @@ func eventsForChain(
 		return nil, fmt.Errorf("close conftail chain events: %w", err)
 	}
 	return events, nil
-}
-
-func buildTicketPayload(
-	chain chainRecord,
-	events []Event,
-	maxDescriptionBytes int,
-) (ticketPayload, error) {
-	if len(events) == 0 {
-		return ticketPayload{}, errors.New("cannot create a ticket for an empty chain")
-	}
-	changeCount := max(chain.EventCount, len(events))
-	shortID := chain.ID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
-	summary := fmt.Sprintf(
-		"[CT-%s] %s / %s / %s",
-		shortID,
-		chain.FirewallName,
-		chain.User,
-		chain.FirstEventAt.UTC().Format("2006-01-02 15:04Z"),
-	)
-	summary = truncateString(summary, 255)
-	description := buildTicketDescription(chain, events, maxDescriptionBytes)
-	return ticketPayload{
-		Status:       "OPEN",
-		ChainID:      chain.ID,
-		Summary:      summary,
-		Description:  description,
-		Firewall:     ticketFirewall{ID: chain.FirewallID, Name: chain.FirewallName},
-		Admin:        chain.User,
-		StartedAt:    chain.FirstEventAt.UTC(),
-		LastChangeAt: chain.LastEventAt.UTC(),
-		ChangeCount:  changeCount,
-		Late:         chain.Late,
-		Unattributed: chain.Unattributed,
-	}, nil
-}
-
-func buildTicketDescription(chain chainRecord, events []Event, maxBytes int) string {
-	var builder strings.Builder
-	if chain.Unattributed {
-		builder.WriteString("WARNING: No unique administrator could be attributed to these changes.\n\n")
-	}
-	if chain.Late {
-		builder.WriteString("NOTICE: This session contains configuration events that arrived after an earlier session was sealed.\n\n")
-	}
-	fmt.Fprintf(
-		&builder,
-		"Firewall: %s (FortiSafe ID %d)\nAdministrator: %s\nSession: %s\n\nOrdered changes:\n",
-		chain.FirewallName,
-		chain.FirewallID,
-		chain.User,
-		chain.ID,
-	)
-	totalEvents := max(chain.EventCount, len(events))
-	included := 0
-	for _, event := range events {
-		line := timelineLine(event)
-		omittedAfterLine := totalEvents - included - 1
-		reserve := 0
-		if omittedAfterLine > 0 {
-			reserve = len(ticketOmissionLine(omittedAfterLine, chain.ID))
-		}
-		if builder.Len()+len(line)+reserve > maxBytes {
-			break
-		}
-		builder.WriteString(line)
-		included++
-	}
-	omitted := totalEvents - included
-	if omitted <= 0 {
-		return truncateUTF8Bytes(builder.String(), maxBytes)
-	}
-	footer := ticketOmissionLine(omitted, chain.ID)
-	if len(footer) >= maxBytes {
-		return truncateUTF8Bytes(footer, maxBytes)
-	}
-	prefix := truncateUTF8Bytes(builder.String(), maxBytes-len(footer))
-	return prefix + footer
-}
-
-func ticketOmissionLine(omitted int, chainID string) string {
-	return fmt.Sprintf(
-		"… %d additional redacted change(s) omitted; see FortiSafe chain %s for the complete timeline.\n",
-		max(omitted, 0),
-		chainID,
-	)
-}
-
-func truncateUTF8Bytes(value string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	value = strings.ToValidUTF8(value, "�")
-	if len(value) <= maxBytes {
-		return value
-	}
-	marker := truncatedMarker
-	if maxBytes < len(marker) {
-		end := maxBytes
-		for end > 0 && !utf8.ValidString(value[:end]) {
-			end--
-		}
-		return value[:end]
-	}
-	end := maxBytes - len(marker)
-	for end > 0 && !utf8.ValidString(value[:end]) {
-		end--
-	}
-	return value[:end] + marker
-}
-
-func timelineLine(event Event) string {
-	parts := []string{event.EventAt.UTC().Format(time.RFC3339)}
-	for _, item := range []struct {
-		label string
-		value string
-	}{
-		{label: "source", value: event.Source},
-		{label: "device", value: event.DeviceName},
-		{label: "device_id", value: event.DeviceID},
-		{label: "vdom", value: event.VDOM},
-		{label: "attribution", value: event.UserAttribution},
-		{label: "tx", value: event.TransactionID},
-		{label: "ui", value: event.UI},
-		{label: "action", value: event.Action},
-		{label: "path", value: event.Path},
-		{label: "object", value: event.Object},
-		{label: "attribute", value: event.ConfigAttribute},
-		{label: "log_id", value: event.LogID},
-		{label: "description", value: event.LogDescription},
-		{label: "message", value: event.Message},
-		{label: "uuid", value: event.UUID},
-	} {
-		if item.value != "" {
-			parts = append(parts, item.label+"="+strings.ReplaceAll(item.value, "\n", " "))
-		}
-	}
-	return "- " + strings.Join(parts, " | ") + "\n"
 }
 
 type outboxDelivery struct {
@@ -1721,6 +1704,9 @@ func (s *store) prune(ctx context.Context, now time.Time, retentionDays int) (in
 		return 0, nil
 	}
 	cutoff := now.UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ignored_events WHERE ignored_at_ns < ?`, unixNanos(cutoff)); err != nil {
+		return 0, fmt.Errorf("prune ignored conftail event identities: %w", err)
+	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM chains WHERE id IN (
 		SELECT chains.id FROM chains
 		JOIN outbox ON outbox.chain_id = chains.id

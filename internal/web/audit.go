@@ -357,6 +357,7 @@ type auditData struct {
 // Model structures for parsed config elements
 type Interface struct {
 	Name          string   `json:"name"`
+	VDOM          string   `json:"vdom,omitempty"`
 	IP            string   `json:"ip"`
 	Mask          string   `json:"mask"`
 	AllowAccess   []string `json:"allowaccess"`
@@ -376,12 +377,14 @@ type Interface struct {
 // for the fleet IPAM view (FQDN/geo/range objects are not captured).
 type AddressObject struct {
 	Name string `json:"name"`
+	VDOM string `json:"vdom,omitempty"`
 	IP   string `json:"ip"`
 	Mask string `json:"mask"`
 }
 
 type StaticRoute struct {
 	ID      string `json:"id"`
+	VDOM    string `json:"vdom,omitempty"`
 	Dst     string `json:"dst"`
 	Gateway string `json:"gateway"`
 	Device  string `json:"device"`

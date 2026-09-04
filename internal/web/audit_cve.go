@@ -140,7 +140,7 @@ func queryCVEDefs(db *sql.DB, query string) []cveDef {
 func cveFingerprint(defs []cveDef) string {
 	h := sha256.New()
 	for _, d := range defs {
-		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00", d.id, d.severity, d.remediation)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00", d.id, d.summaryEN, d.severity, d.remediation)
 		for _, r := range d.ranges {
 			_, _ = fmt.Fprintf(h, "%d.%d.%d\x00", r.major, r.minor, r.fixedPatch)
 		}

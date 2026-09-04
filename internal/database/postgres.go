@@ -538,37 +538,95 @@ func (s *Store) ListBackups(ctx context.Context, fwID int) ([]models.Backup, err
 	return out, rows.Err()
 }
 
-// ListErrors returns firewalls whose status marks a failed backup.
-func (s *Store) ListErrors(ctx context.Context) ([]models.Firewall, error) {
+// ListErrors returns a credential-free diagnosis projection for failed backups,
+// newest failure first. updated_at is written with each status transition and
+// therefore represents the attempt that produced the current failed status.
+func (s *Store) ListErrors(ctx context.Context) ([]models.BackupError, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, fqdn, last_backup, status FROM firewalls WHERE status LIKE 'Failed:%'`)
+		`SELECT id, fqdn, updated_at, last_backup, status
+		 FROM firewalls
+		 WHERE status LIKE 'Failed:%'
+		 ORDER BY updated_at DESC NULLS LAST, id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Firewall
+	var out []models.BackupError
 	for rows.Next() {
-		var fw models.Firewall
-		var lastBackup *time.Time
-		if err := rows.Scan(&fw.ID, &fw.FQDN, &lastBackup, &fw.Status); err != nil {
+		var (
+			failure                  models.BackupError
+			lastAttempt, lastSuccess *time.Time
+			status                   string
+		)
+		if err := rows.Scan(&failure.ID, &failure.FQDN, &lastAttempt, &lastSuccess, &status); err != nil {
 			return nil, err
 		}
-		if lastBackup != nil {
-			fw.LastBackup = *lastBackup
+		if lastAttempt != nil {
+			failure.LastAttempt = *lastAttempt
 		}
-		out = append(out, fw)
+		if lastSuccess != nil {
+			failure.LastSuccess = *lastSuccess
+		}
+		failure.Reason = backupFailureReason(status)
+		out = append(out, failure)
 	}
 	return out, rows.Err()
 }
 
-// ListActivityLogs returns a page of activity, newest first.
-func (s *Store) ListActivityLogs(ctx context.Context, limit, offset int) ([]models.ActivityLog, error) {
+func backupFailureReason(status string) string {
+	reason := strings.TrimSpace(strings.TrimPrefix(status, "Failed:"))
+	if reason == "" {
+		return "Backup failed without a reported reason."
+	}
+	return reason
+}
+
+func activityLogWhere(filter models.ActivityLogFilter) (string, []any) {
+	clauses := make([]string, 0, 5)
+	args := make([]any, 0, 5)
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if filter.Query != "" {
+		parameter := placeholder(filter.Query)
+		clauses = append(clauses, fmt.Sprintf(`(
+			strpos(lower(COALESCE(username, '')), lower(%[1]s)) > 0 OR
+			strpos(lower(COALESCE(action, '')), lower(%[1]s)) > 0 OR
+			strpos(lower(COALESCE(details, '')), lower(%[1]s)) > 0
+		)`, parameter))
+	}
+	if filter.Username != "" {
+		parameter := placeholder(filter.Username)
+		clauses = append(clauses, "strpos(lower(COALESCE(username, '')), lower("+parameter+")) > 0")
+	}
+	if filter.Action != "" {
+		parameter := placeholder(filter.Action)
+		clauses = append(clauses, "strpos(lower(COALESCE(action, '')), lower("+parameter+")) > 0")
+	}
+	if !filter.From.IsZero() {
+		clauses = append(clauses, "timestamp >= "+placeholder(filter.From))
+	}
+	if !filter.To.IsZero() {
+		clauses = append(clauses, "timestamp < "+placeholder(filter.To))
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// ListActivityLogs returns a filtered page of activity, newest first.
+func (s *Store) ListActivityLogs(ctx context.Context, filter models.ActivityLogFilter, limit, offset int) ([]models.ActivityLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	where, args := activityLogWhere(filter)
+	args = append(args, limit, max(0, offset))
 	rows, err := s.pool.Query(ctx,
-		`SELECT username, action, details, timestamp FROM activity_logs
-		 ORDER BY timestamp DESC LIMIT $1 OFFSET $2`, limit, offset)
+		`SELECT username, action, details, timestamp FROM activity_logs`+where+
+			fmt.Sprintf(" ORDER BY timestamp DESC NULLS LAST, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)),
+		args...)
 	if err != nil {
 		return nil, err
 	}
@@ -584,10 +642,11 @@ func (s *Store) ListActivityLogs(ctx context.Context, limit, offset int) ([]mode
 	return out, rows.Err()
 }
 
-// CountActivityLogs returns the total number of activity rows.
-func (s *Store) CountActivityLogs(ctx context.Context) (int, error) {
+// CountActivityLogs returns the total number of matching activity rows.
+func (s *Store) CountActivityLogs(ctx context.Context, filter models.ActivityLogFilter) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs`).Scan(&n)
+	where, args := activityLogWhere(filter)
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs`+where, args...).Scan(&n)
 	return n, err
 }
 

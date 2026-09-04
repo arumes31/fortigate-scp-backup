@@ -1,33 +1,50 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Backup Errors</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Backup Errors"}}</h1>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .RetryQueued}}<div class="alert alert-success" role="status">{{L .Base.Lang "Backup retry queued. The status will update when the attempt finishes."}}</div>{{end}}
 
+{{if .Error}}
+<section class="card error-load-state" role="alert" aria-labelledby="backupErrorsUnavailable">
+    <h2 id="backupErrorsUnavailable">{{L .Base.Lang "Could not load backup failures"}}</h2>
+    <p>{{.Error}}</p>
+    <a href="/errors" class="btn btn-primary">{{L .Base.Lang "Retry loading"}}</a>
+</section>
+{{else}}
 <div class="card pad-0">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Firewalls With Failed Backups</h2>
-        <a href="/" class="btn btn-sm">Back to Firewalls</a>
+        <div><h2 class="mt-0 mb-0">{{L .Base.Lang "Firewalls With Failed Backups"}}</h2><p class="muted mt-0 mb-0">{{len .Errors}} {{if eq (len .Errors) 1}}{{L .Base.Lang "active failure"}}{{else}}{{L .Base.Lang "active failures"}}{{end}}</p></div>
+        <a href="/" class="btn btn-sm">{{L .Base.Lang "Back to Firewalls"}}</a>
     </div>
     {{if .Errors}}
-    <div class="table-wrap">
-        <table class="data">
-            <thead>
-                <tr><th>ID</th><th>FQDN</th><th>Last Backup</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-            {{range .Errors}}
-                <tr>
-                    <td>{{.ID}}</td>
-                    <td>{{.FQDN}}</td>
-                    <td class="muted">{{fmtTime .LastBackup}}</td>
-                    <td><span class="pill pill-failed" title="{{.Status}}">{{.Status}}</span></td>
-                </tr>
-            {{end}}
-            </tbody>
-        </table>
+    <div class="backup-error-list">
+        {{range .Errors}}
+        <article class="backup-error" aria-labelledby="backupError{{.ID}}">
+            <header class="backup-error__header">
+                <div><span class="pill pill-failed">{{L $.Base.Lang "Failed"}}</span><h3 id="backupError{{.ID}}">{{.FQDN}} <small>#{{.ID}}</small></h3></div>
+                <nav class="actions" aria-label="{{L $.Base.Lang "Context for"}} {{.FQDN}}">
+                    <a class="btn btn-sm" href="/#firewall-{{.ID}}">Firewall</a>
+                    <a class="btn btn-sm" href="/backups/{{.ID}}">{{L $.Base.Lang "Backups"}}</a>
+                </nav>
+            </header>
+            <div class="backup-error__reason"><span>{{L $.Base.Lang "Failure reason"}}</span><p>{{.Reason}}</p></div>
+            <dl class="backup-error__timeline">
+                <div><dt>{{L $.Base.Lang "Last attempt"}}</dt><dd>{{if isZero .LastAttempt}}{{L $.Base.Lang "Unknown"}}{{else}}<time datetime="{{fmtMachineTime .LastAttempt}}">{{fmtTime .LastAttempt}}</time>{{end}}</dd></div>
+                <div><dt>{{L $.Base.Lang "Last success"}}</dt><dd>{{if isZero .LastSuccess}}{{L $.Base.Lang "Never"}}{{else}}<time datetime="{{fmtMachineTime .LastSuccess}}">{{fmtTime .LastSuccess}}</time>{{end}}</dd></div>
+                <div><dt>{{L $.Base.Lang "Next scheduled"}}</dt><dd>{{if isZero .NextRun}}{{L $.Base.Lang "Not scheduled"}}{{else}}<time datetime="{{fmtMachineTime .NextRun}}">{{fmtTime .NextRun}}</time>{{end}}</dd></div>
+            </dl>
+            <footer class="backup-error__footer">
+                <p>{{L $.Base.Lang "Retry starts one asynchronous backup attempt for this firewall."}}</p>
+                <form method="post" action="/backup_now/{{.ID}}">
+                    <input type="hidden" name="return_to" value="/errors">
+                    <button type="submit" class="btn btn-primary">{{L $.Base.Lang "Retry now"}}</button>
+                </form>
+            </footer>
+        </article>
+        {{end}}
     </div>
     {{else}}
-    <div class="empty">No backup errors. Everything is healthy.</div>
+    <div class="empty backup-errors-healthy"><strong>{{L .Base.Lang "Everything is healthy."}}</strong><br>{{L .Base.Lang "No failed backups need attention."}}</div>
     {{end}}
 </div>
+{{end}}
 {{end}}

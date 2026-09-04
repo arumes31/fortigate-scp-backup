@@ -78,7 +78,7 @@ func TestGraylogLiveConfTailQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compose source group %d query: %v", groupIndex, err)
 		}
-		events, err := client.fetchPage(ctx, graylogSearchRequest{
+		page, err := client.fetchPage(ctx, graylogSearchRequest{
 			Query:  query,
 			Fields: graylogSelectedFields,
 			From:   0,
@@ -94,7 +94,7 @@ func TestGraylogLiveConfTailQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fetch source group %d: %v", groupIndex, err)
 		}
-		return events
+		return page.events
 	}
 
 	baseEvents := fetchPage(0, nil)

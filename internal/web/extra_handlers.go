@@ -15,8 +15,38 @@ import (
 
 // handleHealthz is a liveness probe.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte("ok"))
+	type component struct {
+		Status string `json:"status"`
+	}
+	response := struct {
+		Status     string               `json:"status"`
+		Components map[string]component `json:"components"`
+	}{
+		Status:     "ok",
+		Components: make(map[string]component),
+	}
+	s.healthMu.RLock()
+	probes := make(map[string]func(context.Context) string, len(s.healthProbes))
+	for name, probe := range s.healthProbes {
+		probes[name] = probe
+	}
+	s.healthMu.RUnlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	for name, probe := range probes {
+		response.Components[name] = component{Status: boundedHealthStatus(probe(ctx))}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func boundedHealthStatus(status string) string {
+	switch status {
+	case "healthy", "waiting", "stale", "degraded", "failed":
+		return status
+	default:
+		return "unknown"
+	}
 }
 
 // handleReadyz is a readiness probe: it verifies the database is reachable.

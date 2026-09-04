@@ -9,102 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
-
-func TestBuildTicketDescriptionRespectsByteLimit(t *testing.T) {
-	t.Parallel()
-	chain := chainRecord{
-		ID:           "11111111-2222-3333-4444-555555555555",
-		FirewallID:   9,
-		FirewallName: strings.Repeat("🔥", maxIdentityRunes),
-		User:         strings.Repeat("ü", maxIdentityRunes),
-		Unattributed: true,
-		Late:         true,
-	}
-	events := []Event{{
-		EventAt:         time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC),
-		Path:            strings.Repeat("界", maxDetailRunes),
-		ConfigAttribute: strings.Repeat("é", maxDetailRunes),
-	}}
-	for _, limit := range []int{1, 16, 1_024, 60_000} {
-		description := buildTicketDescription(chain, events, limit)
-		if len(description) > limit {
-			t.Fatalf("description bytes = %d, want <= %d", len(description), limit)
-		}
-		if !utf8.ValidString(description) {
-			t.Fatalf("description is not valid UTF-8 at byte limit %d", limit)
-		}
-	}
-}
-
-func TestBuildTicketDescriptionPreservesOmissionCountAndChainID(t *testing.T) {
-	t.Parallel()
-	const chainID = "11111111-2222-3333-4444-555555555555"
-	chain := chainRecord{
-		ID:           chainID,
-		FirewallID:   9,
-		FirewallName: strings.Repeat("firewall-name-", maxIdentityRunes),
-		User:         strings.Repeat("administrator-name-", maxIdentityRunes),
-		EventCount:   12_345,
-		Unattributed: true,
-		Late:         true,
-	}
-	events := []Event{{
-		EventAt: time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC),
-		Message: strings.Repeat("large-redacted-detail-", maxDetailRunes),
-	}}
-	description := buildTicketDescription(chain, events, 1_024)
-	if len(description) > 1_024 || !utf8.ValidString(description) {
-		t.Fatalf("description is not a valid 1,024-byte payload: bytes=%d", len(description))
-	}
-	if !strings.Contains(description, "12345 additional redacted change(s) omitted") {
-		t.Fatalf("description lost the exact omission count: %q", description)
-	}
-	if !strings.Contains(description, chainID) {
-		t.Fatalf("description lost the full chain ID: %q", description)
-	}
-}
-
-func TestTimelineLineIncludesAvailableRedactedContext(t *testing.T) {
-	t.Parallel()
-	event := Event{
-		EventAt:         time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC),
-		Source:          "fw-node-a",
-		DeviceName:      "branch-node-a",
-		DeviceID:        "FGT-TEST-0001",
-		VDOM:            "root",
-		UserAttribution: attributionUnattributed,
-		UI:              "ssh",
-		Action:          "Edit",
-		TransactionID:   "42",
-		Path:            "firewall.policy",
-		Object:          "1",
-		ConfigAttribute: "password=" + redactedValue,
-		LogID:           "0100044546",
-		LogDescription:  redactedValue,
-		Message:         redactedValue,
-		UUID:            "event-uuid",
-	}
-	line := timelineLine(event)
-	for _, expected := range []string{
-		"source=fw-node-a",
-		"device=branch-node-a",
-		"device_id=FGT-TEST-0001",
-		"vdom=root",
-		"attribution=unattributed",
-		"tx=42",
-		"attribute=password=" + redactedValue,
-		"log_id=0100044546",
-		"description=" + redactedValue,
-		"message=" + redactedValue,
-		"uuid=event-uuid",
-	} {
-		if !strings.Contains(line, expected) {
-			t.Fatalf("timeline line %q does not contain %q", line, expected)
-		}
-	}
-}
 
 func TestStoreAndOutboxNeverPersistRawSecrets(t *testing.T) {
 	t.Parallel()
@@ -1026,6 +931,7 @@ func TestStorePragmasSurviveConnectionTurnoverAndCascade(t *testing.T) {
 		{name: "busy_timeout", want: 5000},
 		{name: "synchronous", want: 1},
 		{name: "journal_mode", want: "wal"},
+		{name: "auto_vacuum", want: 2},
 	}
 	for _, pragma := range pragmas {
 		var got any
@@ -1046,6 +952,13 @@ func TestStorePragmasSurviveConnectionTurnoverAndCascade(t *testing.T) {
 	if got := countRowsWhere(t, s, "outbox", "chain_id = '"+chainID+"'"); got != 0 {
 		t.Fatalf("outbox rows remaining after cascade = %d", got)
 	}
+	var searchMatches int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'Edit'`).Scan(&searchMatches); err != nil {
+		t.Fatal(err)
+	}
+	if searchMatches != 0 {
+		t.Fatalf("full-text rows remaining after cascade = %d", searchMatches)
+	}
 }
 
 func newTestStore(t *testing.T, activation time.Time) *store {
@@ -1056,6 +969,87 @@ func newTestStore(t *testing.T, activation time.Time) *store {
 	}
 	t.Cleanup(func() { _ = s.close() })
 	return s
+}
+
+func TestStoreMigratesVersionOneAndRebuildsRedactedSearchIndex(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	event := testEvent(1, "fw-search", "alice", "search-migration", base.Add(time.Minute))
+	event.Message = "urgent vpn migration"
+	event.SemanticHash = semanticHash(event)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(time.Hour),
+		Events:  []Event{event},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE event_search`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = 1 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.initSchema(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, conftailSchemaVersion)
+	}
+	var matches int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_search WHERE event_search MATCH ?`, `"urgent" AND "vpn"`).Scan(&matches); err != nil {
+		t.Fatal(err)
+	}
+	if matches != 1 {
+		t.Fatalf("rebuilt search matches = %d, want 1", matches)
+	}
+}
+
+func TestStoreMigratesVersionTwoAndCreatesGlobalIgnoreTables(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if _, err := s.db.Exec(`DROP TABLE ignored_events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE global_ignore_rules`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = 2 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.initSchema(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, conftailSchemaVersion)
+	}
+	event := testEvent(1, "fw-migration.example.test", "operator", "global-ignore-migration", base.Add(time.Minute))
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(2 * time.Minute),
+		Events:  []Event{event},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := s.createGlobalIgnoreRule(
+		context.Background(),
+		storedEventID(t, s, event.GraylogID),
+		ignoreRuleKindAttribute,
+		"operator",
+		base.Add(3*time.Minute),
+	); err != nil || !created {
+		t.Fatalf("create rule after v2 migration: created=%t err=%v", created, err)
+	}
 }
 
 func testEvent(firewallID int, firewallName, user, graylogID string, eventAt time.Time) Event {

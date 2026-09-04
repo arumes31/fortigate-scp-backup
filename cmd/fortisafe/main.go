@@ -173,16 +173,19 @@ func main() {
 	registry.Register(fgt_confconv.New(cfg, logger))
 	registry.Register(fgtconftail.New(cfg, logger))
 	if err := registry.MountEnabled(router, extension.Deps{
-		Context:       ctx,
-		DB:            store.Pool(),
-		LogActivity:   store.LogActivity,
-		LoginRequired: sess.LoginRequired,
-		CurrentUser:   func(r *http.Request) string { return sess.User(r).Username },
-		BroadcastOp:   srv.BroadcastOp,
-		Schedule:      sched.Schedule,
-		Logger:        logger,
-		TZ:            cfg.TZ,
-		DataDir:       cfg.DataDir,
+		Context:        ctx,
+		DB:             store.Pool(),
+		LogActivity:    store.LogActivity,
+		LoginRequired:  sess.LoginRequired,
+		CurrentUser:    func(r *http.Request) string { return sess.User(r).Username },
+		PageBase:       srv.PageBase,
+		BroadcastOp:    srv.BroadcastOp,
+		Schedule:       sched.Schedule,
+		ScheduleCron:   sched.ScheduleCron,
+		RegisterHealth: srv.RegisterHealth,
+		Logger:         logger,
+		TZ:             cfg.TZ,
+		DataDir:        cfg.DataDir,
 		FirewallCreds: func(ctx context.Context, id int) (string, string, string, int, error) {
 			fw, err := store.GetFirewall(ctx, id)
 			if err != nil {

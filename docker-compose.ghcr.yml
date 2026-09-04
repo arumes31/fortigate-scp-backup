@@ -35,7 +35,7 @@ services:
       - "BOOTSTRAP_ADMIN_PASSWORD_FILE=/run/secrets/bootstrap_admin_password"
       - "COOKIE_SECURE=${COOKIE_SECURE:-true}"
       - "ENABLE_HSTS=${ENABLE_HSTS:-true}"
-      - "TRUST_PROXY_HEADERS=false"
+      - "TRUST_PROXY_HEADERS=true"
 
       # --- Encryption at Rest ---
       - "ENCRYPTION_KEY_FILE=/run/secrets/encryption_key"
@@ -52,7 +52,7 @@ services:
       - "MAIL_SERVER=smtp.test.com"
       - "MAIL_PORT=25"
       - "MAIL_USER=fortisafe@test.com"
-      - "MAIL_PASSWORD=${MAIL_PASSWORD:-}"
+      - "MAIL_PASSWORD_FILE=/run/secrets/mail_password"
       - "MAIL_RECIPIENT=user1@test.com"
 
       # --- Extension: FGT ADM VPN Config (Optional) ---
@@ -117,6 +117,7 @@ services:
       - bootstrap_admin_password
       - totp_secret
       - radius_secret
+      - mail_password
       # Uncomment with FGT_CONFTAIL_HOOKWISE_TOKEN_FILE above.
       # - fgt_conftail_hookwise_token
     depends_on:
@@ -157,6 +158,8 @@ secrets:
     file: ./secrets/totp_secret
   radius_secret:
     file: ./secrets/radius_secret
+  mail_password:
+    file: ./secrets/mail_password
   # Optional fgt_conftail Hookwise token-file fallback.
   # fgt_conftail_hookwise_token:
   #   file: ./secrets/fgt_conftail_hookwise_token

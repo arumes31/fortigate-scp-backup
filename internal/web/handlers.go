@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,12 +23,14 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // ---- page data structs (each embeds Base for the shared layout) ----
 
 type loginData struct {
 	Error         string
+	Lang          string
 	TOTPEnabled   bool
 	RadiusEnabled bool
 }
@@ -36,9 +40,11 @@ const csvRequestBodyTimeout = 2 * time.Minute
 // loginView builds the login page data, carrying the TOTP/RADIUS flags the
 // template needs to decide whether to reveal the TOTP field and show the
 // "approve on your mobile" RADIUS banner.
-func (s *Server) loginView(errMsg string) loginData {
+func (s *Server) loginView(r *http.Request, errMsg string) loginData {
+	lang := langFromRequest(r)
 	return loginData{
-		Error:         errMsg,
+		Error:         webui.Localize(lang, errMsg),
+		Lang:          lang,
 		TOTPEnabled:   s.cfg.TOTPEnabled,
 		RadiusEnabled: s.cfg.RadiusEnabled,
 	}
@@ -49,39 +55,72 @@ type indexData struct {
 	Error           string
 	Firewalls       []models.Firewall
 	NextRuns        map[int]time.Time
-	PendingHostKeys map[int]sshhostkey.PendingKey
+	PendingHostKeys map[int]*sshhostkey.PendingKey
 }
 
 type backupsData struct {
 	Base    BaseData
 	FwID    int
+	FQDN    string
 	Backups []models.Backup
 	Error   string
 }
 
 type errorsData struct {
-	Base   BaseData
-	Errors []models.Firewall
-	Error  string
+	Base        BaseData
+	Errors      []backupErrorView
+	Error       string
+	RetryQueued bool
+}
+
+type backupErrorView struct {
+	models.BackupError
+	NextRun time.Time
 }
 
 type activityLogData struct {
 	Base       BaseData
 	Logs       []models.ActivityLog
 	Error      string
+	Filters    activityLogFilterView
+	HasFilters bool
+	Total      int
 	Page       int
 	TotalPages int
+	PrevURL    string
+	NextURL    string
+}
+
+type activityLogFilterView struct {
+	Query  string
+	User   string
+	Action string
+	From   string
+	To     string
+}
+
+type activityLogRequest struct {
+	Filter models.ActivityLogFilter
+	View   activityLogFilterView
+	Page   int
 }
 
 type changePasswordData struct {
-	Base  BaseData
-	Error string
+	Base    BaseData
+	Error   string
+	Success bool
 }
 
 type searchResult struct {
 	FQDN     string
 	Filename string
 	Line     string
+	Segments []searchSegment
+}
+
+type searchSegment struct {
+	Text  string
+	Match bool
 }
 
 type searchData struct {
@@ -95,7 +134,7 @@ type searchData struct {
 // handleLogin renders and processes the login form (public route).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.render(w, "login.html", s.loginView(""))
+		s.render(w, "login.html", s.loginView(r, ""))
 		return
 	}
 
@@ -111,7 +150,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rlKey := ipKey + "|" + username
 	if !s.limiter.allowed(rlKey) || !s.ipLimiter.allowed(ipKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
-		s.render(w, "login.html", s.loginView("Too many failed attempts. Please try again later."))
+		s.render(w, "login.html", s.loginView(r, "Too many failed attempts. Please try again later."))
 		return
 	}
 
@@ -140,14 +179,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 				s.limiter.fail(rlKey)
 				s.ipLimiter.fail(ipKey)
 				s.store.LogActivity(username, "Login Failed", "Invalid TOTP code")
-				s.render(w, "login.html", s.loginView("Invalid TOTP code"))
+				s.render(w, "login.html", s.loginView(r, "Invalid TOTP code"))
 				return
 			}
 		} else {
 			s.limiter.fail(rlKey)
 			s.ipLimiter.fail(ipKey)
 			s.store.LogActivity(username, "Login Failed", "TOTP required but no secret found")
-			s.render(w, "login.html", s.loginView("TOTP required but no secret found"))
+			s.render(w, "login.html", s.loginView(r, "TOTP required but no secret found"))
 			return
 		}
 	}
@@ -156,7 +195,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.limiter.fail(rlKey)
 		s.ipLimiter.fail(ipKey)
 		s.store.LogActivity(username, "Login Failed", "Invalid credentials")
-		s.render(w, "login.html", s.loginView("Invalid credentials"))
+		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 		return
 	}
 
@@ -165,7 +204,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.sess.Login(w, r, username, isRadius); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
-		s.render(w, "login.html", s.loginView("Failed to establish session. Please try again."))
+		s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))
 		return
 	}
 	s.store.LogActivity(username, "Login Success", "User logged in")
@@ -277,14 +316,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nextRuns := make(map[int]time.Time, len(fws))
-	pendingHostKeys := make(map[int]sshhostkey.PendingKey)
+	pendingHostKeys := make(map[int]*sshhostkey.PendingKey)
 	for _, fw := range fws {
 		if info, ok := s.sched.Info(BackupJobID(fw.ID)); ok {
 			nextRuns[fw.ID] = info.NextRun
 		}
 		if s.hostKeyManager != nil {
 			if pending, ok := s.hostKeyManager.Pending(fw.FQDN, fw.SSHPort); ok {
-				pendingHostKeys[fw.ID] = pending
+				pendingHostKeys[fw.ID] = &pending
 			}
 		}
 	}
@@ -437,14 +476,24 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := s.base(r, "Backups", "firewalls")
+	firewall, err := s.store.GetFirewall(r.Context(), fwID)
+	if errors.Is(err, database.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.logger.Error("failed to retrieve firewall for backups", "fw_id", fwID, "err", err)
+		s.render(w, "backups.html", backupsData{Base: s.base(r, "Backups", "firewalls"), FwID: fwID, Error: "Failed to load firewall details"})
+		return
+	}
+	base := s.base(r, "Backups · "+firewall.FQDN, "firewalls")
 	backups, err := s.store.ListBackups(r.Context(), fwID)
 	if err != nil {
 		s.logger.Error("failed to retrieve backups", "fw", fwID, "err", err)
-		s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, Error: "Failed to load backups"})
+		s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, FQDN: firewall.FQDN, Error: "Failed to load backups"})
 		return
 	}
-	s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, Backups: backups})
+	s.render(w, "backups.html", backupsData{Base: base, FwID: fwID, FQDN: firewall.FQDN, Backups: backups})
 }
 
 // handleDownload serves a stored configuration file, decrypting it on the fly
@@ -505,23 +554,47 @@ func (s *Server) handleErrors(w http.ResponseWriter, r *http.Request) {
 	errs, err := s.store.ListErrors(r.Context())
 	if err != nil {
 		s.logger.Error("failed to retrieve errors", "err", err)
-		s.render(w, "errors.html", errorsData{Base: base, Error: "Failed to load errors"})
+		s.render(w, "errors.html", errorsData{Base: base, Error: "Could not load backup failures. Retry the request or check the application log."})
 		return
 	}
-	s.render(w, "errors.html", errorsData{Base: base, Errors: errs})
+	views := make([]backupErrorView, 0, len(errs))
+	for _, failure := range errs {
+		view := backupErrorView{BackupError: failure}
+		if info, ok := s.sched.Info(BackupJobID(failure.ID)); ok {
+			view.NextRun = info.NextRun
+		}
+		views = append(views, view)
+	}
+	s.render(w, "errors.html", errorsData{
+		Base: base, Errors: views, RetryQueued: r.URL.Query().Get("retry") == "queued",
+	})
 }
 
 // handleBackupNow triggers an asynchronous backup then returns to the index so
 // the request does not block on the SSH/SCP timeout.
 func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
+	returnTo := "/"
+	if r.FormValue("return_to") == "/errors" {
+		returnTo = "/errors"
+	}
 	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
-	if err != nil {
-		http.Redirect(w, r, "/", http.StatusFound)
+	if err != nil || fwID <= 0 {
+		s.store.LogActivity(s.sess.User(r).Username, "Backup Now Failed", "Rejected manual backup with invalid firewall ID")
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
+		return
+	}
+	if _, err := s.store.GetFirewall(r.Context(), fwID); err != nil {
+		s.logger.Warn("manual backup rejected", "fw_id", fwID, "err", err)
+		s.store.LogActivity(s.sess.User(r).Username, "Backup Now Failed", fmt.Sprintf("Rejected manual backup for unknown fw_id %d", fwID))
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
 		return
 	}
 	s.store.LogActivity(s.sess.User(r).Username, "Backup Now", fmt.Sprintf("Manual backup triggered for fw_id %d", fwID))
 	s.backup.Enqueue(fwID)
-	http.Redirect(w, r, "/", http.StatusFound)
+	if returnTo == "/errors" {
+		returnTo += "?retry=queued"
+	}
+	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
 
 // handleChangePassword renders and processes the password change form.
@@ -532,20 +605,23 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	if d.IsRadiusUser {
 		s.store.LogActivity(d.Username, "Password Change Attempt", "Password change denied for RADIUS user")
-		http.Redirect(w, r, "/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	if r.Method != http.MethodPost {
-		s.render(w, "change_password.html", changePasswordData{Base: base})
+		s.render(w, "change_password.html", changePasswordData{
+			Base: base, Success: r.URL.Query().Get("updated") == "1",
+		})
 		return
 	}
 
 	oldPassword := r.FormValue("old_password")
 	newPassword := r.FormValue("new_password")
 	confirm := r.FormValue("confirm_password")
-	if newPassword != confirm {
-		s.render(w, "change_password.html", changePasswordData{Base: base, Error: "New passwords do not match"})
+	if err := appsecurity.ValidateNewPassword(oldPassword, newPassword, confirm); err != nil {
+		s.store.LogActivity(d.Username, "Password Change Rejected", "Local password policy rejected the request")
+		s.render(w, "change_password.html", changePasswordData{Base: base, Error: err.Error()})
 		return
 	}
 	ok, err := s.store.ChangePassword(ctx, d.Username, oldPassword, newPassword)
@@ -556,10 +632,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok {
 		s.store.LogActivity(d.Username, "Change Password", "Password changed successfully")
-		http.Redirect(w, r, "/", http.StatusFound)
+		http.Redirect(w, r, "/change_password?updated=1", http.StatusSeeOther)
 		return
 	}
-	s.render(w, "change_password.html", changePasswordData{Base: base, Error: "Old password incorrect"})
+	s.render(w, "change_password.html", changePasswordData{Base: base, Error: "Current password is incorrect."})
 }
 
 // handleSearch searches the newest configuration of every firewall.
@@ -568,13 +644,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	data := searchData{Base: s.base(r, "Search", "search")}
 
 	if r.Method == http.MethodPost {
+		started := time.Now()
+		actor := s.sess.User(r).Username
+		if actor == "" {
+			actor = "unknown"
+		}
+		outcome := "empty"
+		defer func() {
+			duration := time.Since(started)
+			details := fmt.Sprintf("outcome=%s results=%d truncated=%t duration_ms=%d", outcome, len(data.Results), data.Truncated, duration.Milliseconds())
+			s.store.LogActivity(actor, "Configuration Search", details)
+			s.logger.Info("configuration search completed", "actor", actor, "outcome", outcome,
+				"result_count", len(data.Results), "truncated", data.Truncated, "dur_ms", duration.Milliseconds())
+		}()
 		query := r.FormValue("query")
 		data.Query = query
 		if query != "" {
-			s.store.LogActivity(s.sess.User(r).Username, "Search", "Performed search for: "+query)
-
 			pattern, err := buildSearchPattern(query)
 			if err != nil {
+				outcome = "invalid"
 				data.Error = "Invalid search pattern: " + err.Error()
 				s.render(w, "search.html", data)
 				return
@@ -582,18 +670,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 			refs, err := s.store.ListFirewallRefs(ctx)
 			if err != nil {
+				outcome = "error"
 				data.Error = "An error occurred during search: " + err.Error()
 				s.render(w, "search.html", data)
 				return
 			}
 			for _, ref := range refs {
-				results := s.searchFirewall(ref, pattern)
+				results := s.searchFirewall(ref, pattern, maxSearchResults-len(data.Results))
 				data.Results = append(data.Results, results...)
 				if len(data.Results) >= maxSearchResults {
-					data.Results = data.Results[:maxSearchResults]
 					data.Truncated = true
 					break
 				}
+			}
+			if data.Truncated {
+				outcome = "truncated"
+			} else if len(data.Results) > 0 {
+				outcome = "success"
 			}
 		}
 	}
@@ -617,7 +710,10 @@ func buildSearchPattern(query string) (*regexp.Regexp, error) {
 }
 
 // searchFirewall scans the newest .conf file of one firewall for pattern matches.
-func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) []searchResult {
+func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp, limit int) []searchResult {
+	if limit <= 0 {
+		return nil
+	}
 	fwDir := filepath.Join(s.cfg.BackupDir, strconv.Itoa(ref.ID))
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
@@ -662,43 +758,168 @@ func (s *Server) searchFirewall(ref models.FirewallRef, pattern *regexp.Regexp) 
 	for sc.Scan() {
 		line := sc.Text()
 		if pattern.MatchString(line) {
+			trimmed := strings.TrimSpace(line)
 			results = append(results, searchResult{
 				FQDN:     ref.FQDN,
 				Filename: relName,
-				Line:     strings.TrimSpace(line),
+				Line:     trimmed,
+				Segments: searchLineSegments(trimmed, pattern),
 			})
+			if len(results) >= limit {
+				break
+			}
 		}
 	}
 	return results
 }
 
+func searchLineSegments(line string, pattern *regexp.Regexp) []searchSegment {
+	indexes := pattern.FindAllStringIndex(line, -1)
+	if len(indexes) == 0 {
+		return []searchSegment{{Text: line}}
+	}
+	segments := make([]searchSegment, 0, len(indexes)*2+1)
+	last := 0
+	for _, index := range indexes {
+		if index[0] > last {
+			segments = append(segments, searchSegment{Text: line[last:index[0]]})
+		}
+		if index[1] > index[0] {
+			segments = append(segments, searchSegment{Text: line[index[0]:index[1]], Match: true})
+		}
+		last = index[1]
+	}
+	if last < len(line) {
+		segments = append(segments, searchSegment{Text: line[last:]})
+	}
+	return segments
+}
+
 const activityPageSize = 100
+
+const (
+	activityQueryMaxRunes    = 256
+	activityIdentityMaxRunes = 128
+)
+
+func parseActivityLogRequest(r *http.Request, location *time.Location) (activityLogRequest, error) {
+	if location == nil {
+		location = time.UTC
+	}
+	values := r.URL.Query()
+	request := activityLogRequest{
+		View: activityLogFilterView{
+			Query:  strings.TrimSpace(values.Get("q")),
+			User:   strings.TrimSpace(values.Get("user")),
+			Action: strings.TrimSpace(values.Get("action")),
+			From:   strings.TrimSpace(values.Get("from")),
+			To:     strings.TrimSpace(values.Get("to")),
+		},
+		Page: 1,
+	}
+	if utf8.RuneCountInString(request.View.Query) > activityQueryMaxRunes {
+		return request, errors.New("query is too long")
+	}
+	if utf8.RuneCountInString(request.View.User) > activityIdentityMaxRunes {
+		return request, errors.New("user filter is too long")
+	}
+	if utf8.RuneCountInString(request.View.Action) > activityIdentityMaxRunes {
+		return request, errors.New("action filter is too long")
+	}
+	request.Filter.Query = request.View.Query
+	request.Filter.Username = request.View.User
+	request.Filter.Action = request.View.Action
+	if request.View.From != "" {
+		from, err := time.ParseInLocation(time.DateOnly, request.View.From, location)
+		if err != nil {
+			return request, errors.New("invalid from date; use YYYY-MM-DD")
+		}
+		request.Filter.From = from
+	}
+	if request.View.To != "" {
+		to, err := time.ParseInLocation(time.DateOnly, request.View.To, location)
+		if err != nil {
+			return request, errors.New("invalid to date; use YYYY-MM-DD")
+		}
+		request.Filter.To = to.AddDate(0, 0, 1)
+	}
+	if !request.Filter.From.IsZero() && !request.Filter.To.IsZero() && !request.Filter.From.Before(request.Filter.To) {
+		return request, errors.New("from date must not be after to date")
+	}
+	if page, err := strconv.Atoi(values.Get("page")); err == nil && page > 0 {
+		request.Page = page
+	}
+	return request, nil
+}
+
+func (view activityLogFilterView) hasFilters() bool {
+	return view.Query != "" || view.User != "" || view.Action != "" || view.From != "" || view.To != ""
+}
+
+func activityLogPageURL(view activityLogFilterView, page int) string {
+	values := url.Values{}
+	for key, value := range map[string]string{
+		"q": view.Query, "user": view.User, "action": view.Action, "from": view.From, "to": view.To,
+	} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(page))
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return "/activity_log?" + encoded
+	}
+	return "/activity_log"
+}
 
 // handleActivityLog renders a page of activity, newest first.
 func (s *Server) handleActivityLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	base := s.base(r, "Activity Log", "activity")
-
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
+	request, err := parseActivityLogRequest(r, s.cfg.TZ)
+	if err != nil {
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: err.Error(), Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: 1, TotalPages: 1,
+		})
+		return
 	}
-	total, err := s.store.CountActivityLogs(ctx)
+	total, err := s.store.CountActivityLogs(ctx, request.Filter)
 	if err != nil {
 		s.logger.Error("failed to count activity logs", "err", err)
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: "Failed to load activity-log count", Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: 1, TotalPages: 1,
+		})
+		return
 	}
 	totalPages := (total + activityPageSize - 1) / activityPageSize
 	if totalPages < 1 {
 		totalPages = 1
 	}
-	if page > totalPages {
-		page = totalPages
+	if request.Page > totalPages {
+		request.Page = totalPages
 	}
-	logs, err := s.store.ListActivityLogs(ctx, activityPageSize, (page-1)*activityPageSize)
+	logs, err := s.store.ListActivityLogs(ctx, request.Filter, activityPageSize, (request.Page-1)*activityPageSize)
 	if err != nil {
 		s.logger.Error("failed to retrieve activity logs", "err", err)
-		s.render(w, "activity_log.html", activityLogData{Base: base, Error: "Failed to load activity logs", Page: 1, TotalPages: 1})
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: "Failed to load activity logs", Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: request.Page, TotalPages: totalPages,
+		})
 		return
 	}
-	s.render(w, "activity_log.html", activityLogData{Base: base, Logs: logs, Page: page, TotalPages: totalPages})
+	data := activityLogData{
+		Base: base, Logs: logs, Filters: request.View, HasFilters: request.View.hasFilters(),
+		Total: total, Page: request.Page, TotalPages: totalPages,
+	}
+	if request.Page > 1 {
+		data.PrevURL = activityLogPageURL(request.View, request.Page-1)
+	}
+	if request.Page < totalPages {
+		data.NextURL = activityLogPageURL(request.View, request.Page+1)
+	}
+	s.render(w, "activity_log.html", data)
 }

@@ -7,9 +7,57 @@ package security
 import (
 	"crypto/subtle"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	// MinPasswordBytes is the minimum accepted local-password length.
+	MinPasswordBytes = 16
+	// MaxPasswordBytes matches bcrypt's maximum useful input length.
+	MaxPasswordBytes = 72
+)
+
+type passwordValidationError string
+
+func (e passwordValidationError) Error() string { return string(e) }
+
+var (
+	ErrPasswordRequired    error = passwordValidationError("Enter a new password.")
+	ErrPasswordInvalidUTF8 error = passwordValidationError("New password must be valid UTF-8.")
+	ErrPasswordTooShort    error = passwordValidationError("New password must contain at least 16 UTF-8 bytes.")
+	ErrPasswordTooLong     error = passwordValidationError("New password must contain at most 72 UTF-8 bytes.")
+	ErrPasswordUnchanged   error = passwordValidationError("New password must be different from your current password.")
+	ErrPasswordMismatch    error = passwordValidationError("New password confirmation does not match.")
+)
+
+// ValidateNewPassword applies the complete local-password change policy. Byte
+// length is intentional: bcrypt accepts at most 72 bytes, and a Unicode code
+// point may occupy more than one UTF-8 byte. Clients may mirror these checks for
+// feedback, but callers must always enforce this function server-side.
+func ValidateNewPassword(oldPassword, newPassword, confirmation string) error {
+	if newPassword == "" {
+		return ErrPasswordRequired
+	}
+	if !utf8.ValidString(newPassword) {
+		return ErrPasswordInvalidUTF8
+	}
+	length := len([]byte(newPassword))
+	if length < MinPasswordBytes {
+		return ErrPasswordTooShort
+	}
+	if length > MaxPasswordBytes {
+		return ErrPasswordTooLong
+	}
+	if subtle.ConstantTimeCompare([]byte(oldPassword), []byte(newPassword)) == 1 {
+		return ErrPasswordUnchanged
+	}
+	if newPassword != confirmation {
+		return ErrPasswordMismatch
+	}
+	return nil
+}
 
 // HashPassword returns a bcrypt hash of the given plaintext.
 func HashPassword(plain string) (string, error) {

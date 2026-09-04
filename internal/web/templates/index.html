@@ -1,12 +1,12 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Firewalls</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Firewalls"}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <div class="card">
     <div class="card-header collapsible-header" id="addToggle">
-        <h2 class="mt-0 mb-0">Add Firewall</h2>
-        <button type="button" class="btn btn-sm" id="addToggleBtn">Show</button>
+        <h2 class="mt-0 mb-0">{{L .Base.Lang "Add Firewall"}}</h2>
+        <button type="button" class="btn btn-sm" id="addToggleBtn">{{L .Base.Lang "Show"}}</button>
     </div>
     <div id="addBody" hidden>
         <form method="post" action="/">
@@ -16,43 +16,43 @@
                     <input type="text" id="fqdn" name="fqdn" required>
                 </div>
                 <div class="field">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" name="username" placeholder="default SCP user">
-                    <span class="hint">Leave blank to use the configured default.</span>
+                    <label for="username">{{L .Base.Lang "Username"}}</label>
+                    <input type="text" id="username" name="username" placeholder="{{L .Base.Lang "default SCP user"}}">
+                    <span class="hint">{{L .Base.Lang "Leave blank to use the configured default."}}</span>
                 </div>
                 <div class="field">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" placeholder="default SCP password">
+                    <label for="password">{{L .Base.Lang "Password"}}</label>
+                    <input type="password" id="password" name="password" placeholder="{{L .Base.Lang "default SCP password"}}">
                 </div>
                 <div class="field">
-                    <label for="interval_minutes">Interval (minutes)</label>
+                    <label for="interval_minutes">{{L .Base.Lang "Interval (minutes)"}}</label>
                     <input type="number" id="interval_minutes" name="interval_minutes" min="1" value="180" required>
                 </div>
                 <div class="field">
-                    <label for="cron_expr">Cron (optional)</label>
-                    <input type="text" id="cron_expr" name="cron_expr" placeholder="e.g. 0 3 * * *">
-                    <span class="hint">Overrides interval. Standard 5-field cron.</span>
+                    <label for="cron_expr">{{L .Base.Lang "Cron (optional)"}}</label>
+                    <input type="text" id="cron_expr" name="cron_expr" placeholder="{{L .Base.Lang "e.g. 0 3 * * *"}}">
+                    <span class="hint">{{L .Base.Lang "Overrides interval. Standard 5-field cron."}}</span>
                 </div>
                 <div class="field">
-                    <label for="retention_count">Retention (copies)</label>
+                    <label for="retention_count">{{L .Base.Lang "Retention (copies)"}}</label>
                     <input type="number" id="retention_count" name="retention_count" min="0" value="7" required>
                 </div>
                 <div class="field">
-                    <label for="ssh_port">SSH Port</label>
+                    <label for="ssh_port">{{L .Base.Lang "SSH Port"}}</label>
                     <input type="number" id="ssh_port" name="ssh_port" min="1" value="9422" required>
                 </div>
             </div>
             <div class="toolbar">
-                <button type="submit" class="btn btn-primary">Add Firewall</button>
+                <button type="submit" class="btn btn-primary">{{L .Base.Lang "Add Firewall"}}</button>
             </div>
         </form>
 
-        <h3>Bulk Upload (CSV)</h3>
-        <p class="hint">Headers: <code>fqdn,username,password,interval_minutes,retention_count,ssh_port</code>. Required: <code>fqdn</code>, <code>interval_minutes</code>, <code>retention_count</code>.</p>
+        <h3>{{L .Base.Lang "Bulk Upload (CSV)"}}</h3>
+        <p class="hint">{{L .Base.Lang "Headers:"}} <code>fqdn,username,password,interval_minutes,retention_count,ssh_port</code>. {{L .Base.Lang "Required:"}} <code>fqdn</code>, <code>interval_minutes</code>, <code>retention_count</code>.</p>
         <form method="post" action="/" enctype="multipart/form-data">
             <div class="toolbar">
                 <input type="file" name="csv_file" accept=".csv" required>
-                <button type="submit" class="btn">Upload CSV</button>
+                <button type="submit" class="btn">{{L .Base.Lang "Upload CSV"}}</button>
             </div>
         </form>
     </div>
@@ -60,55 +60,69 @@
 
 <div class="card pad-0">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Configured Firewalls</h2>
-        <div class="toolbar">
-            <input type="search" id="fwFilter" placeholder="Filter by FQDN or status…">
-            <a href="/errors" class="btn btn-sm">View Errors</a>
+        <h2 class="mt-0 mb-0">{{L .Base.Lang "Configured Firewalls"}}</h2>
+        <div class="toolbar firewall-filter-toolbar">
+            <label for="fwFilter">{{L .Base.Lang "Filter firewalls"}}</label>
+            <input type="search" id="fwFilter" placeholder="{{L .Base.Lang "Filter by FQDN or status…"}}">
+            <a href="/errors" class="btn btn-sm">{{L .Base.Lang "View Errors"}}</a>
         </div>
     </div>
     {{if .Firewalls}}
     <div class="table-wrap">
-        <table class="data" id="fwTable">
+        <table class="data firewall-worklist" id="fwTable">
             <thead>
                 <tr>
-                    <th>ID</th><th>FQDN</th><th>User</th><th>Interval</th><th>Retention</th>
-                    <th>Last Backup</th><th>Next Run</th><th>Status</th><th>SSH Port</th><th>Actions</th>
+                    <th>FQDN</th><th>{{L $.Base.Lang "Status"}}</th><th>{{L $.Base.Lang "Schedule"}}</th><th>{{L $.Base.Lang "Last Backup"}}</th><th>{{L $.Base.Lang "Actions"}}</th>
                 </tr>
             </thead>
             <tbody>
             {{$root := .}}
             {{range .Firewalls}}
                 {{$firewall := .}}
-                <tr data-fw="{{.ID}}">
-                    <td>{{.ID}}</td>
-                    <td class="fw-fqdn">{{.FQDN}}</td>
-                    <td class="muted">{{.Username}}</td>
-                    <td>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}{{.IntervalMin}} min{{end}}</td>
-                    <td>{{.RetentionCount}}</td>
-                    <td class="muted">{{fmtTime .LastBackup}}</td>
-                    <td class="muted">{{fmtTime (index $root.NextRuns .ID)}}</td>
+                <tr id="firewall-{{.ID}}" data-fw="{{.ID}}">
+                    <td class="fw-fqdn">
+                        <strong>{{.FQDN}}</strong>
+                        <details class="fw-secondary"><summary>{{L $root.Base.Lang "Details"}}</summary>
+                            <dl><div><dt>ID</dt><dd>{{.ID}}</dd></div><div><dt>{{L $root.Base.Lang "User"}}</dt><dd>{{if .Username}}{{.Username}}{{else}}{{L $root.Base.Lang "default"}}{{end}}</dd></div><div><dt>{{L $root.Base.Lang "Retention"}}</dt><dd>{{.RetentionCount}} {{L $root.Base.Lang "copies"}}</dd></div><div><dt>{{L $root.Base.Lang "SSH port"}}</dt><dd>{{.SSHPort}}</dd></div></dl>
+                        </details>
+                    </td>
                     <td class="fw-status">{{template "statusPill" .Status}}</td>
-                    <td>{{.SSHPort}}</td>
+                    {{$nextRun := index $root.NextRuns .ID}}
+                    <td class="fw-schedule"><span>{{if .CronExpr}}<code>{{.CronExpr}}</code>{{else}}{{L $root.Base.Lang "Every"}} {{.IntervalMin}} min{{end}}</span><small>{{L $root.Base.Lang "Next:"}} {{if isZero $nextRun}}—{{else}}<time datetime="{{fmtMachineTime $nextRun}}">{{fmtTime $nextRun}}</time>{{end}}</small></td>
+                    <td class="muted">{{if isZero .LastBackup}}—{{else}}<time datetime="{{fmtMachineTime .LastBackup}}">{{fmtTime .LastBackup}}</time>{{end}}</td>
                     <td>
                         <div class="actions">
-                            <a class="btn btn-sm" href="/backups/{{.ID}}">Backups</a>
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline">
-                                <button type="submit" class="btn btn-sm">Backup Now</button>
-                            </form>
-                            <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">Test</button>
+                            <div class="primary-actions">
+                                <form method="post" action="/backup_now/{{.ID}}"><button type="submit" class="btn btn-sm btn-primary">{{L $root.Base.Lang "Backup Now"}}</button></form>
+                                <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">{{L $root.Base.Lang "Test"}}</button>
+                            </div>
+                            <details class="row-actions-menu"><summary class="btn btn-sm">{{L $root.Base.Lang "More"}}</summary><div>
+                                <a class="btn btn-sm" href="/backups/{{.ID}}">{{L $root.Base.Lang "Backups"}}</a>
+                                <button type="button" class="btn btn-sm btn-danger" data-dialog-open="deleteFirewall{{.ID}}">{{L $root.Base.Lang "Delete"}}</button>
+                            </div></details>
                             {{with index $root.PendingHostKeys .ID}}
                             <div class="ssh-key-warning" role="alert">
-                                <strong>SSH host key changed</strong><br>
+                                <strong>{{L $root.Base.Lang "SSH host key changed"}}</strong><br>
                                 <code title="{{.Algorithm}}">{{.Fingerprint}}</code>
-                                <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" style="display:inline" onsubmit="return confirm('Accept the detected SSH key {{.Fingerprint}}?');">
-                                    <button type="submit" class="btn btn-sm btn-danger">Accept new SSH key</button>
-                                </form>
+                                <button type="button" class="btn btn-sm btn-danger" data-dialog-open="acceptHostKey{{$firewall.ID}}">{{L $root.Base.Lang "Accept new SSH key"}}</button>
                             </div>
+                            <dialog class="ui-dialog" id="acceptHostKey{{$firewall.ID}}" data-ui-dialog aria-labelledby="acceptHostKeyTitle{{$firewall.ID}}">
+                                <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" class="ui-dialog__body">
+                                    <h2 id="acceptHostKeyTitle{{$firewall.ID}}">{{L $root.Base.Lang "Accept SSH host key for"}} {{$firewall.FQDN}}</h2>
+                                    <p>{{L $root.Base.Lang "Confirm fingerprint"}} <code>{{.Fingerprint}}</code> {{L $root.Base.Lang "before replacing the trusted key."}}</p>
+                                    <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>{{L $root.Base.Lang "Cancel"}}</button><button type="submit" class="btn btn-danger">{{L $root.Base.Lang "Accept new SSH key"}}</button></div>
+                                </form>
+                            </dialog>
                             {{end}}
-                            <form method="post" action="/delete/{{.ID}}" style="display:inline" onsubmit="return confirm('Delete firewall {{.FQDN}}?');">
-                                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
-                            </form>
                         </div>
+                        <dialog class="ui-dialog" id="deleteFirewall{{.ID}}" data-ui-dialog data-confirm-text="{{.FQDN}}" aria-labelledby="deleteFirewallTitle{{.ID}}">
+                            <form method="post" action="/delete/{{.ID}}" class="ui-dialog__body">
+                                <h2 id="deleteFirewallTitle{{.ID}}">{{L $root.Base.Lang "Delete"}} {{.FQDN}}</h2>
+                                <p>{{L $root.Base.Lang "This removes the firewall, its scheduled job, and its stored backups."}}</p>
+                                <label>{{L $root.Base.Lang "Type"}} {{.FQDN}} {{L $root.Base.Lang "to confirm"}}<input type="text" data-confirm-input autocomplete="off"></label>
+                                <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>{{L $root.Base.Lang "Cancel"}}</button><button type="submit" class="btn btn-danger" data-confirm-action disabled>{{L $root.Base.Lang "Delete firewall"}}</button></div>
+                            </form>
+                        </dialog>
                     </td>
                 </tr>
             {{end}}
@@ -116,7 +130,7 @@
         </table>
     </div>
     {{else}}
-    <div class="empty">No firewalls configured yet. Add one above to get started.</div>
+    <div class="empty">{{L .Base.Lang "No firewalls configured yet. Add one above to get started."}}</div>
     {{end}}
 </div>
 {{end}}
@@ -130,90 +144,4 @@
 {{- else}}<span class="pill pill-muted">—</span>{{end}}
 {{- end}}
 
-{{define "scripts"}}
-<script>
-    (function () {
-        var toggle = document.getElementById('addToggle');
-        var body = document.getElementById('addBody');
-        var btn = document.getElementById('addToggleBtn');
-        if (toggle && body) {
-            toggle.addEventListener('click', function () {
-                if (body.hasAttribute('hidden')) {
-                    body.removeAttribute('hidden');
-                    if (btn) { btn.textContent = 'Hide'; }
-                } else {
-                    body.setAttribute('hidden', '');
-                    if (btn) { btn.textContent = 'Show'; }
-                }
-            });
-        }
-        // FQDN/status filter, persisted across reloads.
-        var filter = document.getElementById('fwFilter');
-        var table = document.getElementById('fwTable');
-        function applyFilter() {
-            if (!filter || !table) { return; }
-            var q = filter.value.toLowerCase();
-            try { localStorage.setItem('fwFilter', filter.value); } catch (e) {}
-            var rows = table.tBodies[0].rows;
-            for (var i = 0; i < rows.length; i++) {
-                var fqdnCell = rows[i].querySelector('.fw-fqdn');
-                var statusCell = rows[i].querySelector('.fw-status');
-                var hay = ((fqdnCell ? fqdnCell.textContent : '') + ' ' + (statusCell ? statusCell.textContent : '')).toLowerCase();
-                rows[i].style.display = hay.indexOf(q) !== -1 ? '' : 'none';
-            }
-        }
-        if (filter) {
-            // A ?q= param (e.g. from a clicked dashboard tile) takes precedence and
-            // is persisted, so deep-links like /?q=Failed pre-filter the list.
-            var urlQ = new URLSearchParams(window.location.search).get('q');
-            if (urlQ !== null) {
-                filter.value = urlQ;
-                try { localStorage.setItem('fwFilter', urlQ); } catch (e) {}
-            } else {
-                try { filter.value = localStorage.getItem('fwFilter') || ''; } catch (e) {}
-            }
-            filter.addEventListener('input', applyFilter);
-            applyFilter();
-        }
-        // Status pill markup, mirrored from the server for live updates.
-        function pill(status) {
-            if (status === 'Success') { return '<span class="pill pill-success">Success</span>'; }
-            if (status === 'New') { return '<span class="pill pill-new">New</span>'; }
-            if (status === 'In Progress') { return '<span class="pill pill-info">In Progress</span>'; }
-            if (status.indexOf('Failed') === 0) { return '<span class="pill pill-failed" title="' + status.replace(/"/g, '&quot;') + '">Failed</span>'; }
-            return '<span class="pill pill-muted">' + status + '</span>';
-        }
-        // Live status updates via SSE (#70).
-        if (window.EventSource) {
-            var es = new EventSource('/events');
-            es.onmessage = function (e) {
-                try {
-                    var d = JSON.parse(e.data);
-                    // Only backup status changes drive the status pills; the
-                    // operation lifecycle events (analysis, sshdiag, …) would
-                    // otherwise overwrite a firewall's status with "started".
-                    if (d.kind && d.kind !== 'backup') { return; }
-                    var row = table && table.querySelector('tr[data-fw="' + d.fw_id + '"]');
-                    if (row) {
-                        var cell = row.querySelector('.fw-status');
-                        if (cell) { cell.innerHTML = pill(d.status); }
-                    }
-                } catch (err) {}
-            };
-        }
-        // Test connection buttons (#34).
-        document.querySelectorAll('.test-conn').forEach(function (b) {
-            b.addEventListener('click', function () {
-                var id = b.getAttribute('data-fw');
-                var orig = b.textContent;
-                b.textContent = '…'; b.disabled = true;
-                fetch('/test_connection/' + id, {method: 'POST'}).then(function (r) { return r.json(); }).then(function (j) {
-                    alert(j.message || (j.ok ? 'OK' : 'Failed'));
-                }).catch(function () { alert('Test failed'); }).finally(function () {
-                    b.textContent = orig; b.disabled = false;
-                });
-            });
-        });
-    })();
-</script>
-{{end}}
+{{define "scripts"}}<script src="/static/firewalls.js"></script>{{end}}

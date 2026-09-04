@@ -1,0 +1,18 @@
+{
+  "name": "fortisafe-ui-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Deterministic desktop browser and accessibility gates for FortiSafe",
+  "scripts": {
+    "test:desktop": "playwright test",
+    "test:desktop:update": "playwright test --update-snapshots",
+    "show-report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.61.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

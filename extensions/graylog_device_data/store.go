@@ -184,7 +184,7 @@ func (e *Extension) switchCapableIDs() (map[int]bool, error) {
 // package's results_json probe (switchCapableIDs) has been verified against.
 // When bumping auditSchemaVersion in internal/web/audit_cache.go, confirm the
 // "switches" key still decodes here and raise this constant.
-const auditCacheMaxKnownSchema = 7
+const auditCacheMaxKnownSchema = 8
 
 // deviceRetention bounds how long a device row survives without being seen
 // again. Retaining rows across refreshes (instead of wiping them) preserves

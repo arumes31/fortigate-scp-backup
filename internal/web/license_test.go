@@ -1,6 +1,8 @@
 package web
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -135,6 +137,67 @@ func TestLicenseLevel(t *testing.T) {
 	}
 }
 
+func TestLatestLicenseFetchIgnoresMissingTimestamps(t *testing.T) {
+	t.Parallel()
+	want := time.Date(2026, 9, 2, 9, 30, 0, 0, time.UTC)
+	rows := []licenseRow{
+		{FetchedAt: time.Time{}},
+		{FetchedAt: want.Add(-time.Hour)},
+		{FetchedAt: want},
+	}
+	if got := latestLicenseFetch(rows); !got.Equal(want) {
+		t.Fatalf("latestLicenseFetch() = %v, want %v", got, want)
+	}
+}
+
+func TestStoreLicenseFailurePreservesLastSuccessfulFetch(t *testing.T) {
+	t.Parallel()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "license.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, query := range []string{
+		`CREATE TABLE license_status (fw_id INTEGER PRIMARY KEY, serial TEXT, hostname TEXT, model TEXT, version TEXT, build TEXT, registration TEXT, ha_mode TEXT, op_mode TEXT, fetched_at TEXT NOT NULL, fetch_error TEXT)`,
+		`CREATE TABLE license_entitlements (fw_id INTEGER NOT NULL, service TEXT NOT NULL, version TEXT, expiry TEXT, last_update TEXT, result TEXT, PRIMARY KEY (fw_id, service))`,
+		`CREATE TABLE license_devices (fw_id INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, serial TEXT, model TEXT, version TEXT, build TEXT, status TEXT)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := storeLicenseResult(db, 7, &licenseStatus{Serial: "FGT-TEST"}, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE license_status SET fetched_at = '2026-09-02T08:00:00Z' WHERE fw_id = 7`); err != nil {
+		t.Fatal(err)
+	}
+	var successfulAt string
+	if err := db.QueryRow(`SELECT fetched_at FROM license_status WHERE fw_id = 7`).Scan(&successfulAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeLicenseResult(db, 7, nil, nil, nil, "synthetic failure"); err != nil {
+		t.Fatal(err)
+	}
+	var afterFailure, fetchError string
+	if err := db.QueryRow(`SELECT fetched_at, fetch_error FROM license_status WHERE fw_id = 7`).Scan(&afterFailure, &fetchError); err != nil {
+		t.Fatal(err)
+	}
+	if afterFailure != successfulAt || fetchError != "synthetic failure" {
+		t.Fatalf("after failure fetched_at/error = %q/%q, want %q/%q", afterFailure, fetchError, successfulAt, "synthetic failure")
+	}
+	if err := storeLicenseResult(db, 12, nil, nil, nil, "first attempt failed"); err != nil {
+		t.Fatal(err)
+	}
+	var neverSuccessful string
+	if err := db.QueryRow(`SELECT fetched_at FROM license_status WHERE fw_id = 12`).Scan(&neverSuccessful); err != nil {
+		t.Fatal(err)
+	}
+	if neverSuccessful != "" {
+		t.Fatalf("first failed attempt stored successful timestamp %q", neverSuccessful)
+	}
+}
+
 // TestClassifyLicense verifies the device-level rollup: a long-lapsed service
 // among active entitlements must not mark the device expired (real fleets
 // carry stale entries for services outside the current contract bundle).
@@ -225,6 +288,21 @@ func TestParseSwitchInfoStatus(t *testing.T) {
 	}
 	if got := parseSwitchInfoStatus("FGT90G-TEST-N1 $ \r\ncommand parse error before 'switch-controller'\r\nCommand fail. Return code -61\r\n"); len(got) != 0 {
 		t.Errorf("error output must parse to no switches: %+v", got)
+	}
+}
+
+func TestParseSwitchInfoStatusPreservesManagedSwitchIDAsMergeKey(t *testing.T) {
+	t.Parallel()
+	output := "Managed Switch : SWITCH-ID-01 0\r\n" +
+		"Version: FortiSwitch-108E v7.4.9,build0946,260122 (GA)\r\n" +
+		"Hostname: FRIENDLY-HOSTNAME\r\n"
+	devices := parseSwitchInfoStatus(output)
+	if len(devices) != 1 || devices[0].Name != "SWITCH-ID-01" {
+		t.Fatalf("parsed switches = %+v, want managed switch ID as name", devices)
+	}
+	merged := mergeSwitchDevices([]string{"SWITCH-ID-01"}, devices)
+	if len(merged) != 1 || merged[0].Status != "online" {
+		t.Fatalf("merged switches = %+v, want one online switch", merged)
 	}
 }
 

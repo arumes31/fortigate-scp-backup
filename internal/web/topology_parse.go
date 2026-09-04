@@ -20,6 +20,7 @@ type Zone struct {
 // DhcpServer is one `config system dhcp server` entry.
 type DhcpServer struct {
 	ID        string   `json:"id"`
+	VDOM      string   `json:"vdom,omitempty"`
 	Interface string   `json:"interface"`
 	Gateway   string   `json:"gateway,omitempty"`
 	Netmask   string   `json:"netmask,omitempty"`
@@ -110,7 +111,10 @@ type parsedConfig struct {
 func parseConfigData(doc *cfgDoc) *parsedConfig {
 	var interfaces []Interface
 	for _, b := range doc.blocksUnder("config system interface") {
-		it := Interface{Name: b.Name}
+		it := Interface{Name: b.Name, VDOM: vdomForBlock(b)}
+		if v, _, ok := doc.settingDirect(b, "vdom"); ok && v != "" {
+			it.VDOM = v
+		}
 		if v, _, ok := doc.settingDirect(b, "ip"); ok {
 			if f := strings.Fields(v); len(f) > 0 {
 				it.IP = f[0]
@@ -157,7 +161,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 
 	var routes []StaticRoute
 	for _, b := range doc.blocksUnder("config router static") {
-		r := StaticRoute{ID: b.Name}
+		r := StaticRoute{ID: b.Name, VDOM: vdomForBlock(b)}
 		if v, _, ok := doc.settingDirect(b, "dst"); ok {
 			r.Dst = v
 		}
@@ -285,7 +289,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 
 	var dhcp []DhcpServer
 	for _, b := range doc.blocksUnder("config system dhcp server") {
-		d := DhcpServer{ID: b.Name}
+		d := DhcpServer{ID: b.Name, VDOM: vdomForBlock(b)}
 		if v, _, ok := doc.settingDirect(b, "interface"); ok {
 			d.Interface = v
 		}
@@ -430,7 +434,7 @@ func parseConfigData(doc *cfgDoc) *parsedConfig {
 					(f[0] == "0.0.0.0" && len(f) > 1 && f[1] == "0.0.0.0") {
 					continue
 				}
-				ao := AddressObject{Name: b.Name, IP: f[0]}
+				ao := AddressObject{Name: b.Name, VDOM: vdomForBlock(b), IP: f[0]}
 				if len(f) > 1 {
 					ao.Mask = f[1]
 				}

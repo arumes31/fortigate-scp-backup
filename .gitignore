@@ -28,7 +28,11 @@ temp/
 .agents/
 .kimi-code
 pgdata/
+tasks/
 /secrets/*
 !/secrets/README.md
 
-
+# Deterministic browser-test dependencies and generated evidence
+/ui-tests/node_modules/
+/ui-tests/playwright-report/
+/ui-tests/test-results/

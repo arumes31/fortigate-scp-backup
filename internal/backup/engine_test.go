@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"os"
@@ -147,6 +148,16 @@ func TestMigrateEncryptionAtRest(t *testing.T) {
 	}
 	if second, err := MigrateEncryptionAtRest(dir, s.cipher); err != nil || second != 0 {
 		t.Fatalf("idempotent migration = (%d, %v), want (0, nil)", second, err)
+	}
+}
+
+func TestMigrateEncryptionAtRestTreatsMissingRootAsEmpty(t *testing.T) {
+	t.Parallel()
+	s := testService(t, bytes.Repeat([]byte{0x31}, 32))
+	missingRoot := filepath.Join(t.TempDir(), "not-created")
+	migrated, err := MigrateEncryptionAtRest(missingRoot, s.cipher)
+	if err != nil || migrated != 0 {
+		t.Fatalf("missing-root migration = (%d, %v), want (0, nil)", migrated, err)
 	}
 }
 

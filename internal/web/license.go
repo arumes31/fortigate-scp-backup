@@ -289,7 +289,9 @@ func parseSwitchInfoStatus(out string) []licenseDevice {
 		case "Serial-Number":
 			cur.Serial = val
 		case "Hostname":
-			cur.Name = val
+			if cur.Name == "" {
+				cur.Name = val
+			}
 		}
 	}
 	return devs
@@ -488,15 +490,15 @@ func parseWTPConfig(out string) []licenseDevice {
 
 // storeLicenseResult upserts one device's collection outcome. On success the
 // entitlement and child-device rows are replaced atomically; on failure only
-// the error and attempt time are recorded, so the last good data stays
-// visible.
+// the error is recorded, so the last good data and its successful fetch time
+// stay visible.
 func storeLicenseResult(db *sql.DB, fwID int, st *licenseStatus, ents []licenseEntitlement, devs []licenseDevice, fetchErr string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if fetchErr != "" {
 		_, err := db.Exec(`INSERT INTO license_status (fw_id, fetched_at, fetch_error)
-			VALUES (?, ?, ?)
-			ON CONFLICT(fw_id) DO UPDATE SET fetched_at=excluded.fetched_at, fetch_error=excluded.fetch_error`,
-			fwID, now, fetchErr)
+			VALUES (?, '', ?)
+			ON CONFLICT(fw_id) DO UPDATE SET fetch_error=excluded.fetch_error`,
+			fwID, fetchErr)
 		return err
 	}
 	tx, err := db.Begin()
@@ -630,7 +632,7 @@ type licenseRow struct {
 	Build        string
 	Registration string
 	HAMode       string
-	FetchedAt    string
+	FetchedAt    time.Time
 	FetchError   string
 	Expiry       string // driving entitlement expiry (ISO), "" unknown
 	DaysLeft     int
@@ -733,14 +735,18 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 	rows := make([]licenseRow, 0, len(fws))
 	for _, fw := range fws {
 		row := licenseRow{FwID: fw.ID, FQDN: fw.FQDN, Level: "unknown"}
+		var fetchedAt string
 		err := db.QueryRow(`SELECT COALESCE(serial,''), COALESCE(hostname,''), COALESCE(model,''),
 			COALESCE(version,''), COALESCE(build,''), COALESCE(registration,''), COALESCE(ha_mode,''),
 			COALESCE(fetched_at,''), COALESCE(fetch_error,'')
 			FROM license_status WHERE fw_id = ?`, fw.ID).Scan(
 			&row.Serial, &row.Hostname, &row.Model, &row.Version, &row.Build,
-			&row.Registration, &row.HAMode, &row.FetchedAt, &row.FetchError)
+			&row.Registration, &row.HAMode, &fetchedAt, &row.FetchError)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, err
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339, fetchedAt); parseErr == nil {
+			row.FetchedAt = parsed
 		}
 		ents, err := db.Query(`SELECT COALESCE(service,''), COALESCE(version,''), COALESCE(expiry,''),
 			COALESCE(last_update,''), COALESCE(result,'')
@@ -796,12 +802,23 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 }
 
 type licensesData struct {
-	Base     BaseData
-	Rows     []licenseRow
-	Expiring int // devices at warn/crit
-	Expired  int
-	Unknown  int // never fetched or fetch failed
-	Error    string
+	Base          BaseData
+	Rows          []licenseRow
+	Expiring      int // devices at warn/crit
+	Expired       int
+	Unknown       int // never fetched or fetch failed
+	LastFetchedAt time.Time
+	Error         string
+}
+
+func latestLicenseFetch(rows []licenseRow) time.Time {
+	var latest time.Time
+	for _, row := range rows {
+		if row.FetchedAt.After(latest) {
+			latest = row.FetchedAt
+		}
+	}
+	return latest
 }
 
 func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
@@ -812,6 +829,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		data.Error = "Failed to load license data. Check logs for details."
 	}
 	data.Rows = rows
+	data.LastFetchedAt = latestLicenseFetch(rows)
 	for _, row := range rows {
 		switch row.Level {
 		case "warn", "crit":
