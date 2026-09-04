@@ -1,20 +1,20 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Dashboard</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Dashboard"}}</h1>
 
 <div class="alert alert-error" id="clusterAlert"{{if not .ClusterAlert}} hidden{{end}}>
-    ⚠ Möglicher flächendeckender Ausfall: <b>{{.Stats.Failed}}</b> von {{.Stats.TotalFirewalls}} Firewalls melden Fehler — Netzwerk-/RADIUS-Problem prüfen.
+    ⚠ {{L .Base.Lang "Possible widespread outage:"}} <b>{{.Stats.Failed}}</b> {{L .Base.Lang "of"}} {{.Stats.TotalFirewalls}} {{L .Base.Lang "firewalls report errors — check the network or RADIUS."}}
 </div>
 
 <div class="toolbar dash-actions">
-    <form method="post" action="/backup_now_all_failed" onsubmit="return confirm('Backup für alle fehlgeschlagenen Firewalls starten?');" style="margin:0">
-        <button type="submit" class="btn btn-primary">[!] Retry all failed</button>
+    <form method="post" action="/backup_now_all_failed" onsubmit="return confirm('{{L .Base.Lang "Start backups for all failed firewalls?"}}');" style="margin:0">
+        <button type="submit" class="btn btn-primary">[!] {{L .Base.Lang "Retry all failed"}}</button>
     </form>
-    <a href="/download_bundle" class="btn">⤓ Restore-Bundle (ZIP)</a>
-    <a href="/audit" class="btn">Audit / Compliance</a>
+    <a href="/download_bundle" class="btn">⤓ {{L .Base.Lang "Restore bundle (ZIP)"}}</a>
+    <a href="/audit" class="btn">{{L .Base.Lang "Audit / Compliance"}}</a>
     <span class="spacer"></span>
-    <label class="refresh-ctl">Auto-Refresh
+    <label class="refresh-ctl">{{L .Base.Lang "Auto-refresh"}}
         <select id="refreshInterval">
-            <option value="0">off</option>
+            <option value="0">{{L .Base.Lang "off"}}</option>
             <option value="5">5s</option>
             <option value="30" selected>30s</option>
         </select>
@@ -22,53 +22,53 @@
 </div>
 
 <p class="dashboard-refresh-status{{if .LoadError}} is-error{{end}}" id="dashboardRefreshStatus" role="status" aria-live="polite">
-    {{if .LoadError}}Dashboard data is incomplete. Check the application log.{{else}}Dashboard data is current.{{end}}
+    {{if .LoadError}}{{L .Base.Lang "Dashboard data is incomplete. Check the application log."}}{{else}}{{L .Base.Lang "Dashboard data is current."}}{{end}}
 </p>
 
 <section class="card attention-card" aria-labelledby="attentionTitle">
     <div class="card-header">
-        <div><p class="eyebrow">Operator queue</p><h2 class="mt-0 mb-0" id="attentionTitle">Needs attention</h2></div>
-        <span class="pill{{if .AttentionAll}} pill-failed{{end}}" id="attentionCount">{{.AttentionAll}} open</span>
+        <div><p class="eyebrow">{{L .Base.Lang "Operator queue"}}</p><h2 class="mt-0 mb-0" id="attentionTitle">{{L .Base.Lang "Needs attention"}}</h2></div>
+        <span class="pill{{if .AttentionAll}} pill-failed{{end}}" id="attentionCount">{{.AttentionAll}} {{L .Base.Lang "open"}}</span>
     </div>
     <div id="attentionBody">
     {{if .LoadError}}
-        <div class="alert alert-error" role="alert">Issue data could not be loaded completely; no healthy state is inferred.</div>
+        <div class="alert alert-error" role="alert">{{L .Base.Lang "Issue data could not be loaded completely; no healthy state is inferred."}}</div>
     {{else if .Attention}}
         <ol class="attention-list">
         {{range .Attention}}
             <li class="attention-item">
                 <span class="attention-severity severity-{{.Severity}}">{{.Severity}}</span>
                 <div class="attention-copy"><span class="attention-source">{{.Source}}</span><strong>{{.Title}}</strong><span class="muted">{{.Detail}}</span></div>
-                <span class="attention-age" aria-label="Age {{.Age}}">{{.Age}}</span>
+                <span class="attention-age" aria-label="{{L $.Base.Lang "Age"}} {{.Age}}">{{.Age}}</span>
                 <a class="btn btn-sm" href="{{.Href}}">{{.Action}}</a>
             </li>
         {{end}}
         </ol>
-        {{if .AttentionMore}}<p class="attention-more">+{{.AttentionMore}} more in detailed issue data</p>{{end}}
+        {{if .AttentionMore}}<p class="attention-more">+{{.AttentionMore}} {{L .Base.Lang "more in detailed issue data"}}</p>{{end}}
     {{else}}
-        <div class="empty">No actionable issues.</div>
+        <div class="empty">{{L .Base.Lang "No actionable issues."}}</div>
     {{end}}
     </div>
 </section>
 
 <div class="metric-groups" id="statGrid">
-    <section class="metric-group" aria-labelledby="metricHealth"><h2 id="metricHealth">Health</h2><div class="metric-grid">
-        <a class="stat-tile" href="/" title="Alle Firewalls"><div class="n" data-k="total">{{.Stats.TotalFirewalls}}</div><div class="l">Firewalls</div></a>
-        <a class="stat-tile ok" href="/?q=Success" title="Nur erfolgreiche"><div class="n" data-k="healthy">{{.Stats.Healthy}}</div><div class="l">Healthy</div></a>
-        <a class="stat-tile fail" href="/?q=Failed" title="Nur fehlgeschlagene"><div class="n" data-k="failed">{{.Stats.Failed}}</div><div class="l">Failed</div></a>
-        <a class="stat-tile new" href="/?q=New" title="Neu / ausstehend"><div class="n" data-k="new">{{.Stats.New}}</div><div class="l">New / Pending</div></a>
+    <section class="metric-group" aria-labelledby="metricHealth"><h2 id="metricHealth">{{L .Base.Lang "Health"}}</h2><div class="metric-grid">
+        <a class="stat-tile" href="/" title="{{L .Base.Lang "All firewalls"}}"><div class="n" data-k="total">{{.Stats.TotalFirewalls}}</div><div class="l">{{L .Base.Lang "Firewalls"}}</div></a>
+        <a class="stat-tile ok" href="/?q=Success" title="{{L .Base.Lang "Successful only"}}"><div class="n" data-k="healthy">{{.Stats.Healthy}}</div><div class="l">{{L .Base.Lang "Healthy"}}</div></a>
+        <a class="stat-tile fail" href="/?q=Failed" title="{{L .Base.Lang "Failed only"}}"><div class="n" data-k="failed">{{.Stats.Failed}}</div><div class="l">{{L .Base.Lang "Failed"}}</div></a>
+        <a class="stat-tile new" href="/?q=New" title="{{L .Base.Lang "New or pending"}}"><div class="n" data-k="new">{{.Stats.New}}</div><div class="l">{{L .Base.Lang "New / Pending"}}</div></a>
     </div></section>
-    <section class="metric-group" aria-labelledby="metricOperations"><h2 id="metricOperations">Operations</h2><div class="metric-grid">
-        <div class="stat-tile"><div class="n" id="nextBackup" data-next="{{.NextBackupISO}}">—</div><div class="l">Next Backup</div></div>
-        <div class="stat-tile"><div class="n" data-k="backups24h">{{.Stats.BackupsLast24h}}</div><div class="l">Backups (24h)</div></div>
-        <div class="stat-tile"><div class="n" data-k="avg">{{.AvgDuration}}</div><div class="l">Ø Backup <span data-k="runs">({{.BackupsRun}} runs)</span></div></div>
-        <div class="stat-tile"><div class="n" data-k="pruned">{{.PrunedTotal}}</div><div class="l">Pruned (session)</div></div>
+    <section class="metric-group" aria-labelledby="metricOperations"><h2 id="metricOperations">{{L .Base.Lang "Operations"}}</h2><div class="metric-grid">
+        <div class="stat-tile"><div class="n" id="nextBackup" data-next="{{.NextBackupISO}}">—</div><div class="l">{{L .Base.Lang "Next Backup"}}</div></div>
+        <div class="stat-tile"><div class="n" data-k="backups24h">{{.Stats.BackupsLast24h}}</div><div class="l">{{L .Base.Lang "Backups (24h)"}}</div></div>
+        <div class="stat-tile"><div class="n" data-k="avg">{{.AvgDuration}}</div><div class="l">Ø Backup <span data-k="runs">({{.BackupsRun}} {{L .Base.Lang "runs"}})</span></div></div>
+        <div class="stat-tile"><div class="n" data-k="pruned">{{.PrunedTotal}}</div><div class="l">{{L .Base.Lang "Pruned (session)"}}</div></div>
     </div></section>
-    <section class="metric-group" aria-labelledby="metricStorage"><h2 id="metricStorage">Storage</h2><div class="metric-grid">
-        <div class="stat-tile"><div class="n" data-k="storage">{{fmtBytes .StorageBytes}}</div><div class="l">Used <span data-k="storageWeek">(+{{fmtBytes .StorageWeek}}/7d)</span></div></div>
-        <div class="stat-tile"><div class="n" data-k="totalBackups">{{.Stats.TotalBackups}}</div><div class="l">Total Backups</div></div>
-        <div class="stat-tile"><div class="n" data-k="largest">{{fmtBytes .LargestBytes}}</div><div class="l">Largest config</div></div>
-        <div class="stat-tile"><div class="n" data-k="smallest">{{fmtBytes .SmallestBytes}}</div><div class="l">Smallest config</div></div>
+    <section class="metric-group" aria-labelledby="metricStorage"><h2 id="metricStorage">{{L .Base.Lang "Storage"}}</h2><div class="metric-grid">
+        <div class="stat-tile"><div class="n" data-k="storage">{{fmtBytes .StorageBytes}}</div><div class="l">{{L .Base.Lang "Used"}} <span data-k="storageWeek">(+{{fmtBytes .StorageWeek}}/7d)</span></div></div>
+        <div class="stat-tile"><div class="n" data-k="totalBackups">{{.Stats.TotalBackups}}</div><div class="l">{{L .Base.Lang "Total Backups"}}</div></div>
+        <div class="stat-tile"><div class="n" data-k="largest">{{fmtBytes .LargestBytes}}</div><div class="l">{{L .Base.Lang "Largest config"}}</div></div>
+        <div class="stat-tile"><div class="n" data-k="smallest">{{fmtBytes .SmallestBytes}}</div><div class="l">{{L .Base.Lang "Smallest config"}}</div></div>
     </div></section>
 </div>
 
@@ -80,7 +80,7 @@
 </div>
 
 <details class="issue-details">
-<summary>Detailed issue data <span class="pill">{{.AttentionAll}}</span></summary>
+<summary>{{L .Base.Lang "Detailed issue data"}} <span class="pill">{{.AttentionAll}}</span></summary>
 <div class="issue-details-body">
 <div class="card pad-0">
     <div class="card-header">

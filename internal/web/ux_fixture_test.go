@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -237,7 +238,7 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
 			return
 		}
-		webServer.render(w, "dashboard.html", uxDashboardFixture(scenario))
+		webServer.render(w, "dashboard.html", uxLocalizedFixtureData(uxDashboardFixture(scenario), uxLanguageFromRequest(r)))
 	})
 	mux.HandleFunc("/__ux/shell/de", func(w http.ResponseWriter, r *http.Request) {
 		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
@@ -261,9 +262,10 @@ func newUXFixtureHandler(webServer *Server, extensionTemplates *uxExtensionTempl
 			http.Error(w, "unknown error fixture", http.StatusBadRequest)
 			return
 		}
-		title, message := errorPageCopy("en", code)
+		lang := uxLanguageFromRequest(r)
+		title, message := errorPageCopy(lang, code)
 		data := errorData{
-			Base: uxBase(title, ""), Code: code, Title: title, Message: message,
+			Base: uxBaseLang(title, "", lang), Code: code, Title: title, Message: message,
 			RequestID: fmt.Sprintf("ux-request-%d", code), BackURL: "/dashboard",
 		}
 		if code == http.StatusInternalServerError {
@@ -297,10 +299,6 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 		return nil, errors.New("locate UX fixture source")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	parse := func(relativePath string) (*template.Template, error) {
-		return template.ParseFiles(filepath.Join(root, relativePath))
-	}
-
 	admVPN, err := webui.ParsePage(
 		os.DirFS(root),
 		"extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_index.html",
@@ -309,7 +307,7 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 	if err != nil {
 		return nil, err
 	}
-	admVPNEdit, err := parse("extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_edit_form.html")
+	admVPNEdit, err := template.New("fgt_adm_vpn_conf_edit_form.html").Funcs(template.FuncMap{"L": webui.Localize}).ParseFiles(filepath.Join(root, "extensions/fgt_adm_vpn_conf/templates/fgt_adm_vpn_conf_edit_form.html"))
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +401,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 				http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
 				return
 			}
-			if err := renderer.RenderHTTP(w, data(scenario)); err != nil {
+			if err := renderer.RenderHTTP(w, uxLocalizedFixtureData(data(scenario), uxLanguageFromRequest(r))); err != nil {
 				http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
 			}
 		}
@@ -420,9 +418,10 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	}
 
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/{$}", renderShared(templates.admVPN, uxADMVPNFixture))
-	mux.HandleFunc("GET /fgt-adm-vpn-conf/edit/{id}", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /fgt-adm-vpn-conf/edit/{id}", func(w http.ResponseWriter, r *http.Request) {
 		data := map[string]any{
-			"ID": 7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
+			"Lang": uxLanguageFromRequest(r),
+			"ID":   7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
 			"Cid": "101", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
 			"IpsecPskRo": "SENTINEL-STORED-RO-PSK-5e19", "IpsecPskHci": "SENTINEL-STORED-HCI-PSK-83d1",
 			"Radiusmgt": "YES", "GraylogEnabled": true,
@@ -580,7 +579,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		if page != 2 {
 			page = 1
 		}
-		if err := templates.confTailChain.RenderHTTP(w, uxConfTailChainFixture(scenario, view, page)); err != nil {
+		if err := templates.confTailChain.RenderHTTP(w, uxLocalizedFixtureData(uxConfTailChainFixture(scenario, view, page), uxLanguageFromRequest(r))); err != nil {
 			http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
 		}
 	})
@@ -927,7 +926,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 				http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
 				return
 			}
-			webServer.render(w, name, data(scenario))
+			webServer.render(w, name, uxLocalizedFixtureData(data(scenario), uxLanguageFromRequest(r)))
 		}
 	}
 	jsonResponse := func(payload string) http.HandlerFunc {
@@ -938,7 +937,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	}
 
 	mux.HandleFunc("GET /login", render("login.html", func(uxScenario) any {
-		return loginData{TOTPEnabled: true, RadiusEnabled: true}
+		return loginData{Lang: "en", TOTPEnabled: true, RadiusEnabled: true}
 	}))
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
@@ -958,7 +957,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 				Segments: []searchSegment{{Text: query, Match: true}, {Text: ` "<sentinel-config>"`}},
 			}}
 		}
-		webServer.render(w, "search.html", data)
+		webServer.render(w, "search.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 	})
 	mux.HandleFunc("GET /audit", render("audit.html", uxAuditFixture))
 	mux.HandleFunc("GET /audit/results/{fwID}", func(w http.ResponseWriter, r *http.Request) {
@@ -1050,7 +1049,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		data := topologySharedPage{Token: token, Lang: "en"}
+		data := topologySharedPage{Token: token, Lang: uxLanguageFromRequest(r)}
 		if token == "fixture-token" {
 			data.IncludeDevices = true
 			data.ExpiresAt = uxFixtureNow.Add(7 * 24 * time.Hour)
@@ -1091,7 +1090,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 		if data.Page < data.TotalPages {
 			data.NextURL = activityLogPageURL(data.Filters, data.Page+1)
 		}
-		webServer.render(w, "activity_log.html", data)
+		webServer.render(w, "activity_log.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 	})
 	mux.HandleFunc("GET /errors", func(w http.ResponseWriter, r *http.Request) {
 		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
@@ -1101,7 +1100,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 		}
 		data := uxErrorsFixture(scenario)
 		data.RetryQueued = r.URL.Query().Get("retry") == "queued"
-		webServer.render(w, "errors.html", data)
+		webServer.render(w, "errors.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 	})
 	mux.HandleFunc("POST /backup_now/{fwID}", func(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("return_to") != "/errors" {
@@ -1132,19 +1131,19 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			confirmation := r.FormValue("confirm_password")
 			if err := appsecurity.ValidateNewPassword(oldPassword, newPassword, confirmation); err != nil {
 				data.Error = err.Error()
-				webServer.render(w, "change_password.html", data)
+				webServer.render(w, "change_password.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 				return
 			}
 			if oldPassword == "incorrect-current-password" {
 				data.Error = "Current password is incorrect."
-				webServer.render(w, "change_password.html", data)
+				webServer.render(w, "change_password.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 				return
 			}
 			http.Redirect(w, r, "/change_password?updated=1", http.StatusSeeOther)
 			return
 		case http.MethodGet:
 			data.Success = r.URL.Query().Get("updated") == "1"
-			webServer.render(w, "change_password.html", data)
+			webServer.render(w, "change_password.html", uxLocalizedFixtureData(data, uxLanguageFromRequest(r)))
 		default:
 			w.Header().Set("Allow", "GET, POST")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1221,6 +1220,95 @@ func uxBaseLang(title, active, lang string) BaseData {
 		ExtEnabled: true, ExtFgtConfGenEnabled: true, ExtFgtPolSplitEnabled: true,
 		ExtFgtConfConvEnabled: true, ExtFgtConfTailEnabled: true,
 	}
+}
+
+func uxLanguageFromRequest(r *http.Request) string {
+	if strings.TrimSpace(r.URL.Query().Get("lang")) == "de" {
+		return "de"
+	}
+	if r.Referer() != "" {
+		if refererURL, err := url.Parse(r.Referer()); err == nil && refererURL.Query().Get("lang") == "de" {
+			return "de"
+		}
+	}
+	return "en"
+}
+
+func uxLocalizedFixtureData(data any, lang string) any {
+	options := func(active string) webui.NavigationOptions {
+		return webui.NavigationOptions{
+			Lang: lang, Active: active, AdmVPN: true, ConfGen: true,
+			PolSplit: true, ConfConv: true, ConfTail: true,
+		}
+	}
+	localizeBase := func(value any) any {
+		switch base := value.(type) {
+		case BaseData:
+			base.Lang = lang
+			base.Shell = webui.ShellText(lang)
+			base.Navigation = webui.Navigation(options(base.Active))
+			return base
+		case webui.BaseData:
+			base.Lang = lang
+			base.Shell = webui.ShellText(lang)
+			base.Navigation = webui.Navigation(options(base.Active))
+			return base
+		default:
+			return value
+		}
+	}
+	if source, ok := data.(map[string]any); ok {
+		copyMap := uxLocalizedFixtureMap(source, lang)
+		if base, ok := copyMap["Base"]; ok {
+			copyMap["Base"] = localizeBase(base)
+		}
+		if _, ok := copyMap["Lang"]; ok {
+			copyMap["Lang"] = lang
+		}
+		return copyMap
+	}
+	value := reflect.ValueOf(data)
+	if value.Kind() != reflect.Struct {
+		return data
+	}
+	copyValue := reflect.New(value.Type()).Elem()
+	copyValue.Set(value)
+	if langField := copyValue.FieldByName("Lang"); langField.IsValid() && langField.CanSet() && langField.Kind() == reflect.String {
+		langField.SetString(lang)
+	}
+	baseField := copyValue.FieldByName("Base")
+	if !baseField.IsValid() || !baseField.CanSet() {
+		return copyValue.Interface()
+	}
+	localized := localizeBase(baseField.Interface())
+	if reflect.TypeOf(localized) == baseField.Type() {
+		baseField.Set(reflect.ValueOf(localized))
+	}
+	return copyValue.Interface()
+}
+
+func uxLocalizedFixtureMap(source map[string]any, lang string) map[string]any {
+	copyMap := make(map[string]any, len(source)+1)
+	for key, value := range source {
+		switch nested := value.(type) {
+		case map[string]any:
+			copyMap[key] = uxLocalizedFixtureMap(nested, lang)
+		case []any:
+			items := make([]any, len(nested))
+			for index, item := range nested {
+				if itemMap, ok := item.(map[string]any); ok {
+					items[index] = uxLocalizedFixtureMap(itemMap, lang)
+				} else {
+					items[index] = item
+				}
+			}
+			copyMap[key] = items
+		default:
+			copyMap[key] = value
+		}
+	}
+	copyMap["Lang"] = lang
+	return copyMap
 }
 
 func uxFirewalls() []models.Firewall {
@@ -1307,7 +1395,7 @@ func uxActivityFixture(scenario uxScenario) activityLogData {
 }
 
 func uxErrorsFixture(scenario uxScenario) errorsData {
-	data := errorsData{Base: uxBase("Backup errors", "errors")}
+	data := errorsData{Base: uxBase("Backup errors", "firewalls")}
 	if scenario != uxScenarioEmpty {
 		data.Errors = []backupErrorView{{
 			BackupError: models.BackupError{

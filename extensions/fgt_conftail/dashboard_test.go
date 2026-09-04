@@ -46,7 +46,7 @@ func TestDashboardPagesUseIndependentSharedShellRenderers(t *testing.T) {
 				Base: base, Dashboard: dashboardData{TotalPages: 1},
 				Filters: dashboardFilterView{State: dashboardStateAll, Page: 1},
 			},
-			want: "Configuration Change Tail",
+			want: "Konfigurationsänderungen",
 		},
 		{
 			name: "chain", renderer: chainPage,
@@ -54,7 +54,7 @@ func TestDashboardPagesUseIndependentSharedShellRenderers(t *testing.T) {
 				Base: base, Chain: dashboardChain{ID: "fixture-chain", FirewallName: "edge.example.test"},
 				Page: 1, TotalPages: 1,
 			},
-			want: "Complete Redacted Timeline",
+			want: "Vollständiger geschwärzter Verlauf",
 		},
 	}
 	for _, test := range tests {

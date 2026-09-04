@@ -1,17 +1,17 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Search Configurations</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Search Configurations"}}</h1>
 
 {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <div class="card">
     <form method="post" action="/search">
         <div class="field">
-            <label for="query">Search term</label>
-            <input type="search" id="query" name="query" value="{{.Query}}" placeholder="e.g. set hostname*  (use * as wildcard)" autofocus>
-            <span class="hint">Scans the newest configuration of every firewall. <code>*</code> is a wildcard.</span>
+            <label for="query">{{L .Base.Lang "Search term"}}</label>
+            <input type="search" id="query" name="query" value="{{.Query}}" placeholder="{{L .Base.Lang "e.g. set hostname* (use * as wildcard)"}}" autofocus>
+            <span class="hint">{{L .Base.Lang "Scans the newest configuration of every firewall."}} <code>*</code> {{L .Base.Lang "is a wildcard."}}</span>
         </div>
         <div class="toolbar">
-            <button type="submit" class="btn btn-primary">Search</button>
+            <button type="submit" class="btn btn-primary">{{L .Base.Lang "Search"}}</button>
         </div>
     </form>
 </div>
@@ -19,14 +19,14 @@
 {{if .Query}}
 <div class="card pad-0 search-results">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Results</h2>
-        <span class="muted">{{len .Results}} match{{if ne (len .Results) 1}}es{{end}}</span>
+        <h2 class="mt-0 mb-0">{{L .Base.Lang "Results"}}</h2>
+        <span class="muted">{{len .Results}} {{if eq (len .Results) 1}}{{L .Base.Lang "match"}}{{else}}{{L .Base.Lang "matches"}}{{end}}</span>
     </div>
-    {{if .Truncated}}<div class="alert alert-error" role="status">Too many matches — showing the first {{len .Results}}. Please refine your search.</div>{{end}}
+    {{if .Truncated}}<div class="alert alert-error" role="status">{{L .Base.Lang "Too many matches — showing the first"}} {{len .Results}}. {{L .Base.Lang "Please refine your search."}}</div>{{end}}
     {{if .Results}}
     <div class="table-wrap">
         <table class="data">
-            <thead><tr><th>Firewall</th><th>File</th><th>Matching Line</th></tr></thead>
+            <thead><tr><th>Firewall</th><th>{{L $.Base.Lang "File"}}</th><th>{{L $.Base.Lang "Matching Line"}}</th></tr></thead>
             <tbody>
             {{range .Results}}
                 <tr>
@@ -39,23 +39,20 @@
         </table>
     </div>
     {{else}}
-    <div class="empty">No matches found.</div>
+    <div class="empty">{{L .Base.Lang "No matches found."}}</div>
     {{end}}
 </div>
 {{end}}
 
 <details class="card search-help"{{if not .Query}} open{{end}}>
-    <summary><span>Search examples &amp; tips</span></summary>
+    <summary><span>{{L .Base.Lang "Search examples & tips"}}</span></summary>
     <div class="search-help-body">
     <p class="muted" style="margin-top:0;">
-        The search scans the <b>newest saved configuration of every firewall</b> and
-        returns each matching line together with the firewall it came from. Matching is
-        <b>case-insensitive</b>; <code>*</code> is a wildcard that matches any characters,
-        and everything else is matched literally (so <code>.</code>, <code>-</code>, and
-        quotes are taken as-is). Click any example to load it into the search box.
+        {{L .Base.Lang "The search scans the"}} <b>{{L .Base.Lang "newest saved configuration of every firewall"}}</b> {{L .Base.Lang "and returns each matching line together with its firewall. Matching is"}}
+        <b>{{L .Base.Lang "case-insensitive"}}</b>; <code>*</code> {{L .Base.Lang "matches any characters; everything else is matched literally. Click an example to load it into the search box."}}
     </p>
 
-    <h3>Find a firewall by name / hostname</h3>
+    <h3>{{L .Base.Lang "Find a firewall by name / hostname"}}</h3>
     <div class="chips">
         <button type="button" class="chip" data-q="set hostname">set hostname</button>
         <button type="button" class="chip" data-q="set hostname *FGT*">set hostname *FGT*</button>
@@ -63,7 +60,7 @@
         <button type="button" class="chip" data-q="set alias *branch*">set alias *branch*</button>
     </div>
 
-    <h3>Interfaces &amp; addressing</h3>
+    <h3>{{L .Base.Lang "Interfaces & addressing"}}</h3>
     <div class="chips">
         <button type="button" class="chip" data-q='edit "port1"'>edit "port1"</button>
         <button type="button" class="chip" data-q="set ip 10.*">set ip 10.*</button>
@@ -71,7 +68,7 @@
         <button type="button" class="chip" data-q="set allowaccess *https*">set allowaccess *https*</button>
     </div>
 
-    <h3>Policies, addresses &amp; services</h3>
+    <h3>{{L .Base.Lang "Policies, addresses & services"}}</h3>
     <div class="chips">
         <button type="button" class="chip" data-q="config firewall policy">config firewall policy</button>
         <button type="button" class="chip" data-q="set srcintf *wan*">set srcintf *wan*</button>
@@ -87,7 +84,7 @@
         <button type="button" class="chip" data-q="set psksecret *">set psksecret *</button>
     </div>
 
-    <h3>Admins, users &amp; security review</h3>
+    <h3>{{L .Base.Lang "Admins, users & security review"}}</h3>
     <div class="chips">
         <button type="button" class="chip" data-q="config system admin">config system admin</button>
         <button type="button" class="chip" data-q="set trusthost*">set trusthost*</button>

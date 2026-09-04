@@ -5,7 +5,7 @@ const attributeMatch = 'type[fortimanager->fortimanager]fmg["manager.example.tes
 test('ConfTail creates and manages an exact global ignore rule', async ({ page }) => {
   await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
 
-  const openButton = page.getByRole('button', { name: 'Ignore globally…' });
+  const openButton = page.locator('#ct-event-41').getByRole('button', { name: 'Ignore globally…' });
   await expect(openButton).toBeVisible();
   await openButton.click();
 

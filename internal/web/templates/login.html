@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{if .Lang}}{{.Lang}}{{else}}en{{end}}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <title>FortiSafe · Login</title>
+    <title>FortiSafe · {{L .Lang "Login"}}</title>
     <!-- Share the app's terminal design system (tokens, JetBrains Mono, inputs,
          buttons, alerts) so the login screen matches every other page. The
          inline block below only adds the login-specific layout + the radar
@@ -196,43 +196,41 @@
     </div>
     <div class="logo-text" id="logo-text"></div>
     <div class="container">
-        <h1 class="page-title login-title"><span class="accent-bar"></span>Login</h1>
+        <h1 class="page-title login-title"><span class="accent-bar"></span>{{L .Lang "Login"}}</h1>
         {{if .Error}}
             <p class="alert alert-error" role="alert">{{.Error}}</p>
         {{end}}
         {{if .RadiusEnabled}}
         <div class="alert alert-info radius-banner" id="radius-banner">
-            <b>RADIUS / MFA:</b> Sign-in can take up to 60&nbsp;seconds. If your
-            account uses push or one-time-password MFA, <b>approve the prompt on
-            your mobile device</b> after clicking Login.
+            <b>RADIUS / MFA:</b> {{L .Lang "Sign-in can take up to 60 seconds. If your account uses push or one-time-password MFA,"}} <b>{{L .Lang "approve the prompt on your mobile device"}}</b> {{L .Lang "after clicking Login."}}
         </div>
         {{end}}
         <form method="post" action="/login" id="login-form">
             <div class="field">
-                <label for="username">Username</label>
+                <label for="username">{{L .Lang "Username"}}</label>
                 <input type="text" name="username" id="username" autocomplete="username" required>
             </div>
             <div class="field">
-                <label for="password">Password</label>
+                <label for="password">{{L .Lang "Password"}}</label>
                 <div class="password-field">
                     <input type="password" name="password" id="password" autocomplete="current-password" required>
                     <button type="button" class="password-toggle" data-password-toggle="password"
-                            data-show-label="Show" data-hide-label="Hide"
-                            data-show-aria-label="Show password" data-hide-aria-label="Hide password"
-                            aria-label="Show password" aria-controls="password" aria-pressed="false">Show</button>
+                            data-show-label="{{L .Lang "Show"}}" data-hide-label="{{L .Lang "Hide"}}"
+                            data-show-aria-label="{{L .Lang "Show password"}}" data-hide-aria-label="{{L .Lang "Hide password"}}"
+                            aria-label="{{L .Lang "Show password"}}" aria-controls="password" aria-pressed="false">{{L .Lang "Show"}}</button>
                 </div>
             </div>
             {{if .TOTPEnabled}}
                 <div class="field" id="totp-section">
-                    <label for="totp_code">TOTP Code</label>
+                    <label for="totp_code">{{L .Lang "TOTP Code"}}</label>
                     <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code"
                            pattern="[0-9]{6}" minlength="6" maxlength="6">
                 </div>
             {{end}}
-            <input type="submit" value="Login" id="login-submit" class="btn btn-primary login-submit">
+            <input type="submit" value="{{L .Lang "Login"}}" id="login-submit" class="btn btn-primary login-submit">
         </form>
         <div class="login-wait" id="login-wait" role="status" aria-live="polite" aria-atomic="true">
-            <span class="spinner"></span>Signing in… check your mobile device to confirm the login if prompted.
+            <span class="spinner"></span>{{L .Lang "Signing in… check your mobile device to confirm the login if prompted."}}
         </div>
     </div>
     <script src="/static/ui.js"></script>
@@ -278,7 +276,7 @@
                     if (loginWait) { loginWait.classList.add('show'); }
                     if (loginSubmit) {
                         loginSubmit.disabled = true;
-                        loginSubmit.value = 'Signing in…';
+                        loginSubmit.value = '{{L .Lang "Signing in…"}}';
                     }
                 });
             }

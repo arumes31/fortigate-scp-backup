@@ -1,12 +1,12 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Compare backups · <span class="no-caps">{{.Firewall.FQDN}}</span> <span class="muted">#{{.Firewall.ID}}</span></h1>
-<p><a class="btn btn-sm" href="/backups/{{.Firewall.ID}}">Back to backup history</a></p>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Compare backups"}} · <span class="no-caps">{{.Firewall.FQDN}}</span> <span class="muted">#{{.Firewall.ID}}</span></h1>
+<p><a class="btn btn-sm" href="/backups/{{.Firewall.ID}}">{{L .Base.Lang "Back to backup history"}}</a></p>
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-{{if .Truncated}}<div class="alert alert-warning" role="status">Comparison is truncated at the documented safety limits.</div>{{end}}
+{{if .Truncated}}<div class="alert alert-warning" role="status">{{L .Base.Lang "Comparison is truncated at the documented safety limits."}}</div>{{end}}
 <div class="card pad-0">
-  <div class="card-header"><h2 class="mt-0 mb-0">Side-by-side configuration diff</h2><span class="muted">Backup #{{.Left.ID}} → #{{.Right.ID}}</span></div>
-  <div class="table-wrap" role="region" aria-label="Configuration differences" tabindex="0">
-    <table class="data config-diff"><thead><tr><th>Old line</th><th>Backup #{{.Left.ID}}</th><th>New line</th><th>Backup #{{.Right.ID}}</th></tr></thead>
+  <div class="card-header"><h2 class="mt-0 mb-0">{{L .Base.Lang "Side-by-side configuration diff"}}</h2><span class="muted">Backup #{{.Left.ID}} → #{{.Right.ID}}</span></div>
+  <div class="table-wrap" role="region" aria-label="{{L .Base.Lang "Configuration differences"}}" tabindex="0">
+    <table class="data config-diff"><thead><tr><th>{{L .Base.Lang "Old line"}}</th><th>Backup #{{.Left.ID}}</th><th>{{L .Base.Lang "New line"}}</th><th>Backup #{{.Right.ID}}</th></tr></thead>
       <tbody>{{range .Rows}}<tr class="diff-{{.Kind}}"><td>{{if .LeftLine}}{{.LeftLine}}{{end}}</td><td><code>{{.Left}}</code></td><td>{{if .RightLine}}{{.RightLine}}{{end}}</td><td><code>{{.Right}}</code></td></tr>{{end}}</tbody>
     </table>
   </div>

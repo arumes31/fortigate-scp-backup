@@ -98,6 +98,7 @@ type dashboardCounts struct {
 }
 
 type dashboardEvent struct {
+	Lang             string
 	ID               int64
 	Sequence         int
 	EventAt          time.Time
@@ -123,6 +124,7 @@ type dashboardEvent struct {
 }
 
 type dashboardChain struct {
+	Lang             string
 	ID               string
 	FirewallID       int
 	FirewallName     string
@@ -931,6 +933,12 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		ActiveFilters:   dashboardActiveFilterChips(filters),
 		AdvancedOpen:    dashboardAdvancedFiltersSet(filters),
 	}
+	for index := range page.Dashboard.Active {
+		page.Dashboard.Active[index].Lang = page.Base.Lang
+	}
+	for index := range page.Dashboard.History {
+		page.Dashboard.History[index].Lang = page.Base.Lang
+	}
 	if filters.Page > 1 {
 		page.HasPrev = true
 		page.PrevFields = dashboardFormFields(filters, filters.Page-1, "")
@@ -1050,8 +1058,11 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to load global ignore rules", http.StatusInternalServerError)
 		return
 	}
+	base := e.pageBase(r, "Configuration Change Session", "conftail")
+	chain.Lang = base.Lang
 	for eventIndex := range chain.Events {
 		event := &chain.Events[eventIndex]
+		event.Lang = base.Lang
 		candidate := Event{Action: event.Action, Path: event.Path, ConfigAttribute: event.ConfigAttribute}
 		if rule, ok := matchingGlobalIgnoreRule(ignoreRules, candidate); ok {
 			event.GlobalIgnoreID = rule.ID
@@ -1063,7 +1074,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		username = e.currentUser(r)
 	}
 	view := dashboardChainPageData{
-		Base:             e.pageBase(r, "Configuration Change Session", "conftail"),
+		Base:             base,
 		Chain:            chain,
 		Delivery:         buildDashboardDeliverySummary(chain),
 		EventGroups:      dashboardEventGroups(chain.Events, viewMode),

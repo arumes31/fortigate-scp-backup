@@ -3,6 +3,22 @@
     function startADMVPNPage() {
         var root = document.getElementById('adm-vpn-page');
         if (!root) { return; }
+        var de = document.documentElement.lang === 'de';
+        var messages = {
+            'selected': 'ausgewählt',
+            'A maximum of 100 entries can be selected.': 'Es können höchstens 100 Einträge ausgewählt werden.',
+            'Select at least one entry.': 'Wählen Sie mindestens einen Eintrag aus.',
+            'A maximum of 100 entries can be processed at once.': 'Es können höchstens 100 Einträge gleichzeitig verarbeitet werden.',
+            'Loading configuration…': 'Konfiguration wird geladen…',
+            'Edit form is unavailable': 'Das Bearbeitungsformular ist nicht verfügbar',
+            'Saving configuration…': 'Konfiguration wird gespeichert…',
+            'Loading…': 'Wird geladen…',
+            'Loading removal commands…': 'Entfernungsbefehle werden geladen…',
+            'Removal commands ready': 'Entfernungsbefehle sind bereit',
+            'due': 'fällig',
+            'next': 'nächste Prüfung',
+        };
+        function t(english) { return de ? (messages[english] || english) : english; }
         var presetKey = 'fortisafe.adm-vpn.columns.v1';
         var allowedPresets = { compact: true, standard: true, diagnostic: true };
         var presetSelect = root.querySelector('#vpnColumnPreset');
@@ -65,14 +81,14 @@
         function selectedBoxes() { return selectionBoxes.filter(function (box) { return box.checked; }); }
         function updateSelection() {
             var count = selectedBoxes().length;
-            selectionCount.textContent = count + ' selected';
+            selectionCount.textContent = count + ' ' + t('selected');
             bulkButtons.forEach(function (button) { button.disabled = count === 0 || count > maxSelection; });
         }
         selectionBoxes.forEach(function (box) {
             box.addEventListener('change', function () {
                 if (box.checked && selectedBoxes().length > maxSelection) {
                     box.checked = false;
-                    announce(bulkFeedback, 'error', 'A maximum of 100 entries can be selected.');
+                    announce(bulkFeedback, 'error', t('A maximum of 100 entries can be selected.'));
                 }
                 updateSelection();
             });
@@ -87,7 +103,7 @@
                 }
             });
             updateSelection();
-            if (omitted > 0) { announce(bulkFeedback, 'error', 'Selected 100 visible entries; ' + omitted + ' exceed the limit.'); }
+            if (omitted > 0) { announce(bulkFeedback, 'error', de ? '100 sichtbare Einträge ausgewählt; ' + omitted + ' überschreiten das Limit.' : 'Selected 100 visible entries; ' + omitted + ' exceed the limit.'); }
         });
         root.querySelector('#vpnClearSelection').addEventListener('click', function () {
             selectionBoxes.forEach(function (box) { box.checked = false; });
@@ -98,18 +114,18 @@
             event.preventDefault();
             var selected = selectedBoxes();
             if (selected.length === 0) {
-                announce(bulkFeedback, 'error', 'Select at least one entry.');
+                announce(bulkFeedback, 'error', t('Select at least one entry.'));
                 return;
             }
             if (selected.length > maxSelection) {
-                announce(bulkFeedback, 'error', 'A maximum of 100 entries can be processed at once.');
+                announce(bulkFeedback, 'error', t('A maximum of 100 entries can be processed at once.'));
                 return;
             }
             var submitter = event.submitter;
             var action = submitter && submitter.formAction;
             if (!action) { return; }
             bulkButtons.forEach(function (button) { button.disabled = true; });
-            announce(bulkFeedback, 'loading', 'Preparing ' + selected.length + ' entries…');
+            announce(bulkFeedback, 'loading', de ? selected.length + ' Einträge werden vorbereitet…' : 'Preparing ' + selected.length + ' entries…');
             fetch(action, { method: 'POST', body: new FormData(bulkForm) })
                 .then(function (response) {
                     if (!response.ok) { return response.text().then(function (text) { throw new Error(text.trim() || ('HTTP ' + response.status)); }); }
@@ -128,11 +144,11 @@
                     var succeeded = result.response.headers.get('X-FortiSafe-Bulk-Succeeded') || String(selected.length);
                     var failed = result.response.headers.get('X-FortiSafe-Bulk-Failed') || '0';
                     var failedIDs = result.response.headers.get('X-FortiSafe-Bulk-Failed-IDs') || '';
-                    var message = succeeded + ' succeeded, ' + failed + ' failed.';
-                    if (failedIDs) { message += ' Failed IDs: ' + failedIDs + '.'; }
+                    var message = de ? succeeded + ' erfolgreich, ' + failed + ' fehlgeschlagen.' : succeeded + ' succeeded, ' + failed + ' failed.';
+                    if (failedIDs) { message += de ? ' Fehlgeschlagene IDs: ' + failedIDs + '.' : ' Failed IDs: ' + failedIDs + '.'; }
                     announce(bulkFeedback, failed === '0' ? 'success' : 'error', message);
                 })
-                .catch(function (error) { announce(bulkFeedback, 'error', 'Bulk operation failed: ' + error.message); })
+                .catch(function (error) { announce(bulkFeedback, 'error', (de ? 'Massenoperation fehlgeschlagen: ' : 'Bulk operation failed: ') + error.message); })
                 .finally(updateSelection);
         });
         updateSelection();
@@ -145,7 +161,7 @@
                 if (editRequest) { editRequest.abort(); }
                 editRequest = new AbortController();
                 modalBody.replaceChildren();
-                announce(editFeedback, 'loading', 'Loading configuration…');
+                announce(editFeedback, 'loading', t('Loading configuration…'));
                 fetch('/fgt-adm-vpn-conf/edit/' + encodeURIComponent(button.dataset.id), { signal: editRequest.signal })
                     .then(function (response) {
                         if (!response.ok) { throw new Error('HTTP ' + response.status); }
@@ -155,20 +171,20 @@
                         modalBody.innerHTML = html;
                         editFeedback.hidden = true;
                         var form = modalBody.querySelector('form');
-                        if (!form) { throw new Error('Edit form is unavailable'); }
+                        if (!form) { throw new Error(t('Edit form is unavailable')); }
                         form.addEventListener('submit', function (event) {
                             event.preventDefault();
-                            announce(editFeedback, 'loading', 'Saving configuration…');
+                            announce(editFeedback, 'loading', t('Saving configuration…'));
                             fetch(form.action, { method: 'POST', body: new FormData(form) })
                                 .then(function (response) {
                                     if (!response.ok) { return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); }); }
                                     window.location.assign('/fgt-adm-vpn-conf/');
                                 })
-                                .catch(function (error) { announce(editFeedback, 'error', 'Could not update configuration: ' + error.message); });
+                                .catch(function (error) { announce(editFeedback, 'error', (de ? 'Konfiguration konnte nicht aktualisiert werden: ' : 'Could not update configuration: ') + error.message); });
                         });
                     })
                     .catch(function (error) {
-                        if (error.name !== 'AbortError') { announce(editFeedback, 'error', 'Could not load configuration: ' + error.message); }
+                        if (error.name !== 'AbortError') { announce(editFeedback, 'error', (de ? 'Konfiguration konnte nicht geladen werden: ' : 'Could not load configuration: ') + error.message); }
                     });
             });
         });
@@ -194,9 +210,9 @@
                 removeInput.value = '';
                 removeInput.dispatchEvent(new Event('input'));
                 removeForm.action = '/fgt-adm-vpn-conf/delete/' + encodeURIComponent(id);
-                removalPre.textContent = 'Loading…';
-                removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
-                announce(removeFeedback, 'loading', 'Loading removal commands…');
+                removalPre.textContent = t('Loading…');
+                removeIntro.textContent = de ? 'Die Konfiguration „' + name + '“ muss zuerst von den FortiGate-Geräten entfernt werden. Führen Sie die folgenden Befehle auf dem passenden Gerät aus und bestätigen Sie anschließend das Entfernen.' : 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
+                announce(removeFeedback, 'loading', t('Loading removal commands…'));
                 if (removalRequest) { removalRequest.abort(); }
                 removalRequest = new AbortController();
                 fetch('/fgt-adm-vpn-conf/removal_commands/' + encodeURIComponent(id), { signal: removalRequest.signal })
@@ -206,12 +222,12 @@
                     })
                     .then(function (text) {
                         removalPre.textContent = text;
-                        announce(removeFeedback, 'success', 'Removal commands ready');
+                        announce(removeFeedback, 'success', t('Removal commands ready'));
                     })
                     .catch(function (error) {
                         if (error.name !== 'AbortError') {
                             removalPre.textContent = '';
-                            announce(removeFeedback, 'error', 'Could not load removal commands: ' + error.message);
+                            announce(removeFeedback, 'error', (de ? 'Entfernungsbefehle konnten nicht geladen werden: ' : 'Could not load removal commands: ') + error.message);
                         }
                     });
             });
@@ -247,10 +263,10 @@
                 var target = new Date(element.dataset.next).getTime();
                 if (isNaN(target)) { element.textContent = '-'; return; }
                 var difference = Math.round((target - now) / 1000);
-                if (difference <= 0) { element.textContent = 'due'; return; }
+                if (difference <= 0) { element.textContent = t('due'); return; }
                 var minutes = Math.floor(difference / 60);
                 var seconds = difference % 60;
-                element.textContent = 'next ' + minutes + 'm ' + String(seconds).padStart(2, '0') + 's';
+                element.textContent = t('next') + ' ' + minutes + 'm ' + String(seconds).padStart(2, '0') + 's';
             });
         }
         updateGraylogCheckTimers();

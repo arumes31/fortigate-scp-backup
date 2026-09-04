@@ -1,41 +1,41 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Activity Log</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Activity Log"}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <div class="card pad-0">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Recent Activity</h2>
-        <span class="muted">{{if .Error}}Results unavailable{{else}}{{.Total}} matching{{end}}</span>
+        <h2 class="mt-0 mb-0">{{L .Base.Lang "Recent Activity"}}</h2>
+        <span class="muted">{{if .Error}}{{L .Base.Lang "Results unavailable"}}{{else}}{{.Total}} {{L .Base.Lang "matching"}}{{end}}</span>
     </div>
     <form method="get" action="/activity_log" class="filter-form activity-filter" role="search">
-        <label>Search
-            <input type="search" name="q" value="{{.Filters.Query}}" maxlength="256" placeholder="User, action, or details">
+        <label>{{L .Base.Lang "Search"}}
+            <input type="search" name="q" value="{{.Filters.Query}}" maxlength="256" placeholder="{{L .Base.Lang "User, action, or details"}}">
         </label>
-        <label>User
+        <label>{{L .Base.Lang "User"}}
             <input type="search" name="user" value="{{.Filters.User}}" maxlength="128" autocomplete="off">
         </label>
-        <label>Action
+        <label>{{L .Base.Lang "Action"}}
             <input type="search" name="action" value="{{.Filters.Action}}" maxlength="128" autocomplete="off">
         </label>
-        <label>From
+        <label>{{L .Base.Lang "From"}}
             <input type="date" name="from" value="{{.Filters.From}}">
         </label>
-        <label>To
+        <label>{{L .Base.Lang "To"}}
             <input type="date" name="to" value="{{.Filters.To}}">
         </label>
         <div class="filter-actions">
-            <button class="btn btn-sm" type="submit">Apply filters</button>
-            {{if .HasFilters}}<a class="btn btn-sm" href="/activity_log">Clear</a>{{end}}
+            <button class="btn btn-sm" type="submit">{{L .Base.Lang "Apply filters"}}</button>
+            {{if .HasFilters}}<a class="btn btn-sm" href="/activity_log">{{L .Base.Lang "Clear"}}</a>{{end}}
         </div>
     </form>
     {{if .Error}}
-    <div class="empty">Correct the filters or retry the request.</div>
+    <div class="empty">{{L .Base.Lang "Correct the filters or retry the request."}}</div>
     {{else if .Logs}}
     <div class="table-wrap">
         <table class="data" id="logTable">
             <thead>
-                <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Details</th></tr>
+                <tr><th>{{L $.Base.Lang "Timestamp"}}</th><th>{{L $.Base.Lang "User"}}</th><th>{{L $.Base.Lang "Action"}}</th><th>{{L $.Base.Lang "Details"}}</th></tr>
             </thead>
             <tbody>
             {{range .Logs}}
@@ -55,13 +55,13 @@
     </div>
     {{if gt .TotalPages 1}}
     <div class="pager">
-        {{if .PrevURL}}<a class="btn btn-sm" rel="prev" href="{{.PrevURL}}">‹ Prev</a>{{end}}
-        <span class="muted">Page {{.Page}} of {{.TotalPages}}</span>
-        {{if .NextURL}}<a class="btn btn-sm" rel="next" href="{{.NextURL}}">Next ›</a>{{end}}
+        {{if .PrevURL}}<a class="btn btn-sm" rel="prev" href="{{.PrevURL}}">‹ {{L .Base.Lang "Previous"}}</a>{{end}}
+        <span class="muted">{{L .Base.Lang "Page"}} {{.Page}} {{L .Base.Lang "of"}} {{.TotalPages}}</span>
+        {{if .NextURL}}<a class="btn btn-sm" rel="next" href="{{.NextURL}}">{{L .Base.Lang "Next"}} ›</a>{{end}}
     </div>
     {{end}}
     {{else}}
-    <div class="empty">{{if .HasFilters}}No activity matches these filters.{{else}}No activity recorded yet.{{end}}</div>
+    <div class="empty">{{if .HasFilters}}{{L .Base.Lang "No activity matches these filters."}}{{else}}{{L .Base.Lang "No activity recorded yet."}}{{end}}</div>
     {{end}}
 </div>
 {{end}}

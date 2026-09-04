@@ -4,14 +4,14 @@
 
 {{define "content"}}
     <div class="page confgen-page" id="confgen-page" data-preselected-template="{{.PreselectedTemplate}}">
-        <header class="confgen-page-header"><h1 class="page-title"><span class="accent-bar"></span>FortiGate Policy Generator</h1><span id="confgen-dirty" class="pill pill-new" hidden>Unsaved changes</span></header>
+        <header class="confgen-page-header"><h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "FortiGate Policy Generator"}}</h1><span id="confgen-dirty" class="pill pill-new" hidden>{{L .Base.Lang "Unsaved changes"}}</span></header>
         <p id="confgen-feedback" class="page-feedback" data-feedback="success"></p>
 
         <section class="card confgen-target-context" aria-labelledby="confgen-target-title">
-            <div><span class="eyebrow">Target context</span><h2 id="confgen-target-title">Load configuration from firewall</h2><p class="muted">Use a source backup to populate validated interfaces, objects, and profiles.</p></div>
+            <div><span class="eyebrow">{{L .Base.Lang "Target context"}}</span><h2 id="confgen-target-title">{{L .Base.Lang "Load configuration from firewall"}}</h2><p class="muted">{{L .Base.Lang "Use a source backup to populate validated interfaces, objects, and profiles."}}</p></div>
             <div class="confgen-target-controls">
-                <div class="field"><label for="firewall-select">Select Firewall</label><select id="firewall-select" class="form-control"><option value="">Select Firewall</option>{{range .Firewalls}}<option value="{{.ID}}">{{.FQDN}}</option>{{end}}</select></div>
-                <button type="button" data-action="load-firewall-config" class="btn btn-primary">Load Config</button>
+                <div class="field"><label for="firewall-select">{{L .Base.Lang "Select Firewall"}}</label><select id="firewall-select" class="form-control"><option value="">{{L .Base.Lang "Select Firewall"}}</option>{{range .Firewalls}}<option value="{{.ID}}">{{.FQDN}}</option>{{end}}</select></div>
+                <button type="button" data-action="load-firewall-config" class="btn btn-primary">{{L .Base.Lang "Load Config"}}</button>
             </div>
         </section>
 
@@ -19,47 +19,47 @@
             <!-- Sidebar for templates and policy list -->
             <div class="sidebar">
                 <div class="card">
-                    <h2 class="collapsible-header mb-0">Templates</h2>
+                    <h2 class="collapsible-header mb-0">{{L .Base.Lang "Templates"}}</h2>
                     <div class="template-section" style="margin-top: 15px;">
-                        <label for="template-select">Load Template</label>
+                        <label for="template-select">{{L .Base.Lang "Load Template"}}</label>
                         <select id="template-select" class="form-control">
-                            <option value="">Select Template</option>
+                            <option value="">{{L .Base.Lang "Select Template"}}</option>
                             {{range .Templates}}
                                 <option value="{{.}}">{{.}}</option>
                             {{end}}
                         </select>
                         <div class="btn-group" style="margin-top: 8px;">
-                            <button type="button" data-action="load-template" class="btn btn-sm">Load</button>
-                            <button type="button" data-action="clone-template" class="btn btn-sm">Clone</button>
-                            <button type="button" data-action="copy-url" class="btn btn-sm">Copy URL</button>
+                            <button type="button" data-action="load-template" class="btn btn-sm">{{L .Base.Lang "Load"}}</button>
+                            <button type="button" data-action="clone-template" class="btn btn-sm">{{L .Base.Lang "Clone"}}</button>
+                            <button type="button" data-action="copy-url" class="btn btn-sm">{{L .Base.Lang "Copy URL"}}</button>
                         </div>
 
-                        <label for="template-name" style="margin-top: 15px; display: block;">Edit Template</label>
-                        <input type="text" id="template-name" class="form-control" placeholder="Template Name">
+                        <label for="template-name" style="margin-top: 15px; display: block;">{{L .Base.Lang "Edit Template"}}</label>
+                        <input type="text" id="template-name" class="form-control" placeholder="{{L .Base.Lang "Template Name"}}">
                         
                         <div class="checkbox-row" style="margin-top: 8px; margin-bottom: 8px;">
                             <input type="checkbox" id="template-global" name="template-global">
-                            <label for="template-global" class="no-caps">Save as Global Template</label>
+                            <label for="template-global" class="no-caps">{{L .Base.Lang "Save as Global Template"}}</label>
                         </div>
 
                         <div class="btn-group">
-                            <button type="button" data-action="save-template" class="btn btn-sm btn-primary">Save</button>
-                            <button type="button" data-action="delete-template" class="btn btn-sm">Delete</button>
-                            <button type="button" data-action="rename-template" class="btn btn-sm">Rename</button>
-                            <button type="button" data-action="export-template" class="btn btn-sm">Export</button>
+                            <button type="button" data-action="save-template" class="btn btn-sm btn-primary">{{L .Base.Lang "Save"}}</button>
+                            <button type="button" data-action="delete-template" class="btn btn-sm">{{L .Base.Lang "Delete"}}</button>
+                            <button type="button" data-action="rename-template" class="btn btn-sm">{{L .Base.Lang "Rename"}}</button>
+                            <button type="button" data-action="export-template" class="btn btn-sm">{{L .Base.Lang "Export"}}</button>
                         </div>
                         
                         <div style="margin-top: 8px;">
                             <input type="file" id="import-template" accept=".json" data-change-action="import-template" hidden>
-                            <button type="button" data-action="choose-template-file" class="btn btn-sm w-100">Import Template</button>
+                            <button type="button" data-action="choose-template-file" class="btn btn-sm w-100">{{L .Base.Lang "Import Template"}}</button>
                         </div>
                     </div>
                 </div>
 
                 <div class="card">
-                    <h2>Policies</h2>
+                    <h2>{{L .Base.Lang "Policies"}}</h2>
                     <div id="policy-list"></div>
-                    <button type="button" data-action="add-policy" class="btn w-100" style="margin-top: 10px;">+ Add Policy</button>
+                    <button type="button" data-action="add-policy" class="btn w-100" style="margin-top: 10px;">+ {{L .Base.Lang "Add Policy"}}</button>
                 </div>
             </div>
 
@@ -67,14 +67,14 @@
             <div class="main-content">
                 <!-- Policy configuration form -->
                 <div class="card policy-form" id="policy-form" style="display: none;">
-                    <h2>Policy Configuration</h2>
+                    <h2>{{L .Base.Lang "Policy Configuration"}}</h2>
                     <div class="form-grid">
                         <div class="field">
-                            <label for="policy-name">Policy Name</label>
+                            <label for="policy-name">{{L .Base.Lang "Policy Name"}}</label>
                             <input type="text" class="policy-name" id="policy-name">
                         </div>
                         <div class="field">
-                            <label for="policy-comment">Policy Comment</label>
+                            <label for="policy-comment">{{L .Base.Lang "Policy Comment"}}</label>
                             <input type="text" class="policy-comment" id="policy-comment">
                         </div>
                     </div>
@@ -82,55 +82,55 @@
                     <div class="form-grid" style="grid-template-columns: 1fr 1fr; margin-top: 15px;">
                         <div class="src-section">
                             <div class="src-interfaces">
-                                <label>Source Interfaces</label>
+                                <label>{{L .Base.Lang "Source Interfaces"}}</label>
                                 <div class="interface-items"></div>
-                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-interface">+ Add Source Interface</button>
+                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-interface">+ {{L .Base.Lang "Add Source Interface"}}</button>
                             </div>
                             <div class="src-addresses" style="margin-top: 15px;">
-                                <label>Source Addresses/ISDB</label>
+                                <label>{{L .Base.Lang "Source Addresses/ISDB"}}</label>
                                 <div class="address-items"></div>
-                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-address">+ Add Source Address/ISDB</button>
+                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-address">+ {{L .Base.Lang "Add Source Address/ISDB"}}</button>
                             </div>
                             <div class="src-users-groups" style="margin-top: 15px;">
-                                <label>Users/Groups</label>
+                                <label>{{L .Base.Lang "Users/Groups"}}</label>
                                 <div class="user-group-items"></div>
-                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-user-group">+ Add User/Group</button>
+                                <button type="button" class="btn btn-sm btn-outline" data-action="add-src-user-group">+ {{L .Base.Lang "Add User/Group"}}</button>
                             </div>
                         </div>
 
                         <div class="dst-section">
                             <div class="dst-interfaces">
-                                <label>Destination Interfaces</label>
+                                <label>{{L .Base.Lang "Destination Interfaces"}}</label>
                                 <div class="interface-items"></div>
-                                <button type="button" class="btn btn-sm btn-outline" data-action="add-dst-interface">+ Add Destination Interface</button>
+                                <button type="button" class="btn btn-sm btn-outline" data-action="add-dst-interface">+ {{L .Base.Lang "Add Destination Interface"}}</button>
                             </div>
                             <div class="dst-addresses" style="margin-top: 15px;">
-                                <label>Destination Addresses/ISDB</label>
+                                <label>{{L .Base.Lang "Destination Addresses/ISDB"}}</label>
                                 <div class="address-items"></div>
-                                <button type="button" class="btn btn-sm btn-outline" data-action="add-dst-address">+ Add Destination Address/ISDB</button>
+                                <button type="button" class="btn btn-sm btn-outline" data-action="add-dst-address">+ {{L .Base.Lang "Add Destination Address/ISDB"}}</button>
                             </div>
                         </div>
                     </div>
 
                     <div class="services" style="margin-top: 15px;">
-                        <label>Services</label>
+                        <label>{{L .Base.Lang "Services"}}</label>
                         <div class="service-items"></div>
-                        <button type="button" class="btn btn-sm btn-outline" data-action="add-service">+ Add Service/Group</button>
+                        <button type="button" class="btn btn-sm btn-outline" data-action="add-service">+ {{L .Base.Lang "Add Service/Group"}}</button>
                     </div>
 
                     <div class="form-grid" style="margin-top: 15px;">
                         <div class="field">
-                            <label for="action">Action</label>
+                            <label for="action">{{L .Base.Lang "Action"}}</label>
                             <select class="action" id="action" data-change-action="toggle-profile-fields">
-                                <option value="accept">Accept</option>
-                                <option value="deny">Deny</option>
+                                <option value="accept">{{L .Base.Lang "Accept"}}</option>
+                                <option value="deny">{{L .Base.Lang "Deny"}}</option>
                             </select>
                         </div>
                         <div class="field">
-                            <label for="inspection-mode">Inspection Mode</label>
+                            <label for="inspection-mode">{{L .Base.Lang "Inspection Mode"}}</label>
                             <select class="inspection-mode" id="inspection-mode">
-                                <option value="flow">Flow-based</option>
-                                <option value="proxy">Proxy-based</option>
+                                <option value="flow">{{L .Base.Lang "Flow-based"}}</option>
+                                <option value="proxy">{{L .Base.Lang "Proxy-based"}}</option>
                             </select>
                         </div>
                     </div>
@@ -139,7 +139,7 @@
                         <div class="field">
                             <label for="ssl-ssh-profile">SSL/SSH Profile</label>
                             <select class="ssl-ssh-profile" id="ssl-ssh-profile">
-                                <option value="">None</option>
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .SSLSSHProfiles}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -149,10 +149,10 @@
                         <div class="field">
                             <div class="field-toggle">
                                 <input type="checkbox" class="toggle-field" data-field="webfilter-profile" id="webfilter-enabled" checked>
-                                <label for="webfilter-enabled">Webfilter Profile</label>
+                                <label for="webfilter-enabled">{{L .Base.Lang "Webfilter Profile"}}</label>
                             </div>
-                            <select class="webfilter-profile" id="webfilter-profile" aria-label="Webfilter Profile">
-                                <option value="">None</option>
+                            <select class="webfilter-profile" id="webfilter-profile" aria-label="{{L .Base.Lang "Webfilter Profile"}}">
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .WebfilterProfiles}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -164,10 +164,10 @@
                         <div class="field">
                             <div class="field-toggle">
                                 <input type="checkbox" class="toggle-field" data-field="application-list" id="application-list-enabled" checked>
-                                <label for="application-list-enabled">Application List</label>
+                                <label for="application-list-enabled">{{L .Base.Lang "Application List"}}</label>
                             </div>
-                            <select class="application-list" id="application-list" aria-label="Application List">
-                                <option value="">None</option>
+                            <select class="application-list" id="application-list" aria-label="{{L .Base.Lang "Application List"}}">
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .ApplicationLists}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -179,8 +179,8 @@
                                 <input type="checkbox" class="toggle-field" data-field="av-profile" id="av-enabled">
                                 <label for="av-enabled">Antivirus</label>
                             </div>
-                            <select class="av-profile" id="av-profile" aria-label="Antivirus Profile" disabled>
-                                <option value="">None</option>
+                            <select class="av-profile" id="av-profile" aria-label="{{L .Base.Lang "Antivirus Profile"}}" disabled>
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .AVProfiles}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -195,7 +195,7 @@
                                 <label for="ips-sensor-enabled">IPS Sensor</label>
                             </div>
                             <select class="ips-sensor" id="ips-sensor" aria-label="IPS Sensor">
-                                <option value="">None</option>
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .IPSSensors}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -203,29 +203,29 @@
                         </div>
                         
                         <div class="field">
-                            <label for="logtraffic">Log Traffic</label>
+                            <label for="logtraffic">{{L .Base.Lang "Log Traffic"}}</label>
                             <select class="logtraffic" id="logtraffic">
-                                <option value="all">All</option>
+                                <option value="all">{{L .Base.Lang "All"}}</option>
                                 <option value="utm">UTM</option>
-                                <option value="disable">Disable</option>
+                                <option value="disable">{{L .Base.Lang "Disable"}}</option>
                             </select>
                         </div>
                     </div>
 
                     <div class="form-grid" style="margin-top: 15px;">
                         <div class="field">
-                            <label for="logtraffic-start">Log Traffic Start</label>
+                            <label for="logtraffic-start">{{L .Base.Lang "Log Traffic Start"}}</label>
                             <select class="logtraffic-start" id="logtraffic-start">
-                                <option value="enable">Enable</option>
-                                <option value="disable">Disable</option>
+                                <option value="enable">{{L .Base.Lang "Enable"}}</option>
+                                <option value="disable">{{L .Base.Lang "Disable"}}</option>
                             </select>
                         </div>
                         
                         <div class="field">
-                            <label for="auto-asic-offload">Auto ASIC Offload</label>
+                            <label for="auto-asic-offload">{{L .Base.Lang "Auto ASIC Offload"}}</label>
                             <select class="auto-asic-offload" id="auto-asic-offload">
-                                <option value="enable">Enable</option>
-                                <option value="disable">Disable</option>
+                                <option value="enable">{{L .Base.Lang "Enable"}}</option>
+                                <option value="disable">{{L .Base.Lang "Disable"}}</option>
                             </select>
                         </div>
                     </div>
@@ -234,15 +234,15 @@
                         <div class="field">
                             <label for="nat">NAT</label>
                             <select class="nat" id="nat" data-change-action="toggle-ip-pool-field">
-                                <option value="disable">Disable</option>
-                                <option value="enable">Enable</option>
+                                <option value="disable">{{L .Base.Lang "Disable"}}</option>
+                                <option value="enable">{{L .Base.Lang "Enable"}}</option>
                             </select>
                         </div>
                         
                         <div class="field ip-pool-section" style="display: none;">
-                            <label for="ip-pool">IP Pool</label>
+                            <label for="ip-pool">{{L .Base.Lang "IP Pool"}}</label>
                             <select class="ip-pool" id="ip-pool">
-                                <option value="">None</option>
+                                <option value="">{{L .Base.Lang "None"}}</option>
                                 {{range .IPPools}}
                                     <option value="{{.}}">{{.}}</option>
                                 {{end}}
@@ -251,65 +251,65 @@
                     </div>
 
                     <div class="btn-group" style="margin-top: 20px;">
-                        <button type="button" data-action="save-policy" class="btn btn-primary">Save Policy</button>
-                        <button type="button" data-action="clear-form" class="btn">Clear Form</button>
-                        <button type="button" data-action="clone-policy" class="btn">Clone Policy</button>
+                        <button type="button" data-action="save-policy" class="btn btn-primary">{{L .Base.Lang "Save Policy"}}</button>
+                        <button type="button" data-action="clear-form" class="btn">{{L .Base.Lang "Clear Form"}}</button>
+                        <button type="button" data-action="clone-policy" class="btn">{{L .Base.Lang "Clone Policy"}}</button>
                     </div>
                 </div>
 
                 <div class="card text-center" id="policy-form-placeholder" style="padding: 40px;">
-                    <div class="muted">Select a policy on the left or add a new one to configure rules.</div>
+                    <div class="muted">{{L .Base.Lang "Select a policy on the left or add a new one to configure rules."}}</div>
                 </div>
 
                 <aside class="confgen-review-rail" aria-labelledby="confgen-review-title">
                     <div class="card">
-                        <span class="eyebrow">Validation & output</span>
-                        <h2 id="confgen-review-title">Review</h2>
-                        <p class="muted">Server checks are authoritative. Review warnings before generation.</p>
+                        <span class="eyebrow">{{L .Base.Lang "Validation & output"}}</span>
+                        <h2 id="confgen-review-title">{{L .Base.Lang "Review"}}</h2>
+                        <p class="muted">{{L .Base.Lang "Server checks are authoritative. Review warnings before generation."}}</p>
                         <div class="confgen-review-actions">
-                            <button type="button" class="btn w-100" data-action="validate-policies">Validate policies</button>
-                            <button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" hidden>Generate All Policies</button>
-                            <button type="button" class="btn w-100 confgen-reset-workspace" data-action="clear-form">Reset current policy</button>
+                            <button type="button" class="btn w-100" data-action="validate-policies">{{L .Base.Lang "Validate policies"}}</button>
+                            <button type="button" class="btn btn-primary btn-lg generate-policies-btn w-100" data-action="generate-policies" hidden>{{L .Base.Lang "Generate All Policies"}}</button>
+                            <button type="button" class="btn w-100 confgen-reset-workspace" data-action="clear-form">{{L .Base.Lang "Reset current policy"}}</button>
                         </div>
                     </div>
 
-                    <div class="confgen-review-tabs" role="tablist" aria-label="Policy review">
-                        <button type="button" id="review-validation-tab" role="tab" aria-selected="true" aria-controls="review-validation-panel" tabindex="0" data-review-tab="validation">Validation <span id="validation-count" class="pill">0</span></button>
-                        <button type="button" id="review-warnings-tab" role="tab" aria-selected="false" aria-controls="review-warnings-panel" tabindex="-1" data-review-tab="warnings">Warnings <span id="warning-count" class="pill">0</span></button>
-                        <button type="button" id="review-cli-tab" role="tab" aria-selected="false" aria-controls="review-cli-panel" tabindex="-1" data-review-tab="cli">CLI output</button>
+                    <div class="confgen-review-tabs" role="tablist" aria-label="{{L .Base.Lang "Policy review"}}">
+                        <button type="button" id="review-validation-tab" role="tab" aria-selected="true" aria-controls="review-validation-panel" tabindex="0" data-review-tab="validation">{{L .Base.Lang "Validation"}} <span id="validation-count" class="pill">0</span></button>
+                        <button type="button" id="review-warnings-tab" role="tab" aria-selected="false" aria-controls="review-warnings-panel" tabindex="-1" data-review-tab="warnings">{{L .Base.Lang "Warnings"}} <span id="warning-count" class="pill">0</span></button>
+                        <button type="button" id="review-cli-tab" role="tab" aria-selected="false" aria-controls="review-cli-panel" tabindex="-1" data-review-tab="cli">{{L .Base.Lang "CLI output"}}</button>
                     </div>
 
                     <section id="review-validation-panel" class="card confgen-review-panel" role="tabpanel" aria-labelledby="review-validation-tab" tabindex="0">
-                        <p id="validation-summary" class="muted" role="status">Run validation to review this policy set.</p>
+                        <p id="validation-summary" class="muted" role="status">{{L .Base.Lang "Run validation to review this policy set."}}</p>
                         <ul id="validation-list" class="confgen-issue-list"></ul>
                     </section>
 
                     <section id="review-warnings-panel" class="card confgen-review-panel" role="tabpanel" aria-labelledby="review-warnings-tab" tabindex="0" hidden>
-                        <p id="warning-summary" class="muted" role="status">No warnings have been reported.</p>
+                        <p id="warning-summary" class="muted" role="status">{{L .Base.Lang "No warnings have been reported."}}</p>
                         <ul id="warning-list" class="confgen-issue-list"></ul>
                     </section>
 
                     <section id="review-cli-panel" class="confgen-review-panel" role="tabpanel" aria-labelledby="review-cli-tab" tabindex="0" hidden>
-                        <p id="output-placeholder" class="card muted">Generate policies to inspect and export CLI output.</p>
+                        <p id="output-placeholder" class="card muted">{{L .Base.Lang "Generate policies to inspect and export CLI output."}}</p>
                         <div class="output-section" hidden>
                             <div class="card">
                                 <div class="card-header">
-                                    <h3 class="mb-0">Output 1: All-in-One Policies</h3>
-                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output1" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output1" class="btn btn-sm">Download</button></div>
+                                    <h3 class="mb-0">{{L .Base.Lang "Output 1: All-in-One Policies"}}</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output1" class="btn btn-sm">{{L .Base.Lang "Copy"}}</button><button type="button" data-action="download-output" data-output-id="output1" class="btn btn-sm">{{L .Base.Lang "Download"}}</button></div>
                                 </div>
                                 <pre id="output1" class="code-block"></pre>
                             </div>
                             <div class="card">
                                 <div class="card-header">
-                                    <h3 class="mb-0">Output 2: One Policy Per Service</h3>
-                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output2" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output2" class="btn btn-sm">Download</button></div>
+                                    <h3 class="mb-0">{{L .Base.Lang "Output 2: One Policy Per Service"}}</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output2" class="btn btn-sm">{{L .Base.Lang "Copy"}}</button><button type="button" data-action="download-output" data-output-id="output2" class="btn btn-sm">{{L .Base.Lang "Download"}}</button></div>
                                 </div>
                                 <pre id="output2" class="code-block"></pre>
                             </div>
                             <div class="card">
                                 <div class="card-header">
-                                    <h3 class="mb-0">Output 3: Per Src/Dst Interface and Service</h3>
-                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output3" class="btn btn-sm">Copy</button><button type="button" data-action="download-output" data-output-id="output3" class="btn btn-sm">Download</button></div>
+                                    <h3 class="mb-0">{{L .Base.Lang "Output 3: Per Src/Dst Interface and Service"}}</h3>
+                                    <div class="confgen-output-actions"><button type="button" data-action="copy-output" data-output-id="output3" class="btn btn-sm">{{L .Base.Lang "Copy"}}</button><button type="button" data-action="download-output" data-output-id="output3" class="btn btn-sm">{{L .Base.Lang "Download"}}</button></div>
                                 </div>
                                 <pre id="output3" class="code-block"></pre>
                             </div>

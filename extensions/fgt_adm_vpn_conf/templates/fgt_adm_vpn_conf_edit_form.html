@@ -1,57 +1,57 @@
 <form action="/fgt-adm-vpn-conf/edit/{{.ID}}" method="post">
     <div class="form-grid">
         <div class="field">
-            <label for="edit-kundenname">Customer name</label>
+            <label for="edit-kundenname">{{L .Lang "Customer name"}}</label>
             <input id="edit-kundenname" type="text" name="kundenname" value="{{.Kundenname}}">
         </div>
         <div class="field">
-            <label for="edit-standort">Site</label>
+            <label for="edit-standort">{{L .Lang "Site"}}</label>
             <input id="edit-standort" type="text" name="standort" value="{{.Standort}}">
         </div>
         <div class="field">
-            <label for="edit-firewallname">Firewall name</label>
+            <label for="edit-firewallname">{{L .Lang "Firewall name"}}</label>
             <input id="edit-firewallname" type="text" name="firewallname" value="{{.Firewallname}}">
         </div>
         <div class="field">
             <label for="edit-cid">CID</label>
-            <input id="edit-cid" type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+            <input id="edit-cid" type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="{{L .Lang "CID must be a number"}}" required>
         </div>
         <div class="field">
-            <label for="edit-remoteip-full">Remote IPv4 address</label>
+            <label for="edit-remoteip-full">{{L .Lang "Remote IPv4 address"}}</label>
             <input id="edit-remoteip-full" type="text" name="remoteip_full" value="{{.RemoteipFull}}">
         </div>
         <div class="field">
-            <label for="edit-wan-interface">WAN interface</label>
+            <label for="edit-wan-interface">{{L .Lang "WAN interface"}}</label>
             <input id="edit-wan-interface" type="text" name="wan_interface" value="{{.WanInterface}}">
         </div>
         <div class="field">
-            <label for="edit-lan-interface">LAN interface</label>
+            <label for="edit-lan-interface">{{L .Lang "LAN interface"}}</label>
             <input id="edit-lan-interface" type="text" name="lan_interface" value="{{.LanInterface}}">
         </div>
         <div class="field">
             <label for="edit-ipsec-psk-ro">IPsec PSK RO</label>
             <input id="edit-ipsec-psk-ro" type="password" name="ipsec_psk_ro" autocomplete="new-password" maxlength="100" aria-describedby="edit-ipsec-psk-ro-hint">
-            <small id="edit-ipsec-psk-ro-hint" class="field-hint">Leave blank to keep the current secret.</small>
+            <small id="edit-ipsec-psk-ro-hint" class="field-hint">{{L .Lang "Leave blank to keep the current secret."}}</small>
         </div>
         <div class="field">
             <label for="edit-ipsec-psk-hci">IPsec PSK HCI</label>
             <input id="edit-ipsec-psk-hci" type="password" name="ipsec_psk_hci" autocomplete="new-password" maxlength="100" aria-describedby="edit-ipsec-psk-hci-hint">
-            <small id="edit-ipsec-psk-hci-hint" class="field-hint">Leave blank to keep the current secret.</small>
+            <small id="edit-ipsec-psk-hci-hint" class="field-hint">{{L .Lang "Leave blank to keep the current secret."}}</small>
         </div>
         <div class="field">
-            <label for="edit-radiusmgt">RADIUS management (YES/NO)</label>
+            <label for="edit-radiusmgt">{{L .Lang "RADIUS management (YES/NO)"}}</label>
             <input id="edit-radiusmgt" type="text" name="radiusmgt" value="{{.Radiusmgt}}">
         </div>
         <div class="field">
-            <label for="edit-cluster-hostnames">Cluster hostnames (comma separated)</label>
+            <label for="edit-cluster-hostnames">{{L .Lang "Cluster hostnames (comma separated)"}}</label>
             <input id="edit-cluster-hostnames" type="text" name="cluster_hostnames" value="{{.ClusterHostnames}}" placeholder="FW1,FW2">
         </div>
         <div class="field checkbox-row">
             <input type="checkbox" name="graylog_enabled" id="edit_graylog_enabled" {{if .GraylogEnabled}}checked{{end}}>
-            <label for="edit_graylog_enabled">Graylog Enabled</label>
+            <label for="edit_graylog_enabled">{{L .Lang "Graylog Enabled"}}</label>
         </div>
     </div>
     <div class="adm-form-actions">
-        <button type="submit" class="btn btn-primary">Update Entry</button>
+        <button type="submit" class="btn btn-primary">{{L .Lang "Update Entry"}}</button>
     </div>
 </form>

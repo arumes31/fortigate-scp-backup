@@ -4,16 +4,31 @@
     const root = document.querySelector(".conftail-page");
     if (!root) return;
 
+    const de = document.documentElement.lang === "de";
+    const messages = {
+        "Next run is not scheduled": "Nächster Lauf ist nicht geplant",
+        "Due now": "Jetzt fällig",
+        "Time: Browser": "Zeit: Browser",
+        "Time: UTC": "Zeit: UTC",
+        "Local views could not be saved in this browser.": "Lokale Ansichten konnten in diesem Browser nicht gespeichert werden.",
+        "Select a saved view": "Gespeicherte Ansicht auswählen",
+        "No saved views": "Keine gespeicherten Ansichten",
+        "Enter a view name using at most 48 printable characters.": "Geben Sie einen Ansichtsnamen mit höchstens 48 druckbaren Zeichen ein.",
+        "Delete a local view before saving another; the limit is 10.": "Löschen Sie eine lokale Ansicht, bevor Sie eine weitere speichern; das Limit ist 10.",
+        "Delete this global ignore rule? Future matching events will enter sessions again.": "Diese globale Ignorierregel löschen? Zukünftige passende Ereignisse werden wieder in Sitzungen aufgenommen.",
+    };
+    const t = (english) => de ? (messages[english] || english) : english;
+
     const countdown = root.querySelector("#ct-next-poll-countdown");
     if (countdown) {
         const target = Date.parse(countdown.dataset.nextPoll || "");
         if (!Number.isFinite(target)) {
-            countdown.textContent = "Next run is not scheduled";
+            countdown.textContent = t("Next run is not scheduled");
         } else {
             const update = () => {
                 const remaining = Math.max(0, Math.ceil((target - Date.now()) / 1000));
                 if (remaining === 0) {
-                    countdown.textContent = "Due now";
+                    countdown.textContent = t("Due now");
                     return;
                 }
                 const hours = Math.floor(remaining / 3600);
@@ -90,7 +105,7 @@
         });
         timeToggles.forEach((toggle) => {
             const local = timeMode === "local";
-            toggle.textContent = local ? "Time: Browser" : "Time: UTC";
+            toggle.textContent = local ? t("Time: Browser") : t("Time: UTC");
             toggle.setAttribute("aria-pressed", local ? "true" : "false");
         });
     };
@@ -181,7 +196,7 @@
                 window.localStorage.setItem(viewStorageKey, JSON.stringify({ version: 2, views }));
             } catch (_) {
                 viewFeedback.dataset.state = "error";
-                viewFeedback.textContent = "Local views could not be saved in this browser.";
+                viewFeedback.textContent = t("Local views could not be saved in this browser.");
                 return false;
             }
             return true;
@@ -215,7 +230,7 @@
             viewSelect.replaceChildren();
             const placeholder = document.createElement("option");
             placeholder.value = "";
-            placeholder.textContent = views.length ? "Select a saved view" : "No saved views";
+            placeholder.textContent = views.length ? t("Select a saved view") : t("No saved views");
             viewSelect.appendChild(placeholder);
             views.forEach((view) => {
                 const option = document.createElement("option");
@@ -256,14 +271,14 @@
             const name = viewNameInput.value.trim();
             if (!name || !validPlainText(name, 48)) {
                 viewFeedback.dataset.state = "error";
-                viewFeedback.textContent = "Enter a view name using at most 48 printable characters.";
+                viewFeedback.textContent = t("Enter a view name using at most 48 printable characters.");
                 viewNameInput.focus();
                 return;
             }
             const existing = views.findIndex((view) => view.name.toLocaleLowerCase() === name.toLocaleLowerCase());
             if (existing < 0 && views.length >= maxViews) {
                 viewFeedback.dataset.state = "error";
-                viewFeedback.textContent = "Delete a local view before saving another; the limit is 10.";
+                viewFeedback.textContent = t("Delete a local view before saving another; the limit is 10.");
                 return;
             }
             const view = { name, filters: currentStoredFilters() };
@@ -272,7 +287,9 @@
             if (!persistViews()) return;
             renderViews(name);
             viewFeedback.dataset.state = "success";
-            viewFeedback.textContent = `Saved local view “${name}”. Event-text search was not stored.`;
+            viewFeedback.textContent = de
+                ? `Lokale Ansicht „${name}“ gespeichert. Die Ereignistextsuche wurde nicht gespeichert.`
+                : `Saved local view “${name}”. Event-text search was not stored.`;
         });
         viewLoad.addEventListener("click", () => {
             const view = views.find((candidate) => candidate.name === viewSelect.value);
@@ -285,7 +302,7 @@
             if (!persistViews()) return;
             renderViews();
             viewFeedback.dataset.state = "success";
-            viewFeedback.textContent = `Deleted local view “${name}”.`;
+            viewFeedback.textContent = de ? `Lokale Ansicht „${name}“ gelöscht.` : `Deleted local view “${name}”.`;
         });
     }
 
@@ -365,7 +382,7 @@
 
     root.querySelectorAll("[data-ct-ignore-delete]").forEach((form) => {
         form.addEventListener("submit", (event) => {
-            if (!window.confirm("Delete this global ignore rule? Future matching events will enter sessions again.")) {
+            if (!window.confirm(t("Delete this global ignore rule? Future matching events will enter sessions again."))) {
                 event.preventDefault();
             }
         });

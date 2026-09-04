@@ -5,73 +5,73 @@
 {{define "content"}}
     <div class="page conftail-page">
         <div class="ct-page-heading">
-            <h1 class="page-title"><span class="accent-bar"></span>Configuration Change Tail</h1>
-            <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
+            <h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Configuration Change Tail"}}</h1>
+            <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="{{L .Base.Lang "Switch between UTC and the browser time zone"}}">{{L .Base.Lang "Time: UTC"}}</button>
         </div>
-        <p class="ct-intro">Read-only configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window.</p>
+        <p class="ct-intro">{{L .Base.Lang "Read-only configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window."}}</p>
 
-        <section class="ct-metrics" aria-label="Configuration change health">
+        <section class="ct-metrics" aria-label="{{L .Base.Lang "Configuration change health"}}">
             <article class="card ct-metric ct-health-{{.Health.State}}" data-ct-poll-status data-poll-running="{{.PollRunning}}" data-poll-signature="{{.PollSignature}}">
-                <span class="ct-label">Graylog collector</span>
-                <strong>{{.Health.Label}}</strong>
+                <span class="ct-label">{{L .Base.Lang "Graylog collector"}}</span>
+                <strong>{{L .Base.Lang .Health.Label}}</strong>
                 {{if .Health.Code}}<span class="ct-code no-caps">{{.Health.Code}}</span>{{end}}
                 {{if .Health.Detail}}<span class="ct-detail no-caps">{{.Health.Detail}}</span>{{end}}
-                {{if .Health.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.Health.Evidence}}</span>{{end}}
-                <span class="ct-detail">Last check: {{template "dashboardTime" .Health.CheckedAt}}</span>
-                {{if .Health.Action}}<span class="ct-action no-caps">Next: {{.Health.Action}}</span>{{end}}
+                {{if .Health.Evidence}}<span class="ct-evidence no-caps">{{L .Base.Lang "Evidence:"}} {{.Health.Evidence}}</span>{{end}}
+                <span class="ct-detail">{{L .Base.Lang "Last check:"}} {{template "dashboardTime" .Health.CheckedAt}}</span>
+                {{if .Health.Action}}<span class="ct-action no-caps">{{L .Base.Lang "Next:"}} {{.Health.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.SessionHealth.State}}">
-                <span class="ct-label">Session pipeline</span>
-                <strong>{{.SessionHealth.Label}}</strong>
+                <span class="ct-label">{{L .Base.Lang "Session pipeline"}}</span>
+                <strong>{{L .Base.Lang .SessionHealth.Label}}</strong>
                 {{if .SessionHealth.Code}}<span class="ct-code no-caps">{{.SessionHealth.Code}}</span>{{end}}
                 {{if .SessionHealth.Detail}}<span class="ct-detail no-caps">{{.SessionHealth.Detail}}</span>{{end}}
-                {{if .SessionHealth.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.SessionHealth.Evidence}}</span>{{end}}
-                <span class="ct-detail">Last check: {{template "dashboardTime" .SessionHealth.CheckedAt}}</span>
-                {{if .SessionHealth.Action}}<span class="ct-action no-caps">Next: {{.SessionHealth.Action}}</span>{{end}}
+                {{if .SessionHealth.Evidence}}<span class="ct-evidence no-caps">{{L .Base.Lang "Evidence:"}} {{.SessionHealth.Evidence}}</span>{{end}}
+                <span class="ct-detail">{{L .Base.Lang "Last check:"}} {{template "dashboardTime" .SessionHealth.CheckedAt}}</span>
+                {{if .SessionHealth.Action}}<span class="ct-action no-caps">{{L .Base.Lang "Next:"}} {{.SessionHealth.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}">
-                <span class="ct-label">Hookwise delivery</span>
-                <strong>{{.DeliveryHealth.Label}}</strong>
+                <span class="ct-label">{{L .Base.Lang "Hookwise delivery"}}</span>
+                <strong>{{L .Base.Lang .DeliveryHealth.Label}}</strong>
                 {{if .DeliveryHealth.Code}}<span class="ct-code no-caps">{{.DeliveryHealth.Code}}</span>{{end}}
                 {{if .DeliveryHealth.Detail}}<span class="ct-detail no-caps">{{.DeliveryHealth.Detail}}</span>{{end}}
-                {{if .DeliveryHealth.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.DeliveryHealth.Evidence}}</span>{{end}}
-                <span class="ct-detail">Last check: {{template "dashboardTime" .DeliveryHealth.CheckedAt}}</span>
-                {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">Next: {{.DeliveryHealth.Action}}</span>{{end}}
+                {{if .DeliveryHealth.Evidence}}<span class="ct-evidence no-caps">{{L .Base.Lang "Evidence:"}} {{.DeliveryHealth.Evidence}}</span>{{end}}
+                <span class="ct-detail">{{L .Base.Lang "Last check:"}} {{template "dashboardTime" .DeliveryHealth.CheckedAt}}</span>
+                {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">{{L .Base.Lang "Next:"}} {{.DeliveryHealth.Action}}</span>{{end}}
             </article>
         </section>
-        <p class="ct-next-poll"><span class="ct-label">Next collector check</span> {{template "dashboardTime" .NextPollRun}} · <span id="ct-next-poll-countdown" data-next-poll="{{fmtMachineTime .NextPollRun}}">Countdown unavailable</span></p>
+        <p class="ct-next-poll"><span class="ct-label">{{L .Base.Lang "Next collector check"}}</span> {{template "dashboardTime" .NextPollRun}} · <span id="ct-next-poll-countdown" data-next-poll="{{fmtMachineTime .NextPollRun}}">{{L .Base.Lang "Countdown unavailable"}}</span></p>
 
         {{if .CoverageEnabled}}
         <details class="card ct-coverage">
             <summary class="ct-coverage-summary">
-                <span class="ct-coverage-title">Graylog source coverage</span>
-                <span class="ct-count">{{len .Coverage}} Graylog-enabled firewall(s)</span>
+                <span class="ct-coverage-title">{{L .Base.Lang "Graylog source coverage"}}</span>
+                <span class="ct-count">{{len .Coverage}} {{L .Base.Lang "Graylog-enabled firewall(s)"}}</span>
             </summary>
             <div class="ct-coverage-body">
-            <p class="ct-help">Coverage includes only firewalls with Graylog enabled in ADM VPN Config.</p>
+            <p class="ct-help">{{L .Base.Lang "Coverage includes only firewalls with Graylog enabled in ADM VPN Config."}}</p>
             {{if .Warnings}}
             <div class="ct-warning" role="status">
-                <strong>Coverage warnings</strong>
+                <strong>{{L .Base.Lang "Coverage warnings"}}</strong>
                 <ul>{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>
             </div>
             {{end}}
             {{if .Coverage}}
             <div class="ct-table-wrap">
                 <table class="data">
-                    <thead><tr><th>Firewall</th><th>Accepted source aliases</th><th>Coverage state</th></tr></thead>
+                    <thead><tr><th>Firewall</th><th>{{L .Base.Lang "Accepted source aliases"}}</th><th>{{L .Base.Lang "Coverage state"}}</th></tr></thead>
                     <tbody>
                     {{range .Coverage}}
                     <tr class="ct-virtual-row">
                         <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
                         <td class="no-caps">{{if .Aliases}}{{range $index, $alias := .Aliases}}{{if $index}}, {{end}}{{$alias}}{{end}}{{else}}-{{end}}</td>
-                        <td>{{if .Warnings}}<span class="pill ct-state-failed">warning</span><ul class="ct-inline-warnings">{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>{{else}}<span class="pill ct-state-accepted">covered</span>{{end}}</td>
+                        <td>{{if .Warnings}}<span class="pill ct-state-failed">{{L $.Base.Lang "warning"}}</span><ul class="ct-inline-warnings">{{range .Warnings}}<li class="no-caps">{{.}}</li>{{end}}</ul>{{else}}<span class="pill ct-state-accepted">{{L $.Base.Lang "covered"}}</span>{{end}}</td>
                     </tr>
                     {{end}}
                     </tbody>
                 </table>
             </div>
             {{else}}
-            <p class="empty">Source catalog has not completed its first refresh.</p>
+            <p class="empty">{{L .Base.Lang "Source catalog has not completed its first refresh."}}</p>
             {{end}}
             </div>
         </details>
@@ -79,136 +79,136 @@
 
         <details class="card ct-ignore-management" id="ct-global-ignores"{{if .IgnoreNotice}} open{{end}}>
             <summary class="ct-coverage-summary">
-                <span class="ct-coverage-title">Global ignore rules</span>
-                <span class="ct-count">{{len .IgnoreRules}} rule(s)</span>
+                <span class="ct-coverage-title">{{L .Base.Lang "Global ignore rules"}}</span>
+                <span class="ct-count">{{len .IgnoreRules}} {{L .Base.Lang "rule(s)"}}</span>
             </summary>
             <div class="ct-coverage-body">
                 {{if .IgnoreNotice}}<p class="ct-notice" role="status">{{.IgnoreNotice}}</p>{{end}}
-                <p class="ct-help">Enabled rules suppress future matching events across every firewall before they enter a session or Hookwise ticket. Existing history is retained.</p>
+                <p class="ct-help">{{L .Base.Lang "Enabled rules suppress future matching events across every firewall before they enter a session or Hookwise ticket. Existing history is retained."}}</p>
                 {{if .IgnoreRules}}
-                <div class="ct-table-wrap" role="region" aria-label="Global ignore rules" tabindex="0">
+                <div class="ct-table-wrap" role="region" aria-label="{{L .Base.Lang "Global ignore rules"}}" tabindex="0">
                     <table class="data">
-                        <thead><tr><th>Scope</th><th>Exact match</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                        <thead><tr><th>{{L .Base.Lang "Scope"}}</th><th>{{L .Base.Lang "Exact match"}}</th><th>{{L .Base.Lang "Status"}}</th><th>{{L .Base.Lang "Created"}}</th><th>{{L .Base.Lang "Actions"}}</th></tr></thead>
                         <tbody>{{range .IgnoreRules}}
                             <tr>
                                 <td><span class="pill">{{.Kind}}</span></td>
                                 <td class="no-caps"><code>{{.DisplayValue}}</code></td>
-                                <td>{{if .Enabled}}<span class="pill ct-state-accepted">enabled</span>{{else}}<span class="pill">disabled</span>{{end}}</td>
+                                <td>{{if .Enabled}}<span class="pill ct-state-accepted">{{L $.Base.Lang "enabled"}}</span>{{else}}<span class="pill">{{L $.Base.Lang "disabled"}}</span>{{end}}</td>
                                 <td><span class="no-caps">{{.CreatedBy}}</span><br>{{template "dashboardTime" .CreatedAt}}</td>
                                 <td class="ct-ignore-actions">
                                     <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/toggle">
                                         <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
-                                        <button type="submit" class="btn btn-sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+                                        <button type="submit" class="btn btn-sm">{{if .Enabled}}{{L $.Base.Lang "Disable"}}{{else}}{{L $.Base.Lang "Enable"}}{{end}}</button>
                                     </form>
                                     <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/delete" data-ct-ignore-delete>
-                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                        <button type="submit" class="btn btn-sm btn-danger">{{L $.Base.Lang "Delete"}}</button>
                                     </form>
                                 </td>
                             </tr>
                         {{end}}</tbody>
                     </table>
                 </div>
-                {{else}}<p class="empty">No global ignore rules. Add one from an event in a complete timeline.</p>{{end}}
+                {{else}}<p class="empty">{{L .Base.Lang "No global ignore rules. Add one from an event in a complete timeline."}}</p>{{end}}
             </div>
         </details>
 
         <section class="card" aria-labelledby="ct-filter-title">
             <div class="ct-filter-heading">
                 <div>
-                    <p class="ct-label">Session workspace</p>
-                    <h2 id="ct-filter-title">Timeline filters</h2>
+                    <p class="ct-label">{{L .Base.Lang "Session workspace"}}</p>
+                    <h2 id="ct-filter-title">{{L .Base.Lang "Timeline filters"}}</h2>
                 </div>
-                <span class="ct-count">Filter values stay out of browser history</span>
+                <span class="ct-count">{{L .Base.Lang "Filter values stay out of browser history"}}</span>
             </div>
             <div class="ct-view-bar" aria-labelledby="ct-view-title">
                 <div>
-                    <strong id="ct-view-title">Local views</strong>
-                    <span class="ct-help">Up to 10 in this browser. Event-text search is never saved.</span>
+                    <strong id="ct-view-title">{{L .Base.Lang "Local views"}}</strong>
+                    <span class="ct-help">{{L .Base.Lang "Up to 10 in this browser. Event-text search is never saved."}}</span>
                 </div>
-                <label class="sr-only" for="ct-view-name">Local view name</label>
-                <input id="ct-view-name" type="text" maxlength="48" placeholder="View name" autocomplete="off" data-ct-view-name>
-                <label class="sr-only" for="ct-view-select">Saved local view</label>
-                <select id="ct-view-select" data-ct-view-select><option value="">No saved views</option></select>
-                <button class="btn btn-sm" type="button" data-ct-view-save>Save current</button>
-                <button class="btn btn-sm" type="button" data-ct-view-load disabled>Load</button>
-                <button class="btn btn-sm btn-danger" type="button" data-ct-view-delete disabled>Delete</button>
+                <label class="sr-only" for="ct-view-name">{{L .Base.Lang "Local view name"}}</label>
+                <input id="ct-view-name" type="text" maxlength="48" placeholder="{{L .Base.Lang "View name"}}" autocomplete="off" data-ct-view-name>
+                <label class="sr-only" for="ct-view-select">{{L .Base.Lang "Saved local view"}}</label>
+                <select id="ct-view-select" data-ct-view-select><option value="">{{L .Base.Lang "No saved views"}}</option></select>
+                <button class="btn btn-sm" type="button" data-ct-view-save>{{L .Base.Lang "Save current"}}</button>
+                <button class="btn btn-sm" type="button" data-ct-view-load disabled>{{L .Base.Lang "Load"}}</button>
+                <button class="btn btn-sm btn-danger" type="button" data-ct-view-delete disabled>{{L .Base.Lang "Delete"}}</button>
                 <span class="ct-view-feedback" role="status" aria-live="polite" data-ct-view-feedback></span>
             </div>
             <form method="post" action="/fgt-conftail/" class="ct-filter" id="ct-filter-form" role="search" data-ct-filter-form>
                 <div class="ct-basic-filters">
                 <div class="field ct-filter-search">
-                    <label for="ct-search">Search redacted event text</label>
-                    <input id="ct-search" type="search" maxlength="256" name="q" value="{{.Filters.Search}}" placeholder="All indexed event fields" autocomplete="off">
+                    <label for="ct-search">{{L .Base.Lang "Search redacted event text"}}</label>
+                    <input id="ct-search" type="search" maxlength="256" name="q" value="{{.Filters.Search}}" placeholder="{{L .Base.Lang "All indexed event fields"}}" autocomplete="off">
                 </div>
                 <div class="field">
-                    <label for="ct-firewall">Firewall ID</label>
-                    <input id="ct-firewall" type="search" inputmode="numeric" list="ct-firewall-options" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls" autocomplete="off">
+                    <label for="ct-firewall">{{L .Base.Lang "Firewall ID"}}</label>
+                    <input id="ct-firewall" type="search" inputmode="numeric" list="ct-firewall-options" name="firewall" value="{{.Filters.Firewall}}" placeholder="{{L .Base.Lang "All firewalls"}}" autocomplete="off">
                     <datalist id="ct-firewall-options">
                         {{range .Firewalls}}<option value="{{.FirewallID}}" label="{{.FirewallName}}"></option>{{end}}
                     </datalist>
                 </div>
                 <div class="field">
-                    <label for="ct-user">Administrator contains</label>
-                    <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="All administrators" autocomplete="off">
+                    <label for="ct-user">{{L .Base.Lang "Administrator contains"}}</label>
+                    <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="{{L .Base.Lang "All administrators"}}" autocomplete="off">
                 </div>
                 <div class="field">
-                    <label for="ct-state">Session / delivery state</label>
+                    <label for="ct-state">{{L .Base.Lang "Session / delivery state"}}</label>
                     <select id="ct-state" name="state">
-                        <option value="all" {{if eq .Filters.State "all"}}selected{{end}}>All</option>
-                        <option value="active" {{if eq .Filters.State "active"}}selected{{end}}>Active sessions</option>
-                        <option value="sealed" {{if eq .Filters.State "sealed"}}selected{{end}}>Sealed sessions</option>
-                        <option value="pending" {{if eq .Filters.State "pending"}}selected{{end}}>Delivery pending</option>
-                        <option value="retry" {{if eq .Filters.State "retry"}}selected{{end}}>Delivery retry</option>
-                        <option value="failed" {{if eq .Filters.State "failed"}}selected{{end}}>Delivery failed</option>
-                        <option value="accepted" {{if eq .Filters.State "accepted"}}selected{{end}}>Delivery accepted</option>
+                        <option value="all" {{if eq .Filters.State "all"}}selected{{end}}>{{L .Base.Lang "All"}}</option>
+                        <option value="active" {{if eq .Filters.State "active"}}selected{{end}}>{{L .Base.Lang "Active sessions"}}</option>
+                        <option value="sealed" {{if eq .Filters.State "sealed"}}selected{{end}}>{{L .Base.Lang "Sealed sessions"}}</option>
+                        <option value="pending" {{if eq .Filters.State "pending"}}selected{{end}}>{{L .Base.Lang "Delivery pending"}}</option>
+                        <option value="retry" {{if eq .Filters.State "retry"}}selected{{end}}>{{L .Base.Lang "Delivery retry"}}</option>
+                        <option value="failed" {{if eq .Filters.State "failed"}}selected{{end}}>{{L .Base.Lang "Delivery failed"}}</option>
+                        <option value="accepted" {{if eq .Filters.State "accepted"}}selected{{end}}>{{L .Base.Lang "Delivery accepted"}}</option>
                     </select>
                 </div>
                 <div class="field">
-                    <label for="ct-from">Changed from (UTC)</label>
+                    <label for="ct-from">{{L .Base.Lang "Changed from (UTC)"}}</label>
                     <input id="ct-from" type="datetime-local" name="from" value="{{.Filters.From}}">
                 </div>
                 <div class="field">
-                    <label for="ct-to">Changed through (UTC)</label>
+                    <label for="ct-to">{{L .Base.Lang "Changed through (UTC)"}}</label>
                     <input id="ct-to" type="datetime-local" name="to" value="{{.Filters.To}}">
                 </div>
                 </div>
                 <details class="ct-advanced-filters"{{if .AdvancedOpen}} open{{end}}>
-                    <summary>Advanced filters</summary>
+                    <summary>{{L .Base.Lang "Advanced filters"}}</summary>
                     <div class="ct-advanced-grid">
                         <div class="field">
-                            <label for="ct-source">Graylog source contains</label>
-                            <input id="ct-source" type="search" maxlength="512" name="source" value="{{.Filters.Source}}" placeholder="All sources" autocomplete="off">
+                            <label for="ct-source">{{L .Base.Lang "Graylog source contains"}}</label>
+                            <input id="ct-source" type="search" maxlength="512" name="source" value="{{.Filters.Source}}" placeholder="{{L .Base.Lang "All sources"}}" autocomplete="off">
                         </div>
                         <div class="field">
-                            <label for="ct-device">Device name contains</label>
-                            <input id="ct-device" type="search" maxlength="512" name="device" value="{{.Filters.Device}}" placeholder="All device names" autocomplete="off">
+                            <label for="ct-device">{{L .Base.Lang "Device name contains"}}</label>
+                            <input id="ct-device" type="search" maxlength="512" name="device" value="{{.Filters.Device}}" placeholder="{{L .Base.Lang "All device names"}}" autocomplete="off">
                         </div>
                         <div class="field">
-                            <label for="ct-serial">Serial contains</label>
-                            <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="All serials" autocomplete="off">
+                            <label for="ct-serial">{{L .Base.Lang "Serial contains"}}</label>
+                            <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="{{L .Base.Lang "All serials"}}" autocomplete="off">
                         </div>
                         <div class="field">
-                            <label for="ct-action">Action contains</label>
-                            <input id="ct-action" type="search" maxlength="512" name="action" value="{{.Filters.Action}}" placeholder="All actions" autocomplete="off">
+                            <label for="ct-action">{{L .Base.Lang "Action contains"}}</label>
+                            <input id="ct-action" type="search" maxlength="512" name="action" value="{{.Filters.Action}}" placeholder="{{L .Base.Lang "All actions"}}" autocomplete="off">
                         </div>
                         <div class="field">
-                            <label for="ct-transaction">Config transaction ID</label>
-                            <input id="ct-transaction" type="search" maxlength="512" name="transaction" value="{{.Filters.TransactionID}}" placeholder="Exact transaction ID" autocomplete="off">
+                            <label for="ct-transaction">{{L .Base.Lang "Config transaction ID"}}</label>
+                            <input id="ct-transaction" type="search" maxlength="512" name="transaction" value="{{.Filters.TransactionID}}" placeholder="{{L .Base.Lang "Exact transaction ID"}}" autocomplete="off">
                         </div>
                         <div class="field">
-                            <label for="ct-log-id">FortiGate log ID</label>
-                            <input id="ct-log-id" type="search" inputmode="numeric" maxlength="512" name="log_id" value="{{.Filters.LogID}}" placeholder="Exact log ID" autocomplete="off">
+                            <label for="ct-log-id">{{L .Base.Lang "FortiGate log ID"}}</label>
+                            <input id="ct-log-id" type="search" inputmode="numeric" maxlength="512" name="log_id" value="{{.Filters.LogID}}" placeholder="{{L .Base.Lang "Exact log ID"}}" autocomplete="off">
                         </div>
                     </div>
                 </details>
                 <div class="ct-filter-actions">
-                    <button class="btn btn-primary" type="submit">Apply filters</button>
-                    <a class="btn" href="/fgt-conftail/">Clear</a>
+                    <button class="btn btn-primary" type="submit">{{L .Base.Lang "Apply filters"}}</button>
+                    <a class="btn" href="/fgt-conftail/">{{L .Base.Lang "Clear"}}</a>
                 </div>
             </form>
             {{if .ActiveFilters}}
-            <div class="ct-active-filters" aria-label="Active filters">
-                <span class="ct-label">Active</span>
+            <div class="ct-active-filters" aria-label="{{L .Base.Lang "Active filters"}}">
+                <span class="ct-label">{{L .Base.Lang "Active"}}</span>
                 {{range .ActiveFilters}}
                 <form method="post" action="/fgt-conftail/" class="ct-filter-chip-form">
                     {{template "dashboardHiddenFields" .Fields}}
@@ -220,27 +220,27 @@
         </section>
 
         <details class="card ct-column-settings">
-            <summary>Visible dashboard columns</summary>
-            <p class="ct-help">Saved only in this browser. With JavaScript disabled, all columns remain visible.</p>
+            <summary>{{L .Base.Lang "Visible dashboard columns"}}</summary>
+            <p class="ct-help">{{L .Base.Lang "Saved only in this browser. With JavaScript disabled, all columns remain visible."}}</p>
             <div class="ct-column-options">
-                <fieldset data-ct-column-group="active"><legend>Active sessions</legend>
-                    <label><input type="checkbox" data-ct-column-toggle="active:administrator" checked> Administrator</label>
+                <fieldset data-ct-column-group="active"><legend>{{L .Base.Lang "Active sessions"}}</legend>
+                    <label><input type="checkbox" data-ct-column-toggle="active:administrator" checked> {{L .Base.Lang "Administrator"}}</label>
                     <label><input type="checkbox" data-ct-column-toggle="active:vdoms" checked> VDOMs</label>
-                    <label><input type="checkbox" data-ct-column-toggle="active:first" checked> First change</label>
-                    <label><input type="checkbox" data-ct-column-toggle="active:last" checked> Last change</label>
-                    <label><input type="checkbox" data-ct-column-toggle="active:eligible" checked> Seal eligible at</label>
-                    <label><input type="checkbox" data-ct-column-toggle="active:changes" checked> Changes</label>
-                    <label><input type="checkbox" data-ct-column-toggle="active:flags" checked> Flags</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:first" checked> {{L .Base.Lang "First change"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:last" checked> {{L .Base.Lang "Last change"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:eligible" checked> {{L .Base.Lang "Seal eligible at"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:changes" checked> {{L .Base.Lang "Changes"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="active:flags" checked> {{L .Base.Lang "Flags"}}</label>
                 </fieldset>
-                <fieldset data-ct-column-group="history"><legend>History</legend>
-                    <label><input type="checkbox" data-ct-column-toggle="history:administrator" checked> Administrator</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:first" checked> First change</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:last" checked> Last change</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:changes" checked> Changes</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:delivery" checked> Delivery</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:attempts" checked> Attempts</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:next" checked> Next / accepted</label>
-                    <label><input type="checkbox" data-ct-column-toggle="history:result" checked> Request ID / error</label>
+                <fieldset data-ct-column-group="history"><legend>{{L .Base.Lang "History"}}</legend>
+                    <label><input type="checkbox" data-ct-column-toggle="history:administrator" checked> {{L .Base.Lang "Administrator"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:first" checked> {{L .Base.Lang "First change"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:last" checked> {{L .Base.Lang "Last change"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:changes" checked> {{L .Base.Lang "Changes"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:delivery" checked> {{L .Base.Lang "Delivery"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:attempts" checked> {{L .Base.Lang "Attempts"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:next" checked> {{L .Base.Lang "Next / accepted"}}</label>
+                    <label><input type="checkbox" data-ct-column-toggle="history:result" checked> {{L .Base.Lang "Request ID / error"}}</label>
                 </fieldset>
             </div>
         </details>
@@ -248,38 +248,38 @@
         {{if or (eq .Filters.State "all") (eq .Filters.State "active")}}
         <section class="card pad-0" aria-labelledby="ct-active-title">
             <div class="card-header">
-                <h2 id="ct-active-title">Active change sessions</h2>
-                <span class="ct-count">{{.Dashboard.ActiveTotal}} matching</span>
+                <h2 id="ct-active-title">{{L .Base.Lang "Active change sessions"}}</h2>
+                <span class="ct-count">{{.Dashboard.ActiveTotal}} {{L .Base.Lang "matching"}}</span>
             </div>
             {{if .Dashboard.Active}}
             <div class="ct-table-wrap">
                 <table class="data ct-chain-table" data-ct-table="active">
-                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">Administrator</th><th data-ct-column="vdoms">VDOMs</th><th data-ct-column="first">First change</th><th data-ct-column="last">Last change</th><th data-ct-column="eligible">Seal eligible at</th><th data-ct-column="changes">Changes</th><th data-ct-column="flags">Flags</th></tr></thead>
+                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">{{L .Base.Lang "Administrator"}}</th><th data-ct-column="vdoms">VDOMs</th><th data-ct-column="first">{{L .Base.Lang "First change"}}</th><th data-ct-column="last">{{L .Base.Lang "Last change"}}</th><th data-ct-column="eligible">{{L .Base.Lang "Seal eligible at"}}</th><th data-ct-column="changes">{{L .Base.Lang "Changes"}}</th><th data-ct-column="flags">{{L .Base.Lang "Flags"}}</th></tr></thead>
                     <tbody>{{range .Dashboard.Active}}{{template "chainRow" .}}{{end}}</tbody>
                 </table>
             </div>
             {{if .ActiveOmitted}}<p class="ct-omitted">{{.ActiveOmitted}} additional active session(s) are omitted by the safety limit. Narrow the filters to inspect them.</p>{{end}}
-            {{else}}<p class="empty">No active change sessions match these filters.</p>{{end}}
+            {{else}}<p class="empty">{{L .Base.Lang "No active change sessions match these filters."}}</p>{{end}}
         </section>
         {{end}}
 
         {{if ne .Filters.State "active"}}
         <section class="card pad-0" aria-labelledby="ct-history-title">
             <div class="card-header">
-                <h2 id="ct-history-title">Sealed session history</h2>
-                <span class="ct-count">{{.Dashboard.HistoryTotal}} matching · page {{.Filters.Page}} / {{.Dashboard.TotalPages}}</span>
+                <h2 id="ct-history-title">{{L .Base.Lang "Sealed session history"}}</h2>
+                <span class="ct-count">{{.Dashboard.HistoryTotal}} {{L .Base.Lang "matching"}} · {{L .Base.Lang "Page"}} {{.Filters.Page}} / {{.Dashboard.TotalPages}}</span>
             </div>
             {{if .Dashboard.History}}
             <div class="ct-table-wrap">
                 <table class="data ct-chain-table ct-history-table" data-ct-table="history">
-                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">Administrator</th><th data-ct-column="first">First change</th><th data-ct-column="last">Last change</th><th data-ct-column="changes">Changes</th><th data-ct-column="delivery">Delivery</th><th data-ct-column="attempts">Attempts</th><th data-ct-column="next">Next / accepted</th><th data-ct-column="result">Request ID / error</th></tr></thead>
+                    <thead><tr><th>Firewall</th><th data-ct-column="administrator">{{L .Base.Lang "Administrator"}}</th><th data-ct-column="first">{{L .Base.Lang "First change"}}</th><th data-ct-column="last">{{L .Base.Lang "Last change"}}</th><th data-ct-column="changes">{{L .Base.Lang "Changes"}}</th><th data-ct-column="delivery">{{L .Base.Lang "Delivery"}}</th><th data-ct-column="attempts">{{L .Base.Lang "Attempts"}}</th><th data-ct-column="next">{{L .Base.Lang "Next / accepted"}}</th><th data-ct-column="result">{{L .Base.Lang "Request ID / error"}}</th></tr></thead>
                     <tbody>{{range .Dashboard.History}}{{template "historyRow" .}}{{end}}</tbody>
                 </table>
             </div>
-            {{else}}<p class="empty">No sealed change sessions match these filters.</p>{{end}}
-            <nav class="ct-pagination" aria-label="History pagination">
-                {{if .HasPrev}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .PrevFields}}<button class="btn" type="submit" data-ct-page="previous">Previous</button></form>{{end}}
-                {{if .HasNext}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .NextFields}}<button class="btn" type="submit" data-ct-page="next">Next</button></form>{{end}}
+            {{else}}<p class="empty">{{L .Base.Lang "No sealed change sessions match these filters."}}</p>{{end}}
+            <nav class="ct-pagination" aria-label="{{L .Base.Lang "History pagination"}}">
+                {{if .HasPrev}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .PrevFields}}<button class="btn" type="submit" data-ct-page="previous">{{L .Base.Lang "Previous"}}</button></form>{{end}}
+                {{if .HasNext}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .NextFields}}<button class="btn" type="submit" data-ct-page="next">{{L .Base.Lang "Next"}}</button></form>{{end}}
             </nav>
         </section>
         {{end}}
@@ -299,7 +299,7 @@
     <td data-ct-column="last">{{template "dashboardTime" .LastEventAt}}</td>
     <td data-ct-column="eligible">{{template "dashboardTime" .QuietEligibleAt}}</td>
     <td data-ct-column="changes">{{.EventCount}}</td>
-    <td data-ct-column="flags">{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+    <td data-ct-column="flags">{{if .Late}}<span class="pill ct-state-retry">{{L .Lang "late"}}</span>{{end}} {{if .Unattributed}}<span class="pill ct-state-failed">{{L .Lang "unattributed"}}</span>{{end}}</td>
 </tr>
 <tr class="ct-timeline-row"><td colspan="8">{{template "timelineLink" .}}</td></tr>
 {{end}}
@@ -307,11 +307,11 @@
 {{define "historyRow"}}
 <tr class="ct-virtual-row">
     <td><strong>#{{.FirewallID}}</strong> <span class="no-caps">{{.FirewallName}}</span></td>
-    <td class="no-caps" data-ct-column="administrator">{{.User}}{{if .Late}} <span class="pill ct-state-retry">late</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">unattributed</span>{{end}}</td>
+    <td class="no-caps" data-ct-column="administrator">{{.User}}{{if .Late}} <span class="pill ct-state-retry">{{L .Lang "late"}}</span>{{end}}{{if .Unattributed}} <span class="pill ct-state-failed">{{L .Lang "unattributed"}}</span>{{end}}</td>
     <td data-ct-column="first">{{template "dashboardTime" .FirstEventAt}}</td>
     <td data-ct-column="last">{{template "dashboardTime" .LastEventAt}}</td>
     <td data-ct-column="changes">{{.EventCount}}</td>
-    <td data-ct-column="delivery"><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{.DeliveryState}}{{else}}unknown{{end}}</span></td>
+    <td data-ct-column="delivery"><span class="pill ct-state-{{.DeliveryState}}">{{if .DeliveryState}}{{L .Lang .DeliveryState}}{{else}}{{L .Lang "unknown"}}{{end}}</span></td>
     <td data-ct-column="attempts">{{.DeliveryAttempts}}</td>
     <td data-ct-column="next">{{if eq .DeliveryState "accepted"}}{{template "dashboardTime" .AcceptedAt}}{{else}}{{template "dashboardTime" .NextAttemptAt}}{{end}}</td>
     <td class="no-caps" data-ct-column="result">{{if .RequestID}}{{.RequestID}}{{else if .LastError}}{{.LastError}}{{else}}-{{end}}</td>
@@ -320,8 +320,8 @@
 {{end}}
 
 {{define "timelineLink"}}
-<p class="ct-complete-link"><a href="/fgt-conftail/chain/{{.ID}}">Open complete redacted timeline ({{.EventCount}} change{{if ne .EventCount 1}}s{{end}})</a></p>
+<p class="ct-complete-link"><a href="/fgt-conftail/chain/{{.ID}}">{{L .Lang "Open complete redacted timeline"}} ({{.EventCount}} {{if eq .EventCount 1}}{{L .Lang "change"}}{{else}}{{L .Lang "changes"}}{{end}})</a></p>
 {{end}}
 
-{{define "dashboardTime"}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{end}}
+{{define "dashboardTime"}}{{if fmtMachineTime .}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{else}}<span>-</span>{{end}}{{end}}
 {{define "dashboardHiddenFields"}}{{range .}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}

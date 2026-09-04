@@ -105,7 +105,11 @@ func ParsePage(pageFS fs.FS, pagePath string, funcs template.FuncMap) (*Renderer
 		return nil, fmt.Errorf("webui: read page %q: %w", pagePath, err)
 	}
 
-	parsed := template.New("webui").Funcs(funcs)
+	templateFuncs := template.FuncMap{"L": Localize}
+	for name, function := range funcs {
+		templateFuncs[name] = function
+	}
+	parsed := template.New("webui").Funcs(templateFuncs)
 	if _, err := parsed.Parse(string(shell)); err != nil {
 		return nil, fmt.Errorf("webui: parse shell: %w", err)
 	}

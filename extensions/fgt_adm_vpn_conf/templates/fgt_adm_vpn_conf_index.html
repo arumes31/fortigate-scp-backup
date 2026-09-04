@@ -4,35 +4,35 @@
 
 {{define "content"}}
     <div class="page adm-vpn-page" id="adm-vpn-page" data-column-preset="standard">
-        <h1 class="page-title"><span class="accent-bar"></span>FGT ADM VPN Config</h1>
+        <h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "FGT ADM VPN Config"}}</h1>
 
         <details class="card add-entry">
-            <summary><span class="no-caps">Add new entry</span><span class="muted">Create VPN configuration</span></summary>
+            <summary><span class="no-caps">{{L .Base.Lang "Add new entry"}}</span><span class="muted">{{L .Base.Lang "Create VPN configuration"}}</span></summary>
             <div>
                 <form action="/fgt-adm-vpn-conf/add" method="post">
                     <div class="form-grid">
                         <div class="field">
-                            <label for="add-firewallname">Firewall name</label>
+                            <label for="add-firewallname">{{L .Base.Lang "Firewall name"}}</label>
                             <input id="add-firewallname" type="text" name="firewallname" required>
                         </div>
                         <div class="field">
                             <label for="add-cid">CID</label>
-                            <input id="add-cid" type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="CID must be a number" required>
+                            <input id="add-cid" type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="{{L .Base.Lang "CID must be a number"}}" required>
                         </div>
                         <div class="field">
-                            <label for="add-kundenname">Customer name</label>
+                            <label for="add-kundenname">{{L .Base.Lang "Customer name"}}</label>
                             <input id="add-kundenname" type="text" name="kundenname" required>
                         </div>
                         <div class="field">
-                            <label for="add-standort">Site</label>
+                            <label for="add-standort">{{L .Base.Lang "Site"}}</label>
                             <input id="add-standort" type="text" name="standort" required>
                         </div>
                         <div class="field">
-                            <label for="add-wan-interface">WAN interface</label>
+                            <label for="add-wan-interface">{{L .Base.Lang "WAN interface"}}</label>
                             <input id="add-wan-interface" type="text" name="wan_interface" value="wan1" required>
                         </div>
                         <div class="field">
-                            <label for="add-lan-interface">LAN interface</label>
+                            <label for="add-lan-interface">{{L .Base.Lang "LAN interface"}}</label>
                             <input id="add-lan-interface" type="text" name="lan_interface" value="loopback" required>
                         </div>
                         <div class="field">
@@ -44,20 +44,20 @@
                             <input id="add-ipsec-psk-hci" type="text" name="ipsec_psk_hci" value="psauto" required>
                         </div>
                         <div class="field">
-                            <label for="add-radiusmgt">RADIUS management (YES/NO)</label>
+                            <label for="add-radiusmgt">{{L .Base.Lang "RADIUS management (YES/NO)"}}</label>
                             <input id="add-radiusmgt" type="text" name="radiusmgt" value="YES" required>
                         </div>
                         <div class="field">
-                            <label for="add-cluster-hostnames">Cluster hostnames (comma separated)</label>
+                            <label for="add-cluster-hostnames">{{L .Base.Lang "Cluster hostnames (comma separated)"}}</label>
                             <input id="add-cluster-hostnames" type="text" name="cluster_hostnames" placeholder="FW1,FW2">
                         </div>
                         <div class="field checkbox-row">
                             <input type="checkbox" name="graylog_enabled" id="add_graylog_enabled" checked>
-                            <label for="add_graylog_enabled">Graylog Enabled</label>
+                            <label for="add_graylog_enabled">{{L .Base.Lang "Graylog Enabled"}}</label>
                         </div>
                     </div>
                     <div class="adm-form-actions">
-                        <button type="submit" class="btn btn-primary">Add Entry</button>
+                        <button type="submit" class="btn btn-primary">{{L .Base.Lang "Add Entry"}}</button>
                     </div>
                 </form>
             </div>
@@ -65,63 +65,63 @@
 
         <div class="card">
             <div class="card-header">
-                <h2 class="mb-0">Available IPs <span class="muted">(10.105.1.0/24)</span></h2>
-                <div class="stat"><b>{{.AvailableIPsCount}}</b><span class="muted">available ({{.AvailableIPsPercentage}}%)</span></div>
+                <h2 class="mb-0">{{L .Base.Lang "Available IPs"}} <span class="muted">(10.105.1.0/24)</span></h2>
+                <div class="stat"><b>{{.AvailableIPsCount}}</b><span class="muted">{{L .Base.Lang "available"}} ({{.AvailableIPsPercentage}}%)</span></div>
             </div>
-            <progress class="adm-ip-progress" max="100" value="{{.AvailableIPsPercentage}}" aria-label="Available IP address percentage">{{.AvailableIPsPercentage}}%</progress>
+            <progress class="adm-ip-progress" max="100" value="{{.AvailableIPsPercentage}}" aria-label="{{L .Base.Lang "Available IP address percentage"}}">{{.AvailableIPsPercentage}}%</progress>
         </div>
 
         <div class="adm-fleet-workspace">
             <section class="card pad-0 adm-fleet-list" aria-labelledby="vpnEntriesTitle">
                 <div class="card-header adm-fleet-toolbar">
-                    <div><h2 class="mt-0 mb-0" id="vpnEntriesTitle">Fleet entries</h2><span class="muted">Configuration, DNS, and Graylog evidence</span></div>
-                    <label class="adm-preset-control" for="vpnColumnPreset">Column preset
-                        <select id="vpnColumnPreset" aria-label="Column preset">
-                            <option value="compact">Compact</option>
-                            <option value="standard" selected>Standard</option>
-                            <option value="diagnostic">Diagnostic</option>
+                    <div><h2 class="mt-0 mb-0" id="vpnEntriesTitle">{{L .Base.Lang "Fleet entries"}}</h2><span class="muted">{{L .Base.Lang "Configuration, DNS, and Graylog evidence"}}</span></div>
+                    <label class="adm-preset-control" for="vpnColumnPreset">{{L .Base.Lang "Column preset"}}
+                        <select id="vpnColumnPreset" aria-label="{{L .Base.Lang "Column preset"}}">
+                            <option value="compact">{{L .Base.Lang "Compact"}}</option>
+                            <option value="standard" selected>{{L .Base.Lang "Standard"}}</option>
+                            <option value="diagnostic">{{L .Base.Lang "Diagnostic"}}</option>
                         </select>
                     </label>
-                    <label class="adm-search-control" for="vpnSearch">Search entries
-                        <input type="search" id="vpnSearch" aria-label="Search VPN entries" placeholder="Firewall, customer, site, CID&hellip;" autocomplete="off">
+                    <label class="adm-search-control" for="vpnSearch">{{L .Base.Lang "Search entries"}}
+                        <input type="search" id="vpnSearch" aria-label="{{L .Base.Lang "Search VPN entries"}}" placeholder="{{L .Base.Lang "Firewall, customer, site, CID…"}}" autocomplete="off">
                     </label>
                     <span class="muted adm-search-count" id="vpnSearchCount" aria-live="polite"></span>
                 </div>
                 <form class="adm-bulk-bar" id="admBulkForm" method="post">
-                    <button class="btn btn-sm" type="button" id="vpnSelectVisible">Select visible</button>
-                    <button class="btn btn-sm" type="button" id="vpnClearSelection">Clear</button>
-                    <strong id="vpnSelectionCount">0 selected</strong>
+                    <button class="btn btn-sm" type="button" id="vpnSelectVisible">{{L .Base.Lang "Select visible"}}</button>
+                    <button class="btn btn-sm" type="button" id="vpnClearSelection">{{L .Base.Lang "Clear"}}</button>
+                    <strong id="vpnSelectionCount">0 {{L .Base.Lang "selected"}}</strong>
                     <span class="dialog-feedback adm-bulk-feedback" id="vpnBulkFeedback" role="status" aria-live="polite" hidden></span>
                     <span class="spacer"></span>
-                    <button class="btn btn-sm" type="submit" formaction="/fgt-adm-vpn-conf/bulk/export" data-bulk-action="export" disabled>Export selected CSV</button>
-                    <button class="btn btn-sm btn-primary" type="submit" formaction="/fgt-adm-vpn-conf/bulk/generate" data-bulk-action="generate" disabled>Generate selected</button>
+                    <button class="btn btn-sm" type="submit" formaction="/fgt-adm-vpn-conf/bulk/export" data-bulk-action="export" disabled>{{L .Base.Lang "Export selected CSV"}}</button>
+                    <button class="btn btn-sm btn-primary" type="submit" formaction="/fgt-adm-vpn-conf/bulk/generate" data-bulk-action="generate" disabled>{{L .Base.Lang "Generate selected"}}</button>
                 </form>
                 <div class="table-wrap adm-fleet-table-wrap">
                     <table class="data compact adm-fleet-table" id="vpnTable">
                         <thead><tr>
-                            <th data-column="selection"><span class="sr-only">Select</span></th>
-                            <th data-column="identity">Identity</th>
-                            <th data-column="enabled">Monitoring</th>
-                            <th data-column="health">Check health</th>
-                            <th data-column="last-check">Last check</th>
-                            <th data-column="endpoint">Endpoint</th>
-                            <th data-column="evidence">Evidence</th>
-                            <th data-column="details"><span class="sr-only">Details</span></th>
+                            <th data-column="selection"><span class="sr-only">{{L .Base.Lang "Select"}}</span></th>
+                            <th data-column="identity">{{L .Base.Lang "Identity"}}</th>
+                            <th data-column="enabled">{{L .Base.Lang "Monitoring"}}</th>
+                            <th data-column="health">{{L .Base.Lang "Check health"}}</th>
+                            <th data-column="last-check">{{L .Base.Lang "Last check"}}</th>
+                            <th data-column="endpoint">{{L .Base.Lang "Endpoint"}}</th>
+                            <th data-column="evidence">{{L .Base.Lang "Evidence"}}</th>
+                            <th data-column="details"><span class="sr-only">{{L .Base.Lang "Details"}}</span></th>
                         </tr></thead>
                         <tbody>
                             {{range .Configs}}
                             <tr tabindex="0" data-vpn-row="{{.ID}}" aria-selected="false" aria-controls="vpn-detail-{{.ID}}">
-                                <td data-column="selection"><input type="checkbox" name="id" value="{{.ID}}" form="admBulkForm" data-vpn-checkbox aria-label="Select {{.Firewallname}}"></td>
+                                <td data-column="selection"><input type="checkbox" name="id" value="{{.ID}}" form="admBulkForm" data-vpn-checkbox aria-label="{{L $.Base.Lang "Select"}} {{.Firewallname}}"></td>
                                 <td data-column="identity"><strong class="adm-identity">{{.Firewallname}}</strong><span class="sub">{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</span></td>
-                                <td data-column="enabled">{{if .GraylogEnabled}}<span class="pill pill-success">Enabled</span>{{else}}<span class="pill pill-muted">Disabled</span>{{end}}</td>
-                                <td data-column="health"><span class="pill adm-health adm-health--{{.HealthState}}">{{.HealthLabel}}</span><span class="sub">{{.HealthSummary}}</span></td>
-                                <td data-column="last-check">{{if .LastCheckISO}}<time datetime="{{.LastCheckISO}}">{{.LastCheckDisplay}}</time>{{else}}<span class="muted">Not checked</span>{{end}}{{if and .GraylogEnabled .NextCheckISO}}<span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>{{end}}</td>
+                                <td data-column="enabled">{{if .GraylogEnabled}}<span class="pill pill-success">{{L $.Base.Lang "Enabled"}}</span>{{else}}<span class="pill pill-muted">{{L $.Base.Lang "Disabled"}}</span>{{end}}</td>
+                                <td data-column="health"><span class="pill adm-health adm-health--{{.HealthState}}">{{L $.Base.Lang .HealthLabel}}</span><span class="sub">{{.HealthSummary}}</span></td>
+                                <td data-column="last-check">{{if .LastCheckISO}}<time datetime="{{.LastCheckISO}}">{{.LastCheckDisplay}}</time>{{else}}<span class="muted">{{L $.Base.Lang "Not checked"}}</span>{{end}}{{if and .GraylogEnabled .NextCheckISO}}<span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>{{end}}</td>
                                 <td data-column="endpoint"><code>{{.RemoteipFull}}</code>{{if .DnsNameFull}}<a class="sub adm-fqdn" href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a>{{end}}</td>
                                 <td data-column="evidence"><span class="sub">Graylog: {{.LastGraylogStatus}}</span><span class="sub">DNS: {{.LastDnsStatus}}{{if .LastDnsResolved}} → {{.LastDnsResolved}}{{end}}</span></td>
-                                <td data-column="details"><button type="button" class="btn btn-sm" data-vpn-select="{{.ID}}" aria-label="Details for {{.Firewallname}}">Details</button></td>
+                                <td data-column="details"><button type="button" class="btn btn-sm" data-vpn-select="{{.ID}}" aria-label="{{L $.Base.Lang "Details for %s" .Firewallname}}">{{L $.Base.Lang "Details"}}</button></td>
                             </tr>
                             {{else}}
-                            <tr><td colspan="8" class="empty">No entries yet.</td></tr>
+                            <tr><td colspan="8" class="empty">{{L $.Base.Lang "No entries yet."}}</td></tr>
                             {{end}}
                         </tbody>
                     </table>
@@ -129,21 +129,21 @@
             </section>
 
             <aside class="card adm-fleet-detail" id="vpnDetailRegion" aria-labelledby="vpnDetailTitle">
-                <div id="vpnDetailEmpty" class="adm-detail-empty"><span class="eyebrow">Entry details</span><h2 id="vpnDetailTitle">Select an entry</h2><p class="muted">Choose a fleet row to inspect its factual configuration and check evidence.</p></div>
+                <div id="vpnDetailEmpty" class="adm-detail-empty"><span class="eyebrow">{{L .Base.Lang "Entry details"}}</span><h2 id="vpnDetailTitle">{{L .Base.Lang "Select an entry"}}</h2><p class="muted">{{L .Base.Lang "Choose a fleet row to inspect its factual configuration and check evidence."}}</p></div>
                 {{range .Configs}}
                 <section class="adm-detail-panel" id="vpn-detail-{{.ID}}" data-vpn-detail="{{.ID}}" tabindex="-1" hidden>
-                    <header class="adm-detail-header"><div><span class="eyebrow">Entry details</span><h2>{{.Firewallname}}</h2><p>{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</p></div><span class="pill adm-health adm-health--{{.HealthState}}">{{.HealthLabel}}</span></header>
-                    <p class="adm-factual-note"><strong>Configuration checks only.</strong> Tunnel availability is not measured by this view.</p>
+                    <header class="adm-detail-header"><div><span class="eyebrow">{{L $.Base.Lang "Entry details"}}</span><h2>{{.Firewallname}}</h2><p>{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</p></div><span class="pill adm-health adm-health--{{.HealthState}}">{{L $.Base.Lang .HealthLabel}}</span></header>
+                    <p class="adm-factual-note"><strong>{{L $.Base.Lang "Configuration checks only."}}</strong> {{L $.Base.Lang "Tunnel availability is not measured by this view."}}</p>
                     <div class="adm-evidence-grid">
-                        <section><h3>Graylog evidence</h3><strong>{{.GraylogEvidence}}</strong><dl><dt>Raw status</dt><dd>{{.LastGraylogStatus}}</dd><dt>Last check</dt><dd>{{if .LastGraylogISO}}<time datetime="{{.LastGraylogISO}}">{{.LastGraylogDisplay}}</time>{{else}}Not checked{{end}}</dd><dt>Monitoring</dt><dd>{{if .GraylogEnabled}}Enabled{{else}}Disabled{{end}}</dd></dl></section>
-                        <section><h3>DNS evidence</h3><strong>{{.DnsEvidence}}</strong><dl><dt>Hostname</dt><dd class="adm-break">{{if .DnsNameFull}}{{.DnsNameFull}}{{else}}—{{end}}</dd><dt>Expected IP</dt><dd>{{.RemoteipFull}}</dd><dt>Resolved IP</dt><dd>{{if .LastDnsResolved}}{{.LastDnsResolved}}{{else}}—{{end}}</dd><dt>Last check</dt><dd>{{if .LastDnsISO}}<time datetime="{{.LastDnsISO}}">{{.LastDnsDisplay}}</time>{{else}}Not checked{{end}}</dd></dl></section>
+                        <section><h3>{{L $.Base.Lang "Graylog evidence"}}</h3><strong>{{.GraylogEvidence}}</strong><dl><dt>{{L $.Base.Lang "Raw status"}}</dt><dd>{{.LastGraylogStatus}}</dd><dt>{{L $.Base.Lang "Last check"}}</dt><dd>{{if .LastGraylogISO}}<time datetime="{{.LastGraylogISO}}">{{.LastGraylogDisplay}}</time>{{else}}{{L $.Base.Lang "Not checked"}}{{end}}</dd><dt>{{L $.Base.Lang "Monitoring"}}</dt><dd>{{if .GraylogEnabled}}{{L $.Base.Lang "Enabled"}}{{else}}{{L $.Base.Lang "Disabled"}}{{end}}</dd></dl></section>
+                        <section><h3>{{L $.Base.Lang "DNS evidence"}}</h3><strong>{{.DnsEvidence}}</strong><dl><dt>{{L $.Base.Lang "Hostname"}}</dt><dd class="adm-break">{{if .DnsNameFull}}{{.DnsNameFull}}{{else}}—{{end}}</dd><dt>{{L $.Base.Lang "Expected IP"}}</dt><dd>{{.RemoteipFull}}</dd><dt>{{L $.Base.Lang "Resolved IP"}}</dt><dd>{{if .LastDnsResolved}}{{.LastDnsResolved}}{{else}}—{{end}}</dd><dt>{{L $.Base.Lang "Last check"}}</dt><dd>{{if .LastDnsISO}}<time datetime="{{.LastDnsISO}}">{{.LastDnsDisplay}}</time>{{else}}{{L $.Base.Lang "Not checked"}}{{end}}</dd></dl></section>
                     </div>
-                    <section class="adm-config-facts"><h3>Configuration</h3><dl><dt>VPN address</dt><dd><code>{{.RemoteipFull}}</code><span class="sub">First: {{.RemoteipFull1st}}</span></dd><dt>IKE username</dt><dd class="adm-break">{{.Ike2Username}}</dd><dt>Interfaces</dt><dd>{{.WanInterface}} / {{.LanInterface}}</dd><dt>RADIUS</dt><dd>{{.Radiusmgt}}</dd><dt>Cluster hosts</dt><dd class="adm-break">{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}—{{end}}</dd></dl></section>
+                    <section class="adm-config-facts"><h3>{{L $.Base.Lang "Configuration"}}</h3><dl><dt>{{L $.Base.Lang "VPN address"}}</dt><dd><code>{{.RemoteipFull}}</code><span class="sub">{{L $.Base.Lang "First:"}} {{.RemoteipFull1st}}</span></dd><dt>{{L $.Base.Lang "IKE username"}}</dt><dd class="adm-break">{{.Ike2Username}}</dd><dt>{{L $.Base.Lang "Interfaces"}}</dt><dd>{{.WanInterface}} / {{.LanInterface}}</dd><dt>RADIUS</dt><dd>{{.Radiusmgt}}</dd><dt>{{L $.Base.Lang "Cluster hosts"}}</dt><dd class="adm-break">{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}—{{end}}</dd></dl></section>
                     <div class="ui-dialog__actions adm-detail-actions">
-                        <button type="button" class="btn btn-sm open-edit-modal" data-dialog-open="editModal" data-id="{{.ID}}" aria-label="Edit {{.Firewallname}}">Edit</button>
-                        <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm" aria-label="Download configuration">Download</a>
+                        <button type="button" class="btn btn-sm open-edit-modal" data-dialog-open="editModal" data-id="{{.ID}}" aria-label="{{L $.Base.Lang "Edit"}} {{.Firewallname}}">{{L $.Base.Lang "Edit"}}</button>
+                        <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm" aria-label="{{L $.Base.Lang "Download configuration"}}">{{L $.Base.Lang "Download"}}</a>
                         <span class="spacer"></span>
-                        <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-dialog-open="removeModal" data-id="{{.ID}}" data-name="{{.Firewallname}}" aria-label="Remove {{.Firewallname}}">Remove</button>
+                        <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-dialog-open="removeModal" data-id="{{.ID}}" data-name="{{.Firewallname}}" aria-label="{{L $.Base.Lang "Remove"}} {{.Firewallname}}">{{L $.Base.Lang "Remove"}}</button>
                     </div>
                 </section>
                 {{end}}
@@ -151,47 +151,44 @@
         </div>
 
         <div class="card">
-            <h2 class="mt-0">Import / Export</h2>
+            <h2 class="mt-0">{{L .Base.Lang "Import / Export"}}</h2>
             <form action="/fgt-adm-vpn-conf/import" method="post" enctype="multipart/form-data" class="toolbar">
-                <label>CSV file <input class="adm-import-file" type="file" name="file" accept=".csv"></label>
-                <button type="submit" class="btn">Import</button>
-                <a href="/fgt-adm-vpn-conf/export" class="btn">Export All to CSV (Backup)</a>
-                <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">Export to Browser Favorites</a>
+                <label>{{L .Base.Lang "CSV file"}} <input class="adm-import-file" type="file" name="file" accept=".csv"></label>
+                <button type="submit" class="btn">{{L .Base.Lang "Import"}}</button>
+                <a href="/fgt-adm-vpn-conf/export" class="btn">{{L .Base.Lang "Export All to CSV (Backup)"}}</a>
+                <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">{{L .Base.Lang "Export to Browser Favorites"}}</a>
             </form>
         </div>
         <dialog id="editModal" class="ui-dialog adm-vpn-dialog" data-ui-dialog aria-labelledby="editModalTitle">
             <div class="ui-dialog__body">
-                <h2 id="editModalTitle">Edit configuration</h2>
-                <p id="editFeedback" class="dialog-feedback" aria-label="Edit status" data-feedback="loading">Loading configuration…</p>
+                <h2 id="editModalTitle">{{L .Base.Lang "Edit configuration"}}</h2>
+                <p id="editFeedback" class="dialog-feedback" aria-label="{{L .Base.Lang "Edit status"}}" data-feedback="loading">{{L .Base.Lang "Loading configuration…"}}</p>
                 <div id="modal-body-content"></div>
                 <div class="ui-dialog__actions">
-                    <button class="btn" id="modalClose" type="button" data-dialog-close data-dialog-initial>Close</button>
+                    <button class="btn" id="modalClose" type="button" data-dialog-close data-dialog-initial>{{L .Base.Lang "Close"}}</button>
                 </div>
             </div>
         </dialog>
 
         <dialog id="removeModal" class="ui-dialog adm-vpn-dialog" data-ui-dialog data-confirm-text="" aria-labelledby="removeModalTitle">
             <div class="ui-dialog__body">
-        <h2 id="removeModalTitle">Remove configuration</h2>
-        <p class="muted" id="removeIntro">
-            This configuration must be removed from the FortiGate device(s) first.
-            Run the commands below on the matching device, then confirm removal.
-        </p>
-        <pre id="removalCommands" class="code-block">Loading&hellip;</pre>
+        <h2 id="removeModalTitle">{{L .Base.Lang "Remove configuration"}}</h2>
+        <p class="muted" id="removeIntro">{{L .Base.Lang "This configuration must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal."}}</p>
+        <pre id="removalCommands" class="code-block">{{L .Base.Lang "Loading…"}}</pre>
         <label for="removeConfirmInput">
-            Type <strong id="removeConfirmName">the firewall name</strong> to confirm
+            {{L .Base.Lang "Type"}} <strong id="removeConfirmName">{{L .Base.Lang "the firewall name"}}</strong> {{L .Base.Lang "to confirm"}}
             <input type="text" id="removeConfirmInput" autocomplete="off" data-confirm-input data-dialog-initial>
         </label>
-        <p id="removeFeedback" class="dialog-feedback" aria-label="Removal status" data-feedback="loading">Loading removal commands…</p>
+        <p id="removeFeedback" class="dialog-feedback" aria-label="{{L .Base.Lang "Removal status"}}" data-feedback="loading">{{L .Base.Lang "Loading removal commands…"}}</p>
         <div class="ui-dialog__actions">
-            <button type="button" class="btn btn-sm button-with-icon" id="copyRemovalBtn" data-copy-target="removalCommands" data-copy-feedback="removeFeedback" data-copy-success="Commands copied" data-copy-error="Copy failed">
+            <button type="button" class="btn btn-sm button-with-icon" id="copyRemovalBtn" data-copy-target="removalCommands" data-copy-feedback="removeFeedback" data-copy-success="{{L .Base.Lang "Commands copied"}}" data-copy-error="{{L .Base.Lang "Copy failed"}}">
                 <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#copy"></use></svg>
-                <span>Copy commands</span>
+                <span>{{L .Base.Lang "Copy commands"}}</span>
             </button>
             <span class="spacer"></span>
-            <button type="button" class="btn" id="removeCancelBtn" data-dialog-close>Cancel</button>
+            <button type="button" class="btn" id="removeCancelBtn" data-dialog-close>{{L .Base.Lang "Cancel"}}</button>
             <form method="post" id="removeForm" action="" class="adm-remove-form">
-                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" data-confirm-action disabled>Remove entry</button>
+                <button type="submit" class="btn btn-danger" id="removeConfirmBtn" data-confirm-action disabled>{{L .Base.Lang "Remove entry"}}</button>
             </form>
         </div>
             </div>

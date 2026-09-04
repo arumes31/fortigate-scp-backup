@@ -31,7 +31,7 @@ func (e *Extension) parseTemplates() error {
 	if err != nil {
 		return err
 	}
-	editTemplate, err := template.ParseFS(templatesFS, "templates/"+editFormTemplate)
+	editTemplate, err := template.New(editFormTemplate).Funcs(template.FuncMap{"L": webui.Localize}).ParseFS(templatesFS, "templates/"+editFormTemplate)
 	if err != nil {
 		return err
 	}
@@ -75,6 +75,7 @@ type indexData struct {
 // deliberately absent so adding a template field cannot accidentally disclose
 // either secret in the edit response.
 type editFormData struct {
+	Lang             string
 	ID               int64
 	Kundenname       string
 	Standort         string
@@ -224,8 +225,13 @@ func (e *Extension) editForm(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
+	data := browserSafeEditFormData(c)
+	data.Lang = "en"
+	if e.pageBase != nil {
+		data.Lang = e.pageBase(r, "FGT ADM VPN Config", "admvpn").Lang
+	}
 	var buf bytes.Buffer
-	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, browserSafeEditFormData(c)); err != nil {
+	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, data); err != nil {
 		e.serverError(w, err)
 		return
 	}
