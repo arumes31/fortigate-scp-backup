@@ -28,7 +28,10 @@ test('ADM VPN uses the shared shell and keyboard-safe add, edit, and removal flo
   await expectAccessible(page, 'add form');
   await expect(page.locator('#removeConfirmBtn')).toBeDisabled();
 
-  const editOpener = page.getByRole('button', { name: 'Edit edge.example.test' });
+  await page.getByRole('button', { name: 'Details for edge.example.test' }).click();
+  const entryDetail = page.locator('#vpn-detail-7');
+  await expect(entryDetail).toBeVisible();
+  const editOpener = entryDetail.getByRole('button', { name: 'Edit edge.example.test' });
   await editOpener.click();
   const editDialog = page.getByRole('dialog', { name: 'Edit configuration' });
   await expect(editDialog).toBeVisible();
@@ -38,7 +41,7 @@ test('ADM VPN uses the shared shell and keyboard-safe add, edit, and removal flo
   await expect(editDialog).toBeHidden();
   await expect(editOpener).toBeFocused();
 
-  const removeOpener = page.getByRole('button', { name: 'Remove edge.example.test' });
+  const removeOpener = entryDetail.getByRole('button', { name: 'Remove edge.example.test' });
   await removeOpener.click();
   const removeDialog = page.getByRole('dialog', { name: 'Remove configuration' });
   await expect(removeDialog).toBeVisible();

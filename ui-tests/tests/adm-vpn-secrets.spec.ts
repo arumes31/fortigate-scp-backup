@@ -59,7 +59,8 @@ test('ADM VPN edit never returns stored PSKs to the browser or trace', async ({ 
   });
 
   await page.goto('/fgt-adm-vpn-conf/', { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: 'Edit edge.example.test' }).click();
+  await page.getByRole('button', { name: 'Details for edge.example.test' }).click();
+  await page.locator('#vpn-detail-7').getByRole('button', { name: 'Edit edge.example.test' }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit configuration' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel('IPsec PSK RO')).toHaveAttribute('type', 'password');

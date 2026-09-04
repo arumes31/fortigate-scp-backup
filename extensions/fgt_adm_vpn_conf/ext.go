@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -114,6 +115,12 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 
 	// Public status feed (no auth) consumed by external monitoring.
 	r.Get("/graylog_dsv", e.graylogDSV)
+
+	staticSub, err := fs.Sub(templatesFS, "static")
+	if err != nil {
+		return err
+	}
+	r.Handle("/static/*", http.StripPrefix(e.Prefix()+"/static/", http.FileServer(http.FS(staticSub))))
 
 	go e.graylogWorker()
 	go e.dnsWorker()

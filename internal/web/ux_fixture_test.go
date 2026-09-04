@@ -516,6 +516,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	})
 
 	serveStatic("/fgt-confgen/static/", "extensions/fgt_confgen/static")
+	serveStatic("/fgt-adm-vpn-conf/static/", "extensions/fgt_adm_vpn_conf/static")
 	serveStatic("/fgt-polsplit/static/", "extensions/fgt_polsplit/static")
 	serveStatic("/fgt-confconv/static/", "extensions/fgt_confconv/static")
 	serveStatic("/fgt-conftail/static/", "extensions/fgt_conftail/static")
@@ -524,13 +525,39 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 func uxADMVPNFixture(scenario uxScenario) any {
 	configs := []any{}
 	if scenario != uxScenarioEmpty {
-		configs = append(configs, map[string]any{
+		first := map[string]any{
 			"ID": 7, "Firewallname": "edge.example.test", "Cid": "101", "Kundenname": "Synthetic customer",
 			"Standort": "Vienna", "RemoteipFull": "10.105.1.7", "RemoteipFull1st": "10.150.11.7",
-			"Ike2Username": "vpn-adm-synthetic-vienna", "WanInterface": "wan1", "Radiusmgt": "YES",
+			"Ike2Username": "vpn-adm-synthetic-vienna", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
 			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(time.Minute).Format(time.RFC3339),
 			"ClusterHostnames": "edge-a, edge-b", "DnsNameFull": "edge.example.test", "LastDnsStatus": "ok",
-			"LastDnsResolved": "10.105.1.7",
+			"LastDnsResolved": "10.105.1.7", "HealthState": "healthy", "HealthLabel": "Checks pass",
+			"HealthSummary": "Graylog online · DNS verified", "GraylogEvidence": "Graylog online", "DnsEvidence": "DNS verified",
+			"LastCheckDisplay": "2026-09-02 10:29 UTC", "LastCheckISO": uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
+			"LastGraylogDisplay": "2026-09-02 10:29 UTC", "LastGraylogISO": uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
+			"LastDnsDisplay": "2026-09-02 10:28 UTC", "LastDnsISO": uxFixtureNow.Add(-2 * time.Minute).Format(time.RFC3339),
+		}
+		if scenario == uxScenarioError {
+			first["LastGraylogStatus"] = "offline"
+			first["LastDnsStatus"] = "mismatch"
+			first["LastDnsResolved"] = "10.105.1.99"
+			first["HealthState"] = "failed"
+			first["HealthLabel"] = "Attention"
+			first["HealthSummary"] = "Graylog offline · DNS mismatch"
+			first["GraylogEvidence"] = "Graylog offline"
+			first["DnsEvidence"] = "DNS mismatch"
+		}
+		configs = append(configs, first, map[string]any{
+			"ID": 8, "Firewallname": "branch-with-an-intentionally-long-hostname.europe.example.test", "Cid": "102",
+			"Kundenname": "Long-name fixture", "Standort": "Salzburg", "RemoteipFull": "10.105.1.8", "RemoteipFull1st": "10.150.11.8",
+			"Ike2Username": "vpn-adm-long-name-salzburg", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
+			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(2 * time.Minute).Format(time.RFC3339),
+			"DnsNameFull": "branch-with-an-intentionally-long-hostname.europe.example.test", "LastDnsStatus": "mismatch",
+			"LastDnsResolved": "10.105.1.88", "HealthState": "failed", "HealthLabel": "Attention",
+			"HealthSummary": "Graylog online · DNS mismatch", "GraylogEvidence": "Graylog online", "DnsEvidence": "DNS mismatch",
+			"LastCheckDisplay": "2026-09-02 10:28 UTC", "LastCheckISO": uxFixtureNow.Add(-2 * time.Minute).Format(time.RFC3339),
+			"LastGraylogDisplay": "2026-09-02 10:28 UTC", "LastGraylogISO": uxFixtureNow.Add(-2 * time.Minute).Format(time.RFC3339),
+			"LastDnsDisplay": "2026-09-02 10:27 UTC", "LastDnsISO": uxFixtureNow.Add(-3 * time.Minute).Format(time.RFC3339),
 		})
 	}
 	return map[string]any{

@@ -1,26 +1,9 @@
 {{define "head"}}
-    <style>
-        /* Compact variant for this page's wide config table. */
-        .adm-vpn-page table.data.compact thead th { padding: 8px 10px; }
-        .adm-vpn-page table.data.compact tbody td { padding: 6px 10px; }
-        .adm-vpn-page table.data.compact code { font-size: 11px; }
-        /* Secondary line inside a cell (REMOTEIP-1st, next-check countdown). */
-        .adm-vpn-page .sub { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
-        /* DNS record check icon beside the DNS-Name-Full link. */
-        .adm-vpn-page .dns-check { font-weight: 700; margin-right: 6px; cursor: help; }
-        .adm-vpn-page .dns-ok { color: var(--success); }
-        .adm-vpn-page .dns-fail { color: var(--danger); }
-        .adm-vpn-page .dns-warn { color: var(--warning); }
-        .adm-vpn-page .dns-unknown { color: var(--text-dim); }
-        .adm-vpn-page .add-entry summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
-        .adm-vpn-page .add-entry summary::marker { color: var(--action); }
-        .adm-vpn-page .add-entry[open] summary { margin-bottom: 18px; }
-        .adm-vpn-page .dialog-feedback { margin: 0; }
-    </style>
+    <link rel="stylesheet" href="/fgt-adm-vpn-conf/static/adm-vpn.css">
 {{end}}
 
 {{define "content"}}
-    <div class="page adm-vpn-page" id="adm-vpn-page">
+    <div class="page adm-vpn-page" id="adm-vpn-page" data-column-preset="standard">
         <h1 class="page-title"><span class="accent-bar"></span>FGT ADM VPN Config</h1>
 
         <details class="card add-entry">
@@ -73,7 +56,7 @@
                             <label for="add_graylog_enabled">Graylog Enabled</label>
                         </div>
                     </div>
-                    <div style="margin-top:18px;">
+                    <div class="adm-form-actions">
                         <button type="submit" class="btn btn-primary">Add Entry</button>
                     </div>
                 </form>
@@ -85,95 +68,81 @@
                 <h2 class="mb-0">Available IPs <span class="muted">(10.105.1.0/24)</span></h2>
                 <div class="stat"><b>{{.AvailableIPsCount}}</b><span class="muted">available ({{.AvailableIPsPercentage}}%)</span></div>
             </div>
-            <div class="meter"><span style="width:{{.AvailableIPsPercentage}}%"></span></div>
+            <progress class="adm-ip-progress" max="100" value="{{.AvailableIPsPercentage}}" aria-label="Available IP address percentage">{{.AvailableIPsPercentage}}%</progress>
         </div>
 
-        <div class="card pad-0">
-            <div class="card-header">
-                <h2 class="mt-0 mb-0">Entries</h2>
-                <input type="text" id="vpnSearch" placeholder="Search entries&hellip;"
-                       aria-label="Search VPN entries" autocomplete="off" style="max-width:280px;">
-                <span class="muted" id="vpnSearchCount" style="font-size: 0.85em;"></span>
-            </div>
-            <div class="table-wrap">
-                <table class="data sticky-first compact" id="vpnTable">
-                    <thead>
-                        <tr>
-                            <th>Firewallname</th>
-                            <th>CID</th>
-                            <th>Kundenname</th>
-                            <th>Standort</th>
-                            <th>REMOTEIP / -1st</th>
-                            <th>ike2-username</th>
-                            <th>WAN</th>
-                            <th>RADIUS</th>
-                            <th>GL Status</th>
-                            <th>Cluster</th>
-                            <th>DNS-Name-Full</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{range .Configs}}
-                        <tr>
-                            <td>{{.Firewallname}}</td>
-                            <td>{{.Cid}}</td>
-                            <td>{{.Kundenname}}</td>
-                            <td>{{.Standort}}</td>
-                            <td><code>{{.RemoteipFull}}</code><span class="sub">{{.RemoteipFull1st}}</span></td>
-                            <td>{{.Ike2Username}}</td>
-                            <td>{{.WanInterface}}</td>
-                            <td>{{.Radiusmgt}}</td>
-                            <td>
-                                {{if eq .LastGraylogStatus "config_missing"}}
-                                    <span class="pill pill-new" title="Graylog not configured">config</span>
-                                {{else if or (not .GraylogEnabled) (eq .LastGraylogStatus "disabled")}}
-                                    <span class="pill pill-muted" title="Graylog check disabled">disabled</span>
-                                {{else if eq .LastGraylogStatus "online"}}
-                                    <span class="pill pill-success" title="Online">online</span>
-                                {{else if eq .LastGraylogStatus "offline"}}
-                                    <span class="pill pill-failed" title="Offline">offline</span>
-                                {{else}}
-                                    <span class="pill pill-muted" title="Unknown">unknown</span>
-                                {{end}}
-                                {{if and .GraylogEnabled .NextCheckISO}}
-                                    <span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>
-                                {{end}}
-                            </td>
-                            <td>{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}-{{end}}</td>
-                            <td>
-                                {{if .DnsNameFull}}
-                                    {{if eq .LastDnsStatus "ok"}}
-                                        <span class="dns-check dns-ok" role="img" title="DNS OK — resolves to {{.LastDnsResolved}}" aria-label="DNS OK"><span aria-hidden="true">&#10003;</span></span>
-                                    {{else if eq .LastDnsStatus "mismatch"}}
-                                        <span class="dns-check dns-fail" role="img" title="Wrong IP — resolves to {{.LastDnsResolved}}, expected {{.RemoteipFull}}" aria-label="DNS address mismatch"><span aria-hidden="true">&#10007;</span></span>
-                                    {{else if eq .LastDnsStatus "unresolved"}}
-                                        <span class="dns-check dns-fail" role="img" title="No DNS record — expected {{.RemoteipFull}}" aria-label="DNS record unresolved"><span aria-hidden="true">&#10007;</span></span>
-                                    {{else if eq .LastDnsStatus "error"}}
-                                        <span class="dns-check dns-warn" role="img" title="DNS lookup failed (resolver error)" aria-label="DNS lookup failed"><span aria-hidden="true">&#9888;</span></span>
-                                    {{else}}
-                                        <span class="dns-check dns-unknown" role="img" title="DNS not checked yet" aria-label="DNS not checked"><span aria-hidden="true">&middot;</span></span>
-                                    {{end}}<a href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a>
-                                {{else}}-{{end}}
-                            </td>
-                            <td class="actions">
-                                <button type="button" class="btn btn-sm open-edit-modal" data-dialog-open="editModal" data-id="{{.ID}}" aria-label="Edit {{.Firewallname}}">Edit</button>
-                                <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-dialog-open="removeModal" data-id="{{.ID}}" data-name="{{.Firewallname}}" aria-label="Remove {{.Firewallname}}">Remove</button>
-                                <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm">Download</a>
-                            </td>
-                        </tr>
-                        {{else}}
-                        <tr><td colspan="12" class="empty">No entries yet.</td></tr>
-                        {{end}}
-                    </tbody>
-                </table>
-            </div>
+        <div class="adm-fleet-workspace">
+            <section class="card pad-0 adm-fleet-list" aria-labelledby="vpnEntriesTitle">
+                <div class="card-header adm-fleet-toolbar">
+                    <div><h2 class="mt-0 mb-0" id="vpnEntriesTitle">Fleet entries</h2><span class="muted">Configuration, DNS, and Graylog evidence</span></div>
+                    <label class="adm-preset-control" for="vpnColumnPreset">Column preset
+                        <select id="vpnColumnPreset" aria-label="Column preset">
+                            <option value="compact">Compact</option>
+                            <option value="standard" selected>Standard</option>
+                            <option value="diagnostic">Diagnostic</option>
+                        </select>
+                    </label>
+                    <label class="adm-search-control" for="vpnSearch">Search entries
+                        <input type="search" id="vpnSearch" placeholder="Firewall, customer, site, CID&hellip;" autocomplete="off">
+                    </label>
+                    <span class="muted adm-search-count" id="vpnSearchCount" aria-live="polite"></span>
+                </div>
+                <div class="table-wrap adm-fleet-table-wrap">
+                    <table class="data compact adm-fleet-table" id="vpnTable">
+                        <thead><tr>
+                            <th data-column="identity">Identity</th>
+                            <th data-column="enabled">Monitoring</th>
+                            <th data-column="health">Check health</th>
+                            <th data-column="last-check">Last check</th>
+                            <th data-column="endpoint">Endpoint</th>
+                            <th data-column="evidence">Evidence</th>
+                            <th data-column="details"><span class="sr-only">Details</span></th>
+                        </tr></thead>
+                        <tbody>
+                            {{range .Configs}}
+                            <tr tabindex="0" data-vpn-row="{{.ID}}" aria-selected="false" aria-controls="vpn-detail-{{.ID}}">
+                                <td data-column="identity"><strong class="adm-identity">{{.Firewallname}}</strong><span class="sub">{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</span></td>
+                                <td data-column="enabled">{{if .GraylogEnabled}}<span class="pill pill-success">Enabled</span>{{else}}<span class="pill pill-muted">Disabled</span>{{end}}</td>
+                                <td data-column="health"><span class="pill adm-health adm-health--{{.HealthState}}">{{.HealthLabel}}</span><span class="sub">{{.HealthSummary}}</span></td>
+                                <td data-column="last-check">{{if .LastCheckISO}}<time datetime="{{.LastCheckISO}}">{{.LastCheckDisplay}}</time>{{else}}<span class="muted">Not checked</span>{{end}}{{if and .GraylogEnabled .NextCheckISO}}<span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>{{end}}</td>
+                                <td data-column="endpoint"><code>{{.RemoteipFull}}</code>{{if .DnsNameFull}}<a class="sub adm-fqdn" href="https://{{.DnsNameFull}}:9443" target="_blank" rel="noopener">{{.DnsNameFull}}</a>{{end}}</td>
+                                <td data-column="evidence"><span class="sub">Graylog: {{.LastGraylogStatus}}</span><span class="sub">DNS: {{.LastDnsStatus}}{{if .LastDnsResolved}} → {{.LastDnsResolved}}{{end}}</span></td>
+                                <td data-column="details"><button type="button" class="btn btn-sm" data-vpn-select="{{.ID}}" aria-label="Details for {{.Firewallname}}">Details</button></td>
+                            </tr>
+                            {{else}}
+                            <tr><td colspan="7" class="empty">No entries yet.</td></tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <aside class="card adm-fleet-detail" id="vpnDetailRegion" aria-labelledby="vpnDetailTitle">
+                <div id="vpnDetailEmpty" class="adm-detail-empty"><span class="eyebrow">Entry details</span><h2 id="vpnDetailTitle">Select an entry</h2><p class="muted">Choose a fleet row to inspect its factual configuration and check evidence.</p></div>
+                {{range .Configs}}
+                <section class="adm-detail-panel" id="vpn-detail-{{.ID}}" data-vpn-detail="{{.ID}}" tabindex="-1" hidden>
+                    <header class="adm-detail-header"><div><span class="eyebrow">Entry details</span><h2>{{.Firewallname}}</h2><p>{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</p></div><span class="pill adm-health adm-health--{{.HealthState}}">{{.HealthLabel}}</span></header>
+                    <p class="adm-factual-note"><strong>Configuration checks only.</strong> Tunnel availability is not measured by this view.</p>
+                    <div class="adm-evidence-grid">
+                        <section><h3>Graylog evidence</h3><strong>{{.GraylogEvidence}}</strong><dl><dt>Raw status</dt><dd>{{.LastGraylogStatus}}</dd><dt>Last check</dt><dd>{{if .LastGraylogISO}}<time datetime="{{.LastGraylogISO}}">{{.LastGraylogDisplay}}</time>{{else}}Not checked{{end}}</dd><dt>Monitoring</dt><dd>{{if .GraylogEnabled}}Enabled{{else}}Disabled{{end}}</dd></dl></section>
+                        <section><h3>DNS evidence</h3><strong>{{.DnsEvidence}}</strong><dl><dt>Hostname</dt><dd class="adm-break">{{if .DnsNameFull}}{{.DnsNameFull}}{{else}}—{{end}}</dd><dt>Expected IP</dt><dd>{{.RemoteipFull}}</dd><dt>Resolved IP</dt><dd>{{if .LastDnsResolved}}{{.LastDnsResolved}}{{else}}—{{end}}</dd><dt>Last check</dt><dd>{{if .LastDnsISO}}<time datetime="{{.LastDnsISO}}">{{.LastDnsDisplay}}</time>{{else}}Not checked{{end}}</dd></dl></section>
+                    </div>
+                    <section class="adm-config-facts"><h3>Configuration</h3><dl><dt>VPN address</dt><dd><code>{{.RemoteipFull}}</code><span class="sub">First: {{.RemoteipFull1st}}</span></dd><dt>IKE username</dt><dd class="adm-break">{{.Ike2Username}}</dd><dt>Interfaces</dt><dd>{{.WanInterface}} / {{.LanInterface}}</dd><dt>RADIUS</dt><dd>{{.Radiusmgt}}</dd><dt>Cluster hosts</dt><dd class="adm-break">{{if .ClusterHostnames}}{{.ClusterHostnames}}{{else}}—{{end}}</dd></dl></section>
+                    <div class="ui-dialog__actions adm-detail-actions">
+                        <button type="button" class="btn btn-sm open-edit-modal" data-dialog-open="editModal" data-id="{{.ID}}" aria-label="Edit {{.Firewallname}}">Edit</button>
+                        <a href="/fgt-adm-vpn-conf/generate_single/{{.ID}}" class="btn btn-sm" aria-label="Download configuration">Download</a>
+                        <span class="spacer"></span>
+                        <button type="button" class="btn btn-sm btn-danger open-remove-modal" data-dialog-open="removeModal" data-id="{{.ID}}" data-name="{{.Firewallname}}" aria-label="Remove {{.Firewallname}}">Remove</button>
+                    </div>
+                </section>
+                {{end}}
+            </aside>
         </div>
 
         <div class="card">
             <h2 class="mt-0">Import / Export</h2>
             <form action="/fgt-adm-vpn-conf/import" method="post" enctype="multipart/form-data" class="toolbar">
-                <label>CSV file <input type="file" name="file" accept=".csv" style="max-width:280px;"></label>
+                <label>CSV file <input class="adm-import-file" type="file" name="file" accept=".csv"></label>
                 <button type="submit" class="btn">Import</button>
                 <a href="/fgt-adm-vpn-conf/export" class="btn">Export All to CSV (Backup)</a>
                 <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">Export to Browser Favorites</a>
@@ -210,7 +179,7 @@
             </button>
             <span class="spacer"></span>
             <button type="button" class="btn" id="removeCancelBtn" data-dialog-close>Cancel</button>
-            <form method="post" id="removeForm" action="" style="display:inline; margin:0;">
+            <form method="post" id="removeForm" action="" class="adm-remove-form">
                 <button type="submit" class="btn btn-danger" id="removeConfirmBtn" data-confirm-action disabled>Remove entry</button>
             </form>
         </div>
@@ -220,159 +189,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script>
-(function () {
-function startADMVPNPage() {
-    var root = document.getElementById('adm-vpn-page');
-    if (!root) { return; }
-    var editModal = root.querySelector('#editModal');
-    var modalBody = root.querySelector('#modal-body-content');
-    var editFeedback = root.querySelector('#editFeedback');
-    var editRequest = null;
-
-    function announce(target, kind, message) {
-        target.hidden = false;
-        window.FortiSafeUI.announce(target, kind, message);
-    }
-
-    root.querySelectorAll('.open-edit-modal').forEach(function (button) {
-        button.addEventListener('click', function () {
-            if (editRequest) { editRequest.abort(); }
-            editRequest = new AbortController();
-            modalBody.replaceChildren();
-            announce(editFeedback, 'loading', 'Loading configuration…');
-            fetch('/fgt-adm-vpn-conf/edit/' + encodeURIComponent(button.dataset.id), { signal: editRequest.signal })
-                .then(function (response) {
-                    if (!response.ok) { throw new Error('HTTP ' + response.status); }
-                    return response.text();
-                })
-                .then(function (html) {
-                    modalBody.innerHTML = html;
-                    editFeedback.hidden = true;
-                    var form = modalBody.querySelector('form');
-                    if (!form) { throw new Error('Edit form is unavailable'); }
-                    form.addEventListener('submit', function (event) {
-                        event.preventDefault();
-                        announce(editFeedback, 'loading', 'Saving configuration…');
-                        fetch(form.action, { method: 'POST', body: new FormData(form) })
-                            .then(function (response) {
-                                if (!response.ok) {
-                                    return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); });
-                                }
-                                window.location.assign('/fgt-adm-vpn-conf/');
-                            })
-                            .catch(function (error) {
-                                announce(editFeedback, 'error', 'Could not update configuration: ' + error.message);
-                            });
-                    });
-                })
-                .catch(function (error) {
-                    if (error.name !== 'AbortError') {
-                        announce(editFeedback, 'error', 'Could not load configuration: ' + error.message);
-                    }
-                });
-        });
-    });
-    editModal.addEventListener('close', function () {
-        if (editRequest) { editRequest.abort(); editRequest = null; }
-        modalBody.replaceChildren();
-    });
-
-    // Removal stays POST-only and is unlocked only when the operator types the
-    // exact resource name shown in the dialog.
-    var removeModal = root.querySelector('#removeModal');
-    var removeForm = root.querySelector('#removeForm');
-    var removeInput = root.querySelector('#removeConfirmInput');
-    var removeName = root.querySelector('#removeConfirmName');
-    var removalPre = root.querySelector('#removalCommands');
-    var removeIntro = root.querySelector('#removeIntro');
-    var removeFeedback = root.querySelector('#removeFeedback');
-    var removalRequest = null;
-
-    root.querySelectorAll('.open-remove-modal').forEach(function (button) {
-        button.addEventListener('click', function () {
-            var id = button.dataset.id;
-            var name = button.dataset.name || ('#' + id);
-            removeModal.dataset.confirmText = name;
-            removeName.textContent = name;
-            removeInput.value = '';
-            removeInput.dispatchEvent(new Event('input'));
-            removeForm.action = '/fgt-adm-vpn-conf/delete/' + encodeURIComponent(id);
-            removalPre.textContent = 'Loading…';
-            removeIntro.textContent = 'Configuration "' + name + '" must be removed from the FortiGate device(s) first. Run the commands below on the matching device, then confirm removal.';
-            announce(removeFeedback, 'loading', 'Loading removal commands…');
-            if (removalRequest) { removalRequest.abort(); }
-            removalRequest = new AbortController();
-            fetch('/fgt-adm-vpn-conf/removal_commands/' + encodeURIComponent(id), { signal: removalRequest.signal })
-                .then(function (response) {
-                    if (!response.ok) { throw new Error('HTTP ' + response.status); }
-                    return response.text();
-                })
-                .then(function (text) {
-                    removalPre.textContent = text;
-                    announce(removeFeedback, 'success', 'Removal commands ready');
-                })
-                .catch(function (error) {
-                    if (error.name !== 'AbortError') {
-                        removalPre.textContent = '';
-                        announce(removeFeedback, 'error', 'Could not load removal commands: ' + error.message);
-                    }
-                });
-        });
-    });
-    removeForm.addEventListener('submit', function (event) {
-        if (removeInput.value !== removeModal.dataset.confirmText) { event.preventDefault(); }
-    });
-    removeModal.addEventListener('close', function () {
-        if (removalRequest) { removalRequest.abort(); removalRequest = null; }
-    });
-
-    // Client-side table search: hides rows not matching every whitespace-
-    // separated term (case-insensitive, against the row's full text).
-    var searchInput = document.getElementById('vpnSearch');
-    var searchCount = document.getElementById('vpnSearchCount');
-    if (searchInput) {
-        var searchRows = Array.prototype.slice.call(
-            root.querySelectorAll('#vpnTable tbody tr')).filter(function (row) {
-                return !row.querySelector('td.empty');
-            });
-        var applySearch = function () {
-            var terms = searchInput.value.toLowerCase().split(/\s+/).filter(Boolean);
-            var visible = 0;
-            searchRows.forEach(function (row) {
-                var text = row.textContent.toLowerCase();
-                var match = terms.every(function (t) { return text.indexOf(t) !== -1; });
-                row.style.display = match ? '' : 'none';
-                if (match) { visible++; }
-            });
-            searchCount.textContent = terms.length
-                ? visible + ' / ' + searchRows.length
-                : '';
-        };
-        searchInput.addEventListener('input', applySearch);
-    }
-
-    // Live "next check" countdown.
-    function updateGraylogCheckTimers() {
-        var now = Date.now();
-        root.querySelectorAll('.next-graylog-check').forEach(function (el) {
-            var target = new Date(el.dataset.next).getTime();
-            if (isNaN(target)) { el.textContent = '-'; return; }
-            var diff = Math.round((target - now) / 1000);
-            if (diff <= 0) { el.textContent = 'due'; return; }
-            var m = Math.floor(diff / 60);
-            var s = diff % 60;
-            el.textContent = m + 'm ' + String(s).padStart(2, '0') + 's';
-        });
-    }
-    updateGraylogCheckTimers();
-    setInterval(updateGraylogCheckTimers, 1000);
-}
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startADMVPNPage, { once: true });
-} else {
-    startADMVPNPage();
-}
-})();
-</script>
+<script src="/fgt-adm-vpn-conf/static/adm-vpn.js"></script>
 {{end}}

@@ -20,7 +20,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
-//go:embed templates/fgt_adm_vpn_conf_index.html templates/fgt_adm_vpn_conf_edit_form.html
+//go:embed templates/fgt_adm_vpn_conf_index.html templates/fgt_adm_vpn_conf_edit_form.html static/*
 var templatesFS embed.FS
 
 const indexTemplate = "fgt_adm_vpn_conf_index.html"
@@ -63,11 +63,6 @@ func (e *Extension) serverError(w http.ResponseWriter, err error) {
 }
 
 // ---- index ------------------------------------------------------------------
-
-type configRow struct {
-	*VpnConfig
-	NextCheckISO string
-}
 
 type indexData struct {
 	Base                   webui.BaseData
@@ -124,13 +119,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]configRow, 0, len(configs))
 	for _, c := range configs {
-		iso := ""
-		if c.GraylogEnabled {
-			if nc := c.NextGraylogCheck(); nc != nil {
-				iso = nc.UTC().Format("2006-01-02T15:04:05Z")
-			}
-		}
-		rows = append(rows, configRow{VpnConfig: c, NextCheckISO: iso})
+		rows = append(rows, makeConfigRow(c, e.tz))
 	}
 
 	data := indexData{

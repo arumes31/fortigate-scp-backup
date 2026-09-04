@@ -35,11 +35,11 @@ func TestIndexTemplateRenders(t *testing.T) {
 			Navigation: webui.Navigation(webui.NavigationOptions{Lang: "en", Active: "admvpn", AdmVPN: true}),
 		},
 		Configs: []configRow{
-			{VpnConfig: &VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}},
-			{VpnConfig: &VpnConfig{ID: 2, Firewallname: "acme-ok", DnsNameFull: "fgt-acme-ok.adm.example",
-				RemoteipFull: "10.105.1.2", LastDnsStatus: "ok", LastDnsResolved: "10.105.1.2"}},
-			{VpnConfig: &VpnConfig{ID: 3, Firewallname: "acme-bad", DnsNameFull: "fgt-acme-bad.adm.example",
-				RemoteipFull: "10.105.1.3", LastDnsStatus: "mismatch", LastDnsResolved: "10.105.1.99"}},
+			makeConfigRow(&VpnConfig{ID: 1, Firewallname: "acme-hq", Radiusmgt: "YES"}, time.UTC),
+			makeConfigRow(&VpnConfig{ID: 2, Firewallname: "acme-ok", DnsNameFull: "fgt-acme-ok.adm.example",
+				RemoteipFull: "10.105.1.2", LastDnsStatus: "ok", LastDnsResolved: "10.105.1.2"}, time.UTC),
+			makeConfigRow(&VpnConfig{ID: 3, Firewallname: "acme-bad", DnsNameFull: "fgt-acme-bad.adm.example",
+				RemoteipFull: "10.105.1.3", LastDnsStatus: "mismatch", LastDnsResolved: "10.105.1.99"}, time.UTC),
 		},
 		AvailableIPsCount:      5,
 		AvailableIPsPercentage: "50.00",
@@ -59,15 +59,96 @@ func TestIndexTemplateRenders(t *testing.T) {
 			t.Errorf("standalone shell remains: %q", unwanted)
 		}
 	}
-	for _, want := range []string{"open-remove-modal", "removeConfirmInput", "removal_commands",
-		// DNS record check icons: green tick for a matching record, red cross
-		// (with resolved-vs-expected tooltip) for a wrong-IP record.
-		"dns-ok", "dns-fail", "expected 10.105.1.3",
+	for _, want := range []string{"open-remove-modal", "removeConfirmInput",
+		// Factual DNS evidence remains visible without implying tunnel health.
+		"DNS verified", "DNS mismatch", "10.105.1.99",
 		// Client-side table search input + its filter hook.
 		"vpnSearch", "vpnTable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered index missing %q", want)
 		}
+	}
+	for _, want := range []string{
+		`/fgt-adm-vpn-conf/static/adm-vpn.css`, `/fgt-adm-vpn-conf/static/adm-vpn.js`,
+		`class="adm-fleet-workspace"`, `data-column-preset="standard"`, `data-vpn-row`,
+		`id="vpn-detail-1"`, `Configuration checks only`, `Column preset`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ADM VPN master-detail view missing %q", want)
+		}
+	}
+	script, err := templatesFS.ReadFile("static/adm-vpn.js")
+	if err != nil {
+		t.Fatalf("read embedded ADM VPN script: %v", err)
+	}
+	if !bytes.Contains(script, []byte("/removal_commands/")) {
+		t.Error("embedded ADM VPN script no longer loads removal commands")
+	}
+}
+
+func TestConfigRowCombinesOnlyFactualHealthEvidence(t *testing.T) {
+	graylogCheck := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	dnsCheck := graylogCheck.Add(5 * time.Minute)
+	tests := []struct {
+		name        string
+		config      VpnConfig
+		wantState   string
+		wantLabel   string
+		wantSummary string
+		wantLastISO string
+	}{
+		{
+			name: "checks pass",
+			config: VpnConfig{GraylogEnabled: true, LastGraylogStatus: "online", LastDnsStatus: "ok",
+				LastGraylogCheck: &graylogCheck, LastDnsCheck: &dnsCheck},
+			wantState: "healthy", wantLabel: "Checks pass",
+			wantSummary: "Graylog online · DNS verified", wantLastISO: dnsCheck.Format(time.RFC3339),
+		},
+		{
+			name: "graylog failure",
+			config: VpnConfig{GraylogEnabled: true, LastGraylogStatus: "offline", LastDnsStatus: "ok",
+				LastGraylogCheck: &graylogCheck, LastDnsCheck: &dnsCheck},
+			wantState: "failed", wantLabel: "Attention",
+			wantSummary: "Graylog offline · DNS verified", wantLastISO: dnsCheck.Format(time.RFC3339),
+		},
+		{
+			name: "DNS failure",
+			config: VpnConfig{GraylogEnabled: true, LastGraylogStatus: "online", LastDnsStatus: "mismatch",
+				LastGraylogCheck: &graylogCheck, LastDnsCheck: &dnsCheck},
+			wantState: "failed", wantLabel: "Attention",
+			wantSummary: "Graylog online · DNS mismatch", wantLastISO: dnsCheck.Format(time.RFC3339),
+		},
+		{
+			name: "partial coverage",
+			config: VpnConfig{GraylogEnabled: false, LastGraylogStatus: "disabled", LastDnsStatus: "ok",
+				LastDnsCheck: &dnsCheck},
+			wantState: "warning", wantLabel: "Partial coverage",
+			wantSummary: "Graylog disabled · DNS verified", wantLastISO: dnsCheck.Format(time.RFC3339),
+		},
+		{
+			name:      "pending checks",
+			config:    VpnConfig{GraylogEnabled: true, LastGraylogStatus: "unknown", LastDnsStatus: "unknown"},
+			wantState: "unknown", wantLabel: "Checks pending",
+			wantSummary: "Graylog not checked · DNS not checked",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := makeConfigRow(&tt.config, time.UTC)
+			if row.HealthState != tt.wantState || row.HealthLabel != tt.wantLabel || row.HealthSummary != tt.wantSummary {
+				t.Fatalf("health = %q/%q/%q, want %q/%q/%q",
+					row.HealthState, row.HealthLabel, row.HealthSummary,
+					tt.wantState, tt.wantLabel, tt.wantSummary)
+			}
+			if row.LastCheckISO != tt.wantLastISO {
+				t.Errorf("LastCheckISO = %q, want %q", row.LastCheckISO, tt.wantLastISO)
+			}
+			for _, invented := range []string{"tunnel available", "tunnel up", "tunnel down"} {
+				if strings.Contains(strings.ToLower(row.HealthSummary), invented) {
+					t.Errorf("health summary invented tunnel state: %q", row.HealthSummary)
+				}
+			}
+		})
 	}
 }
 

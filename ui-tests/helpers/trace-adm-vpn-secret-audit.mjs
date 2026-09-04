@@ -13,7 +13,8 @@ try {
   const page = await context.newPage();
   const response = await page.goto('/fgt-adm-vpn-conf/', { waitUntil: 'networkidle' });
   if (!response?.ok()) throw new Error(`ADM VPN fixture returned ${response?.status() ?? 'no response'}`);
-  await page.getByRole('button', { name: 'Edit edge.example.test' }).click();
+  await page.getByRole('button', { name: 'Details for edge.example.test' }).click();
+  await page.locator('#vpn-detail-7').getByRole('button', { name: 'Edit edge.example.test' }).click();
   await page.getByRole('dialog', { name: 'Edit configuration' }).waitFor({ state: 'visible' });
 } finally {
   await context.tracing.stop({ path: tracePath });
