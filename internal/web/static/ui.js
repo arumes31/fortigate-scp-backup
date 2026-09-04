@@ -221,6 +221,9 @@ function tt(key) { return (window.I18N && window.I18N[key]) || key; }
                 if (button.dataset.showLabel && button.dataset.hideLabel) {
                     button.textContent = reveal ? button.dataset.hideLabel : button.dataset.showLabel;
                 }
+                if (button.dataset.showAriaLabel && button.dataset.hideAriaLabel) {
+                    button.setAttribute('aria-label', reveal ? button.dataset.hideAriaLabel : button.dataset.showAriaLabel);
+                }
             });
         });
     }

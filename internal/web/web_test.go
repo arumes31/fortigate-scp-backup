@@ -1139,3 +1139,53 @@ func TestLoginPageAnimation(t *testing.T) {
 		t.Error("login page must not reference external scripts (same-origin CSP)")
 	}
 }
+
+func TestLoginPageFormSemantics(t *testing.T) {
+	srv := testServer(t)
+	srv.cfg.TOTPEnabled = true
+	srv.cfg.RadiusEnabled = true
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	html := rr.Body.String()
+	for _, want := range []string{
+		`id="username" autocomplete="username" required`,
+		`id="password" autocomplete="current-password" required`,
+		`type="button" class="password-toggle" data-password-toggle="password"`,
+		`aria-controls="password" aria-pressed="false"`,
+		`id="totp_code" inputmode="numeric" autocomplete="one-time-code"`,
+		`pattern="[0-9]{6}" minlength="6" maxlength="6"`,
+		`role="status" aria-live="polite" aria-atomic="true"`,
+		`<script src="/static/ui.js"></script>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("login page missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`u === 'admin'`,
+		`u !== 'admin'`,
+		`usernameInput.addEventListener`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("login page discloses account type through username-dependent UI: %q", forbidden)
+		}
+	}
+}
+
+func TestLoginPageErrorIsAnnounced(t *testing.T) {
+	srv := testServer(t)
+	form := url.Values{"username": {"admin"}, "password": {"wrong"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if html := rr.Body.String(); !strings.Contains(html, `class="alert alert-error" role="alert"`) {
+		t.Error("login error is not exposed as an assertive alert")
+	}
+}

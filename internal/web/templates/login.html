@@ -149,15 +149,14 @@
 
         .login-submit { width: 100%; justify-content: center; padding: 11px 12px; font-size: 13px; margin-top: 4px; }
 
-        /* Hidden until the TOTP-enabled account (admin) is entered — matches the
-           v2.1.7 behaviour. Server-side enforcement is unchanged. */
-        #totp-section { display: none; }
+        .password-field { display: flex; gap: 8px; align-items: stretch; }
+        .password-field input { min-width: 0; flex: 1; }
+        .password-toggle { flex: none; min-width: 72px; }
 
         /* Prose blocks reset the global UPPERCASE chrome for readability, the same
-           way toasts / stdout do in app.css. Hidden until a RADIUS user (any
-           non-admin username) is entered — see the input handler below. */
+           way toasts / stdout do in app.css. Account-specific authentication
+           details are intentionally not inferred from the entered username. */
         .radius-banner {
-            display: none;
             margin-bottom: 4px;
             padding: 12px 14px;
             text-align: left;
@@ -166,7 +165,6 @@
             font-size: 12px;
             line-height: 1.45;
         }
-        .radius-banner.show { display: block; }
         .radius-banner b { color: var(--accent); }
 
         .login-wait {
@@ -200,7 +198,7 @@
     <div class="container">
         <h1 class="page-title login-title"><span class="accent-bar"></span>Login</h1>
         {{if .Error}}
-            <p class="alert alert-error">{{.Error}}</p>
+            <p class="alert alert-error" role="alert">{{.Error}}</p>
         {{end}}
         {{if .RadiusEnabled}}
         <div class="alert alert-info radius-banner" id="radius-banner">
@@ -212,30 +210,35 @@
         <form method="post" action="/login" id="login-form">
             <div class="field">
                 <label for="username">Username</label>
-                <input type="text" name="username" id="username" autocomplete="username">
+                <input type="text" name="username" id="username" autocomplete="username" required>
             </div>
             <div class="field">
                 <label for="password">Password</label>
-                <input type="password" name="password" id="password" autocomplete="current-password">
+                <div class="password-field">
+                    <input type="password" name="password" id="password" autocomplete="current-password" required>
+                    <button type="button" class="password-toggle" data-password-toggle="password"
+                            data-show-label="Show" data-hide-label="Hide"
+                            data-show-aria-label="Show password" data-hide-aria-label="Hide password"
+                            aria-label="Show password" aria-controls="password" aria-pressed="false">Show</button>
+                </div>
             </div>
             {{if .TOTPEnabled}}
                 <div class="field" id="totp-section">
                     <label for="totp_code">TOTP Code</label>
-                    <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code">
+                    <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code"
+                           pattern="[0-9]{6}" minlength="6" maxlength="6">
                 </div>
             {{end}}
             <input type="submit" value="Login" id="login-submit" class="btn btn-primary login-submit">
         </form>
-        <div class="login-wait" id="login-wait">
+        <div class="login-wait" id="login-wait" role="status" aria-live="polite" aria-atomic="true">
             <span class="spinner"></span>Signing in… check your mobile device to confirm the login if prompted.
         </div>
     </div>
+    <script src="/static/ui.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const logoText = document.getElementById('logo-text');
-            const usernameInput = document.getElementById('username');
-            const totpSection = document.getElementById('totp-section');
-            const radiusBanner = document.getElementById('radius-banner');
             const originalText = 'FortiSafe';
             const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$%';
 
@@ -264,24 +267,6 @@
 
             // Start the matrix rain animation
             matrixRain();
-
-            // Username-driven conditional UI. The local "admin" account uses
-            // TOTP; every other username authenticates via RADIUS. Reveal the
-            // matching hint as the user types (matches v2.1.7). Server-side
-            // enforcement is unchanged regardless of this show/hide.
-            if (usernameInput) {
-                usernameInput.addEventListener('input', function () {
-                    const u = usernameInput.value.trim().toLowerCase();
-                    if (totpSection) {
-                        totpSection.style.display = (u === 'admin') ? 'flex' : 'none';
-                    }
-                    // Show the RADIUS/MFA wait banner only on a RADIUS login
-                    // attempt (a non-empty, non-admin username).
-                    if (radiusBanner) {
-                        radiusBanner.classList.toggle('show', u !== '' && u !== 'admin');
-                    }
-                });
-            }
 
             // On submit, show a waiting hint and disable the button: a RADIUS/MFA
             // sign-in can take up to 60s and may need approval on the user's phone.
