@@ -176,6 +176,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	r.Group(func(protected chi.Router) {
 		protected.Use(deps.LoginRequired)
 		protected.Get("/", e.dashboard)
+		protected.Post("/", e.dashboard)
 		protected.Get("/status", e.dashboardStatus)
 		protected.Get("/chain/{chainID}", e.dashboardChain)
 		protected.Post("/ignore-rules", e.createGlobalIgnoreRule)
@@ -271,7 +272,7 @@ func (e *Extension) hookwiseHealth(ctx context.Context) string {
 	if err != nil {
 		return "failed"
 	}
-	return dashboardDeliveryHealth(counts).State
+	return dashboardDeliveryHealth(counts, time.Now().UTC()).State
 }
 
 func (e *Extension) publishCatalog(catalog sourceCatalog) {

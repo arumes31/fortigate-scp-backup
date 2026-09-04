@@ -116,9 +116,11 @@ func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *te
 	}
 
 	postResponse := httptest.NewRecorder()
-	router.ServeHTTP(postResponse, httptest.NewRequest(http.MethodPost, "/", nil))
-	if postResponse.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST / status = %d, want 405", postResponse.Code)
+	postRequest := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("state=all"))
+	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	router.ServeHTTP(postResponse, postRequest)
+	if postResponse.Code != http.StatusOK {
+		t.Fatalf("POST / status = %d, want 200", postResponse.Code)
 	}
 	staticPostResponse := httptest.NewRecorder()
 	router.ServeHTTP(

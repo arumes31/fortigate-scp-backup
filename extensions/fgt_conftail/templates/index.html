@@ -16,6 +16,8 @@
                 <strong>{{.Health.Label}}</strong>
                 {{if .Health.Code}}<span class="ct-code no-caps">{{.Health.Code}}</span>{{end}}
                 {{if .Health.Detail}}<span class="ct-detail no-caps">{{.Health.Detail}}</span>{{end}}
+                {{if .Health.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.Health.Evidence}}</span>{{end}}
+                <span class="ct-detail">Last check: {{template "dashboardTime" .Health.CheckedAt}}</span>
                 {{if .Health.Action}}<span class="ct-action no-caps">Next: {{.Health.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.SessionHealth.State}}">
@@ -23,6 +25,8 @@
                 <strong>{{.SessionHealth.Label}}</strong>
                 {{if .SessionHealth.Code}}<span class="ct-code no-caps">{{.SessionHealth.Code}}</span>{{end}}
                 {{if .SessionHealth.Detail}}<span class="ct-detail no-caps">{{.SessionHealth.Detail}}</span>{{end}}
+                {{if .SessionHealth.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.SessionHealth.Evidence}}</span>{{end}}
+                <span class="ct-detail">Last check: {{template "dashboardTime" .SessionHealth.CheckedAt}}</span>
                 {{if .SessionHealth.Action}}<span class="ct-action no-caps">Next: {{.SessionHealth.Action}}</span>{{end}}
             </article>
             <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}">
@@ -30,29 +34,12 @@
                 <strong>{{.DeliveryHealth.Label}}</strong>
                 {{if .DeliveryHealth.Code}}<span class="ct-code no-caps">{{.DeliveryHealth.Code}}</span>{{end}}
                 {{if .DeliveryHealth.Detail}}<span class="ct-detail no-caps">{{.DeliveryHealth.Detail}}</span>{{end}}
+                {{if .DeliveryHealth.Evidence}}<span class="ct-evidence no-caps">Evidence: {{.DeliveryHealth.Evidence}}</span>{{end}}
+                <span class="ct-detail">Last check: {{template "dashboardTime" .DeliveryHealth.CheckedAt}}</span>
                 {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">Next: {{.DeliveryHealth.Action}}</span>{{end}}
             </article>
-            <article class="card ct-metric">
-                <span class="ct-label">Last poll start</span>
-                <strong>{{template "dashboardTime" .Dashboard.Poll.LastStartedAt}}</strong>
-                <span class="ct-detail">{{fmtDuration .Dashboard.Poll.LastDuration}} duration</span>
-            </article>
-            <article class="card ct-metric">
-                <span class="ct-label">Last success / failure</span>
-                <strong>{{template "dashboardTime" .Dashboard.Poll.LastSuccessAt}}</strong>
-                <span class="ct-detail">failure: {{template "dashboardTime" .Dashboard.Poll.LastFailureAt}}</span>
-            </article>
-            <article class="card ct-metric">
-                <span class="ct-label">Watermark</span>
-                <strong>{{template "dashboardTime" .Dashboard.Poll.Watermark}}</strong>
-                <span class="ct-detail">{{.Dashboard.Poll.LastPages}} page(s) / {{.Dashboard.Poll.LastFetched}} fetched / {{.Dashboard.Poll.LastInserted}} inserted</span>
-            </article>
-            <article class="card ct-metric">
-                <span class="ct-label">Next poll run</span>
-                <strong>{{template "dashboardTime" .NextPollRun}}</strong>
-                <span id="ct-next-poll-countdown" class="ct-detail" data-next-poll="{{fmtMachineTime .NextPollRun}}">Countdown unavailable</span>
-            </article>
         </section>
+        <p class="ct-next-poll"><span class="ct-label">Next collector check</span> {{template "dashboardTime" .NextPollRun}} · <span id="ct-next-poll-countdown" data-next-poll="{{fmtMachineTime .NextPollRun}}">Countdown unavailable</span></p>
 
         {{if .CoverageEnabled}}
         <details class="card ct-coverage">
@@ -126,14 +113,35 @@
         </details>
 
         <section class="card" aria-labelledby="ct-filter-title">
-            <h2 id="ct-filter-title">Timeline filters</h2>
-            <form method="get" action="/fgt-conftail/" class="ct-filter" role="search">
+            <div class="ct-filter-heading">
+                <div>
+                    <p class="ct-label">Session workspace</p>
+                    <h2 id="ct-filter-title">Timeline filters</h2>
+                </div>
+                <span class="ct-count">Filter values stay out of browser history</span>
+            </div>
+            <div class="ct-view-bar" aria-labelledby="ct-view-title">
+                <div>
+                    <strong id="ct-view-title">Local views</strong>
+                    <span class="ct-help">Up to 10 in this browser. Event-text search is never saved.</span>
+                </div>
+                <label class="sr-only" for="ct-view-name">Local view name</label>
+                <input id="ct-view-name" type="text" maxlength="48" placeholder="View name" autocomplete="off" data-ct-view-name>
+                <label class="sr-only" for="ct-view-select">Saved local view</label>
+                <select id="ct-view-select" data-ct-view-select><option value="">No saved views</option></select>
+                <button class="btn btn-sm" type="button" data-ct-view-save>Save current</button>
+                <button class="btn btn-sm" type="button" data-ct-view-load disabled>Load</button>
+                <button class="btn btn-sm btn-danger" type="button" data-ct-view-delete disabled>Delete</button>
+                <span class="ct-view-feedback" role="status" aria-live="polite" data-ct-view-feedback></span>
+            </div>
+            <form method="post" action="/fgt-conftail/" class="ct-filter" id="ct-filter-form" role="search" data-ct-filter-form>
+                <div class="ct-basic-filters">
                 <div class="field ct-filter-search">
                     <label for="ct-search">Search redacted event text</label>
                     <input id="ct-search" type="search" maxlength="256" name="q" value="{{.Filters.Search}}" placeholder="All indexed event fields" autocomplete="off">
                 </div>
                 <div class="field">
-                    <label for="ct-firewall">Firewall name or ID</label>
+                    <label for="ct-firewall">Firewall ID</label>
                     <input id="ct-firewall" type="search" inputmode="numeric" list="ct-firewall-options" name="firewall" value="{{.Filters.Firewall}}" placeholder="All firewalls" autocomplete="off">
                     <datalist id="ct-firewall-options">
                         {{range .Firewalls}}<option value="{{.FirewallID}}" label="{{.FirewallName}}"></option>{{end}}
@@ -141,31 +149,7 @@
                 </div>
                 <div class="field">
                     <label for="ct-user">Administrator contains</label>
-                    <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="All administrators">
-                </div>
-                <div class="field">
-                    <label for="ct-source">Graylog source contains</label>
-                    <input id="ct-source" type="search" maxlength="512" name="source" value="{{.Filters.Source}}" placeholder="All sources">
-                </div>
-                <div class="field">
-                    <label for="ct-device">Device name contains</label>
-                    <input id="ct-device" type="search" maxlength="512" name="device" value="{{.Filters.Device}}" placeholder="All device names">
-                </div>
-                <div class="field">
-                    <label for="ct-serial">Serial contains</label>
-                    <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="All serials">
-                </div>
-                <div class="field">
-                    <label for="ct-action">Action contains</label>
-                    <input id="ct-action" type="search" maxlength="512" name="action" value="{{.Filters.Action}}" placeholder="All actions">
-                </div>
-                <div class="field">
-                    <label for="ct-transaction">Config transaction ID</label>
-                    <input id="ct-transaction" type="search" maxlength="512" name="transaction" value="{{.Filters.TransactionID}}" placeholder="Exact transaction ID">
-                </div>
-                <div class="field">
-                    <label for="ct-log-id">FortiGate log ID</label>
-                    <input id="ct-log-id" type="search" inputmode="numeric" maxlength="512" name="log_id" value="{{.Filters.LogID}}" placeholder="Exact log ID">
+                    <input id="ct-user" type="search" maxlength="512" name="user" value="{{.Filters.User}}" placeholder="All administrators" autocomplete="off">
                 </div>
                 <div class="field">
                     <label for="ct-state">Session / delivery state</label>
@@ -187,11 +171,52 @@
                     <label for="ct-to">Changed through (UTC)</label>
                     <input id="ct-to" type="datetime-local" name="to" value="{{.Filters.To}}">
                 </div>
+                </div>
+                <details class="ct-advanced-filters"{{if .AdvancedOpen}} open{{end}}>
+                    <summary>Advanced filters</summary>
+                    <div class="ct-advanced-grid">
+                        <div class="field">
+                            <label for="ct-source">Graylog source contains</label>
+                            <input id="ct-source" type="search" maxlength="512" name="source" value="{{.Filters.Source}}" placeholder="All sources" autocomplete="off">
+                        </div>
+                        <div class="field">
+                            <label for="ct-device">Device name contains</label>
+                            <input id="ct-device" type="search" maxlength="512" name="device" value="{{.Filters.Device}}" placeholder="All device names" autocomplete="off">
+                        </div>
+                        <div class="field">
+                            <label for="ct-serial">Serial contains</label>
+                            <input id="ct-serial" type="search" maxlength="512" name="serial" value="{{.Filters.Serial}}" placeholder="All serials" autocomplete="off">
+                        </div>
+                        <div class="field">
+                            <label for="ct-action">Action contains</label>
+                            <input id="ct-action" type="search" maxlength="512" name="action" value="{{.Filters.Action}}" placeholder="All actions" autocomplete="off">
+                        </div>
+                        <div class="field">
+                            <label for="ct-transaction">Config transaction ID</label>
+                            <input id="ct-transaction" type="search" maxlength="512" name="transaction" value="{{.Filters.TransactionID}}" placeholder="Exact transaction ID" autocomplete="off">
+                        </div>
+                        <div class="field">
+                            <label for="ct-log-id">FortiGate log ID</label>
+                            <input id="ct-log-id" type="search" inputmode="numeric" maxlength="512" name="log_id" value="{{.Filters.LogID}}" placeholder="Exact log ID" autocomplete="off">
+                        </div>
+                    </div>
+                </details>
                 <div class="ct-filter-actions">
                     <button class="btn btn-primary" type="submit">Apply filters</button>
                     <a class="btn" href="/fgt-conftail/">Clear</a>
                 </div>
             </form>
+            {{if .ActiveFilters}}
+            <div class="ct-active-filters" aria-label="Active filters">
+                <span class="ct-label">Active</span>
+                {{range .ActiveFilters}}
+                <form method="post" action="/fgt-conftail/" class="ct-filter-chip-form">
+                    {{template "dashboardHiddenFields" .Fields}}
+                    <button type="submit" class="chip ct-filter-chip" aria-label="Remove {{.Label}} filter: {{.Value}}">{{.Label}}: <span class="no-caps">{{.Value}}</span> <span aria-hidden="true">×</span></button>
+                </form>
+                {{end}}
+            </div>
+            {{end}}
         </section>
 
         <details class="card ct-column-settings">
@@ -253,8 +278,8 @@
             </div>
             {{else}}<p class="empty">No sealed change sessions match these filters.</p>{{end}}
             <nav class="ct-pagination" aria-label="History pagination">
-                {{if .PrevURL}}<a class="btn" rel="prev" href="{{.PrevURL}}">Previous</a>{{end}}
-                {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
+                {{if .HasPrev}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .PrevFields}}<button class="btn" type="submit" data-ct-page="previous">Previous</button></form>{{end}}
+                {{if .HasNext}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .NextFields}}<button class="btn" type="submit" data-ct-page="next">Next</button></form>{{end}}
             </nav>
         </section>
         {{end}}
@@ -299,3 +324,4 @@
 {{end}}
 
 {{define "dashboardTime"}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{end}}
+{{define "dashboardHiddenFields"}}{{range .}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}

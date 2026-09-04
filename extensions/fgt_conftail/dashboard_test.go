@@ -433,15 +433,20 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, want := range []string{
-		"Last poll start",
-		"2026-09-01 10:01:00 UTC",
+		"Graylog collector",
+		"Session pipeline",
+		"Hookwise delivery",
+		"Evidence:",
+		"Last check:",
 		"2026-09-01 10:03:00 UTC",
 		"CT-GL-001",
-		"Next poll run",
+		"Next collector check",
 		"2026-09-01 10:02:00 UTC",
 		`id="ct-next-poll-countdown"`,
 		`src="/fgt-conftail/static/conftail.js"`,
-		"Firewall name or ID",
+		"Firewall ID",
+		`method="post" action="/fgt-conftail/"`,
+		"Advanced filters",
 		"Search redacted event text",
 		"Graylog source contains",
 		"Device name contains",
@@ -450,11 +455,14 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 		"Config transaction ID",
 		"FortiGate log ID",
 		`data-ct-time-toggle`,
-		`<time data-ct-time datetime="2026-09-01T10:01:00Z">2026-09-01 10:01:00 UTC</time>`,
+		`<time data-ct-time datetime="2026-09-01T10:03:00Z">2026-09-01 10:03:00 UTC</time>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard body does not contain %q", want)
 		}
+	}
+	if got := strings.Count(body, `class="card ct-metric `); got != 3 {
+		t.Fatalf("health card count = %d, want 3", got)
 	}
 }
 
@@ -694,8 +702,8 @@ func TestDashboardPollHealthIncludesActionableRemediation(t *testing.T) {
 func TestDashboardDeliveryHealthIsIndependentFromCollector(t *testing.T) {
 	t.Parallel()
 
-	health := dashboardDeliveryHealth(dashboardCounts{Failed: 2, Retry: 3})
-	if health.State != "failed" || health.Code != codeHookwiseDeliveryFailed || !strings.Contains(health.Detail, "2 failed") ||
+	health := dashboardDeliveryHealth(dashboardCounts{Failed: 2, Retry: 3}, time.Now().UTC())
+	if health.State != "failed" || health.Code != codeHookwiseDeliveryFailed || !strings.Contains(health.Evidence, "2 failed") ||
 		!strings.Contains(health.Action, "Hookwise") {
 		t.Fatalf("delivery health = %+v", health)
 	}
@@ -831,23 +839,102 @@ func TestQueryDashboardFullTextSearchMatchesAllLiteralTerms(t *testing.T) {
 	}
 }
 
-func TestDashboardPageURLPreservesFullTextSearch(t *testing.T) {
+func TestDashboardRequestAllowsOnlyNonSensitiveGETState(t *testing.T) {
 	t.Parallel()
-	got := dashboardPageURL(dashboardFilters{
-		Search:        "urgent vpn",
-		Action:        "Edit",
-		TransactionID: "82378752",
-		LogID:         "0100044546",
-		State:         deliveryStateRetry,
-	}, 3)
-	parsed, err := url.Parse(got)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/fgt-conftail/?firewall=7&state=retry&from=2026-09-01T09%3A00&page=3",
+		nil,
+	)
+	filters, err := parseDashboardRequest(httptest.NewRecorder(), request)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("safe GET filters rejected: %v", err)
 	}
-	if parsed.Query().Get("q") != "urgent vpn" || parsed.Query().Get("action") != "Edit" ||
-		parsed.Query().Get("transaction") != "82378752" || parsed.Query().Get("log_id") != "0100044546" ||
-		parsed.Query().Get("state") != deliveryStateRetry || parsed.Query().Get("page") != "3" {
-		t.Fatalf("pagination URL = %q", got)
+	if filters.FirewallID != 7 || filters.State != deliveryStateRetry || filters.Page != 3 ||
+		filters.From.Format("2006-01-02T15:04") != "2026-09-01T09:00" {
+		t.Fatalf("safe GET filters = %+v", filters)
+	}
+}
+
+func TestDashboardRequestRequiresPOSTForSensitiveFilters(t *testing.T) {
+	t.Parallel()
+
+	get := httptest.NewRequest(http.MethodGet, "/fgt-conftail/?state=retry&q=url-secret", nil)
+	if _, err := parseDashboardRequest(httptest.NewRecorder(), get); err == nil {
+		t.Fatal("GET request with sensitive search filter was accepted")
+	}
+
+	body := strings.NewReader("firewall=7&state=retry&page=2&q=body-secret&user=alice&source=branch")
+	post := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", body)
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	filters, err := parseDashboardRequest(httptest.NewRecorder(), post)
+	if err != nil {
+		t.Fatalf("POST filters rejected: %v", err)
+	}
+	if filters.FirewallID != 7 || filters.State != deliveryStateRetry || filters.Page != 2 ||
+		filters.Search != "body-secret" || filters.User != "alice" || filters.Source != "branch" {
+		t.Fatalf("POST filters = %+v", filters)
+	}
+
+	unknown := httptest.NewRequest(http.MethodGet, "/fgt-conftail/?token=must-not-enter-url", nil)
+	if _, err := parseDashboardRequest(httptest.NewRecorder(), unknown); err == nil {
+		t.Fatal("unknown GET parameter was accepted")
+	}
+}
+
+func TestDashboardRequestRejectsOversizedAndAmbiguousForms(t *testing.T) {
+	t.Parallel()
+
+	oversized := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader(
+		"q="+strings.Repeat("x", dashboardMaxFormBytes),
+	))
+	oversized.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, err := parseDashboardRequest(httptest.NewRecorder(), oversized); err == nil {
+		t.Fatal("oversized dashboard form was accepted")
+	}
+
+	duplicate := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader("state=all&state=failed"))
+	duplicate.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, err := parseDashboardRequest(httptest.NewRecorder(), duplicate); err == nil {
+		t.Fatal("duplicate dashboard filter was accepted")
+	}
+}
+
+func TestDashboardFilterChipsRemoveOneFilterAndKeepValuesInPOSTFields(t *testing.T) {
+	t.Parallel()
+
+	filters := dashboardFilters{
+		FirewallID: 7,
+		Search:     "body-only-search",
+		User:       "body-only-operator",
+		Source:     "branch-source.example.test",
+		State:      deliveryStateRetry,
+		Page:       4,
+	}
+	chips := dashboardActiveFilterChips(filters)
+	var source dashboardFilterChip
+	for _, chip := range chips {
+		if chip.Label == "Source" {
+			source = chip
+			break
+		}
+	}
+	if source.Label == "" {
+		t.Fatal("source filter chip missing")
+	}
+	fields := make(map[string]string, len(source.Fields))
+	for _, field := range source.Fields {
+		fields[field.Name] = field.Value
+	}
+	if _, exists := fields["source"]; exists {
+		t.Fatalf("source chip retained the removed filter: %+v", source.Fields)
+	}
+	if fields["q"] != "body-only-search" || fields["user"] != "body-only-operator" ||
+		fields["firewall"] != "7" || fields["state"] != deliveryStateRetry {
+		t.Fatalf("source chip did not retain the other filters: %+v", source.Fields)
+	}
+	if _, exists := fields["page"]; exists {
+		t.Fatalf("filter removal retained stale pagination: %+v", source.Fields)
 	}
 }
 
@@ -1031,7 +1118,8 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 		pageBase:    testDashboardPageBase(`<img src=x onerror=alert(1)>`),
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/fgt-conftail/?user=script", nil)
+	request := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader("user=script"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	extension.dashboard(response, request)
 
@@ -1047,9 +1135,9 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 			t.Fatalf("read-only page contains unsafe or mutating content %q", unsafe)
 		}
 	}
-	if strings.Count(body, `method="post"`) != 2 ||
-		!strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) {
-		t.Fatal("page contains a state-changing form outside the shared language and logout controls")
+	if !strings.Contains(body, `class="language-form"`) || !strings.Contains(body, `class="logout-form"`) ||
+		!strings.Contains(body, `class="ct-filter"`) {
+		t.Fatal("page does not contain the shared controls and POST filter form")
 	}
 	for _, escaped := range []string{"&lt;script&gt;", "&lt;img src=x"} {
 		if !strings.Contains(body, escaped) {
@@ -1058,9 +1146,11 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 	}
 
 	post := httptest.NewRecorder()
-	extension.dashboard(post, httptest.NewRequest(http.MethodPost, "/fgt-conftail/", bytes.NewReader(nil)))
-	if post.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST status = %d, want 405", post.Code)
+	postRequest := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader("state=all"))
+	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	extension.dashboard(post, postRequest)
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200", post.Code)
 	}
 }
 
@@ -1079,11 +1169,10 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 		currentUser: func(*http.Request) string { return "operator" },
 		pageBase:    testDashboardPageBase("operator"),
 	}
-	request := httptest.NewRequest(
-		http.MethodGet,
-		"/?firewall=7&q=urgent+vpn&user=alice&source=branch&device=FGT&serial=FG100&action=SensitiveAction&transaction=SensitiveTransaction&log_id=SensitiveLogID&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
-		nil,
-	)
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		"firewall=7&q=urgent+vpn&user=alice&source=branch&device=FGT&serial=FG100&action=SensitiveAction&transaction=SensitiveTransaction&log_id=SensitiveLogID&state=all&from=2026-09-01T09%3A00Z&to=2026-09-01T10%3A00Z",
+	))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	extension.dashboard(response, request)
 	if response.Code != http.StatusOK {
@@ -1094,8 +1183,7 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 	for _, want := range []string{
 		`"msg":"conftail dashboard queried"`,
 		`"code":"CT-UI-003"`,
-		`"actor":"operator"`,
-		`"firewall_id":7`,
+		`"outcome":"success"`,
 		`"search_filter_set":true`,
 		`"user_filter_set":true`,
 		`"source_filter_set":true`,
@@ -1104,18 +1192,44 @@ func TestDashboardHandlerLogsSuccessfulQueries(t *testing.T) {
 		`"action_filter_set":true`,
 		`"transaction_filter_set":true`,
 		`"log_id_filter_set":true`,
-		`"state":"all"`,
-		`"from":"2026-09-01T09:00:00Z"`,
-		`"to":"2026-09-01T10:00:00Z"`,
+		`"firewall_filter_set":true`,
+		`"state_filter_set":false`,
+		`"from_filter_set":true`,
+		`"to_filter_set":true`,
 		`"page":1`,
+		`"active_rows":0`,
+		`"history_rows":0`,
+		`"duration_ms":`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("ConfTail dashboard log does not contain %q:\n%s", want, logs)
 		}
 	}
-	for _, unsafe := range []string{"urgent", "vpn", "SensitiveAction", "SensitiveTransaction", "SensitiveLogID"} {
+	for _, unsafe := range []string{"urgent", "vpn", "alice", "branch", "FGT", "FG100", "SensitiveAction", "SensitiveTransaction", "SensitiveLogID", "operator"} {
 		if strings.Contains(logs, unsafe) {
 			t.Fatalf("dashboard log contains filter value %q: %s", unsafe, logs)
+		}
+	}
+}
+
+func TestDashboardHandlerDoesNotLogRejectedFilterValues(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "never-log-this-filter-value"
+	var output bytes.Buffer
+	extension := &Extension{logger: slog.New(slog.NewJSONHandler(&output, nil))}
+	response := httptest.NewRecorder()
+	extension.dashboard(response, httptest.NewRequest(http.MethodGet, "/?q="+sentinel, nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.Code)
+	}
+	logs := output.String()
+	if strings.Contains(logs, sentinel) {
+		t.Fatalf("rejected filter leaked into application log: %s", logs)
+	}
+	for _, want := range []string{`"outcome":"invalid"`, `"duration_ms":`} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("rejected query log does not contain %q: %s", want, logs)
 		}
 	}
 }

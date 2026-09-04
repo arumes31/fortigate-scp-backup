@@ -554,6 +554,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		"combined":"config system sdwan\n    config service\n        edit 1\n        next\n    end\nend"
 	}`))
 	mux.HandleFunc("GET /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
+	mux.HandleFunc("POST /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
 	mux.HandleFunc("GET /fgt-conftail/status", jsonResponse(`{"running":false,"signature":"fixture"}`))
 	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", renderShared(templates.confTailChain, uxConfTailChainFixture))
 	mux.HandleFunc("POST /fgt-conftail/ignore-rules", func(w http.ResponseWriter, r *http.Request) {
@@ -659,12 +660,24 @@ func uxConfConvFixture(scenario uxScenario) any {
 }
 
 func uxConfTailFixture(scenario uxScenario) any {
-	health := map[string]any{"State": "healthy", "Label": "Healthy", "Detail": "Synthetic fixture data"}
+	health := map[string]any{
+		"State": "healthy", "Label": "Healthy", "Detail": "Synthetic fixture data",
+		"Evidence": "1 page / 6 fetched / 6 inserted", "CheckedAt": uxFixtureNow,
+	}
 	if scenario == uxScenarioWarning {
-		health = map[string]any{"State": "warning", "Label": "Warning", "Detail": "Synthetic delayed poll", "Action": "Review collector"}
+		health = map[string]any{
+			"State": "warning", "Label": "Warning", "Detail": "Synthetic delayed poll",
+			"Evidence": "1 page / 6 fetched / 6 inserted", "CheckedAt": uxFixtureNow,
+			"Action": "Review collector",
+		}
 	}
 	if scenario == uxScenarioError {
-		health = map[string]any{"State": "failed", "Label": "Failed", "Detail": "Synthetic Graylog failure", "Action": "Retry poll"}
+		health = map[string]any{
+			"State": "failed", "Label": "Failed",
+			"Detail":   "Synthetic Graylog failure: an intentionally long unbroken diagnostic-value-that-must-wrap-without-expanding-the-health-card-beyond-the-desktop-content-region",
+			"Evidence": "0 pages / 0 fetched / 0 inserted", "CheckedAt": uxFixtureNow,
+			"Action": "Retry poll",
+		}
 	}
 	return map[string]any{
 		"Base": uxBase("Configuration Change Tail", "conftail"), "Health": health, "SessionHealth": health, "DeliveryHealth": health,
@@ -674,6 +687,19 @@ func uxConfTailFixture(scenario uxScenario) any {
 			"History": []any{}, "HistoryTotal": 0, "TotalPages": 1,
 		},
 		"Filters": map[string]any{"State": "all", "Page": 1}, "NextPollRun": uxFixtureNow.Add(time.Minute),
+		"ActiveFilters": []any{map[string]any{
+			"Label": "Source", "Value": "branch-source.example.test",
+			"Fields": []any{
+				map[string]any{"Name": "firewall", "Value": "7"},
+				map[string]any{"Name": "user", "Value": "body-only-operator"},
+			},
+		}},
+		"HasNext": true,
+		"NextFields": []any{
+			map[string]any{"Name": "firewall", "Value": "7"},
+			map[string]any{"Name": "user", "Value": "body-only-operator"},
+			map[string]any{"Name": "page", "Value": "2"},
+		},
 		"PollRunning": scenario == uxScenarioLoading, "PollSignature": "fixture", "CoverageEnabled": true,
 		"Coverage": []any{}, "Firewalls": []any{}, "Warnings": []string{},
 		"IgnoreRules": []any{map[string]any{
@@ -1441,6 +1467,7 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "Config Converter summary", method: http.MethodGet, path: "/fgt-confconv/config_summary?fw_id=7", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "Config Converter convert", method: http.MethodPost, path: "/fgt-confconv/convert", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfTail", method: http.MethodGet, path: "/fgt-conftail/", wantStatus: http.StatusOK, contentType: "text/html"},
+		{name: "ConfTail filtered", method: http.MethodPost, path: "/fgt-conftail/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfTail status", method: http.MethodGet, path: "/fgt-conftail/status", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfTail chain", method: http.MethodGet, path: "/fgt-conftail/chain/fixture-chain", wantStatus: http.StatusOK, contentType: "text/html"},
 	}

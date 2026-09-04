@@ -107,6 +107,188 @@
     });
     applyTimeMode();
 
+    const filterForm = root.querySelector("[data-ct-filter-form]");
+    const viewNameInput = root.querySelector("[data-ct-view-name]");
+    const viewSelect = root.querySelector("[data-ct-view-select]");
+    const viewSave = root.querySelector("[data-ct-view-save]");
+    const viewLoad = root.querySelector("[data-ct-view-load]");
+    const viewDelete = root.querySelector("[data-ct-view-delete]");
+    const viewFeedback = root.querySelector("[data-ct-view-feedback]");
+    if (filterForm && viewNameInput && viewSelect && viewSave && viewLoad && viewDelete && viewFeedback) {
+        const viewStorageKey = "fortisafe.conftail.views.v2";
+        const legacyViewStorageKey = "fortisafe.conftail.views.v1";
+        const maxViews = 10;
+        const allowedStates = new Set(["all", "active", "sealed", "pending", "retry", "failed", "accepted"]);
+        const storedFilterNames = ["firewall", "user", "source", "device", "serial", "action", "transaction", "log_id", "state", "from", "to"];
+        const advancedFilterNames = new Set(["source", "device", "serial", "action", "transaction", "log_id"]);
+        let views = [];
+
+        const validPlainText = (value, maximum) => typeof value === "string" && value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value);
+        const sanitizeFilters = (candidate) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return {};
+            const sanitized = {};
+            storedFilterNames.forEach((name) => {
+                const raw = candidate[name];
+                if (typeof raw !== "string" || raw === "") return;
+                if (name === "firewall") {
+                    const firewallID = Number(raw);
+                    if (/^[1-9]\d{0,9}$/.test(raw) && Number.isSafeInteger(firewallID) && firewallID <= 2147483647) {
+                        sanitized[name] = raw;
+                    }
+                    return;
+                }
+                if (name === "state") {
+                    if (allowedStates.has(raw)) sanitized[name] = raw;
+                    return;
+                }
+                if (name === "from" || name === "to") {
+                    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw)) sanitized[name] = raw;
+                    return;
+                }
+                if (validPlainText(raw, 512)) sanitized[name] = raw;
+            });
+            return sanitized;
+        };
+        const sanitizeView = (candidate, fallbackName = "") => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+            const rawName = typeof candidate.name === "string" ? candidate.name.trim() : fallbackName.trim();
+            if (!rawName || !validPlainText(rawName, 48)) return null;
+            return { name: rawName, filters: sanitizeFilters(candidate.filters || candidate) };
+        };
+        const normalizeStoredViews = (candidate) => {
+            let list = [];
+            if (Array.isArray(candidate)) {
+                list = candidate;
+            } else if (candidate && typeof candidate === "object" && Array.isArray(candidate.views)) {
+                list = candidate.views;
+            } else if (candidate && typeof candidate === "object") {
+                list = Object.entries(candidate).map(([name, filters]) => ({ name, filters }));
+            }
+            const seen = new Set();
+            const clean = [];
+            list.forEach((candidateView) => {
+                const view = sanitizeView(candidateView);
+                if (!view) return;
+                const key = view.name.toLocaleLowerCase();
+                if (seen.has(key) || clean.length >= maxViews) return;
+                seen.add(key);
+                clean.push(view);
+            });
+            return clean;
+        };
+        const persistViews = () => {
+            try {
+                window.localStorage.setItem(viewStorageKey, JSON.stringify({ version: 2, views }));
+            } catch (_) {
+                viewFeedback.dataset.state = "error";
+                viewFeedback.textContent = "Local views could not be saved in this browser.";
+                return false;
+            }
+            return true;
+        };
+        const readViews = () => {
+            let parsed = null;
+            let current = null;
+            let legacy = null;
+            try {
+                current = window.localStorage.getItem(viewStorageKey);
+                legacy = window.localStorage.getItem(legacyViewStorageKey);
+                if (current) {
+                    try {
+                        parsed = JSON.parse(current);
+                    } catch (_) {
+                        parsed = legacy ? JSON.parse(legacy) : null;
+                    }
+                } else if (legacy) {
+                    parsed = JSON.parse(legacy);
+                }
+            } catch (_) {
+                parsed = null;
+            }
+            views = normalizeStoredViews(parsed);
+            if (current || legacy) {
+                persistViews();
+                try { window.localStorage.removeItem(legacyViewStorageKey); } catch (_) { /* storage unavailable */ }
+            }
+        };
+        const renderViews = (selectedName = "") => {
+            viewSelect.replaceChildren();
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = views.length ? "Select a saved view" : "No saved views";
+            viewSelect.appendChild(placeholder);
+            views.forEach((view) => {
+                const option = document.createElement("option");
+                option.value = view.name;
+                option.textContent = view.name;
+                option.selected = view.name === selectedName;
+                viewSelect.appendChild(option);
+            });
+            const selected = Boolean(viewSelect.value);
+            viewLoad.disabled = !selected;
+            viewDelete.disabled = !selected;
+        };
+        const currentStoredFilters = () => {
+            const filters = {};
+            storedFilterNames.forEach((name) => {
+                const control = filterForm.elements.namedItem(name);
+                const value = control && typeof control.value === "string" ? control.value.trim() : "";
+                if (value) filters[name] = value;
+            });
+            return sanitizeFilters(filters);
+        };
+        const applyView = (view) => {
+            ["q", ...storedFilterNames].forEach((name) => {
+                const control = filterForm.elements.namedItem(name);
+                if (control && typeof control.value === "string") control.value = view.filters[name] || "";
+            });
+            const state = filterForm.elements.namedItem("state");
+            if (state && !state.value) state.value = "all";
+            const advanced = root.querySelector(".ct-advanced-filters");
+            if (advanced) advanced.open = [...advancedFilterNames].some((name) => Boolean(view.filters[name]));
+            filterForm.requestSubmit();
+        };
+
+        readViews();
+        renderViews();
+        viewSelect.addEventListener("change", () => renderViews(viewSelect.value));
+        viewSave.addEventListener("click", () => {
+            const name = viewNameInput.value.trim();
+            if (!name || !validPlainText(name, 48)) {
+                viewFeedback.dataset.state = "error";
+                viewFeedback.textContent = "Enter a view name using at most 48 printable characters.";
+                viewNameInput.focus();
+                return;
+            }
+            const existing = views.findIndex((view) => view.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+            if (existing < 0 && views.length >= maxViews) {
+                viewFeedback.dataset.state = "error";
+                viewFeedback.textContent = "Delete a local view before saving another; the limit is 10.";
+                return;
+            }
+            const view = { name, filters: currentStoredFilters() };
+            if (existing >= 0) views[existing] = view;
+            else views.push(view);
+            if (!persistViews()) return;
+            renderViews(name);
+            viewFeedback.dataset.state = "success";
+            viewFeedback.textContent = `Saved local view “${name}”. Event-text search was not stored.`;
+        });
+        viewLoad.addEventListener("click", () => {
+            const view = views.find((candidate) => candidate.name === viewSelect.value);
+            if (view) applyView(view);
+        });
+        viewDelete.addEventListener("click", () => {
+            const name = viewSelect.value;
+            if (!name) return;
+            views = views.filter((view) => view.name !== name);
+            if (!persistViews()) return;
+            renderViews();
+            viewFeedback.dataset.state = "success";
+            viewFeedback.textContent = `Deleted local view “${name}”.`;
+        });
+    }
+
     const storageKey = "fortisafe.conftail.columns.v1";
     let preferences = {};
     try {
