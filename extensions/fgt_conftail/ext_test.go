@@ -163,6 +163,23 @@ func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *te
 			chainResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
+	exportResponse := httptest.NewRecorder()
+	router.ServeHTTP(
+		exportResponse,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/chain/11111111-2222-3333-4444-555555555555/export/json",
+			nil,
+		),
+	)
+	if exportResponse.Code != http.StatusNotFound ||
+		exportResponse.Header().Get("X-Test-Authenticated") != "yes" {
+		t.Fatalf(
+			"authenticated GET /chain/{id}/export/json = %d/header %q, want 404/auth marker",
+			exportResponse.Code,
+			exportResponse.Header().Get("X-Test-Authenticated"),
+		)
+	}
 	ignoreRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/ignore-rules",

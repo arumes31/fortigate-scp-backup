@@ -584,6 +584,21 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 			http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
 		}
 	})
+	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}/export/{format}", func(w http.ResponseWriter, r *http.Request) {
+		format := r.PathValue("format")
+		if format != "json" && format != "csv" {
+			http.Error(w, "invalid export format", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="fortisafe-conftail-fixture-chain.`+format+`"`)
+		if format == "json" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = io.WriteString(w, `{"schema_version":1,"session":{"id":"fixture-chain","exported_count":0},"events":[]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		_, _ = io.WriteString(w, "sequence,event_id,event_at\r\n")
+	})
 	mux.HandleFunc("POST /fgt-conftail/ignore-rules", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/fgt-conftail/?ignore=created#ct-global-ignores", http.StatusSeeOther)
 	})
@@ -1616,6 +1631,8 @@ func TestUXFixtureExtensionRouteInventory(t *testing.T) {
 		{name: "ConfTail filtered", method: http.MethodPost, path: "/fgt-conftail/", wantStatus: http.StatusOK, contentType: "text/html"},
 		{name: "ConfTail status", method: http.MethodGet, path: "/fgt-conftail/status", wantStatus: http.StatusOK, contentType: "application/json"},
 		{name: "ConfTail chain", method: http.MethodGet, path: "/fgt-conftail/chain/fixture-chain", wantStatus: http.StatusOK, contentType: "text/html"},
+		{name: "ConfTail JSON export", method: http.MethodGet, path: "/fgt-conftail/chain/fixture-chain/export/json", wantStatus: http.StatusOK, contentType: "application/json"},
+		{name: "ConfTail CSV export", method: http.MethodGet, path: "/fgt-conftail/chain/fixture-chain/export/csv", wantStatus: http.StatusOK, contentType: "text/csv"},
 	}
 	testUXFixtureRoutes(t, routes)
 }

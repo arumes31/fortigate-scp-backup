@@ -7,7 +7,11 @@
         <a class="ct-back" href="/fgt-conftail/">← Back to configuration change sessions</a>
         <div class="ct-page-heading">
             <h1 class="page-title"><span class="accent-bar"></span>Complete Redacted Timeline</h1>
-            <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
+            <div class="ct-page-actions">
+                <a class="btn btn-sm" href="/fgt-conftail/chain/{{.Chain.ID}}/export/json" download>Export JSON</a>
+                <a class="btn btn-sm" href="/fgt-conftail/chain/{{.Chain.ID}}/export/csv" download>Export CSV</a>
+                <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
+            </div>
         </div>
 
         <div class="ct-session-overview">
@@ -27,6 +31,7 @@
                     <div><span class="ct-label">VDOMs</span><strong class="no-caps">{{if .Chain.VDOMs}}{{range $index, $vdom := .Chain.VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .Chain.VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</strong></div>
                 </div>
                 <p class="ct-session-id"><span class="ct-label">Session ID</span> <code>{{.Chain.ID}}</code></p>
+                <p class="ct-export-note">Exports use the complete stored redacted timeline in canonical order. Limit: 10,000 rows, 16 MiB, 15 seconds.</p>
             </section>
 
             <section class="card ct-delivery-facts ct-health-{{.Delivery.State}}" aria-labelledby="ct-delivery-facts-title">

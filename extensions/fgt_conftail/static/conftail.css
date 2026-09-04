@@ -9,6 +9,15 @@
     min-width: 0;
 }
 
+.conftail-page .ct-page-actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
 .conftail-page .ct-page-heading + .ct-intro {
     margin-top: 0;
 }
@@ -438,6 +447,12 @@
     font-size: 10px;
     margin: 16px 0 0;
     padding-top: 12px;
+}
+
+.conftail-page .ct-export-note {
+    color: var(--text-muted);
+    font-size: 10px;
+    margin: 8px 0 0;
 }
 
 .conftail-page .ct-delivery-detail {

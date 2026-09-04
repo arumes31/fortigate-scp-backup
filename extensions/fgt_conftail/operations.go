@@ -30,6 +30,7 @@ const (
 	codeSessionQueried          diagnosticCode = "CT-UI-004"
 	codeGlobalIgnoreChanged     diagnosticCode = "CT-UI-005"
 	codeGlobalIgnoreFailed      diagnosticCode = "CT-UI-006"
+	codeSessionExported         diagnosticCode = "CT-UI-007"
 )
 
 func (c diagnosticCode) String() string {

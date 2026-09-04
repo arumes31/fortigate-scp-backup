@@ -58,6 +58,7 @@ type Extension struct {
 	logActivity   func(username, action, details string)
 	pageBase      extension.PageBaseProvider
 	catalogLoader func(context.Context) (sourceCatalog, error)
+	exportLimits  sessionExportLimits
 
 	catalogMu            sync.RWMutex
 	catalog              sourceCatalog
@@ -179,6 +180,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 		protected.Post("/", e.dashboard)
 		protected.Get("/status", e.dashboardStatus)
 		protected.Get("/chain/{chainID}", e.dashboardChain)
+		protected.Get("/chain/{chainID}/export/{format}", e.exportSession)
 		protected.Post("/ignore-rules", e.createGlobalIgnoreRule)
 		protected.Post("/ignore-rules/{ruleID}/toggle", e.toggleGlobalIgnoreRule)
 		protected.Post("/ignore-rules/{ruleID}/delete", e.deleteGlobalIgnoreRule)

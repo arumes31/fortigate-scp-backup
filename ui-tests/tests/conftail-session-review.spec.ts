@@ -70,3 +70,15 @@ test('ConfTail grouping is a stable projection over canonical paginated events',
   const horizontalOverflow = await page.locator('main').evaluate(element => element.scrollWidth > element.clientWidth);
   expect(horizontalOverflow).toBe(false);
 });
+
+test('ConfTail session offers complete JSON and CSV downloads', async ({ page }) => {
+  await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
+  await expect(page.getByText('Limit: 10,000 rows, 16 MiB, 15 seconds.')).toBeVisible();
+
+  for (const format of ['JSON', 'CSV']) {
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('link', { name: `Export ${format}` }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe(`fortisafe-conftail-fixture-chain.${format.toLowerCase()}`);
+  }
+});
