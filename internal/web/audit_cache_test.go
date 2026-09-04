@@ -527,6 +527,22 @@ func TestTopologyPageRenders(t *testing.T) {
 	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, "topology.js") {
 		t.Error("topology page missing expected content")
 	}
+	for _, want := range []string{
+		`<link rel="stylesheet" href="/static/topology.css">`,
+		`<script src="/static/topology-page.js"></script>`,
+		`id="topologyPage"`, `id="topologyViewControls"`, `id="topologyDataControls"`,
+		`id="topologyLegend"`, `id="topologyShareDialog"`, `id="topoDebugDialog"`,
+		`data-topology-filter="devices"`, `data-topology-action="maximize"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("topology page missing accessible control %q", want)
+		}
+	}
+	for _, forbidden := range []string{" onclick=", " onchange=", " oninput=", " onkeydown=", " style="} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("topology page still contains inline presentation/behavior %q", forbidden)
+		}
+	}
 }
 
 func TestSharedRoutesArePublic(t *testing.T) {

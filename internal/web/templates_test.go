@@ -348,3 +348,24 @@ func TestTopologyNestsPinnedAPsUnderWiredPorts(t *testing.T) {
 		t.Error("pinned APs are still switch-level siblings instead of port children")
 	}
 }
+
+func TestTopologyGeneratedControlsUseDelegatedListeners(t *testing.T) {
+	blob, err := staticFS.ReadFile("static/topology.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(blob)
+	for _, forbidden := range []string{"onclick=", "onmouseover=", "onmouseout="} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("topology script still generates an inline handler %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		`data-port-diag`, `data-debug-entry`,
+		`faceBody.addEventListener("click"`, `topoDebugBody.addEventListener("click"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("topology script missing delegated-control behavior %q", want)
+		}
+	}
+}

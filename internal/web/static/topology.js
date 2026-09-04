@@ -20,6 +20,10 @@ let topoMultiMac = [];  // ports with several MACs behind them (extension-comput
 let topoEdges = [];     // switch-edge observations (STP trunk names + LAG legs) from the extension
 let topoFaceData = null;      // nodeData of the open faceplate (re-render on filter change)
 let topoFaceVlanFilter = null;// active VLAN highlight filter on the faceplate (legend click)
+let topoFaceOpener = null;    // restores keyboard focus when the faceplate closes
+let topoFacePorts = [];
+let topoFaceVPNPorts = [];
+let topoFaceBundles = [];
 let topoMultiMacIdx = {};  // "switchDisplayName|port" → mac count
 let topoVpn = [];       // VPN tunnel up/down states from the extension
 let topoVpnIdx = {};    // tunnel name → { status, remip, type }
@@ -232,6 +236,21 @@ function vlanColor(vlan) {
     let h = 0;
     for (let i = 0; i < vlan.length; i++) h = (h * 31 + vlan.charCodeAt(i)) >>> 0;
     return `hsl(${(h * 137.508) % 360}, 55%, 58%)`;
+}
+
+function vlanTone(vlan) {
+    if (!vlan) return 0;
+    let hash = 0;
+    for (let i = 0; i < vlan.length; i++) hash = (hash * 31 + vlan.charCodeAt(i)) >>> 0;
+    return hash % 12;
+}
+
+function facePortStateClass(port) {
+    if (port.isDown || port.liveDown) return " is-down";
+    if (port.isInterlink || port.isWan) return " is-wan";
+    if (port.isFortilink) return " is-fortilink";
+    if (port.hasIP) return " has-ip";
+    return "";
 }
 
 // groupColor hashes a switch-group name to a stable colour, deeper and more
@@ -1129,11 +1148,24 @@ function renderTree(data) {
 
         const nodeEnter = node.enter().append("g")
             .attr("class", "node")
+            .attr("role", "button")
+            .attr("tabindex", 0)
+            .attr("aria-label", d => d.data.name || d.data.kind)
             .attr("transform", `translate(${source.y0 || 60},${source.x0 || 0})`)
             .style("cursor", "pointer")
             .on("click", (ev, d) => {
                 if (d.data.kind === "firewall" || d.data.kind === "switch") {
-                    showFaceplate(d.data);
+                    showFaceplate(d.data, ev.currentTarget);
+                    return;
+                }
+                d.children = d.children ? null : d._children;
+                update(d);
+            })
+            .on("keydown", (ev, d) => {
+                if (ev.key !== "Enter" && ev.key !== " ") return;
+                ev.preventDefault();
+                if (d.data.kind === "firewall" || d.data.kind === "switch") {
+                    showFaceplate(d.data, ev.currentTarget);
                     return;
                 }
                 d.children = d.children ? null : d._children;
@@ -1441,11 +1473,19 @@ function locateDeviceByMac(mac) { searchTopo(mac); }
 // ---------------------------------------------------------------------------
 // Context menu
 // ---------------------------------------------------------------------------
+let topoCtxItems = [];
 function hideCtxMenu() {
     const el = document.getElementById("topoCtx");
-    if (el) el.style.display = "none";
+    if (el) el.hidden = true;
 }
 document.addEventListener("click", hideCtxMenu);
+document.addEventListener("click", event => {
+    const action = event.target.closest(".topo-ctx-item[data-i]");
+    if (!action) return;
+    const item = topoCtxItems[Number(action.dataset.i)];
+    if (item) item.fn();
+    hideCtxMenu();
+});
 
 function showCtxMenu(ev, d) {
     const el = document.getElementById("topoCtx");
@@ -1468,17 +1508,13 @@ function showCtxMenu(ev, d) {
             if (topoUpdate) topoUpdate(d);
         });
     }
+    topoCtxItems = items;
     el.innerHTML = items.map((it, i) =>
-        `<div class="topo-ctx-item" data-i="${i}" style="padding: 6px 12px; cursor: pointer; white-space: nowrap;">${esc(it.label)}</div>`).join("");
-    el.querySelectorAll(".topo-ctx-item").forEach(node => {
-        node.addEventListener("click", () => { items[Number(node.getAttribute("data-i"))].fn(); hideCtxMenu(); });
-        node.addEventListener("mouseenter", () => node.style.background = "rgba(255,255,255,0.08)");
-        node.addEventListener("mouseleave", () => node.style.background = "");
-    });
+        `<button type="button" role="menuitem" class="topo-ctx-item" data-i="${i}">${esc(it.label)}</button>`).join("");
     const card = document.getElementById("topoSvg").parentElement.getBoundingClientRect();
     el.style.left = (ev.clientX - card.left + 4) + "px";
     el.style.top = (ev.clientY - card.top + 4) + "px";
-    el.style.display = "block";
+    el.hidden = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1489,8 +1525,8 @@ function renderDevicePanel() {
     const body = document.getElementById("devPanelBody");
     if (!panel || !body) return;
     const devices = (topoDevices || []).filter(d => !deviceHidden(d));
-    if (!devices.length) { panel.style.display = "none"; return; }
-    panel.style.display = "";
+    if (!devices.length) { panel.hidden = true; return; }
+    panel.hidden = false;
     const q = (document.getElementById("devFilter")?.value || "").trim().toLowerCase();
     const rows = devices.filter(d => !q ||
         [d.mac, d.ip, d.hostname, d.vlan, d.switch_id, d.port]
@@ -1501,22 +1537,28 @@ function renderDevicePanel() {
     // string literal (the browser decodes entities before the JS parser).
     body.innerHTML = rows.slice(0, 500).map(d => {
         const stale = isStaleDevice(d);
-        return `<div class="dev-row" data-mac="${esc(d.mac)}" style="display: flex; gap: 10px; padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 0.8em; ${stale ? "opacity: 0.5;" : ""}">
-            <span style="color: #a5f3fc; min-width: 130px; font-family: monospace;">${esc(d.mac)}</span>
-            <span style="min-width: 110px;">${esc(d.ip || "—")}</span>
-            <span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${esc(d.hostname || "—")}</span>
+        return `<div class="dev-row${stale ? " is-stale" : ""}" data-mac="${esc(d.mac)}" role="button" tabindex="0">
+            <span class="dev-row__mac">${esc(d.mac)}</span>
+            <span class="dev-row__ip">${esc(d.ip || "—")}</span>
+            <span class="dev-row__host">${esc(d.hostname || "—")}</span>
             ${sourceBadges(d.sources)}
             <span class="muted">VLAN ${esc(String(d.vlan || "—"))}</span>
             <span class="muted">${esc(d.switch_id || "")}${d.port ? " · " + esc(d.port) : ""}</span>
-            ${stale ? `<span style="color: #f59e0b;">⏱ ${tt("topo.stale")}</span>` : ""}
+            ${stale ? `<span class="dev-row__stale">⏱ ${tt("topo.stale")}</span>` : ""}
         </div>`;
     }).join("");
-    body.querySelectorAll(".dev-row").forEach(el => {
-        el.addEventListener("click", () => locateDeviceByMac(el.getAttribute("data-mac") || ""));
-        el.addEventListener("mouseenter", () => el.style.background = "rgba(255,255,255,0.05)");
-        el.addEventListener("mouseleave", () => el.style.background = "");
-    });
 }
+
+document.addEventListener("click", event => {
+    const row = event.target.closest(".dev-row[data-mac]");
+    if (row) locateDeviceByMac(row.dataset.mac || "");
+});
+document.addEventListener("keydown", event => {
+    const row = event.target.closest(".dev-row[data-mac]");
+    if (!row || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    locateDeviceByMac(row.dataset.mac || "");
+});
 
 function resetZoom() {
     if (!svg || !zoomBehavior) return;
@@ -1532,14 +1574,14 @@ function showTip(ev, title, body) {
     const tip = document.getElementById("topoTip");
     document.getElementById("topoTipTitle").textContent = title;
     document.getElementById("topoTipBody").textContent = body;
-    tip.style.display = "block";
+    tip.hidden = false;
     const card = document.getElementById("topoSvg").parentElement.getBoundingClientRect();
     let x = ev.clientX - card.left + 16, y = ev.clientY - card.top + 12;
     if (x + 330 > card.width) x -= 350;
     tip.style.left = x + "px";
     tip.style.top = y + "px";
 }
-function hideTip() { document.getElementById("topoTip").style.display = "none"; }
+function hideTip() { document.getElementById("topoTip").hidden = true; }
 
 // ---------------------------------------------------------------------------
 // Faceplate: auto-generated schematic front panel for firewall / switch.
@@ -1733,9 +1775,9 @@ function vlanColorLegend(ports) {
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     if (!names.length) return "";
     const vlanIdOf = n => ((topo && topo.interfaces) || []).find(i => i.name === n)?.vlan_id || 0;
-    return `<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.78em; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+    return `<div class="fp-vlan-legend">
         <span class="muted">${tt("topo.vlan_colors")}:</span>
-        ${names.map(n => `<span data-vlanchip="${esc(n)}" title="VLAN ${vlanIdOf(n) || "?"} · ${esc(n)}" style="cursor: pointer;${topoFaceVlanFilter === n ? " outline: 1px solid " + vlanColor(n) + "; outline-offset: 2px; border-radius: 2px;" : ""}"><span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${vlanColor(n)}; margin-right: 5px; vertical-align: -1px;"></span>${esc(n)}</span>`).join("")}
+        ${names.map(n => `<span class="fp-vlan-chip vlan-tone-${vlanTone(n)}${topoFaceVlanFilter === n ? " is-active" : ""}" data-vlanchip="${esc(n)}" title="VLAN ${vlanIdOf(n) || "?"} · ${esc(n)}"><span class="fp-vlan-swatch"></span>${esc(n)}</span>`).join("")}
     </div>`;
 }
 
@@ -1951,8 +1993,8 @@ function buildSwitchPanelHTML(sw, ports) {
         sfp.sort(byNum);
         html = switchFaceplateSVG(copper, sfp, title);
         if (lags.length) {
-            html += `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;">` +
-                lags.map(p => `<span class="fp-port" data-idx="${p._idx}" style="cursor: pointer; padding: 3px 10px; border: 1px solid ${portColor(p)}; border-radius: 12px; font-size: 0.75em; font-family: monospace;">⇆ ${esc(p.label)}</span>`).join("") +
+            html += `<div class="fp-lag-list">` +
+                lags.map(p => `<span class="fp-port fp-port-chip${facePortStateClass(p)}" data-idx="${p._idx}">⇆ ${esc(p.label)}</span>`).join("") +
                 `</div>`;
         }
     }
@@ -1967,7 +2009,7 @@ function fpPopoverEl() {
     if (!el) {
         el = document.createElement("div");
         el.id = "fpPopover";
-        el.style.cssText = "position:fixed;z-index:2000;display:none;max-width:340px;background:#12161d;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:6px 8px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.6);color:#d1d5db;";
+        el.hidden = true;
         el.addEventListener("mouseenter", () => clearTimeout(el._t));
         el.addEventListener("mouseleave", () => hideFpPopover());
         document.body.appendChild(el);
@@ -1978,7 +2020,7 @@ function hideFpPopover() {
     const el = document.getElementById("fpPopover");
     if (!el) return;
     clearTimeout(el._t);
-    el._t = setTimeout(() => { el.style.display = "none"; }, 200);
+    el._t = setTimeout(() => { el.hidden = true; }, 200);
 }
 function deviceIsStale(dv) {
     const t = Date.parse(String(dv.last_seen || "").replace(" ", "T"));
@@ -1992,18 +2034,15 @@ function showFpPopover(anchor, p) {
         const fp = [dv.osname, dv.devtype, dv.vendor].filter(Boolean).join(" · ");
         const stale = deviceIsStale(dv);
         // 802.1X identity (RADIUS user + group) from the live SSH mac_enrich join.
-        const dot1x = dv.dot1x_user ? `<br><span style="color:#7dd3fc;">🔒 ${esc(dv.dot1x_user)}${dv.dot1x_group ? " · " + esc(dv.dot1x_group) : ""}</span>` : "";
-        return `<div class="fp-devrow" data-mac="${esc(dv.mac)}" style="cursor:pointer;padding:4px 6px;border-radius:5px;${stale ? "opacity:.5;" : ""}" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background=''">
-            <span style="color:#fff;">${esc(dv.hostname || dv.ip || dv.mac)}</span> ${sourceBadges(dv.sources)}${stale ? ` <span style="color:#9ca3af;">· ${tt("topo.stale")}</span>` : ""}
-            <div style="color:#9ca3af;font-family:monospace;font-size:11px;">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}${dot1x}</div>
+        const dot1x = dv.dot1x_user ? `<br><span class="fp-devrow__identity">🔒 ${esc(dv.dot1x_user)}${dv.dot1x_group ? " · " + esc(dv.dot1x_group) : ""}</span>` : "";
+        return `<div class="fp-devrow${stale ? " is-stale" : ""}" data-mac="${esc(dv.mac)}" role="button" tabindex="0">
+            <span class="fp-devrow__title">${esc(dv.hostname || dv.ip || dv.mac)}</span> ${sourceBadges(dv.sources)}${stale ? ` <span class="muted">· ${tt("topo.stale")}</span>` : ""}
+            <div class="fp-devrow__meta">${esc(dv.mac)}${dv.ip ? " · " + esc(dv.ip) : ""}${fp ? "<br>" + esc(fp) : ""}${dot1x}</div>
         </div>`;
     }).join("");
-    el.innerHTML = `<div style="color:#9ca3af;margin:2px 4px 4px;">${tt("topo.port_devices")} — ${esc(p.label)} (${p.devices.length})</div>` + rows;
-    el.querySelectorAll(".fp-devrow").forEach(r => r.addEventListener("click", () => {
-        locateDeviceByMac(r.getAttribute("data-mac"));
-    }));
+    el.innerHTML = `<div class="fp-popover-title">${tt("topo.port_devices")} — ${esc(p.label)} (${p.devices.length})</div>` + rows;
     const rect = anchor.getBoundingClientRect();
-    el.style.display = "block";
+    el.hidden = false;
     el.style.left = Math.max(8, Math.min(window.innerWidth - 356, rect.left)) + "px";
     el.style.top = (rect.bottom + 8) + "px";
 }
@@ -2013,14 +2052,14 @@ function showFpPopover(anchor, p) {
 // 802.1X), C = config. Both G and S present = discovered in multiple sources.
 function sourceBadges(sources) {
     const map = {
-        graylog: { l: "G", c: "#f59e0b", t: tt("topo.src_graylog") },
-        ssh:     { l: "S", c: "#22d3ee", t: tt("topo.src_ssh") },
-        config:  { l: "C", c: "#34d399", t: tt("topo.src_config") },
+        graylog: { l: "G", c: "graylog", t: tt("topo.src_graylog") },
+        ssh:     { l: "S", c: "ssh", t: tt("topo.src_ssh") },
+        config:  { l: "C", c: "config", t: tt("topo.src_config") },
     };
     const chips = (sources || []).map(s => map[s]).filter(Boolean);
     if (!chips.length) return "";
-    return `<span style="display:inline-flex; gap:2px; vertical-align:middle;">` + chips.map(m =>
-        `<span title="${m.t}" style="min-width:11px; text-align:center; font-size:0.64em; font-weight:bold; line-height:1.5; padding:0 2px; border-radius:2px; background:${m.c}22; color:${m.c}; border:1px solid ${m.c}66; font-family:monospace;">${m.l}</span>`
+    return `<span class="source-badges">` + chips.map(m =>
+        `<span class="source-badge source-badge--${m.c}" title="${esc(m.t)}">${m.l}</span>`
     ).join("") + `</span>`;
 }
 
@@ -2033,12 +2072,12 @@ function portDetailHTML(p) {
     const nameOk = s => /^[A-Za-z0-9._-]+$/.test(s || "");
     const canDiag = p._sw && cfg.devicesBase && !cfg.sharedDevicesUrl && nameOk(p._sw) && nameOk(p.label);
     const diagBtn = canDiag
-        ? `<button onclick="runPortDiag(this, '${p._sw}', '${p.label}')" style="margin-top: 10px; background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.35); border-radius: 4px; cursor: pointer; padding: 4px 10px; font-size: 0.85em;">⚡ ${tt("topo.run_diag")}</button>
+        ? `<button type="button" class="btn btn-small topology-port-diag" data-port-diag data-switch="${esc(p._sw)}" data-port="${esc(p.label)}">⚡ ${tt("topo.run_diag")}</button>
            <div class="port-diag-out"></div>`
         : "";
-    return `<div style="margin-top: 14px; padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; font-size: 0.85em;">
-        <strong style="color: #fff;">${esc(p.label)}</strong>
-        <pre class="muted" style="margin: 6px 0 0; white-space: pre-wrap; font-size: 0.95em;">${esc(p.detail)}</pre>
+    return `<div class="topology-port-detail">
+        <strong>${esc(p.label)}</strong>
+        <pre class="muted">${esc(p.detail)}</pre>
         ${diagBtn}
     </div>`;
 }
@@ -2061,7 +2100,7 @@ async function runPortDiag(btn, sw, port) {
         const resp = await fetch(url, { method: "POST" });
         if (resp.status === 429) {
             debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), null);
-            if (out) out.innerHTML = `<div style="color:#f59e0b; margin-top:8px; font-size:0.82em;">${tt("topo.diag_busy")}</div>`;
+            if (out) out.innerHTML = `<div class="is-warning">${tt("topo.diag_busy")}</div>`;
             return;
         }
         if (!resp.ok) {
@@ -2072,7 +2111,7 @@ async function runPortDiag(btn, sw, port) {
         debugRecord(tt("topo.debug_portdiag"), "POST", url, resp.status, Math.round(performance.now() - t0), pd);
         if (out) out.innerHTML = renderPortDiag(pd);
     } catch (e) {
-        if (out) out.innerHTML = `<div style="color:#ef4444; margin-top:8px; font-size:0.82em;">${tt("topo.diag_error")}</div>`;
+        if (out) out.innerHTML = `<div class="is-error">${tt("topo.diag_error")}</div>`;
     } finally {
         btn.disabled = false;
         btn.textContent = orig;
@@ -2081,12 +2120,12 @@ async function runPortDiag(btn, sw, port) {
 
 // renderPortDiag lays out the per-command sections of an on-demand port query.
 function renderPortDiag(pd) {
-    if (!pd || !pd.sections || !pd.sections.length) return `<div class="muted" style="margin-top:8px; font-size:0.82em;">${tt("topo.diag_none")}</div>`;
-    return `<div class="muted" style="font-size:0.78em; margin:8px 0 2px;">${tt("topo.diag_ran")}: ${esc(pd.ran || "")}</div>` +
+    if (!pd || !pd.sections || !pd.sections.length) return `<div class="muted">${tt("topo.diag_none")}</div>`;
+    return `<div class="muted topology-diag-meta">${tt("topo.diag_ran")}: ${esc(pd.ran || "")}</div>` +
         pd.sections.map(s => `
-            <div style="margin-top:6px;">
-                <div style="color:${s.ok ? "#7dd3fc" : "#f59e0b"}; font-size:0.8em; font-weight:bold;">${esc(s.title)}</div>
-                <pre style="margin:2px 0 0; white-space:pre-wrap; font-size:0.76em; background:rgba(0,0,0,0.35); padding:6px 8px; border-radius:4px; overflow-x:auto;">${esc(s.output || "—")}</pre>
+            <div class="topology-diag-section">
+                <div class="topology-diag-section__title${s.ok ? "" : " is-warning"}">${esc(s.title)}</div>
+                <pre>${esc(s.output || "—")}</pre>
             </div>`).join("");
 }
 
@@ -2118,7 +2157,6 @@ function buildFirewallVpnPorts(d) {
 // Cards carry _idx into the vpn port array for the click handler, which shows
 // tunnel detail in the shared detail area.
 function vpnPanelHTML(vpnPorts) {
-    const ledOf = s => s === "up" ? "#22c55e" : (s === "down" ? "#ef4444" : "#4b5563");
     const up = vpnPorts.filter(p => p.status === "up").length;
     const down = vpnPorts.filter(p => p.status === "down").length;
     const header = `<div style="display: flex; align-items: center; gap: 8px; margin: 16px 0 8px;">
@@ -2129,15 +2167,15 @@ function vpnPanelHTML(vpnPorts) {
         return header + `<p class="muted" style="font-size: 0.82em;">${tt("topo.vpn_none")}</p>`;
     }
     const cards = vpnPorts.map((p, i) => {
-        const led = ledOf(p.status);
         const statusTxt = p.status === "up" ? tt("topo.vpn_up") : (p.status === "down" ? tt("topo.vpn_down") : tt("topo.vpn_unknown"));
-        return `<div class="fp-vpn" data-idx="${i}" style="cursor: pointer; background: linear-gradient(180deg, #2a1215, #160a0c); border: 1px solid rgba(251,113,133,0.25); border-left: 3px solid ${led}; border-radius: 6px; padding: 7px 9px;${p.status === "down" ? " opacity: 0.55;" : ""}">
-            <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${led}; display: inline-block; flex: 0 0 auto;"></span>
-                <span style="color: #fff; font-size: 0.82em; font-family: monospace; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(p.label)}</span>
+        const statusClass = p.status === "up" ? " is-up" : (p.status === "down" ? " is-down" : " is-unknown");
+        return `<div class="fp-vpn${statusClass}" data-idx="${i}">
+            <div class="fp-card-title">
+                <span class="fp-status-led"></span>
+                <span class="fp-card-name">${esc(p.label)}</span>
             </div>
-            <div class="muted" style="font-size: 0.74em; margin-top: 3px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">→ ${esc(p.remGw || "—")}</div>
-            <div class="muted" style="font-size: 0.74em;">${esc(p.egress || "—")} · ${statusTxt}</div>
+            <div class="muted fp-card-route">→ ${esc(p.remGw || "—")}</div>
+            <div class="muted fp-card-meta">${esc(p.egress || "—")} · ${statusTxt}</div>
         </div>`;
     }).join("");
     return header + `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;">${cards}</div>`;
@@ -2192,13 +2230,13 @@ function fwIntfPort(i, wan, vlanCount, hbSet, parent) {
 // or a hardware switch (006) — with the glyph and accent used in the panel.
 function fwBundleKind(i) {
     const name = (i.name || "").toLowerCase();
-    if (i.fortilink || name.includes("fortilink")) return { label: "FortiLink", glyph: "⇅", color: "#10b981" };
+    if (i.fortilink || name.includes("fortilink")) return { label: "FortiLink", glyph: "⇅", color: "#10b981", tone: "fortilink" };
     switch (i.type || "") {
-        case "aggregate": return { label: "LACP aggregate", glyph: "⇉", color: "#38bdf8" };
-        case "redundant": return { label: "Redundant", glyph: "⇄", color: "#38bdf8" };
+        case "aggregate": return { label: "LACP aggregate", glyph: "⇉", color: "#38bdf8", tone: "network" };
+        case "redundant": return { label: "Redundant", glyph: "⇄", color: "#38bdf8", tone: "network" };
         case "hard-switch":
-        case "switch": return { label: "Hardware switch", glyph: "▤", color: "#a78bfa" };
-        default: return { label: "Bundle", glyph: "▦", color: "#94a3b8" };
+        case "switch": return { label: "Hardware switch", glyph: "▤", color: "#a78bfa", tone: "switch" };
+        default: return { label: "Bundle", glyph: "▦", color: "#94a3b8", tone: "neutral" };
     }
 }
 
@@ -2243,27 +2281,26 @@ function bundlePanelHTML(bundles) {
         <span class="muted" style="font-size: 0.78em;">${bundles.length}</span>
     </div>`;
     const cards = bundles.map((b, i) => {
-        const led = b.isDown ? "#ef4444" : "#22c55e";
         const chips = b.members.map(m => {
-            const mled = m.isDown ? "#ef4444" : "#22c55e";
-            return `<span style="display: inline-flex; align-items: center; gap: 4px; font-family: monospace; font-size: 0.72em; color: #cbd5e1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-left: 2px solid ${mled}; border-radius: 4px; padding: 2px 6px;${m.isDown ? " opacity: 0.55;" : ""}">${esc(m.name)}${m.isHb ? " ♥" : ""}</span>`;
+            return `<span class="fp-member${m.isDown ? " is-down" : ""}">${esc(m.name)}${m.isHb ? " ♥" : ""}</span>`;
         }).join("");
-        return `<div class="fp-bundle" data-idx="${i}" style="cursor: pointer; background: linear-gradient(180deg, #131a24, #0d131b); border: 1px solid rgba(255,255,255,0.1); border-left: 3px solid ${b.kind.color}; border-radius: 6px; padding: 8px 10px;${b.isDown ? " opacity: 0.6;" : ""}">
-            <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${led}; display: inline-block; flex: 0 0 auto;"></span>
-                <span style="color: #fff; font-size: 0.82em; font-family: monospace; font-weight: bold;">${b.kind.glyph} ${esc(b.label)}</span>
-                <span class="muted" style="font-size: 0.72em; margin-left: auto;">${esc(b.kind.label)}${b.ip ? " · " + esc(b.ip) : ""}</span>
+        return `<div class="fp-bundle fp-bundle--${b.kind.tone}${b.isDown ? " is-down" : ""}" data-idx="${i}">
+            <div class="fp-card-title">
+                <span class="fp-status-led"></span>
+                <span class="fp-card-name">${b.kind.glyph} ${esc(b.label)}</span>
+                <span class="muted fp-bundle-kind">${esc(b.kind.label)}${b.ip ? " · " + esc(b.ip) : ""}</span>
             </div>
-            <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px;">${chips}</div>
+            <div class="fp-member-list">${chips}</div>
         </div>`;
     }).join("");
     return header + `<div style="display: grid; gap: 8px;">${cards}</div>`;
 }
 
-function showFaceplate(nodeData) {
+function showFaceplate(nodeData, opener) {
     topoFaceNode = nodeData; // remember it so a filter toggle can re-render live
     const panel = document.getElementById("facePanel");
     const body = document.getElementById("faceBody");
+    if (opener) topoFaceOpener = opener;
     let ports = [], title = "", sub = "";
 
     if (nodeData.kind === "firewall") {
@@ -2358,62 +2395,119 @@ function showFaceplate(nodeData) {
     body.innerHTML = (panelHTML || vpnHTML || bundleHTML)
         ? (panelHTML || "") + legend + bundleHTML + vpnHTML + '<div id="facePortDetail"></div>'
         : `<p class="muted">${tt("topo.no_ports")}</p>`;
-
-    body.querySelectorAll(".fp-port").forEach(el => {
-        const p = ports[Number(el.getAttribute("data-idx"))];
-        el.addEventListener("click", () => {
-            document.getElementById("facePortDetail").innerHTML = portDetailHTML(p);
-        });
-        el.addEventListener("mouseenter", () => { el.style.opacity = "0.75"; showFpPopover(el, p); });
-        el.addEventListener("mouseleave", () => { el.style.opacity = "1"; hideFpPopover(); });
-    });
-    // VPN tunnel cards: click shows the tunnel's detail in the shared area.
-    body.querySelectorAll(".fp-vpn").forEach(el => {
-        const p = vpnPorts[Number(el.getAttribute("data-idx"))];
-        el.addEventListener("click", () => {
-            document.getElementById("facePortDetail").innerHTML = portDetailHTML(p);
-        });
-    });
-    // Interface-bundle cards: click shows the bundle detail (type + members).
-    body.querySelectorAll(".fp-bundle").forEach(el => {
-        const b = (nodeData._fwBundles || [])[Number(el.getAttribute("data-idx"))];
-        el.addEventListener("click", () => {
-            document.getElementById("facePortDetail").innerHTML = portDetailHTML({ label: b.label, detail: b.detail });
-        });
-    });
-    // Legend VLAN chips filter the panel; a second click clears the filter.
-    body.querySelectorAll("[data-vlanchip]").forEach(el => {
-        el.addEventListener("click", () => {
-            const v = el.getAttribute("data-vlanchip");
-            topoFaceVlanFilter = topoFaceVlanFilter === v ? null : v;
-            showFaceplate(topoFaceData);
-        });
+    body.querySelectorAll(".fp-port, .fp-vpn, .fp-bundle, [data-vlanchip]").forEach(control => {
+        control.setAttribute("role", "button");
+        control.setAttribute("tabindex", "0");
     });
 
+    topoFacePorts = ports;
+    topoFaceVPNPorts = vpnPorts;
+    topoFaceBundles = nodeData._fwBundles || [];
     topoFaceData = nodeData;
-    panel.style.width = topoFaceWide ? topoFaceWideWidth : "460px";
-    panel.style.right = "0";
+    if (panel.classList.contains("topology-faceplate")) {
+        panel.classList.toggle("is-wide", topoFaceWide);
+        panel.classList.add("is-open");
+    } else {
+        panel.style.width = topoFaceWide ? "920px" : "460px";
+        panel.style.right = "0";
+    }
+    panel.setAttribute("aria-hidden", "false");
+    panel.inert = false;
+    if (opener) {
+        const closeButton = panel.querySelector('[data-face-action="close"]');
+        // Move focus after the activating key/click finishes; otherwise an
+        // Enter keyup can be delivered to the newly focused close button.
+        setTimeout(() => {
+            if (closeButton) closeButton.focus();
+            else panel.focus();
+        }, 0);
+    }
 }
-// topoFaceWide widens the slide-in panel; the faceplate SVG is width:100%, so a
-// wider panel renders a larger front panel. max-width:90% (inline) keeps it on
-// screen, so a fixed wide width is safe on small viewports too.
+// topoFaceWide widens the slide-in panel; CSS keeps it on-screen.
 let topoFaceWide = false;
-const topoFaceWideWidth = "920px";
 function toggleFacePanelWidth() {
     topoFaceWide = !topoFaceWide;
     const panel = document.getElementById("facePanel");
-    panel.style.width = topoFaceWide ? topoFaceWideWidth : "460px";
-    panel.style.right = "0"; // keep it open while resizing
+    if (panel.classList.contains("topology-faceplate")) {
+        panel.classList.toggle("is-wide", topoFaceWide);
+        panel.classList.add("is-open");
+    } else {
+        panel.style.width = topoFaceWide ? "920px" : "460px";
+        panel.style.right = "0";
+    }
     const btn = document.getElementById("faceWidthBtn");
-    if (btn) btn.textContent = topoFaceWide ? "⤡" : "⤢";
+    if (btn) {
+        btn.textContent = topoFaceWide ? "⤡" : "⤢";
+        btn.setAttribute("aria-pressed", String(topoFaceWide));
+    }
 }
-// Hide fully regardless of the current (possibly widened) width — offsetWidth
-// already reflects the max-width:90% clamp.
 function closeFaceplate() {
     topoFaceNode = null; // stop tracking so a filter toggle won't re-open it
     const panel = document.getElementById("facePanel");
-    panel.style.right = "-" + (panel.offsetWidth + 40) + "px";
+    if (panel.classList.contains("topology-faceplate")) panel.classList.remove("is-open");
+    else panel.style.right = "-" + (panel.offsetWidth + 40) + "px";
+    panel.setAttribute("aria-hidden", "true");
+    panel.inert = true;
+    if (topoFaceOpener && topoFaceOpener.isConnected) topoFaceOpener.focus();
+    topoFaceOpener = null;
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+    const faceBody = document.getElementById("faceBody");
+    if (!faceBody) return;
+
+    function activateFaceControl(target) {
+        const diag = target.closest("[data-port-diag]");
+        if (diag) {
+            runPortDiag(diag, diag.dataset.switch || "", diag.dataset.port || "");
+            return;
+        }
+        const port = target.closest(".fp-port[data-idx]");
+        const vpn = target.closest(".fp-vpn[data-idx]");
+        const bundle = target.closest(".fp-bundle[data-idx]");
+        const chip = target.closest("[data-vlanchip]");
+        const detail = document.getElementById("facePortDetail");
+        if (port && detail) detail.innerHTML = portDetailHTML(topoFacePorts[Number(port.dataset.idx)]);
+        if (vpn && detail) detail.innerHTML = portDetailHTML(topoFaceVPNPorts[Number(vpn.dataset.idx)]);
+        if (bundle && detail) {
+            const item = topoFaceBundles[Number(bundle.dataset.idx)];
+            if (item) detail.innerHTML = portDetailHTML({ label: item.label, detail: item.detail });
+        }
+        if (chip) {
+            const vlan = chip.dataset.vlanchip;
+            topoFaceVlanFilter = topoFaceVlanFilter === vlan ? null : vlan;
+            showFaceplate(topoFaceData);
+        }
+    }
+
+    faceBody.addEventListener("click", event => activateFaceControl(event.target));
+    faceBody.addEventListener("keydown", event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const control = event.target.closest(".fp-port, .fp-vpn, .fp-bundle, [data-vlanchip]");
+        if (!control) return;
+        event.preventDefault();
+        activateFaceControl(control);
+    });
+    faceBody.addEventListener("mouseover", event => {
+        const port = event.target.closest(".fp-port[data-idx]");
+        if (port && !port.contains(event.relatedTarget)) showFpPopover(port, topoFacePorts[Number(port.dataset.idx)]);
+    });
+    faceBody.addEventListener("mouseout", event => {
+        const port = event.target.closest(".fp-port[data-idx]");
+        if (port && !port.contains(event.relatedTarget)) hideFpPopover();
+    });
+});
+
+document.addEventListener("click", event => {
+    const row = event.target.closest(".fp-devrow[data-mac]");
+    if (row) locateDeviceByMac(row.dataset.mac || "");
+});
+document.addEventListener("keydown", event => {
+    const row = event.target.closest(".fp-devrow[data-mac]");
+    if (!row || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    locateDeviceByMac(row.dataset.mac || "");
+});
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -2458,9 +2552,9 @@ async function loadDeviceData() {
         // belong to the logged-in view only — never reveal them on a public share.
         if (!shared) {
             const btn = document.getElementById("fetchDevBtn");
-            if (btn) btn.style.display = "";
+            if (btn) btn.hidden = false;
             const live = document.getElementById("liveDevBtn");
-            if (live) live.style.display = "";
+            if (live) live.hidden = false;
         }
         topoStp = data.stp || [];
         topoStpEvents = data.stp_events || [];
@@ -2591,14 +2685,10 @@ function updateLiveBtn() {
         const secs = Math.max(0, Math.round((liveDeadline - Date.now()) / 1000));
         const mm = Math.floor(secs / 60), ss = String(secs % 60).padStart(2, "0");
         btn.textContent = `⏸ ${tt("topo.live")} ${mm}:${ss}`;
-        btn.style.background = "rgba(239,68,68,0.15)";
-        btn.style.color = "#fca5a5";
-        btn.style.borderColor = "rgba(239,68,68,0.4)";
+        btn.classList.add("is-live");
     } else {
         btn.textContent = `⟳ ${tt("topo.live")}`;
-        btn.style.background = "rgba(34,211,238,0.12)";
-        btn.style.color = "#67e8f9";
-        btn.style.borderColor = "rgba(34,211,238,0.35)";
+        btn.classList.remove("is-live");
     }
 }
 
@@ -2630,8 +2720,8 @@ function debugRecord(label, method, url, status, ms, body) {
     }
     topoDebugLog.unshift({ label, method, url, status, ms, size, at: new Date().toLocaleTimeString(), bodyText, truncated });
     if (topoDebugLog.length > topoDebugMax) topoDebugLog.length = topoDebugMax;
-    const modal = document.getElementById("topoDebugModal");
-    if (modal && modal.classList.contains("open")) renderDebugModal();
+    const dialog = document.getElementById("topoDebugDialog");
+    if (dialog && dialog.open) renderDebugModal();
 }
 
 // debugSummary reports the shape of the data currently held in memory (not
@@ -2667,25 +2757,25 @@ function renderDebugModal() {
     if (!body) return;
     const summaryRows = debugSummary();
     const summaryHtml = summaryRows.length
-        ? `<table style="width:100%; border-collapse: collapse; font-size: 0.82em; margin-bottom: 14px;">
-            ${summaryRows.map(([k, v]) => `<tr><td class="muted" style="padding:2px 10px 2px 0;">${esc(k)}</td><td style="padding:2px 0; color:#fff;">${esc(String(v))}</td></tr>`).join("")}
+        ? `<table class="topology-debug-summary">
+            ${summaryRows.map(([k, v]) => `<tr><td class="muted">${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join("")}
            </table>`
         : "";
     const logHtml = topoDebugLog.length
         ? topoDebugLog.map(e => {
-            const color = e.status >= 200 && e.status < 300 ? "#34d399" : "#f87171";
+            const statusClass = e.status >= 200 && e.status < 300 ? "is-ok" : "is-error";
             const json = e.bodyText != null
                 ? esc(e.bodyText) + (e.truncated ? `\n… (${tt("topo.debug_truncated")}: ${e.size} B)` : "")
                 : "(" + tt("topo.debug_no_body") + ")";
-            return `<div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-bottom: 8px;">
-                <button type="button" aria-expanded="false" onclick="const b=this.nextElementSibling; const open=b.style.display!=='none'; b.style.display= open ? 'none' : 'block'; this.setAttribute('aria-expanded', String(!open));" style="display:flex; width:100%; align-items:center; gap:10px; padding:8px 10px; background:none; border:none; color:inherit; font:inherit; text-align:left; cursor:pointer;">
-                    <strong style="color:#fff; font-size:0.85em;">${esc(e.label)}</strong>
-                    <code style="color:${color}; font-size:0.8em;">${esc(e.method)} ${e.status}</code>
-                    <span class="muted" style="font-size:0.78em; white-space:nowrap;">${e.ms} ms · ${e.size} B · ${esc(e.at)}</span>
-                    <span class="muted" style="margin-left:auto; font-size:0.78em; word-break: break-all;">${esc(e.url)}</span>
+            return `<div class="topology-debug-entry">
+                <button type="button" class="topology-debug-entry__toggle" data-debug-entry aria-expanded="false">
+                    <strong>${esc(e.label)}</strong>
+                    <code class="topology-debug-entry__status ${statusClass}">${esc(e.method)} ${e.status}</code>
+                    <span class="muted topology-debug-entry__meta">${e.ms} ms · ${e.size} B · ${esc(e.at)}</span>
+                    <span class="muted topology-debug-entry__url">${esc(e.url)}</span>
                 </button>
-                <div style="display:none; padding: 0 10px 10px;">
-                    <pre style="max-height: 320px; overflow:auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; font-size:0.78em; margin:0;">${json}</pre>
+                <div class="topology-debug-entry__body" hidden>
+                    <pre>${json}</pre>
                 </div>
             </div>`;
         }).join("")
@@ -2693,24 +2783,18 @@ function renderDebugModal() {
     body.innerHTML = summaryHtml + logHtml;
 }
 
-function openDebugModal() {
-    renderDebugModal();
-    const modal = document.getElementById("topoDebugModal");
-    if (modal) modal.classList.add("open");
-}
-
-function closeDebugModal() {
-    const modal = document.getElementById("topoDebugModal");
-    if (modal) modal.classList.remove("open");
-}
-
 document.addEventListener("DOMContentLoaded", () => {
-    const closeBtn = document.getElementById("topoDebugClose");
-    if (closeBtn) closeBtn.addEventListener("click", closeDebugModal);
-    const modal = document.getElementById("topoDebugModal");
-    if (modal) modal.addEventListener("click", e => { if (e.target === modal) closeDebugModal(); });
+    const topoDebugBody = document.getElementById("topoDebugBody");
+    if (!topoDebugBody) return;
+    topoDebugBody.addEventListener("click", event => {
+        const button = event.target.closest("[data-debug-entry]");
+        if (!button) return;
+        const detail = button.nextElementSibling;
+        const expanded = button.getAttribute("aria-expanded") === "true";
+        button.setAttribute("aria-expanded", String(!expanded));
+        if (detail) detail.hidden = expanded;
+    });
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeDebugModal(); });
 
 function topoMetaText() {
     if (!topo) return "";
