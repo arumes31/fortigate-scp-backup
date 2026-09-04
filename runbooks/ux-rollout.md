@@ -60,11 +60,14 @@ Repeat this rehearsal whenever the publication dependency graph changes.
 
 ## Production rollout
 
-1. Download and verify the publication metadata artifact for the approved run.
-2. Confirm its commit is the intended revision and its candidate digest is the
-   digest that passed staging.
-3. Record the `previous_digest` as the rollback target.
-4. Approve the protected `production` environment.
+1. Confirm the candidate commit and digest shown by the build and staging jobs
+   are the intended revision.
+2. Approve the protected `production` environment.
+3. Wait for alias promotion and its digest verification to complete.
+4. Download the immutable publication metadata artifact, confirm its candidate
+   digest matches staging, and record its `previous_digest` as the rollback
+   target. The workflow captures this value while holding the promotion lock,
+   immediately before changing `latest`.
 5. Deploy the exact `IMAGE@DIGEST`, never `IMAGE:latest`.
 6. Confirm `/healthz` and `/readyz` return HTTP 200 through the production path.
 7. Sign in with a dedicated smoke account and visit the dashboard plus every
