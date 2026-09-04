@@ -23,7 +23,7 @@ type Store interface {
 	AddFirewall(ctx context.Context, fw models.Firewall) (int, error)
 	DeleteFirewall(ctx context.Context, id int) (string, error)
 	ListBackups(ctx context.Context, fwID int) ([]models.Backup, error)
-	ListErrors(ctx context.Context) ([]models.Firewall, error)
+	ListErrors(ctx context.Context) ([]models.BackupError, error)
 	LastBackupTimes(ctx context.Context) (map[int]time.Time, error)
 	ListActivityLogs(ctx context.Context, filter models.ActivityLogFilter, limit, offset int) ([]models.ActivityLog, error)
 	CountActivityLogs(ctx context.Context, filter models.ActivityLogFilter) (int, error)

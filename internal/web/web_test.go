@@ -36,6 +36,8 @@ import (
 type fakeStore struct {
 	firewalls []models.Firewall
 	backups   []models.Backup
+	errors    []models.BackupError
+	errorsErr error
 	refs      []models.FirewallRef
 	activity  *[]string
 }
@@ -78,7 +80,9 @@ func (s fakeStore) GetFirewall(_ context.Context, id int) (*models.Firewall, err
 func (fakeStore) AddFirewall(context.Context, models.Firewall) (int, error)   { return 1, nil }
 func (fakeStore) DeleteFirewall(context.Context, int) (string, error)         { return "", nil }
 func (s fakeStore) ListBackups(context.Context, int) ([]models.Backup, error) { return s.backups, nil }
-func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)       { return nil, nil }
+func (s fakeStore) ListErrors(context.Context) ([]models.BackupError, error) {
+	return s.errors, s.errorsErr
+}
 func (fakeStore) LastBackupTimes(context.Context) (map[int]time.Time, error) {
 	return map[int]time.Time{}, nil
 }

@@ -538,27 +538,47 @@ func (s *Store) ListBackups(ctx context.Context, fwID int) ([]models.Backup, err
 	return out, rows.Err()
 }
 
-// ListErrors returns firewalls whose status marks a failed backup.
-func (s *Store) ListErrors(ctx context.Context) ([]models.Firewall, error) {
+// ListErrors returns a credential-free diagnosis projection for failed backups,
+// newest failure first. updated_at is written with each status transition and
+// therefore represents the attempt that produced the current failed status.
+func (s *Store) ListErrors(ctx context.Context) ([]models.BackupError, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, fqdn, last_backup, status FROM firewalls WHERE status LIKE 'Failed:%'`)
+		`SELECT id, fqdn, updated_at, last_backup, status
+		 FROM firewalls
+		 WHERE status LIKE 'Failed:%'
+		 ORDER BY updated_at DESC NULLS LAST, id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Firewall
+	var out []models.BackupError
 	for rows.Next() {
-		var fw models.Firewall
-		var lastBackup *time.Time
-		if err := rows.Scan(&fw.ID, &fw.FQDN, &lastBackup, &fw.Status); err != nil {
+		var (
+			failure                  models.BackupError
+			lastAttempt, lastSuccess *time.Time
+			status                   string
+		)
+		if err := rows.Scan(&failure.ID, &failure.FQDN, &lastAttempt, &lastSuccess, &status); err != nil {
 			return nil, err
 		}
-		if lastBackup != nil {
-			fw.LastBackup = *lastBackup
+		if lastAttempt != nil {
+			failure.LastAttempt = *lastAttempt
 		}
-		out = append(out, fw)
+		if lastSuccess != nil {
+			failure.LastSuccess = *lastSuccess
+		}
+		failure.Reason = backupFailureReason(status)
+		out = append(out, failure)
 	}
 	return out, rows.Err()
+}
+
+func backupFailureReason(status string) string {
+	reason := strings.TrimSpace(strings.TrimPrefix(status, "Failed:"))
+	if reason == "" {
+		return "Backup failed without a reported reason."
+	}
+	return reason
 }
 
 func activityLogWhere(filter models.ActivityLogFilter) (string, []any) {

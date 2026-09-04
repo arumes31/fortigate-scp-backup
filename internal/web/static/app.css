@@ -642,6 +642,27 @@ table.data code { font-family: var(--mono); font-size: 12px; color: var(--accent
 .muted { color: var(--text-muted); }
 .empty { padding: 32px; text-align: center; color: var(--text-dim); }
 
+/* ---------- Backup failure diagnosis ---------- */
+.backup-error-list { display: grid; gap: 1px; background: var(--border-soft); }
+.backup-error { min-width: 0; padding: 20px; background: var(--surface); }
+.backup-error__header, .backup-error__footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.backup-error__header > div { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.backup-error__header h3 { margin: 0; overflow-wrap: anywhere; font-size: 16px; }
+.backup-error__header h3 small { color: var(--text-dim); font: 11px var(--mono); }
+.backup-error__header .actions { display: flex; flex: none; gap: 8px; }
+.backup-error__reason { margin: 18px 0; padding: 14px 16px; border-left: 3px solid var(--danger); background: var(--danger-soft); }
+.backup-error__reason > span, .backup-error__timeline dt { color: var(--text-muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.backup-error__reason p { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.backup-error__timeline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0 0 18px; background: var(--border-soft); }
+.backup-error__timeline > div { min-width: 0; padding: 12px 14px; background: var(--surface-2); }
+.backup-error__timeline dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.backup-error__footer { padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.backup-error__footer p { margin: 0; color: var(--text-muted); }
+.backup-error__footer form { margin: 0; flex: none; }
+.backup-errors-healthy strong { color: var(--success); }
+.error-load-state h2 { color: var(--danger); }
+.error-load-state p { max-width: 70ch; }
+
 /* Pinned first column (opt-in via .sticky-first): keeps the row's identifier
    visible while scrolling a wide table sideways. Layering: sticky header row = 2,
    sticky first column = 1, top-left corner cell = 3 (above both). */

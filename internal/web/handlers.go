@@ -63,9 +63,15 @@ type backupsData struct {
 }
 
 type errorsData struct {
-	Base   BaseData
-	Errors []models.Firewall
-	Error  string
+	Base        BaseData
+	Errors      []backupErrorView
+	Error       string
+	RetryQueued bool
+}
+
+type backupErrorView struct {
+	models.BackupError
+	NextRun time.Time
 }
 
 type activityLogData struct {
@@ -543,23 +549,47 @@ func (s *Server) handleErrors(w http.ResponseWriter, r *http.Request) {
 	errs, err := s.store.ListErrors(r.Context())
 	if err != nil {
 		s.logger.Error("failed to retrieve errors", "err", err)
-		s.render(w, "errors.html", errorsData{Base: base, Error: "Failed to load errors"})
+		s.render(w, "errors.html", errorsData{Base: base, Error: "Could not load backup failures. Retry the request or check the application log."})
 		return
 	}
-	s.render(w, "errors.html", errorsData{Base: base, Errors: errs})
+	views := make([]backupErrorView, 0, len(errs))
+	for _, failure := range errs {
+		view := backupErrorView{BackupError: failure}
+		if info, ok := s.sched.Info(BackupJobID(failure.ID)); ok {
+			view.NextRun = info.NextRun
+		}
+		views = append(views, view)
+	}
+	s.render(w, "errors.html", errorsData{
+		Base: base, Errors: views, RetryQueued: r.URL.Query().Get("retry") == "queued",
+	})
 }
 
 // handleBackupNow triggers an asynchronous backup then returns to the index so
 // the request does not block on the SSH/SCP timeout.
 func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
+	returnTo := "/"
+	if r.FormValue("return_to") == "/errors" {
+		returnTo = "/errors"
+	}
 	fwID, err := strconv.Atoi(chi.URLParam(r, "fwID"))
-	if err != nil {
-		http.Redirect(w, r, "/", http.StatusFound)
+	if err != nil || fwID <= 0 {
+		s.store.LogActivity(s.sess.User(r).Username, "Backup Now Failed", "Rejected manual backup with invalid firewall ID")
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
+		return
+	}
+	if _, err := s.store.GetFirewall(r.Context(), fwID); err != nil {
+		s.logger.Warn("manual backup rejected", "fw_id", fwID, "err", err)
+		s.store.LogActivity(s.sess.User(r).Username, "Backup Now Failed", fmt.Sprintf("Rejected manual backup for unknown fw_id %d", fwID))
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
 		return
 	}
 	s.store.LogActivity(s.sess.User(r).Username, "Backup Now", fmt.Sprintf("Manual backup triggered for fw_id %d", fwID))
 	s.backup.Enqueue(fwID)
-	http.Redirect(w, r, "/", http.StatusFound)
+	if returnTo == "/errors" {
+		returnTo += "?retry=queued"
+	}
+	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
 
 // handleChangePassword renders and processes the password change form.

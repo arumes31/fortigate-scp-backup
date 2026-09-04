@@ -79,7 +79,7 @@
             {{$root := .}}
             {{range .Firewalls}}
                 {{$firewall := .}}
-                <tr data-fw="{{.ID}}">
+                <tr id="firewall-{{.ID}}" data-fw="{{.ID}}">
                     <td class="fw-fqdn">
                         <strong>{{.FQDN}}</strong>
                         <details class="fw-secondary"><summary>Details</summary>

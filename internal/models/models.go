@@ -31,6 +31,17 @@ type Backup struct {
 	Checksum  string
 }
 
+// BackupError is the credential-free projection used by failure views. The
+// last attempt is the timestamp of the status update that recorded the failure;
+// LastSuccess is zero when the firewall has never completed a backup.
+type BackupError struct {
+	ID          int
+	FQDN        string
+	Reason      string
+	LastAttempt time.Time
+	LastSuccess time.Time
+}
+
 // User mirrors a row of the `users` table.
 type User struct {
 	ID           int

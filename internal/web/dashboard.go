@@ -506,7 +506,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 			ID:          fw.ID,
 			FQDN:        fw.FQDN,
 			LastSuccess: lastSuccess[fw.ID],
-			Error:       strings.TrimSpace(strings.TrimPrefix(fw.Status, "Failed:")),
+			Error:       fw.Reason,
 		})
 	}
 	stale := s.computeStale(fws, lastSuccess, failedSet)

@@ -780,7 +780,23 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 		}
 		webServer.render(w, "activity_log.html", data)
 	})
-	mux.HandleFunc("GET /errors", render("errors.html", uxErrorsFixture))
+	mux.HandleFunc("GET /errors", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		data := uxErrorsFixture(scenario)
+		data.RetryQueued = r.URL.Query().Get("retry") == "queued"
+		webServer.render(w, "errors.html", data)
+	})
+	mux.HandleFunc("POST /backup_now/{fwID}", func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("return_to") != "/errors" {
+			http.Error(w, "invalid return target", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/errors?retry=queued", http.StatusSeeOther)
+	})
 	mux.HandleFunc("GET /backups/{fwID}", render("backups.html", uxBackupsFixture))
 	mux.HandleFunc("GET /backups/{fwID}/compare", render("backup_compare.html", func(scenario uxScenario) any {
 		return backupCompareData{
@@ -953,10 +969,17 @@ func uxActivityFixture(scenario uxScenario) activityLogData {
 	return data
 }
 
-func uxErrorsFixture(scenario uxScenario) any {
+func uxErrorsFixture(scenario uxScenario) errorsData {
 	data := errorsData{Base: uxBase("Backup errors", "errors")}
 	if scenario != uxScenarioEmpty {
-		data.Errors = uxFirewalls()[1:]
+		data.Errors = []backupErrorView{{
+			BackupError: models.BackupError{
+				ID: 12, FQDN: "branch.example.test",
+				Reason:      "synthetic connection timeout while reading configuration after the SSH handshake; the remote endpoint did not answer before the configured deadline",
+				LastAttempt: uxFixtureNow.Add(-5 * time.Minute), LastSuccess: uxFixtureNow.Add(-8 * time.Hour),
+			},
+			NextRun: uxFixtureNow.Add(20 * time.Minute),
+		}}
 	}
 	if scenario == uxScenarioError {
 		data.Error = "Synthetic backup-error query failure."
