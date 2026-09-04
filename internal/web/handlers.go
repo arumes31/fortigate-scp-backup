@@ -102,8 +102,9 @@ type activityLogRequest struct {
 }
 
 type changePasswordData struct {
-	Base  BaseData
-	Error string
+	Base    BaseData
+	Error   string
+	Success bool
 }
 
 type searchResult struct {
@@ -600,20 +601,23 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	if d.IsRadiusUser {
 		s.store.LogActivity(d.Username, "Password Change Attempt", "Password change denied for RADIUS user")
-		http.Redirect(w, r, "/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	if r.Method != http.MethodPost {
-		s.render(w, "change_password.html", changePasswordData{Base: base})
+		s.render(w, "change_password.html", changePasswordData{
+			Base: base, Success: r.URL.Query().Get("updated") == "1",
+		})
 		return
 	}
 
 	oldPassword := r.FormValue("old_password")
 	newPassword := r.FormValue("new_password")
 	confirm := r.FormValue("confirm_password")
-	if newPassword != confirm {
-		s.render(w, "change_password.html", changePasswordData{Base: base, Error: "New passwords do not match"})
+	if err := appsecurity.ValidateNewPassword(oldPassword, newPassword, confirm); err != nil {
+		s.store.LogActivity(d.Username, "Password Change Rejected", "Local password policy rejected the request")
+		s.render(w, "change_password.html", changePasswordData{Base: base, Error: err.Error()})
 		return
 	}
 	ok, err := s.store.ChangePassword(ctx, d.Username, oldPassword, newPassword)
@@ -624,10 +628,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok {
 		s.store.LogActivity(d.Username, "Change Password", "Password changed successfully")
-		http.Redirect(w, r, "/", http.StatusFound)
+		http.Redirect(w, r, "/change_password?updated=1", http.StatusSeeOther)
 		return
 	}
-	s.render(w, "change_password.html", changePasswordData{Base: base, Error: "Old password incorrect"})
+	s.render(w, "change_password.html", changePasswordData{Base: base, Error: "Current password is incorrect."})
 }
 
 // handleSearch searches the newest configuration of every firewall.

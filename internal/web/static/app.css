@@ -663,6 +663,26 @@ table.data code { font-family: var(--mono); font-size: 12px; color: var(--accent
 .error-load-state h2 { color: var(--danger); }
 .error-load-state p { max-width: 70ch; }
 
+/* ---------- Local password settings ---------- */
+.password-settings { max-width: 980px; }
+.password-settings__layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, .65fr); gap: 28px; align-items: start; }
+.password-settings__fields { display: grid; gap: 16px; }
+.password-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.password-input-row .password-toggle { min-width: 76px; justify-content: center; }
+.password-policy { padding: 16px 18px; border: 1px solid var(--border-soft); background: var(--surface-2); }
+.password-policy h3 { margin: 0 0 8px; font-size: 13px; }
+.password-policy p { margin: 0 0 12px; }
+.password-policy output { color: var(--text-muted); font: 12px var(--mono); }
+.password-policy ul { display: grid; gap: 9px; margin: 0 0 14px; padding: 0; list-style: none; }
+.password-policy li { position: relative; padding-left: 18px; color: var(--text-muted); }
+.password-policy li::before { content: "·"; position: absolute; left: 2px; color: var(--text-dim); }
+.password-policy li[data-valid="true"] { color: var(--success); }
+.password-policy li[data-valid="true"]::before { content: "✓"; color: var(--success); }
+.password-policy li[data-valid="false"] { color: var(--danger); }
+.password-policy li[data-valid="false"]::before { content: "×"; color: var(--danger); }
+.password-caps-warning { margin: 0; padding: 9px 12px; }
+.password-settings .toolbar { margin-top: 22px; }
+
 /* Pinned first column (opt-in via .sticky-first): keeps the row's identifier
    visible while scrolling a wide table sideways. Layering: sticky header row = 2,
    sticky first column = 1, top-left corner cell = 3 (above both). */

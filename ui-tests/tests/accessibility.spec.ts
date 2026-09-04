@@ -17,6 +17,7 @@ const routes = [
   '/errors',
   '/backups/7',
   '/backups/7/compare?backup=1&backup=2',
+  '/change_password',
   '/fgt-adm-vpn-conf/',
   '/fgt-confgen/',
   '/fgt-polsplit/',

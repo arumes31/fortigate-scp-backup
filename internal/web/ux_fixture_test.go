@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
@@ -810,9 +811,33 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 			Truncated: scenario == uxScenarioWarning,
 		}
 	}))
-	mux.HandleFunc("GET /change_password", render("change_password.html", func(uxScenario) any {
-		return changePasswordData{Base: uxBase("Change password", "password")}
-	}))
+	mux.HandleFunc("/change_password", func(w http.ResponseWriter, r *http.Request) {
+		data := changePasswordData{Base: uxBase("Change password", "password")}
+		switch r.Method {
+		case http.MethodPost:
+			oldPassword := r.FormValue("old_password")
+			newPassword := r.FormValue("new_password")
+			confirmation := r.FormValue("confirm_password")
+			if err := appsecurity.ValidateNewPassword(oldPassword, newPassword, confirmation); err != nil {
+				data.Error = err.Error()
+				webServer.render(w, "change_password.html", data)
+				return
+			}
+			if oldPassword == "incorrect-current-password" {
+				data.Error = "Current password is incorrect."
+				webServer.render(w, "change_password.html", data)
+				return
+			}
+			http.Redirect(w, r, "/change_password?updated=1", http.StatusSeeOther)
+			return
+		case http.MethodGet:
+			data.Success = r.URL.Query().Get("updated") == "1"
+			webServer.render(w, "change_password.html", data)
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")

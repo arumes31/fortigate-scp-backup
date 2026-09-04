@@ -6,10 +6,55 @@ package security
 
 import (
 	"crypto/subtle"
+	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	// MinPasswordBytes is the minimum accepted local-password length.
+	MinPasswordBytes = 16
+	// MaxPasswordBytes matches bcrypt's maximum useful input length.
+	MaxPasswordBytes = 72
+)
+
+var (
+	ErrPasswordRequired    = errors.New("Enter a new password.")
+	ErrPasswordInvalidUTF8 = errors.New("New password must be valid UTF-8.")
+	ErrPasswordTooShort    = errors.New("New password must contain at least 16 UTF-8 bytes.")
+	ErrPasswordTooLong     = errors.New("New password must contain at most 72 UTF-8 bytes.")
+	ErrPasswordUnchanged   = errors.New("New password must be different from your current password.")
+	ErrPasswordMismatch    = errors.New("New password confirmation does not match.")
+)
+
+// ValidateNewPassword applies the complete local-password change policy. Byte
+// length is intentional: bcrypt accepts at most 72 bytes, and a Unicode code
+// point may occupy more than one UTF-8 byte. Clients may mirror these checks for
+// feedback, but callers must always enforce this function server-side.
+func ValidateNewPassword(oldPassword, newPassword, confirmation string) error {
+	if newPassword == "" {
+		return ErrPasswordRequired
+	}
+	if !utf8.ValidString(newPassword) {
+		return ErrPasswordInvalidUTF8
+	}
+	length := len([]byte(newPassword))
+	if length < MinPasswordBytes {
+		return ErrPasswordTooShort
+	}
+	if length > MaxPasswordBytes {
+		return ErrPasswordTooLong
+	}
+	if subtle.ConstantTimeCompare([]byte(oldPassword), []byte(newPassword)) == 1 {
+		return ErrPasswordUnchanged
+	}
+	if newPassword != confirmation {
+		return ErrPasswordMismatch
+	}
+	return nil
+}
 
 // HashPassword returns a bcrypt hash of the given plaintext.
 func HashPassword(plain string) (string, error) {
