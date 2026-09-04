@@ -12,16 +12,16 @@
 <body>
     <a class="skip-link" href="#main-content">{{.Base.Shell.SkipToContent}}</a>
     <div class="app-shell">
-        <aside class="app-rail" aria-label="FortiSafe">
+        <aside class="app-rail" aria-label="FortiSafe" data-collapsible-rail>
             <div class="rail-brand">
-                <a class="brand" href="/dashboard"><span aria-hidden="true">&gt;</span> FortiSafe</a>
+                <a class="brand" href="/dashboard"><span class="rail-brand-mark" aria-hidden="true">&gt;<span class="rail-brand-compact">F</span></span><span class="rail-brand-name">FortiSafe</span></a>
                 <span class="rail-product">{{.Base.Shell.Product}}</span>
             </div>
             <nav class="rail-nav" aria-label="{{.Base.Shell.PrimaryNavigation}}">
                 {{range .Base.Navigation}}
                 <section class="nav-group" aria-labelledby="nav-group-{{.Key}}">
                     <h2 id="nav-group-{{.Key}}">{{.Label}}</h2>
-                    {{range .Items}}<a class="nav-item" href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}><span aria-hidden="true" class="nav-marker">›</span><span>{{.Label}}</span></a>{{end}}
+                    {{range .Items}}<a class="nav-item" href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}><svg class="nav-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#{{.Icon}}"></use></svg><span class="nav-label">{{.Label}}</span></a>{{end}}
                 </section>
                 {{end}}
             </nav>
@@ -32,32 +32,38 @@
                      data-reconnecting="{{.Base.Shell.Reconnecting}}"
                      data-unavailable="{{.Base.Shell.Unavailable}}">
                     <span class="sse-dot connecting" id="sseDot" aria-hidden="true"></span>
-                    <span><span class="utility-label">{{.Base.Shell.LiveStatus}}</span><span id="sseLabel">{{.Base.Shell.Connecting}}</span></span>
+                    <span class="utility-copy"><span class="utility-label">{{.Base.Shell.LiveStatus}}</span><span id="sseLabel">{{.Base.Shell.Connecting}}</span></span>
                 </div>
                 <div class="utility-switches">
                     <form method="post" action="/lang" class="language-form">
                         <input type="hidden" name="back" value="{{.Base.ReturnTo}}">
-                        <span class="utility-label" id="language-label">{{.Base.Shell.Language}}</span>
-                        <span class="utility-options" role="group" aria-labelledby="language-label">
-                            <button type="submit" name="lang" value="en" aria-pressed="{{if eq .Base.Lang "en"}}true{{else}}false{{end}}">EN</button>
-                            <button type="submit" name="lang" value="de" aria-pressed="{{if eq .Base.Lang "de"}}true{{else}}false{{end}}">DE</button>
+                        <svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-language"></use></svg>
+                        <span class="utility-copy">
+                            <span class="utility-label" id="language-label">{{.Base.Shell.Language}}</span>
+                            <span class="utility-options" role="group" aria-labelledby="language-label">
+                                <button type="submit" name="lang" value="en" aria-pressed="{{if eq .Base.Lang "en"}}true{{else}}false{{end}}">EN</button>
+                                <button type="submit" name="lang" value="de" aria-pressed="{{if eq .Base.Lang "de"}}true{{else}}false{{end}}">DE</button>
+                            </span>
                         </span>
                     </form>
                     <div class="time-form" data-time-controls>
-                        <span class="utility-label" id="time-display-label">{{.Base.Shell.TimeDisplay}}</span>
-                        <span class="utility-options" role="group" aria-labelledby="time-display-label">
-                            <button type="button" data-time-mode="utc" aria-label="{{.Base.Shell.UTC}}" aria-pressed="true">UTC</button>
-                            <button type="button" data-time-mode="local" aria-label="{{.Base.Shell.BrowserTime}}" aria-pressed="false">{{.Base.Shell.Local}}</button>
+                        <svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-clock"></use></svg>
+                        <span class="utility-copy">
+                            <span class="utility-label" id="time-display-label">{{.Base.Shell.TimeDisplay}}</span>
+                            <span class="utility-options" role="group" aria-labelledby="time-display-label">
+                                <button type="button" data-time-mode="utc" aria-label="{{.Base.Shell.UTC}}" aria-pressed="true">UTC</button>
+                                <button type="button" data-time-mode="local" aria-label="{{.Base.Shell.BrowserTime}}" aria-pressed="false">{{.Base.Shell.Local}}</button>
+                            </span>
                         </span>
                     </div>
                 </div>
                 <div class="utility-account">
-                    <span class="utility-label">{{.Base.Shell.Account}}</span>
-                    <span class="account-name">{{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span>
+                    <svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-account"></use></svg>
+                    <span class="utility-copy"><span class="utility-label">{{.Base.Shell.Account}}</span><span class="account-name">{{if .Base.Username}}{{.Base.Username}}{{else}}—{{end}}</span></span>
                 </div>
-                {{if not .Base.IsRadius}}<a class="utility-link" href="/change_password"{{if eq .Base.Active "password"}} aria-current="page"{{end}}>{{.Base.Shell.ChangePassword}}</a>{{end}}
+                {{if not .Base.IsRadius}}<a class="utility-link" href="/change_password"{{if eq .Base.Active "password"}} aria-current="page"{{end}}><svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-password"></use></svg><span class="utility-copy">{{.Base.Shell.ChangePassword}}</span></a>{{end}}
                 <form method="post" action="/logout" class="logout-form">
-                    <button type="submit" class="utility-link logout-btn">{{.Base.Shell.Logout}}</button>
+                    <button type="submit" class="utility-link logout-btn"><svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-logout"></use></svg><span class="utility-copy">{{.Base.Shell.Logout}}</span></button>
                 </form>
             </section>
         </aside>

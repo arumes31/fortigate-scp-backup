@@ -12,6 +12,7 @@ type NavItem struct {
 	Key     string
 	Label   string
 	Href    string
+	Icon    string
 	Current bool
 }
 
@@ -30,39 +31,39 @@ type NavigationOptions struct {
 // Navigation builds a fresh grouped navigation model for one request.
 func Navigation(options NavigationOptions) []NavGroup {
 	labels := navigationText(options.Lang)
-	current := func(key, label, href string) NavItem {
-		return NavItem{Key: key, Label: label, Href: href, Current: options.Active == key}
+	current := func(key, label, href, icon string) NavItem {
+		return NavItem{Key: key, Label: label, Href: href, Icon: icon, Current: options.Active == key}
 	}
 	groups := []NavGroup{
 		{Key: "overview", Label: labels.overview, Items: []NavItem{
-			current("dashboard", labels.dashboard, "/dashboard"),
-			current("firewalls", labels.firewalls, "/"),
-			current("search", labels.search, "/search"),
-			current("audit", labels.audit, "/audit"),
-			current("topology", labels.topology, "/topology"),
+			current("dashboard", labels.dashboard, "/dashboard", "nav-dashboard"),
+			current("firewalls", labels.firewalls, "/", "nav-firewalls"),
+			current("search", labels.search, "/search", "nav-search"),
+			current("audit", labels.audit, "/audit", "nav-audit"),
+			current("topology", labels.topology, "/topology", "nav-topology"),
 		}},
 		{Key: "network", Label: labels.networkData, Items: []NavItem{
-			current("ipam", labels.ipam, "/ipam"),
-			current("licenses", labels.licenses, "/licenses"),
-			current("activity", labels.activity, "/activity_log"),
+			current("ipam", labels.ipam, "/ipam", "nav-ipam"),
+			current("licenses", labels.licenses, "/licenses", "nav-licenses"),
+			current("activity", labels.activity, "/activity_log", "nav-activity"),
 		}},
 	}
 
 	tools := make([]NavItem, 0, 5)
 	if options.AdmVPN {
-		tools = append(tools, current("admvpn", labels.admVPN, "/fgt-adm-vpn-conf/"))
+		tools = append(tools, current("admvpn", labels.admVPN, "/fgt-adm-vpn-conf/", "nav-admvpn"))
 	}
 	if options.ConfGen {
-		tools = append(tools, current("configgen", labels.confGen, "/fgt-confgen/"))
+		tools = append(tools, current("configgen", labels.confGen, "/fgt-confgen/", "nav-configgen"))
 	}
 	if options.PolSplit {
-		tools = append(tools, current("polsplit", labels.polSplit, "/fgt-polsplit/"))
+		tools = append(tools, current("polsplit", labels.polSplit, "/fgt-polsplit/", "nav-polsplit"))
 	}
 	if options.ConfConv {
-		tools = append(tools, current("confconv", labels.confConv, "/fgt-confconv/"))
+		tools = append(tools, current("confconv", labels.confConv, "/fgt-confconv/", "nav-confconv"))
 	}
 	if options.ConfTail {
-		tools = append(tools, current("conftail", labels.confTail, "/fgt-conftail/"))
+		tools = append(tools, current("conftail", labels.confTail, "/fgt-conftail/", "nav-conftail"))
 	}
 	if len(tools) > 0 {
 		groups = append(groups, NavGroup{Key: "tools", Label: labels.tools, Items: tools})

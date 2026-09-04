@@ -144,6 +144,7 @@ func TestSharedShellRendersNamedDesktopUtilities(t *testing.T) {
 	body := output.String()
 	for _, want := range []string{
 		`<html lang="de">`, `class="skip-link"`, `class="app-rail"`,
+		`data-collapsible-rail`, `class="nav-icon"`, `href="/static/icons.svg#nav-dashboard"`,
 		`aria-label="Primärnavigation"`, `aria-label="Hilfsfunktionen"`,
 		`Betriebskonsole`, `data-time-controls`, `data-time-mode="utc"`, `data-time-mode="local"`,
 		`name="lang" value="en"`, `name="lang" value="de"`,
@@ -159,6 +160,20 @@ func TestSharedShellRendersNamedDesktopUtilities(t *testing.T) {
 	for _, unwanted := range []string{"topbar", "hamburger", "SEC_PROTO", "onclick="} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("shared shell unexpectedly contains %q", unwanted)
+		}
+	}
+}
+
+func TestNavigationItemsProvideStableIcons(t *testing.T) {
+	t.Parallel()
+	groups := Navigation(NavigationOptions{
+		Lang: "en", AdmVPN: true, ConfGen: true, PolSplit: true, ConfConv: true, ConfTail: true,
+	})
+	for _, group := range groups {
+		for _, item := range group.Items {
+			if item.Icon == "" {
+				t.Errorf("navigation item %q has no collapsed-rail icon", item.Key)
+			}
 		}
 	}
 }

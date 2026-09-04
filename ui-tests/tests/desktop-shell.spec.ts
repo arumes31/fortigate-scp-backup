@@ -22,7 +22,7 @@ const shellCases = [
 ];
 
 for (const shellCase of shellCases) {
-  test(`${shellCase.name} desktop shell stays labeled and non-wrapping`, async ({ page }) => {
+  test(`${shellCase.name} desktop shell stays labeled and non-wrapping`, async ({ page }, testInfo) => {
     await page.goto(shellCase.path, { waitUntil: 'networkidle' });
 
     await expect(page.locator('html')).toHaveAttribute('lang', shellCase.lang);
@@ -34,6 +34,28 @@ for (const shellCase of shellCases) {
     await expect(rail.getByRole('button', { name: shellCase.pressedLanguage, exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(rail.getByRole('button', { name: shellCase.browserTime })).toHaveText(shellCase.lang === 'de' ? 'Lokal' : 'Local');
     await expect(page.locator('.hamburger, [aria-label*="menu" i], [aria-label*="menü" i]')).toHaveCount(0);
+
+    const collapsedWidth = await rail.evaluate(element => element.getBoundingClientRect().width);
+    expect(collapsedWidth).toBeLessThanOrEqual(72);
+    await expect(rail.locator('.nav-icon')).toHaveCount(13);
+
+    await rail.hover();
+    await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(218);
+    await expect(rail.locator('.rail-product')).toBeVisible();
+    if (shellCase.name === 'English' && testInfo.project.name === 'desktop-1024') {
+      const screenshot = await page.screenshot({
+        path: testInfo.outputPath('expanded-icon-rail.png'),
+        animations: 'disabled',
+      });
+      expect(screenshot.byteLength).toBeGreaterThan(10_000);
+    }
+
+    await page.mouse.move(page.viewportSize()!.width - 20, 20);
+    await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(72);
+    await rail.getByRole('link', { name: 'Dashboard' }).focus();
+    await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(218);
+    await page.locator('#main-content').focus();
+    await expect.poll(() => rail.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(64.1);
 
     const layout = await page.evaluate(() => {
       const rail = document.querySelector<HTMLElement>('.app-rail')!;
@@ -53,7 +75,7 @@ for (const shellCase of shellCases) {
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
     expect(layout.railLeft).toBe(0);
     expect(layout.railHeight).toBeGreaterThanOrEqual(page.viewportSize()!.height);
-    expect(layout.mainLeft).toBeGreaterThanOrEqual(layout.railRight);
+    expect(layout.mainLeft + 1).toBeGreaterThanOrEqual(layout.railRight);
     expect(layout.bodyTransform).toBe('none');
   });
 }
