@@ -1,0 +1,282 @@
+name: Immutable image pipeline
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Alias set to promote after staging (main or release)
+        required: true
+        type: string
+      release_tag:
+        description: Release alias used when channel is release
+        required: false
+        default: ''
+        type: string
+    outputs:
+      image:
+        description: Lowercase GHCR image name
+        value: ${{ jobs.build_candidate.outputs.image }}
+      digest:
+        description: Immutable multi-platform image digest
+        value: ${{ jobs.build_candidate.outputs.digest }}
+      previous_digest:
+        description: Digest referenced by latest before promotion
+        value: ${{ jobs.build_candidate.outputs.previous_digest }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build_candidate:
+    name: Build immutable candidate
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      previous_digest: ${{ steps.previous.outputs.digest }}
+    steps:
+      - name: Checkout gated revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name
+        id: image
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Record previous production digest
+        id: previous
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          digest=$(docker buildx imagetools inspect "$IMAGE:latest" 2>/dev/null | awk '/^Digest:/ { print $2; exit }')
+          echo "digest=${digest:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push commit-addressed candidate
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+          tags: ${{ steps.image.outputs.image }}:${{ github.sha }}
+
+      - name: Write immutable publication record
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PREVIOUS_DIGEST: ${{ steps.previous.outputs.digest }}
+        run: |
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg image "$IMAGE" \
+            --arg digest "$DIGEST" \
+            --arg previous_digest "$PREVIOUS_DIGEST" \
+            --arg workflow_run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{commit: $commit, image: $image, digest: $digest, previous_digest: $previous_digest, workflow_run: $workflow_run}' \
+            > image-metadata.json
+
+      - name: Upload immutable publication record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-digest-${{ github.sha }}-${{ github.run_attempt }}
+          path: image-metadata.json
+          if-no-files-found: error
+          retention-days: 90
+
+  staging_smoke:
+    name: Staging · health · login · extensions
+    runs-on: ubuntu-latest
+    needs: build_candidate
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+        env:
+          POSTGRES_USER: fortisafe
+          POSTGRES_PASSWORD: fortisafe-staging-db
+          POSTGRES_DB: fortisafe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fortisafe -d fortisafe"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout gated revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start digest-pinned candidate with synthetic data
+        shell: bash
+        env:
+          IMAGE: ${{ needs.build_candidate.outputs.image }}
+          DIGEST: ${{ needs.build_candidate.outputs.digest }}
+        run: |
+          docker run --detach --rm --name fortisafe-staging --network host \
+            --env PORT=18521 \
+            --env PG_HOST=127.0.0.1 \
+            --env PG_PORT=5432 \
+            --env PG_USER=fortisafe \
+            --env PG_PASSWORD=fortisafe-staging-db \
+            --env PG_DATABASE=fortisafe \
+            --env PGSSLMODE=disable \
+            --env SESSION_KEY=fortisafe-staging-session-key-000001 \
+            --env ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+            --env BOOTSTRAP_ADMIN_PASSWORD=FortiSafe-Staging-Only-2026 \
+            --env COOKIE_SECURE=false \
+            --env ENABLE_HSTS=false \
+            --env EXT_ADM_VPN_CONF=true \
+            --env EXT_FGT_CONF_GEN=true \
+            --env EXT_FGT_POLSPLIT=true \
+            --env EXT_FGT_CONFCONV=true \
+            --env EXT_FGT_CONFTAIL=true \
+            --env EXT_GRAYLOG_DEVICE_DATA=false \
+            --env GRAYLOG_URL=http://127.0.0.1:9 \
+            --env GRAYLOG_TOKEN=synthetic-graylog-token \
+            --env HOOKWISE_URL=http://127.0.0.1:9/status \
+            --env HOOKWISE_TOKEN=synthetic-hookwise-token \
+            --env FGT_CONFTAIL_HOOKWISE_URL=https://127.0.0.1:9/w/synthetic \
+            --env FGT_CONFTAIL_HOOKWISE_TOKEN=synthetic-conftail-hookwise-token \
+            --env FGT_CONFTAIL_POLL_SECONDS=86400 \
+            "$IMAGE@$DIGEST"
+
+      - name: Wait for liveness and database readiness
+        shell: bash
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:18521/healthz >/dev/null && \
+               curl --fail --silent --show-error http://127.0.0.1:18521/readyz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs fortisafe-staging
+          exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui-tests/package-lock.json
+
+      - name: Install locked browser-test dependencies
+        run: npm --prefix ui-tests ci --ignore-scripts
+
+      - name: Install pinned Chromium
+        run: npm --prefix ui-tests exec -- playwright install --with-deps chromium
+
+      - name: Smoke-test health, login, and every enabled extension
+        working-directory: ui-tests
+        env:
+          FORTISAFE_STAGING_BASE_URL: http://127.0.0.1:18521
+          FORTISAFE_STAGING_USERNAME: admin
+          FORTISAFE_STAGING_PASSWORD: FortiSafe-Staging-Only-2026
+        run: npx playwright test --config=playwright.staging.config.ts
+
+      - name: Upload synthetic staging evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: synthetic-staging-smoke-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ui-tests/staging-test-results/
+            ui-tests/staging-playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Stop staging candidate
+        if: always()
+        run: docker stop fortisafe-staging || true
+
+  promote:
+    name: Approve and promote tested digest
+    runs-on: ubuntu-latest
+    needs:
+      - build_candidate
+      - staging_smoke
+    if: needs.build_candidate.result == 'success' && needs.staging_smoke.result == 'success'
+    environment: production
+    concurrency:
+      group: fortisafe-image-promotion
+      cancel-in-progress: false
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote main aliases
+        if: inputs.channel == 'main'
+        shell: bash
+        env:
+          IMAGE: ${{ needs.build_candidate.outputs.image }}
+          DIGEST: ${{ needs.build_candidate.outputs.digest }}
+        run: |
+          date_tag=$(date -u +'%d%m%Y')
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:$date_tag" \
+            "$IMAGE@$DIGEST"
+
+      - name: Promote release aliases
+        if: inputs.channel == 'release'
+        shell: bash
+        env:
+          IMAGE: ${{ needs.build_candidate.outputs.image }}
+          DIGEST: ${{ needs.build_candidate.outputs.digest }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test -n "$RELEASE_TAG"
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:$RELEASE_TAG" \
+            "$IMAGE@$DIGEST"
+
+      - name: Verify promoted latest digest
+        shell: bash
+        env:
+          IMAGE: ${{ needs.build_candidate.outputs.image }}
+          EXPECTED_DIGEST: ${{ needs.build_candidate.outputs.digest }}
+        run: |
+          actual=$(docker buildx imagetools inspect "$IMAGE:latest" | awk '/^Digest:/ { print $2; exit }')
+          test "$actual" = "$EXPECTED_DIGEST"
+          echo "Promoted $IMAGE@$EXPECTED_DIGEST"
+          echo "Previous latest: ${{ needs.build_candidate.outputs.previous_digest }}"

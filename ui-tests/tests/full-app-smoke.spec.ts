@@ -17,8 +17,18 @@ test('staged image serves login, health, and every enabled extension', async ({ 
   await page.goto('/login', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Login' })).toBeVisible();
   await page.getByLabel('Username').fill(stagingUsername!);
-  await page.getByLabel('Password').fill(stagingPassword!);
+  await page.getByLabel('Password', { exact: true }).fill(stagingPassword!);
   await page.getByRole('button', { name: 'Login' }).click();
+  await page.waitForURL(/\/(dashboard|change_password)$/);
+  if (new URL(page.url()).pathname === '/change_password') {
+    const rotatedPassword = 'FortiSafe-Staging-Rotated-2026';
+    await page.getByLabel('Current password', { exact: true }).fill(stagingPassword!);
+    await page.getByLabel('New password', { exact: true }).fill(rotatedPassword);
+    await page.getByLabel('Confirm new password', { exact: true }).fill(rotatedPassword);
+    await page.getByRole('button', { name: 'Update password' }).click();
+    await expect(page.locator('.alert-success')).toContainText('Password updated successfully');
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+  }
   await expect(page).toHaveURL(/\/dashboard$/);
 
   const routes = [
