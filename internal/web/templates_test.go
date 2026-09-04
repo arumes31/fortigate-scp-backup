@@ -190,6 +190,33 @@ func TestIndexOmitsSSHHostKeyAcceptanceWithoutPendingKey(t *testing.T) {
 	}
 }
 
+func TestAuditManagementUsesLabeledProgressiveControls(t *testing.T) {
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	if err := s.parseTemplates(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	s.render(recorder, "audit.html", auditData{Base: BaseData{Title: "Audit"}, Firewalls: []models.FirewallRef{{ID: 7, FQDN: "fw.example"}}})
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`id="auditLoadStatus" role="status" aria-live="polite"`,
+		`class="card audit-management audit-exemptions"`,
+		`<label>Rule name`, `<label>Search pattern`,
+		`class="audit-filter"`, `aria-expanded="false" aria-controls="detail-`,
+		`severity === "high"`, `Results are incomplete.`, `Math.min(4, ids.length)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("audit page missing %q", want)
+		}
+	}
+	if strings.Contains(body, `class="card audit-management audit-exemptions" open`) {
+		t.Error("empty exemptions must be collapsed")
+	}
+	if strings.Contains(body, `onclick="recompute(`) || !strings.Contains(body, `data-audit-recheck=`) {
+		t.Error("audit re-check must use the delegated, keyboard-safe action")
+	}
+}
+
 func TestProgressPollingRetriesTransientFailures(t *testing.T) {
 	tests := []struct {
 		name  string

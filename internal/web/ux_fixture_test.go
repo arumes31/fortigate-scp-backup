@@ -608,7 +608,34 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 		webServer.render(w, "search.html", data)
 	})
 	mux.HandleFunc("GET /audit", render("audit.html", uxAuditFixture))
-	mux.HandleFunc("GET /audit/results/{fwID}", jsonResponse(`{"status":"ok","score":73,"findings":[{"severity":"critical","text":"Synthetic administrative account has no MFA","remediation":"Enable two-factor authentication."}]}`))
+	mux.HandleFunc("GET /audit/results/{fwID}", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		if scenario == uxScenarioError && r.PathValue("fwID") == "12" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = io.WriteString(w, `{`)
+			return
+		}
+		payload := map[string]any{
+			"has_config": true, "model": "FortiGate 100F", "version": "7.4.5",
+			"backup_filename": "fixture.conf", "computed_at": uxFixtureNow.Format(time.RFC3339),
+			"pci_score": 92, "cis_score": 88, "hipaa_score": 90,
+			"findings": []map[string]any{}, "exempted": []map[string]any{}, "upgrade_path": []string{"7.4.6"},
+			"ticket_id": "", "ticket_detail": "",
+		}
+		if r.PathValue("fwID") == "7" {
+			payload["pci_score"], payload["cis_score"], payload["hipaa_score"] = 48, 42, 51
+			payload["findings"] = []map[string]any{{
+				"key": "fixture-high", "severity": "high", "text": "Synthetic administrative account has no MFA",
+				"remediation": "Enable two-factor authentication.", "context": "config system admin", "context_start": 1, "line": 1,
+			}}
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(payload)
+	})
 	mux.HandleFunc("GET /licenses", render("licenses.html", func(scenario uxScenario) any {
 		data := licensesData{Base: uxBase("Licenses", "licenses")}
 		if scenario != uxScenarioEmpty {
@@ -758,9 +785,13 @@ func uxAuditFixture(scenario uxScenario) any {
 	data := auditData{Base: uxBase("Audit", "audit")}
 	if scenario != uxScenarioEmpty {
 		data.Firewalls = []models.FirewallRef{{ID: 7, FQDN: "edge.example.test"}, {ID: 12, FQDN: "branch.example.test"}}
+		data.CustomRules = []customRule{{ID: 1, Name: "SSH policy", Pattern: "set admin-ssh-port", Severity: "warning", Remediation: "set admin-ssh-port 9422"}}
+		data.Exemptions = []exemption{{ID: 1, FwID: 7, FindingKey: "fixture", FindingText: "Synthetic accepted risk", Reason: "Compensating control", Scope: "firewall"}}
+		data.CVEStatus = cveRefreshStatus{Live: true, LastSuccessAt: uxFixtureNow.Add(-2 * time.Hour)}
 	}
 	if scenario == uxScenarioError {
-		data.Error = "Synthetic audit failure."
+		data.CVEStatus.LastError = "Synthetic CVE refresh failure"
+		data.CVEStatus.LastAttemptAt = uxFixtureNow.Add(-time.Hour)
 	}
 	return data
 }

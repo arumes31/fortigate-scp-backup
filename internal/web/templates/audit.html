@@ -1,7 +1,9 @@
 {{define "content"}}
 <h1 class="page-title"><span class="accent-bar"></span>{{T .Base.Lang "audit.title"}}</h1>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+
+<p class="audit-load-status" id="auditLoadStatus" role="status" aria-live="polite">{{T .Base.Lang "audit.loading"}}</p>
 
 <div class="stat-grid">
     <div class="stat-tile fail"><div class="n" id="statCritical">…</div><div class="l">{{T .Base.Lang "audit.critical"}}</div></div>
@@ -10,7 +12,7 @@
     <div class="stat-tile"><div class="n" id="statLoaded">0/{{len .Firewalls}}</div><div class="l">{{T .Base.Lang "audit.audited"}}</div></div>
 </div>
 
-<div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 15px; margin-bottom: 20px; font-size: 0.85em;">
+<div class="card audit-cve-status" role="status">
     <div>
         {{if .CVEStatus.Live}}
         <strong style="color: #34d399;">{{T .Base.Lang "audit.cve_db_live"}}</strong>
@@ -24,7 +26,7 @@
             — {{T .Base.Lang "audit.cve_db_updated"}} <time datetime="{{fmtMachineTime .CVEStatus.LastSuccessAt}}">{{fmtTime .CVEStatus.LastSuccessAt}}</time>
             {{end}}
             {{if .CVEStatus.LastError}}
-            · <span style="color: #f87171;" title="{{.CVEStatus.LastError}}">{{T .Base.Lang "audit.cve_db_error"}}</span>
+            · <span class="audit-cve-error">{{T .Base.Lang "audit.cve_db_error"}}: {{.CVEStatus.LastError}}</span>
             {{end}}
         </span>
     </div>
@@ -35,20 +37,21 @@
 
 <div class="grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
     <!-- Custom Rule Builder -->
-    <div class="card">
-        <h2 class="mt-0"><span style="color: var(--accent);">[+]</span> {{T .Base.Lang "audit.custom_rules"}}</h2>
-        <form method="post" action="/audit/custom_rule" style="display: flex; flex-direction: column; gap: 10px;">
+    <details class="card audit-management">
+        <summary><span>[+]</span> {{T .Base.Lang "audit.custom_rules"}} <span class="pill">{{len .CustomRules}}</span></summary>
+        <div class="audit-management-body">
+        <form method="post" action="/audit/custom_rule" class="audit-rule-form">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <input type="text" name="name" placeholder="{{T .Base.Lang "audit.rule_name"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
-                <input type="text" name="pattern" placeholder="{{T .Base.Lang "audit.rule_pattern"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <label>{{T .Base.Lang "audit.rule_name"}}<input type="text" name="name" required></label>
+                <label>{{T .Base.Lang "audit.rule_pattern"}}<input type="text" name="pattern" required></label>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
-                <select name="severity" required aria-label="{{T .Base.Lang "audit.rule_severity"}}" style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; color-scheme: dark;">
+                <label>{{T .Base.Lang "audit.rule_severity"}}<select name="severity" required>
                     <option value="critical">Critical</option>
                     <option value="warning" selected>Warning</option>
                     <option value="info">Info</option>
-                </select>
-                <input type="text" name="remediation" placeholder="{{T .Base.Lang "audit.rule_remediation"}}" required style="padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                </select></label>
+                <label>{{T .Base.Lang "audit.rule_remediation"}}<input type="text" name="remediation" required></label>
             </div>
             <button type="submit" class="btn" style="align-self: flex-start; background: var(--accent); color: #000; font-weight: bold; padding: 8px 16px;">{{T .Base.Lang "audit.rule_add"}}</button>
         </form>
@@ -72,11 +75,13 @@
             </div>
         </div>
         {{end}}
-    </div>
+        </div>
+    </details>
 
     <!-- Exemptions List -->
-    <div class="card">
-        <h2 class="mt-0"><span style="color: var(--accent);">[#]</span> {{T .Base.Lang "audit.exemptions"}}</h2>
+    <details class="card audit-management audit-exemptions"{{if .Exemptions}} open{{end}}>
+        <summary><span>[#]</span> {{T .Base.Lang "audit.exemptions"}} <span class="pill">{{len .Exemptions}}</span></summary>
+        <div class="audit-management-body">
         {{if .Exemptions}}
         <div style="max-height: 250px; overflow-y: auto;">
             {{range .Exemptions}}
@@ -116,7 +121,8 @@
         {{else}}
         <p class="muted">{{T .Base.Lang "audit.exemption_none"}}</p>
         {{end}}
-    </div>
+        </div>
+    </details>
 </div>
 
 <div class="card pad-0">
@@ -125,7 +131,7 @@
             <h2 class="mt-0 mb-0">{{T .Base.Lang "audit.per_firewall"}}</h2>
             <span class="muted">{{T .Base.Lang "audit.latest_configs"}} · <a href="/topology" style="color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em;">{{T .Base.Lang "audit.topology_link"}}</a></span>
         </div>
-        <input type="text" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" onkeyup="filterAuditTable()" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; outline: none; font-size: 0.9em; width: 300px;">
+        <label class="audit-filter">{{T .Base.Lang "audit.filter"}}<input type="search" id="auditSearch" placeholder="{{T .Base.Lang "audit.search"}}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>
     </div>
 
     <div class="table-wrap">
@@ -176,8 +182,10 @@ const failedRows = new Set(); // fwids whose fetch failed (excluded from totals)
 let totals = { critical: 0, warning: 0, loaded: 0 };
 
 function sevColor(sev) {
-    return sev === "critical" ? "#ef4444" : sev === "warning" ? "#f59e0b" : "#3b82f6";
+    return isCriticalSeverity(sev) ? "#ef4444" : sev === "warning" ? "#f59e0b" : "#3b82f6";
 }
+
+function isCriticalSeverity(severity) { return severity === "critical" || severity === "high"; }
 
 function scoreBar(label, score) {
     const color = score < 50 ? "#ef4444" : score < 80 ? "#f59e0b" : "#10b981";
@@ -223,7 +231,7 @@ function findingCard(f, fwid) {
                 <input type="hidden" name="fw_id" value="${fwid}">
                 <input type="hidden" name="finding_key" value="${esc(f.key || "")}">
                 <input type="hidden" name="finding_text" value="${esc(f.text)}">
-                <input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 2px 4px; font-size: 0.8em; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                <label class="audit-inline-field"><span>${tt("audit.exemption_reason_label")}</span><input type="text" name="reason" placeholder="${tt("audit.exempt_reason")}" required autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>
                 <button type="submit" class="btn btn-small" style="font-size: 0.8em; padding: 2px 6px;">${tt("audit.exempt")}</button>
             </form>
         </div>
@@ -261,23 +269,23 @@ function renderRow(tr, res) {
     scoreCell.innerHTML = scoreBar("PCI-DSS", res.pci_score) + scoreBar("CIS Benchmark", res.cis_score) + scoreBar("HIPAA", res.hipaa_score);
 
     ticketCell.innerHTML = `
-        <form method="post" action="/audit/ticket" style="margin: 0; display: flex; flex-direction: column; gap: 4px;">
+        <form method="post" action="/audit/ticket" class="audit-ticket-form">
             <input type="hidden" name="backup_filename" value="${esc(res.backup_filename)}">
-            <input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.9em; width: 120px;">
-            <input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore style="padding: 4px 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px; font-size: 0.85em; width: 120px;">
+            <label>${tt("audit.ticket_id_label")}<input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>
+            <label>${tt("audit.ticket_comment_label")}<input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>
             <button type="submit" class="btn btn-small" style="padding: 2px; font-size: 0.8em; width: 60px;">Link</button>
         </form>`;
 
-    const nCrit = (res.findings || []).filter(f => f.severity === "critical").length;
+    const nCrit = (res.findings || []).filter(f => isCriticalSeverity(f.severity)).length;
     const nWarn = (res.findings || []).filter(f => f.severity === "warning").length;
     actionCell.innerHTML = `
-        <button class="btn btn-small" onclick="toggleDetails(${fwid})" id="btn-${fwid}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">${tt("audit.details_show")}</button>
+        <button type="button" class="btn btn-small audit-detail-toggle" data-audit-detail="${fwid}" id="btn-${fwid}" aria-expanded="false" aria-controls="detail-${fwid}" style="background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px;">${tt("audit.details_show")}</button>
         <div style="margin-top: 6px; font-size: 0.82em;">
             ${nCrit ? `<span style="color: #ef4444;">● ${nCrit} ${tt("audit.n_critical")}</span> ` : ""}
             ${nWarn ? `<span style="color: #f59e0b;">● ${nWarn} ${tt("audit.n_warnings")}</span>` : ""}
             ${!nCrit && !nWarn ? `<span style="color: #10b981;">● ${tt("audit.clean")}</span>` : ""}
         </div>
-        <button class="btn btn-small" onclick="recompute(${fwid})" title="${tt("audit.recheck_title")}" style="margin-top: 6px; background: none; color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.1); padding: 2px 8px; font-size: 0.78em;">${tt("audit.recheck")}</button>`;
+        <button type="button" class="btn btn-small audit-recheck" data-audit-recheck="${fwid}" title="${tt("audit.recheck_title")}">${tt("audit.recheck")}</button>`;
 
     // The heavy details DOM (finding cards with per-finding exemption forms)
     // is built lazily on first expand: building it for every firewall up
@@ -288,6 +296,7 @@ function renderRow(tr, res) {
     if (detailRow.style.display !== "none") {
         buildDetail(fwid);
         document.getElementById("btn-" + fwid).textContent = tt("audit.details_hide");
+        document.getElementById("btn-" + fwid).setAttribute("aria-expanded", "true");
     }
 }
 
@@ -334,14 +343,40 @@ function buildDetail(fwid) {
 
 function renderError(tr, fwid) {
     tr.querySelector(".cell-sys").innerHTML = `<span style="color: #ef4444;">${tt("audit.load_error")}</span>`;
-    tr.querySelector(".cell-actions").innerHTML = `<button class="btn btn-small" onclick="loadRow(${fwid})" style="background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); padding: 4px 10px;">${tt("audit.retry")}</button>`;
+    tr.querySelector(".cell-actions").innerHTML = `<button type="button" class="btn btn-small audit-retry" data-audit-retry="${fwid}" style="background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); padding: 4px 10px;">${tt("audit.retry")}</button>`;
+}
+
+function reorderAuditRows() {
+    const body = document.getElementById("auditBody");
+    if (!body) return;
+    const ordered = auditRows.slice().sort((a, b) => {
+        function priority(tr) {
+            const id = String(tr.getAttribute("data-fwid"));
+            if (failedRows.has(id)) return [0, 0, 0, tr.dataset.fqdn || ""];
+            const res = auditState[id];
+            if (!res) return [4, 0, 100, tr.dataset.fqdn || ""];
+            const findings = res.findings || [];
+            const critical = findings.filter(f => isCriticalSeverity(f.severity)).length;
+            const warnings = findings.filter(f => f.severity === "warning").length;
+            const score = Math.min(res.pci_score ?? 100, res.cis_score ?? 100, res.hipaa_score ?? 100);
+            return [critical ? 1 : warnings ? 2 : 3, -(critical || warnings), score, tr.dataset.fqdn || ""];
+        }
+        const ap = priority(a), bp = priority(b);
+        for (let i = 0; i < 3; i++) if (ap[i] !== bp[i]) return ap[i] - bp[i];
+        return String(ap[3]).localeCompare(String(bp[3]));
+    });
+    for (const tr of ordered) {
+        body.appendChild(tr);
+        const detail = document.getElementById("detail-" + tr.getAttribute("data-fwid"));
+        if (detail) body.appendChild(detail);
+    }
 }
 
 function updateTotals() {
     totals.critical = 0; totals.warning = 0;
     for (const res of Object.values(auditState)) {
         for (const f of (res.findings || [])) {
-            if (f.severity === "critical") totals.critical++;
+            if (isCriticalSeverity(f.severity)) totals.critical++;
             else if (f.severity === "warning") totals.warning++;
         }
     }
@@ -352,6 +387,20 @@ function updateTotals() {
     document.getElementById("statWarnings").textContent = totals.warning + failMark;
     document.getElementById("statLoaded").textContent =
         totals.loaded + "/" + auditRows.length + (failedRows.size ? " ⚠" + failedRows.size : "");
+    const loadStatus = document.getElementById("auditLoadStatus");
+    if (loadStatus) {
+        if (failedRows.size) {
+            loadStatus.className = "audit-load-status is-error";
+            loadStatus.textContent = totals.loaded + "/" + auditRows.length + " loaded · " + failedRows.size + " failed. Results are incomplete.";
+        } else if (totals.loaded < auditRows.length) {
+            loadStatus.className = "audit-load-status is-loading";
+            loadStatus.textContent = "Loading audit results: " + totals.loaded + "/" + auditRows.length;
+        } else {
+            loadStatus.className = "audit-load-status";
+            loadStatus.textContent = "All " + auditRows.length + " audit results loaded.";
+        }
+    }
+    reorderAuditRows();
 }
 
 async function loadRow(fwid, recompute) {
@@ -369,7 +418,6 @@ async function loadRow(fwid, recompute) {
         failedRows.delete(String(fwid));
         renderRow(tr, res);
     } catch (e) {
-        console.error("audit load failed", fwid, e);
         failedRows.add(String(fwid));
         renderError(tr, fwid);
     } finally {
@@ -395,6 +443,7 @@ async function loadAll() {
         }
     }
     await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+    updateTotals();
 }
 
 function filterAuditTable() {
@@ -410,7 +459,7 @@ function filterAuditTable() {
             if (detailsRow) {
                 detailsRow.style.display = "none";
                 const btn = document.getElementById("btn-" + fwid);
-                if (btn) btn.textContent = tt("audit.details_show");
+                if (btn) { btn.textContent = tt("audit.details_show"); btn.setAttribute("aria-expanded", "false"); }
             }
         }
     }
@@ -423,12 +472,26 @@ function toggleDetails(fwID) {
         buildDetail(fwID);
         row.style.display = "table-row";
         btn.textContent = tt("audit.details_hide");
+        btn.setAttribute("aria-expanded", "true");
     } else {
         row.style.display = "none";
         btn.textContent = tt("audit.details_show");
+        btn.setAttribute("aria-expanded", "false");
     }
 }
 
-document.addEventListener("DOMContentLoaded", loadAll);
+document.addEventListener("click", function (event) {
+    const detailToggle = event.target.closest("[data-audit-detail]");
+    if (detailToggle) toggleDetails(Number(detailToggle.dataset.auditDetail));
+    const retry = event.target.closest("[data-audit-retry]");
+    if (retry) loadRow(Number(retry.dataset.auditRetry));
+    const recheck = event.target.closest("[data-audit-recheck]");
+    if (recheck) recompute(Number(recheck.dataset.auditRecheck));
+});
+document.addEventListener("DOMContentLoaded", function () {
+    const filter = document.getElementById("auditSearch");
+    if (filter) filter.addEventListener("input", filterAuditTable);
+    loadAll();
+});
 </script>
 {{end}}
