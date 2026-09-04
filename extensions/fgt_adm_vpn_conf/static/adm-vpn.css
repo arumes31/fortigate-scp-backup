@@ -22,6 +22,7 @@
 .adm-fleet-table { width: 100%; table-layout: fixed; }
 .adm-fleet-table th, .adm-fleet-table td { padding: 9px 10px; overflow-wrap: anywhere; vertical-align: middle; }
 .adm-fleet-table th[data-column="identity"] { width: 21%; }
+.adm-fleet-table th[data-column="selection"] { width: 42px; }
 .adm-fleet-table th[data-column="enabled"] { width: 10%; }
 .adm-fleet-table th[data-column="health"] { width: 20%; }
 .adm-fleet-table th[data-column="last-check"] { width: 14%; }
@@ -38,6 +39,8 @@
 .adm-health--failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
 .adm-health--warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 55%, transparent); }
 .adm-health--unknown { color: var(--text-muted); }
+.adm-bulk-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.adm-bulk-feedback { margin: 0 0 0 6px; }
 .adm-vpn-page[data-column-preset="compact"] [data-column="endpoint"], .adm-vpn-page[data-column-preset="compact"] [data-column="evidence"], .adm-vpn-page[data-column-preset="standard"] [data-column="evidence"] { display: none; }
 
 .adm-detail-empty { display: grid; min-height: 220px; place-content: center; text-align: center; }

@@ -5,6 +5,7 @@
 package fgtadmvpnconf
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -38,6 +39,9 @@ type Extension struct {
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
 	pageBase    extension.PageBaseProvider
+	// buildConfigZipFn is a narrow test seam for per-entry bulk failure handling.
+	// Production uses buildConfigZip when this is nil.
+	buildConfigZipFn func(*VpnConfig) (*bytes.Buffer, error)
 
 	// lookupHost resolves a hostname for the DNS record check; tests replace it
 	// with a stub so no real DNS traffic happens.
@@ -109,6 +113,8 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		// simple GET navigation/prefetch/<img>.
 		pr.Post("/delete/{id}", e.delete)
 		pr.Get("/generate_single/{id}", e.generateSingle)
+		pr.Post("/bulk/generate", e.bulkGenerate)
+		pr.Post("/bulk/export", e.bulkExport)
 		pr.Get("/export", e.exportCSV)
 		pr.Get("/export_bookmarks", e.exportBookmarks)
 	})

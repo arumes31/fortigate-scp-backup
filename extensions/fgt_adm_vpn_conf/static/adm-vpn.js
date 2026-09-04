@@ -55,6 +55,87 @@
             target.hidden = false;
             window.FortiSafeUI.announce(target, kind, message);
         }
+
+        var maxSelection = 100;
+        var bulkForm = root.querySelector('#admBulkForm');
+        var bulkFeedback = root.querySelector('#vpnBulkFeedback');
+        var selectionCount = root.querySelector('#vpnSelectionCount');
+        var selectionBoxes = Array.prototype.slice.call(root.querySelectorAll('[data-vpn-checkbox]'));
+        var bulkButtons = Array.prototype.slice.call(root.querySelectorAll('[data-bulk-action]'));
+        function selectedBoxes() { return selectionBoxes.filter(function (box) { return box.checked; }); }
+        function updateSelection() {
+            var count = selectedBoxes().length;
+            selectionCount.textContent = count + ' selected';
+            bulkButtons.forEach(function (button) { button.disabled = count === 0 || count > maxSelection; });
+        }
+        selectionBoxes.forEach(function (box) {
+            box.addEventListener('change', function () {
+                if (box.checked && selectedBoxes().length > maxSelection) {
+                    box.checked = false;
+                    announce(bulkFeedback, 'error', 'A maximum of 100 entries can be selected.');
+                }
+                updateSelection();
+            });
+        });
+        root.querySelector('#vpnSelectVisible').addEventListener('click', function () {
+            var omitted = 0;
+            selectionBoxes.forEach(function (box) {
+                var row = box.closest('[data-vpn-row]');
+                if (!row.hidden && !box.checked) {
+                    if (selectedBoxes().length < maxSelection) { box.checked = true; }
+                    else { omitted++; }
+                }
+            });
+            updateSelection();
+            if (omitted > 0) { announce(bulkFeedback, 'error', 'Selected 100 visible entries; ' + omitted + ' exceed the limit.'); }
+        });
+        root.querySelector('#vpnClearSelection').addEventListener('click', function () {
+            selectionBoxes.forEach(function (box) { box.checked = false; });
+            updateSelection();
+            bulkFeedback.hidden = true;
+        });
+        bulkForm.addEventListener('submit', function (event) {
+            event.preventDefault();
+            var selected = selectedBoxes();
+            if (selected.length === 0) {
+                announce(bulkFeedback, 'error', 'Select at least one entry.');
+                return;
+            }
+            if (selected.length > maxSelection) {
+                announce(bulkFeedback, 'error', 'A maximum of 100 entries can be processed at once.');
+                return;
+            }
+            var submitter = event.submitter;
+            var action = submitter && submitter.formAction;
+            if (!action) { return; }
+            bulkButtons.forEach(function (button) { button.disabled = true; });
+            announce(bulkFeedback, 'loading', 'Preparing ' + selected.length + ' entries…');
+            fetch(action, { method: 'POST', body: new FormData(bulkForm) })
+                .then(function (response) {
+                    if (!response.ok) { return response.text().then(function (text) { throw new Error(text.trim() || ('HTTP ' + response.status)); }); }
+                    return response.blob().then(function (blob) { return { response: response, blob: blob }; });
+                })
+                .then(function (result) {
+                    var disposition = result.response.headers.get('Content-Disposition') || '';
+                    var filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+                    var filename = filenameMatch ? filenameMatch[1] : 'adm-vpn-download';
+                    var url = URL.createObjectURL(result.blob);
+                    var link = document.createElement('a');
+                    link.href = url;
+                    link.download = filename;
+                    link.click();
+                    window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+                    var succeeded = result.response.headers.get('X-FortiSafe-Bulk-Succeeded') || String(selected.length);
+                    var failed = result.response.headers.get('X-FortiSafe-Bulk-Failed') || '0';
+                    var failedIDs = result.response.headers.get('X-FortiSafe-Bulk-Failed-IDs') || '';
+                    var message = succeeded + ' succeeded, ' + failed + ' failed.';
+                    if (failedIDs) { message += ' Failed IDs: ' + failedIDs + '.'; }
+                    announce(bulkFeedback, failed === '0' ? 'success' : 'error', message);
+                })
+                .catch(function (error) { announce(bulkFeedback, 'error', 'Bulk operation failed: ' + error.message); })
+                .finally(updateSelection);
+        });
+        updateSelection();
         var editModal = root.querySelector('#editModal');
         var modalBody = root.querySelector('#modal-body-content');
         var editFeedback = root.querySelector('#editFeedback');

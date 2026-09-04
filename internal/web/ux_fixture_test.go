@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -432,6 +433,35 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/import", redirectADMVPN)
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/edit/{id}", redirectADMVPN)
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/delete/{id}", redirectADMVPN)
+	mux.HandleFunc("POST /fgt-adm-vpn-conf/bulk/{operation}", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(64 << 10); err != nil {
+			http.Error(w, "invalid selection", http.StatusBadRequest)
+			return
+		}
+		ids := r.MultipartForm.Value["id"]
+		if len(ids) == 0 || len(ids) > 100 {
+			http.Error(w, "selection outside fixture bounds", http.StatusBadRequest)
+			return
+		}
+		operation := r.PathValue("operation")
+		failedIDs := []string{}
+		if operation == "generate" && slices.Contains(ids, "8") {
+			failedIDs = append(failedIDs, "8")
+		}
+		succeeded := len(ids) - len(failedIDs)
+		w.Header().Set("X-FortiSafe-Bulk-Succeeded", strconv.Itoa(succeeded))
+		w.Header().Set("X-FortiSafe-Bulk-Failed", strconv.Itoa(len(failedIDs)))
+		w.Header().Set("X-FortiSafe-Bulk-Failed-IDs", strings.Join(failedIDs, ","))
+		if operation == "export" {
+			w.Header().Set("Content-Type", "text/csv")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="vpn_configs_%d_selected.csv"`, len(ids)))
+			_, _ = io.WriteString(w, "id\r\n"+strings.Join(ids, "\r\n")+"\r\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="fgt_adm_configs_%d_selected.zip"`, len(ids)))
+		_, _ = io.WriteString(w, "PK synthetic bulk fixture")
+	})
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/generate_single/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "# synthetic generated configuration\n")
@@ -559,6 +589,20 @@ func uxADMVPNFixture(scenario uxScenario) any {
 			"LastGraylogDisplay": "2026-09-02 10:28 UTC", "LastGraylogISO": uxFixtureNow.Add(-2 * time.Minute).Format(time.RFC3339),
 			"LastDnsDisplay": "2026-09-02 10:27 UTC", "LastDnsISO": uxFixtureNow.Add(-3 * time.Minute).Format(time.RFC3339),
 		})
+		if scenario == uxScenarioLoading {
+			for id := 9; id <= 107; id++ {
+				configs = append(configs, map[string]any{
+					"ID": id, "Firewallname": fmt.Sprintf("bulk-%03d.example.test", id), "Cid": strconv.Itoa(1000 + id),
+					"Kundenname": "Bulk fixture", "Standort": "Vienna", "RemoteipFull": fmt.Sprintf("10.105.1.%d", (id%240)+10),
+					"RemoteipFull1st": fmt.Sprintf("10.150.11.%d", (id%240)+10), "Ike2Username": fmt.Sprintf("vpn-adm-bulk-%03d", id),
+					"WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES", "GraylogEnabled": true,
+					"LastGraylogStatus": "online", "LastDnsStatus": "ok", "DnsNameFull": fmt.Sprintf("bulk-%03d.example.test", id),
+					"LastDnsResolved": fmt.Sprintf("10.105.1.%d", (id%240)+10), "HealthState": "healthy", "HealthLabel": "Checks pass",
+					"HealthSummary": "Graylog online · DNS verified", "GraylogEvidence": "Graylog online", "DnsEvidence": "DNS verified",
+					"LastCheckDisplay": "2026-09-02 10:29 UTC", "LastCheckISO": uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
+				})
+			}
+		}
 	}
 	return map[string]any{
 		"Base": uxBase("FGT ADM VPN Config", "admvpn"), "Configs": configs,

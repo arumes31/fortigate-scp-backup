@@ -358,6 +358,31 @@ func (e *Extension) allConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("")
 }
 
+func (e *Extension) configsByIDs(ids []int64) ([]*VpnConfig, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		args[index] = id
+	}
+	rows, err := e.db.Query("SELECT "+selectCols+" FROM vpn_config WHERE id IN ("+placeholders+") ORDER BY id", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	configs := make([]*VpnConfig, 0, len(ids))
+	for rows.Next() {
+		config, err := scanConfig(rows)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	return configs, rows.Err()
+}
+
 func (e *Extension) enabledConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("WHERE graylog_enabled = 1")
 }

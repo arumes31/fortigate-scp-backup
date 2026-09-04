@@ -501,27 +501,10 @@ func (e *Extension) exportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=vpn_configs_backup.csv")
 
-	cw := csv.NewWriter(w)
-	cw.UseCRLF = true
-	_ = cw.Write([]string{
-		"Kundenname", "Standort", "REMOTEIP-FULL", "REMOTEIP-FULL-1st",
-		"ike2_username", "WAN-Interface", "LAN-Interface", "DNS-Name",
-		"IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full",
-		"Firewallname", "CID", "graylog_enabled", "cluster_hostnames",
-	})
-	for _, c := range configs {
-		gl := "NO"
-		if c.GraylogEnabled {
-			gl = "YES"
-		}
-		_ = cw.Write([]string{
-			c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st,
-			c.Ike2Username, c.WanInterface, c.LanInterface, c.DnsName,
-			c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
-			c.Firewallname, c.Cid, gl, c.ClusterHostnames,
-		})
+	if err := writeConfigsCSV(w, configs); err != nil {
+		e.logger.Error("ADM VPN CSV export failed", "err", err)
+		return
 	}
-	cw.Flush()
 	e.log(r, "FGT ADM VPN - Export", "Exported all configs to CSV")
 }
 

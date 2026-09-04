@@ -83,13 +83,23 @@
                         </select>
                     </label>
                     <label class="adm-search-control" for="vpnSearch">Search entries
-                        <input type="search" id="vpnSearch" placeholder="Firewall, customer, site, CID&hellip;" autocomplete="off">
+                        <input type="search" id="vpnSearch" aria-label="Search VPN entries" placeholder="Firewall, customer, site, CID&hellip;" autocomplete="off">
                     </label>
                     <span class="muted adm-search-count" id="vpnSearchCount" aria-live="polite"></span>
                 </div>
+                <form class="adm-bulk-bar" id="admBulkForm" method="post">
+                    <button class="btn btn-sm" type="button" id="vpnSelectVisible">Select visible</button>
+                    <button class="btn btn-sm" type="button" id="vpnClearSelection">Clear</button>
+                    <strong id="vpnSelectionCount">0 selected</strong>
+                    <span class="dialog-feedback adm-bulk-feedback" id="vpnBulkFeedback" role="status" aria-live="polite" hidden></span>
+                    <span class="spacer"></span>
+                    <button class="btn btn-sm" type="submit" formaction="/fgt-adm-vpn-conf/bulk/export" data-bulk-action="export" disabled>Export selected CSV</button>
+                    <button class="btn btn-sm btn-primary" type="submit" formaction="/fgt-adm-vpn-conf/bulk/generate" data-bulk-action="generate" disabled>Generate selected</button>
+                </form>
                 <div class="table-wrap adm-fleet-table-wrap">
                     <table class="data compact adm-fleet-table" id="vpnTable">
                         <thead><tr>
+                            <th data-column="selection"><span class="sr-only">Select</span></th>
                             <th data-column="identity">Identity</th>
                             <th data-column="enabled">Monitoring</th>
                             <th data-column="health">Check health</th>
@@ -101,6 +111,7 @@
                         <tbody>
                             {{range .Configs}}
                             <tr tabindex="0" data-vpn-row="{{.ID}}" aria-selected="false" aria-controls="vpn-detail-{{.ID}}">
+                                <td data-column="selection"><input type="checkbox" name="id" value="{{.ID}}" form="admBulkForm" data-vpn-checkbox aria-label="Select {{.Firewallname}}"></td>
                                 <td data-column="identity"><strong class="adm-identity">{{.Firewallname}}</strong><span class="sub">{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</span></td>
                                 <td data-column="enabled">{{if .GraylogEnabled}}<span class="pill pill-success">Enabled</span>{{else}}<span class="pill pill-muted">Disabled</span>{{end}}</td>
                                 <td data-column="health"><span class="pill adm-health adm-health--{{.HealthState}}">{{.HealthLabel}}</span><span class="sub">{{.HealthSummary}}</span></td>
@@ -110,7 +121,7 @@
                                 <td data-column="details"><button type="button" class="btn btn-sm" data-vpn-select="{{.ID}}" aria-label="Details for {{.Firewallname}}">Details</button></td>
                             </tr>
                             {{else}}
-                            <tr><td colspan="7" class="empty">No entries yet.</td></tr>
+                            <tr><td colspan="8" class="empty">No entries yet.</td></tr>
                             {{end}}
                         </tbody>
                     </table>
