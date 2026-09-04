@@ -178,10 +178,50 @@
         </dialog>
 
         <div class="card" id="cc-results" hidden>
-            <h2>Results</h2>
-            <div id="cc-warnings" hidden></div>
-            <div id="cc-sections"></div>
-            <button type="button" class="btn btn-sm" id="cc-copy-all">Copy All</button>
+            <div class="cc-result-heading">
+                <div>
+                    <p class="cc-recipe-step">Generated review</p>
+                    <h2>Results</h2>
+                </div>
+                <p id="cc-result-summary" aria-live="polite"></p>
+            </div>
+            <div class="cc-result-tabs" data-tabs>
+                <div class="cc-tablist" role="tablist" aria-label="Conversion result views">
+                    <button type="button" class="cc-tab" id="cc-result-tab-impact" role="tab" aria-selected="true" aria-controls="cc-result-impact">Impact <span id="cc-impact-count">0</span></button>
+                    <button type="button" class="cc-tab" id="cc-result-tab-warnings" role="tab" aria-selected="false" aria-controls="cc-result-warnings" tabindex="-1">Warnings <span id="cc-warning-count">0</span></button>
+                    <button type="button" class="cc-tab" id="cc-result-tab-cli" role="tab" aria-selected="false" aria-controls="cc-result-cli" tabindex="-1">CLI <span id="cc-cli-count">0</span></button>
+                </div>
+                <section class="cc-tabpanel" id="cc-result-impact" role="tabpanel" aria-labelledby="cc-result-tab-impact">
+                    <h3>Modeled configuration impact</h3>
+                    <p class="cc-intro">Field values stay in the CLI view; this table names only affected objects and fields.</p>
+                    <p class="cc-empty" id="cc-no-changes" hidden>No modeled configuration changes were detected.</p>
+                    <p class="cc-error" id="cc-impact-truncated" hidden></p>
+                    <div class="table-wrap" id="cc-impact-table-wrap" hidden>
+                        <table class="cc-impact-table">
+                            <thead><tr><th scope="col">Object type</th><th scope="col">Object</th><th scope="col">Action</th><th scope="col">Summary</th></tr></thead>
+                            <tbody id="cc-impact-rows"></tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="cc-tabpanel" id="cc-result-warnings" role="tabpanel" aria-labelledby="cc-result-tab-warnings" hidden>
+                    <h3>Warnings requiring review</h3>
+                    <div id="cc-warnings"></div>
+                </section>
+                <section class="cc-tabpanel" id="cc-result-cli" role="tabpanel" aria-labelledby="cc-result-tab-cli" hidden>
+                    <div class="cc-cli-heading">
+                        <div>
+                            <h3>Generated FortiGate CLI</h3>
+                            <p class="cc-intro">Review and test this output before applying it.</p>
+                        </div>
+                        <div class="cc-cli-actions">
+                            <button type="button" class="btn btn-sm" id="cc-copy-all">Copy all CLI</button>
+                            <button type="button" class="btn btn-sm" id="cc-download-cli">Download CLI</button>
+                        </div>
+                    </div>
+                    <p class="cc-action-feedback" id="cc-copy-feedback" role="status" aria-live="polite"></p>
+                    <div id="cc-sections"></div>
+                </section>
+            </div>
         </div>
     </div>
 {{end}}

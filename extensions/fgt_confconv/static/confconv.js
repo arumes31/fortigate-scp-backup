@@ -395,33 +395,96 @@ async function generate() {
 
 function renderResults(result) {
     $('cc-results').hidden = false;
+    const changes = result.changes || [];
+    const warnings = result.warnings || [];
+    const sections = result.sections || [];
+    const changeCount = Number.isInteger(result.changeCount) ? result.changeCount : changes.length;
+    $('cc-result-summary').textContent = `${changeCount} modeled change${changeCount === 1 ? '' : 's'} · ${warnings.length} warning${warnings.length === 1 ? '' : 's'} · ${sections.length} CLI section${sections.length === 1 ? '' : 's'}`;
+    $('cc-impact-count').textContent = String(changeCount);
+    $('cc-warning-count').textContent = String(warnings.length);
+    $('cc-cli-count').textContent = String(sections.length);
+
+    const impactRows = $('cc-impact-rows');
+    const noChanges = $('cc-no-changes');
+    const impactTable = $('cc-impact-table-wrap');
+    noChanges.hidden = changes.length !== 0;
+    impactTable.hidden = changes.length === 0;
+    impactRows.innerHTML = changes.map(change => `
+        <tr>
+            <td>${esc(change.kind)}</td>
+            <td><strong>${esc(change.name)}</strong></td>
+            <td><span class="cc-impact-action" data-action="${esc(change.action)}">${esc(change.action)}</span></td>
+            <td>${esc(change.summary)}</td>
+        </tr>
+    `).join('');
+    const truncated = $('cc-impact-truncated');
+    truncated.hidden = !result.changesTruncated;
+    truncated.textContent = result.changesTruncated
+        ? `Showing the first ${changes.length} of ${changeCount} modeled changes in deterministic order.`
+        : '';
+
     const warningsEl = $('cc-warnings');
-    if (result.warnings && result.warnings.length) {
-        warningsEl.hidden = false;
-        warningsEl.innerHTML = '<h3>Needs manual review</h3><ul class="cc-warning-list">' +
-            result.warnings.map(w =>
+    if (warnings.length) {
+        warningsEl.innerHTML = '<ul class="cc-warning-list">' +
+            warnings.map(w =>
                 `<li><strong>${esc(w.recipe)}:</strong> ${esc(w.detail)}${w.line ? ` <code>${esc(w.line)}</code>` : ''}</li>`
             ).join('') + '</ul>';
     } else {
-        warningsEl.hidden = true;
-        warningsEl.innerHTML = '';
+        warningsEl.innerHTML = '<p class="cc-empty">No warnings were reported.</p>';
     }
 
     const sectionsEl = $('cc-sections');
-    sectionsEl.innerHTML = (result.sections || []).map((s, i) => `
+    sectionsEl.innerHTML = sections.map((s, i) => `
         <h3>${esc(s.label)}</h3>
-        <button type="button" class="btn btn-sm cc-copy" data-target="cc-section-${i}">Copy</button>
+        <button type="button" class="btn btn-sm cc-copy" data-target="cc-section-${i}">Copy section</button>
         <pre class="cc-config" id="cc-section-${i}">${esc(s.lines.join('\n'))}</pre>
-    `).join('');
+    `).join('') || '<p class="cc-empty">No CLI sections were generated.</p>';
 
     sectionsEl.querySelectorAll('.cc-copy').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const pre = $(btn.dataset.target);
-            if (navigator.clipboard) navigator.clipboard.writeText(pre.textContent);
+            await copyResultText(pre.textContent, 'CLI section copied.');
         });
     });
 
     ccState.combined = result.combined || '';
+    $('cc-result-tab-impact').click();
+    $('cc-results').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+}
+
+async function copyResultText(value, successMessage) {
+    const feedback = $('cc-copy-feedback');
+    try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard is unavailable');
+        await navigator.clipboard.writeText(value);
+        feedback.dataset.state = 'success';
+        feedback.textContent = successMessage;
+    } catch {
+        feedback.dataset.state = 'error';
+        feedback.textContent = 'Copy failed. Select the CLI text and copy it manually.';
+    }
+}
+
+function downloadCLI() {
+    const feedback = $('cc-copy-feedback');
+    if (!ccState.combined) {
+        feedback.dataset.state = 'error';
+        feedback.textContent = 'No generated CLI is available to download.';
+        return;
+    }
+    const fwID = parseInt($('cc-firewall').value, 10);
+    const suffix = Number.isInteger(fwID) && fwID > 0 ? String(fwID) : 'result';
+    const blob = new Blob([ccState.combined], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `confconv-firewall-${suffix}.conf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    feedback.dataset.state = 'success';
+    feedback.textContent = 'CLI download prepared.';
 }
 
 /* ---------------- wiring ---------------- */
@@ -464,9 +527,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     $('cc-generate-btn').addEventListener('click', generate);
-    $('cc-copy-all').addEventListener('click', () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(ccState.combined || '');
-    });
+    $('cc-copy-all').addEventListener('click', () => copyResultText(ccState.combined || '', 'All CLI copied.'));
+    $('cc-download-cli').addEventListener('click', downloadCLI);
 });
 
 })();

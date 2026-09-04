@@ -294,6 +294,139 @@
     color: var(--danger);
 }
 
+.confconv-page .cc-result-heading,
+.confconv-page .cc-cli-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.confconv-page .cc-result-heading h2,
+.confconv-page .cc-cli-heading h3 {
+    margin: 4px 0 0;
+}
+
+.confconv-page #cc-result-summary {
+    margin: 0;
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 12px;
+}
+
+.confconv-page .cc-tablist {
+    display: flex;
+    gap: 4px;
+    margin-top: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.confconv-page .cc-tab {
+    appearance: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    padding: 9px 12px;
+    font: 700 11px/1 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.confconv-page .cc-tab span {
+    display: inline-block;
+    min-width: 20px;
+    margin-left: 5px;
+    border: 1px solid var(--border);
+    padding: 2px 5px;
+    color: var(--text-dim);
+    text-align: center;
+}
+
+.confconv-page .cc-tab[aria-selected="true"] {
+    border-bottom-color: var(--accent);
+    color: var(--accent);
+}
+
+.confconv-page .cc-tab:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.confconv-page .cc-tabpanel {
+    padding-top: 18px;
+}
+
+.confconv-page .cc-tabpanel[hidden] {
+    display: none;
+}
+
+.confconv-page .cc-tabpanel h3 {
+    margin: 0;
+    font-size: 14px;
+}
+
+.confconv-page .cc-empty {
+    margin: 12px 0 0;
+    border: 1px dashed var(--border);
+    padding: 18px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.confconv-page .cc-impact-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.confconv-page .cc-impact-table th,
+.confconv-page .cc-impact-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 9px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.confconv-page .cc-impact-table th {
+    color: var(--text-dim);
+    font: 700 10px/1.3 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.confconv-page .cc-impact-action {
+    display: inline-block;
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    color: var(--text-muted);
+    font: 700 10px/1.2 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.confconv-page .cc-impact-action[data-action="create"] {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.confconv-page .cc-impact-action[data-action="delete"],
+.confconv-page .cc-impact-action[data-action="disable"] {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.confconv-page .cc-cli-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.confconv-page #cc-copy-feedback {
+    min-height: 1.45em;
+    margin: 8px 0;
+}
+
 .confconv-page .cc-port-dialog {
     width: min(580px, calc(100% - 48px));
     max-height: min(720px, calc(100vh - 48px));
@@ -331,6 +464,12 @@
     .confconv-page .cc-recipe-brief,
     .confconv-page .cc-pipeline-card {
         grid-template-columns: 1fr;
+    }
+
+    .confconv-page .cc-result-heading,
+    .confconv-page .cc-cli-heading {
+        align-items: flex-start;
+        flex-direction: column;
     }
 }
 

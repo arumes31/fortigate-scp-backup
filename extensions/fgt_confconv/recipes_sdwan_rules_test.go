@@ -100,6 +100,21 @@ func TestSDWANRulesRecipe_ManualStrategyUsesPriorityMembers(t *testing.T) {
 	if !strings.Contains(joined, "set status disable") {
 		t.Errorf("cli missing the route-disable block:\n%s", joined)
 	}
+	if len(cfg.SDWANRules) != 1 || cfg.SDWANRules[0].Seq != 6 || cfg.SDWANRules[0].PriorityMembers != "1 2" {
+		t.Errorf("modeled SD-WAN rules = %+v, want generated rule 6", cfg.SDWANRules)
+	}
+}
+
+func TestSDWANRulesRecipe_DoesNotReuseExistingRuleSequence(t *testing.T) {
+	cfg := freshSDWANRulesConfig()
+	cfg.SDWANRules = []*SDWANRule{{Seq: 50, Name: "existing"}}
+	_, _, err := (sdwanRulesRecipe{}).Run(cfg, mustJSON(t, SDWANRulesOptions{Strategy: "manual"}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := cfg.SDWANRules[len(cfg.SDWANRules)-1].Seq; got != 51 {
+		t.Fatalf("new SD-WAN rule sequence = %d, want 51", got)
+	}
 }
 
 func TestSDWANRulesRecipe_RejectsUnknownStrategy(t *testing.T) {

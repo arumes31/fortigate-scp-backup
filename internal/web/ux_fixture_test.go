@@ -549,6 +549,8 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("POST /fgt-confconv/convert", jsonResponse(`{
 		"sections":[{"recipe":"sdwan-routes-to-rules","label":"SD-WAN rules","lines":["config system sdwan","    config service","        edit 1","        next","    end","end"]}],
 		"warnings":[],"appliedOrder":["sdwan-routes-to-rules"],
+		"changes":[{"kind":"SD-WAN rule","name":"1","action":"create","summary":"Created SD-WAN rule."}],
+		"changeCount":1,"changesTruncated":false,
 		"combined":"config system sdwan\n    config service\n        edit 1\n        next\n    end\nend"
 	}`))
 	mux.HandleFunc("GET /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
