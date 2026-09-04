@@ -25,16 +25,21 @@ import (
 )
 
 const (
-	dashboardStateAll      = "all"
-	dashboardPageSize      = 25
-	dashboardActiveLimit   = 100
-	dashboardEventPageSize = 100
-	dashboardVDOMLimit     = 20
-	dashboardMaxPage       = 10_000
-	dashboardMaxFormBytes  = 32 << 10
-	maxSearchRunes         = 256
-	maxSearchTerms         = 10
-	dashboardWhereSQL      = `c.state = ?
+	dashboardStateAll               = "all"
+	dashboardPageSize               = 25
+	dashboardActiveLimit            = 100
+	dashboardEventPageSize          = 100
+	dashboardVDOMLimit              = 20
+	dashboardMaxPage                = 10_000
+	dashboardMaxFormBytes           = 32 << 10
+	dashboardMaxPreviewBytes        = 2 << 20
+	dashboardPreviewTextBytes       = 32 << 10
+	dashboardChainViewChronological = "chronological"
+	dashboardChainViewTransaction   = "transaction"
+	dashboardChainViewObject        = "object"
+	maxSearchRunes                  = 256
+	maxSearchTerms                  = 10
+	dashboardWhereSQL               = `c.state = ?
 		AND (? = 0 OR EXISTS (SELECT 1 FROM events es
 			JOIN event_search ON event_search.rowid = es.id
 			WHERE es.chain_id = c.id AND event_search MATCH ?))
@@ -94,6 +99,7 @@ type dashboardCounts struct {
 
 type dashboardEvent struct {
 	ID               int64
+	Sequence         int
 	EventAt          time.Time
 	Source           string
 	DeviceName       string
@@ -138,6 +144,32 @@ type dashboardChain struct {
 	VDOMs            []string
 	VDOMsOmitted     int
 	QuietEligibleAt  time.Time
+	TicketPreview    dashboardTicketPreview
+}
+
+type dashboardTicketPreview struct {
+	Summary     string
+	Description string
+	Unavailable bool
+	Truncated   bool
+}
+
+type dashboardEventGroup struct {
+	Label  string
+	Events []dashboardEvent
+}
+
+type dashboardDeliverySummary struct {
+	State      string
+	Label      string
+	Detail     string
+	Action     string
+	Attempts   int
+	NextAt     time.Time
+	AcceptedAt time.Time
+	RequestID  string
+	TicketURL  string
+	LastError  string
 }
 
 type dashboardData struct {
@@ -213,13 +245,19 @@ type dashboardPageData struct {
 }
 
 type dashboardChainPageData struct {
-	Base         webui.BaseData
-	Chain        dashboardChain
-	Page         int
-	TotalPages   int
-	PrevURL      string
-	NextURL      string
-	IgnoreNotice string
+	Base             webui.BaseData
+	Chain            dashboardChain
+	Delivery         dashboardDeliverySummary
+	EventGroups      []dashboardEventGroup
+	View             string
+	ChronologicalURL string
+	TransactionURL   string
+	ObjectURL        string
+	Page             int
+	TotalPages       int
+	PrevURL          string
+	NextURL          string
+	IgnoreNotice     string
 }
 
 type dashboardStatusResponse struct {
@@ -229,9 +267,10 @@ type dashboardStatusResponse struct {
 
 func parseDashboardPages() (*webui.Renderer, *webui.Renderer, error) {
 	funcs := template.FuncMap{
-		"fmtTime":        formatDashboardTime,
-		"fmtMachineTime": formatDashboardMachineTime,
-		"fmtDuration":    formatDashboardDuration,
+		"fmtTime":            formatDashboardTime,
+		"fmtMachineTime":     formatDashboardMachineTime,
+		"fmtDuration":        formatDashboardDuration,
+		"fmtSessionDuration": formatDashboardSessionDuration,
 	}
 	indexPage, err := webui.ParsePage(dashboardFS, "templates/index.html", funcs)
 	if err != nil {
@@ -743,11 +782,45 @@ func (s *store) dashboardChainPage(
 	if err != nil {
 		return dashboardChain{}, 0, err
 	}
+	for eventIndex := range chain.Events {
+		chain.Events[eventIndex].Sequence = (page-1)*dashboardEventPageSize + eventIndex + 1
+	}
 	chain.VDOMs, chain.VDOMsOmitted, err = s.dashboardVDOMs(ctx, chainID)
 	if err != nil {
 		return dashboardChain{}, 0, err
 	}
+	chain.TicketPreview, err = s.dashboardTicketPreview(ctx, chainID)
+	if err != nil {
+		return dashboardChain{}, 0, err
+	}
 	return chain, totalPages, nil
+}
+
+func (s *store) dashboardTicketPreview(ctx context.Context, chainID string) (dashboardTicketPreview, error) {
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM outbox WHERE chain_id = ?`, chainID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dashboardTicketPreview{}, nil
+	}
+	if err != nil {
+		return dashboardTicketPreview{}, fmt.Errorf("read conftail ticket preview: %w", err)
+	}
+	if len(payload) == 0 || len(payload) > dashboardMaxPreviewBytes {
+		return dashboardTicketPreview{Unavailable: true}, nil
+	}
+	var frozen struct {
+		Summary     string `json:"summary"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(payload, &frozen); err != nil || strings.TrimSpace(frozen.Description) == "" {
+		return dashboardTicketPreview{Unavailable: true}, nil
+	}
+	description := truncateUTF8Bytes(frozen.Description, dashboardPreviewTextBytes)
+	return dashboardTicketPreview{
+		Summary:     sanitizeExternalString(frozen.Summary, 255),
+		Description: description,
+		Truncated:   len(description) < len(frozen.Description),
+	}, nil
 }
 
 func (s *store) dashboardEventPage(
@@ -941,7 +1014,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	chainID, pageNumber, err := parseDashboardChainRequest(r)
+	chainID, pageNumber, viewMode, err := parseDashboardChainRequest(r)
 	if err != nil {
 		http.Error(w, "Invalid configuration change session", http.StatusBadRequest)
 		return
@@ -990,17 +1063,23 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		username = e.currentUser(r)
 	}
 	view := dashboardChainPageData{
-		Base:         e.pageBase(r, "Configuration Change Session", "conftail"),
-		Chain:        chain,
-		Page:         pageNumber,
-		TotalPages:   totalPages,
-		IgnoreNotice: dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
+		Base:             e.pageBase(r, "Configuration Change Session", "conftail"),
+		Chain:            chain,
+		Delivery:         buildDashboardDeliverySummary(chain),
+		EventGroups:      dashboardEventGroups(chain.Events, viewMode),
+		View:             viewMode,
+		ChronologicalURL: dashboardChainPageURL(chainID, pageNumber, dashboardChainViewChronological),
+		TransactionURL:   dashboardChainPageURL(chainID, pageNumber, dashboardChainViewTransaction),
+		ObjectURL:        dashboardChainPageURL(chainID, pageNumber, dashboardChainViewObject),
+		Page:             pageNumber,
+		TotalPages:       totalPages,
+		IgnoreNotice:     dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
 	}
 	if pageNumber > 1 {
-		view.PrevURL = dashboardChainPageURL(chainID, pageNumber-1)
+		view.PrevURL = dashboardChainPageURL(chainID, pageNumber-1, viewMode)
 	}
 	if pageNumber < totalPages {
-		view.NextURL = dashboardChainPageURL(chainID, pageNumber+1)
+		view.NextURL = dashboardChainPageURL(chainID, pageNumber+1, viewMode)
 	}
 	var output bytes.Buffer
 	if err := e.chainPage.Render(&output, view); err != nil {
@@ -1018,6 +1097,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 			"actor", sanitizeExternalString(username, maxIdentityRunes),
 			"chain_id", chainID,
 			"state", chain.State,
+			"view", viewMode,
 			"page", pageNumber,
 			"total_pages", totalPages,
 			"event_rows", len(chain.Events),
@@ -1041,20 +1121,130 @@ func dashboardIgnoreNotice(value string) string {
 	}
 }
 
-func parseDashboardChainRequest(r *http.Request) (string, int, error) {
+func parseDashboardChainRequest(r *http.Request) (string, int, string, error) {
 	chainID := strings.TrimSpace(chi.URLParam(r, "chainID"))
 	parsedID, err := uuid.Parse(chainID)
 	if err != nil || parsedID == uuid.Nil || parsedID.String() != strings.ToLower(chainID) {
-		return "", 0, errors.New("invalid chain id")
+		return "", 0, "", errors.New("invalid chain id")
+	}
+	if err := validateDashboardKeys(r.URL.Query(), map[string]bool{
+		"page": true, "view": true, "ignore": true,
+	}); err != nil {
+		return "", 0, "", err
 	}
 	page := 1
 	if value := strings.TrimSpace(r.URL.Query().Get("page")); value != "" {
 		page, err = strconv.Atoi(value)
 		if err != nil || page < 1 || page > dashboardMaxPage {
-			return "", 0, errors.New("invalid chain page")
+			return "", 0, "", errors.New("invalid chain page")
 		}
 	}
-	return parsedID.String(), page, nil
+	view, err := normalizeDashboardChainView(r.URL.Query().Get("view"))
+	if err != nil {
+		return "", 0, "", err
+	}
+	ignoreNotice := strings.TrimSpace(r.URL.Query().Get("ignore"))
+	if ignoreNotice != "" && dashboardIgnoreNotice(ignoreNotice) == "" {
+		return "", 0, "", errors.New("invalid chain ignore notice")
+	}
+	return parsedID.String(), page, view, nil
+}
+
+func normalizeDashboardChainView(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return dashboardChainViewChronological, nil
+	}
+	switch value {
+	case dashboardChainViewChronological, dashboardChainViewTransaction, dashboardChainViewObject:
+		return value, nil
+	default:
+		return "", errors.New("invalid chain view")
+	}
+}
+
+func dashboardEventGroups(events []dashboardEvent, view string) []dashboardEventGroup {
+	if view == dashboardChainViewChronological || len(events) == 0 {
+		return nil
+	}
+	groups := make([]dashboardEventGroup, 0)
+	indexes := make(map[string]int)
+	for _, event := range events {
+		key, label := dashboardEventGroupIdentity(event, view)
+		groupIndex, exists := indexes[key]
+		if !exists {
+			groupIndex = len(groups)
+			indexes[key] = groupIndex
+			groups = append(groups, dashboardEventGroup{Label: label})
+		}
+		groups[groupIndex].Events = append(groups[groupIndex].Events, event)
+	}
+	return groups
+}
+
+func dashboardEventGroupIdentity(event dashboardEvent, view string) (string, string) {
+	if view == dashboardChainViewTransaction {
+		transactionID := strings.TrimSpace(event.TransactionID)
+		if transactionID == "" {
+			return "transaction:none", "Without transaction ID"
+		}
+		return "transaction:" + transactionID, "Transaction " + transactionID
+	}
+	path := strings.TrimSpace(event.Path)
+	object := strings.TrimSpace(event.Object)
+	if path == "" {
+		path = "Unknown path"
+	}
+	label := path
+	if object != "" && object != "-" {
+		label += " / " + object
+	}
+	return "object:" + path + "\x00" + object, label
+}
+
+func buildDashboardDeliverySummary(chain dashboardChain) dashboardDeliverySummary {
+	summary := dashboardDeliverySummary{
+		State: chain.DeliveryState, Attempts: chain.DeliveryAttempts,
+		NextAt: chain.NextAttemptAt, AcceptedAt: chain.AcceptedAt,
+		RequestID: chain.RequestID, TicketURL: dashboardSafeTicketURL(chain.RequestID),
+		LastError: chain.LastError,
+	}
+	if chain.State == chainStateActive {
+		summary.State = "waiting"
+		summary.Label = "Not queued"
+		summary.Detail = "This session is still collecting changes."
+		return summary
+	}
+	switch chain.DeliveryState {
+	case deliveryStatePending:
+		summary.Label = "Queued"
+		summary.Detail = "The immutable ticket is waiting for delivery."
+	case deliveryStateRetry:
+		summary.Label = "Retry scheduled"
+		summary.Detail = "Hookwise delivery will retry automatically."
+		summary.Action = "Check the next attempt and the last classified error."
+	case deliveryStateFailed:
+		summary.Label = "Delivery failed"
+		summary.Detail = "Automatic delivery stopped after a non-retryable failure."
+		summary.Action = "Check Hookwise authentication, endpoint configuration, and application logs."
+	case deliveryStateAccepted:
+		summary.Label = "Accepted by Hookwise"
+		summary.Detail = "Hookwise accepted the immutable ticket payload."
+	default:
+		summary.State = "waiting"
+		summary.Label = "No delivery record"
+		summary.Detail = "No Hookwise delivery record is available for this sealed session."
+		summary.Action = "Check the sealing worker and application logs."
+	}
+	return summary
+}
+
+func dashboardSafeTicketURL(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.RawQuery != "" || parsed.Opaque != "" {
+		return ""
+	}
+	return parsed.String()
 }
 
 func (e *Extension) dashboardIdleDuration() time.Duration {
@@ -1296,12 +1486,19 @@ func dashboardDeliveryHealth(counts dashboardCounts, checkedAt time.Time) dashbo
 	}
 }
 
-func dashboardChainPageURL(chainID string, page int) string {
+func dashboardChainPageURL(chainID string, page int, view string) string {
 	base := "/fgt-conftail/chain/" + chainID
-	if page <= 1 {
+	values := url.Values{}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(page))
+	}
+	if view != "" && view != dashboardChainViewChronological {
+		values.Set("view", view)
+	}
+	if len(values) == 0 {
 		return base
 	}
-	return base + "?page=" + strconv.Itoa(page)
+	return base + "?" + values.Encode()
 }
 
 func formatDashboardTime(value time.Time) string {
@@ -1323,4 +1520,11 @@ func formatDashboardDuration(value time.Duration) string {
 		return "-"
 	}
 	return value.Round(time.Nanosecond).String()
+}
+
+func formatDashboardSessionDuration(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return "-"
+	}
+	return end.Sub(start).Round(time.Second).String()
 }

@@ -117,8 +117,11 @@
 }
 
 .conftail-page .ct-health-healthy { border-left: 3px solid var(--success); }
+.conftail-page .ct-health-accepted { border-left: 3px solid var(--success); }
 .conftail-page .ct-health-waiting,
-.conftail-page .ct-health-stale { border-left: 3px solid var(--warning); }
+.conftail-page .ct-health-stale,
+.conftail-page .ct-health-pending,
+.conftail-page .ct-health-retry { border-left: 3px solid var(--warning); }
 .conftail-page .ct-health-failed { border-left: 3px solid var(--danger); }
 
 .conftail-page .ct-warning {
@@ -396,20 +399,136 @@
     margin-bottom: 12px;
 }
 
-.conftail-page .ct-session-summary {
+.conftail-page .ct-session-overview {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px;
+    grid-template-columns: minmax(0, 1.4fr) minmax(320px, .8fr);
+    gap: 14px;
+    align-items: stretch;
 }
 
-.conftail-page .ct-session-summary > div {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+.conftail-page .ct-session-overview > .card {
+    margin: 0;
     min-width: 0;
 }
 
-.conftail-page .ct-session-summary strong {
+.conftail-page .ct-fact-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 18px;
+}
+
+.conftail-page .ct-fact-grid > div,
+.conftail-page .ct-ticket-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.conftail-page .ct-fact-grid strong,
+.conftail-page .ct-session-id,
+.conftail-page .ct-reference,
+.conftail-page .ct-delivery-error {
+    overflow-wrap: anywhere;
+}
+
+.conftail-page .ct-session-id {
+    border-top: 1px solid var(--border-soft);
+    color: var(--text-muted);
+    font-size: 10px;
+    margin: 16px 0 0;
+    padding-top: 12px;
+}
+
+.conftail-page .ct-delivery-detail {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin: 0 0 16px;
+}
+
+.conftail-page .ct-delivery-error {
+    background: var(--danger-soft);
+    border-left: 2px solid var(--danger);
+    color: var(--danger);
+    font-size: 10px;
+    margin: 14px 0 0;
+    padding: 9px 10px;
+}
+
+.conftail-page .ct-ticket-summary {
+    margin-bottom: 14px;
+}
+
+.conftail-page .ct-ticket-preview details {
+    border: 1px solid var(--border-soft);
+}
+
+.conftail-page .ct-ticket-preview summary {
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 11px 12px;
+}
+
+.conftail-page .ct-ticket-description {
+    background: var(--surface-2);
+    border-top: 1px solid var(--border-soft);
+    color: var(--text);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.65;
+    margin: 0;
+    max-height: 520px;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    padding: 14px;
+    white-space: pre-wrap;
+}
+
+.conftail-page .ct-preview-note {
+    background: var(--warning-soft);
+    color: var(--warning);
+    font-size: 10px;
+    margin: 0;
+    padding: 9px 12px;
+}
+
+.conftail-page .ct-timeline-views {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 0 18px 14px;
+}
+
+.conftail-page .ct-timeline-views [aria-current="page"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.conftail-page .ct-event-position {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.conftail-page .ct-event-group {
+    border-top: 1px solid var(--border-soft);
+    padding-top: 2px;
+}
+
+.conftail-page .ct-event-group-heading {
+    align-items: baseline;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 14px 18px 4px;
+}
+
+.conftail-page .ct-event-group-heading h3 {
+    color: var(--accent);
+    font-size: 12px;
+    margin: 0;
     overflow-wrap: anywhere;
 }
 

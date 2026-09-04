@@ -1508,7 +1508,7 @@ func eventsForChain(
 		device_id, vdom, user, user_attribution, ui, action, transaction_id,
 		config_path, config_object, config_attribute, log_id, log_description,
 		message, uuid, event_at_ns, ingested_at_ns, late
-		FROM events WHERE chain_id = ? ORDER BY event_at_ns, semantic_hash`,
+		FROM events WHERE chain_id = ? ORDER BY event_at_ns, id`,
 		chainID,
 	)
 	if err != nil {

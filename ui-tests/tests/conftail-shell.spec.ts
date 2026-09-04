@@ -25,7 +25,7 @@ test('ConfTail index and session use isolated shared-shell pages', async ({ page
   await expect(page.locator('.app-rail [aria-current="page"]')).toHaveText(/Configuration Tail/);
   await expect(page.getByRole('heading', { level: 1, name: 'Complete Redacted Timeline' })).toBeVisible();
   await expect(page.getByRole('link', { name: /Back to configuration change sessions/ })).toBeVisible();
-  await expect(page.getByText('edge.example.test')).toBeVisible();
+  await expect(page.locator('.ct-session-facts').getByText('#7 edge.example.test')).toBeVisible();
   await expect(page.locator('.topbar, .sysfooter')).toHaveCount(0);
 
   const screenshot = await page.screenshot({

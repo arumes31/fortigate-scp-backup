@@ -10,59 +10,97 @@
             <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="Switch between UTC and the browser time zone">Time: UTC</button>
         </div>
 
-        <section class="card ct-session-summary" aria-label="Session details">
-            <div><span class="ct-label">Chain</span><strong class="no-caps">{{.Chain.ID}}</strong></div>
-            <div><span class="ct-label">Firewall</span><strong class="no-caps">#{{.Chain.FirewallID}} {{.Chain.FirewallName}}</strong></div>
-            <div><span class="ct-label">Administrator</span><strong class="no-caps">{{.Chain.User}}</strong></div>
-            <div><span class="ct-label">State</span><strong>{{.Chain.State}}{{if .Chain.DeliveryState}} / {{.Chain.DeliveryState}}{{end}}</strong></div>
-            <div><span class="ct-label">First / last</span><strong>{{template "dashboardTime" .Chain.FirstEventAt}} / {{template "dashboardTime" .Chain.LastEventAt}}</strong></div>
-            <div><span class="ct-label">Changes</span><strong>{{.Chain.EventCount}}</strong></div>
-            {{if eq .Chain.State "active"}}<div><span class="ct-label">Seal eligible at</span><strong>{{template "dashboardTime" .Chain.QuietEligibleAt}}</strong></div>{{end}}
-            <div><span class="ct-label">VDOMs</span><strong class="no-caps">{{if .Chain.VDOMs}}{{range $index, $vdom := .Chain.VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .Chain.VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</strong></div>
-            <div><span class="ct-label">Delivery attempts</span><strong>{{.Chain.DeliveryAttempts}}</strong></div>
-            <div><span class="ct-label">Next delivery attempt</span><strong>{{if eq .Chain.DeliveryState "accepted"}}-{{else}}{{template "dashboardTime" .Chain.NextAttemptAt}}{{end}}</strong></div>
-            <div><span class="ct-label">Hookwise request ID</span><strong class="no-caps">{{if .Chain.RequestID}}{{.Chain.RequestID}}{{else}}-{{end}}</strong></div>
-            <div><span class="ct-label">Accepted at</span><strong>{{template "dashboardTime" .Chain.AcceptedAt}}</strong></div>
-            <div><span class="ct-label">Last delivery error</span><strong class="no-caps">{{if .Chain.LastError}}{{.Chain.LastError}}{{else}}-{{end}}</strong></div>
-        </section>
+        <div class="ct-session-overview">
+            <section class="card ct-session-facts" aria-labelledby="ct-session-facts-title">
+                <div class="card-header">
+                    <h2 id="ct-session-facts-title">Session facts</h2>
+                    <span class="pill ct-state-{{.Chain.State}}">{{.Chain.State}}</span>
+                </div>
+                <div class="ct-fact-grid">
+                    <div><span class="ct-label">Firewall</span><strong class="no-caps">#{{.Chain.FirewallID}} {{.Chain.FirewallName}}</strong></div>
+                    <div><span class="ct-label">Administrator</span><strong class="no-caps">{{.Chain.User}}</strong></div>
+                    <div><span class="ct-label">Started</span><strong>{{template "dashboardTime" .Chain.FirstEventAt}}</strong></div>
+                    <div><span class="ct-label">Ended</span><strong>{{template "dashboardTime" .Chain.LastEventAt}}</strong></div>
+                    <div><span class="ct-label">Duration</span><strong>{{fmtSessionDuration .Chain.FirstEventAt .Chain.LastEventAt}}</strong></div>
+                    <div><span class="ct-label">Changes</span><strong>{{.Chain.EventCount}}</strong></div>
+                    {{if eq .Chain.State "active"}}<div><span class="ct-label">Seal eligible at</span><strong>{{template "dashboardTime" .Chain.QuietEligibleAt}}</strong></div>{{end}}
+                    <div><span class="ct-label">VDOMs</span><strong class="no-caps">{{if .Chain.VDOMs}}{{range $index, $vdom := .Chain.VDOMs}}{{if $index}}, {{end}}{{$vdom}}{{end}}{{if .Chain.VDOMsOmitted}}, …{{end}}{{else}}-{{end}}</strong></div>
+                </div>
+                <p class="ct-session-id"><span class="ct-label">Session ID</span> <code>{{.Chain.ID}}</code></p>
+            </section>
+
+            <section class="card ct-delivery-facts ct-health-{{.Delivery.State}}" aria-labelledby="ct-delivery-facts-title">
+                <div class="card-header">
+                    <h2 id="ct-delivery-facts-title">Hookwise delivery</h2>
+                    <span class="pill ct-state-{{.Delivery.State}}">{{.Delivery.Label}}</span>
+                </div>
+                <p class="ct-delivery-detail">{{.Delivery.Detail}}</p>
+                <div class="ct-fact-grid">
+                    <div><span class="ct-label">Attempts</span><strong>{{.Delivery.Attempts}}</strong></div>
+                    <div><span class="ct-label">Next attempt</span><strong>{{template "dashboardTime" .Delivery.NextAt}}</strong></div>
+                    <div><span class="ct-label">Accepted at</span><strong>{{template "dashboardTime" .Delivery.AcceptedAt}}</strong></div>
+                    <div><span class="ct-label">Ticket / request ID</span><strong class="no-caps">{{if .Delivery.RequestID}}{{if .Delivery.TicketURL}}<a href="{{.Delivery.TicketURL}}" target="_blank" rel="noopener noreferrer">Open Hookwise ticket</a>{{else}}{{.Delivery.RequestID}}{{end}}{{else}}-{{end}}</strong></div>
+                </div>
+                {{if .Delivery.LastError}}<p class="ct-delivery-error no-caps"><strong>Last error:</strong> {{.Delivery.LastError}}</p>{{end}}
+                {{if .Delivery.Action}}<p class="ct-action no-caps"><strong>Next:</strong> {{.Delivery.Action}}</p>{{end}}
+            </section>
+        </div>
 
         {{if .Chain.Unattributed}}<div class="ct-warning" role="status"><strong>No unique administrator could be attributed to this session.</strong></div>{{end}}
         {{if .Chain.Late}}<div class="ct-warning" role="status"><strong>This session contains late-arriving Graylog events.</strong></div>{{end}}
         {{if .IgnoreNotice}}<p class="ct-notice" role="status">{{.IgnoreNotice}}</p>{{end}}
 
+        {{if or .Chain.TicketPreview.Description .Chain.TicketPreview.Unavailable}}
+        <section class="card ct-ticket-preview" aria-labelledby="ct-ticket-preview-title">
+            <div class="card-header">
+                <h2 id="ct-ticket-preview-title">Hookwise ticket preview</h2>
+                <span class="ct-count">Frozen delivery snapshot</span>
+            </div>
+            {{if .Chain.TicketPreview.Unavailable}}
+            <p class="ct-warning" role="status">The stored ticket preview is unavailable. The event timeline remains readable below.</p>
+            {{else}}
+            <div class="ct-ticket-summary">
+                <span class="ct-label">Summary</span>
+                <strong class="no-caps">{{.Chain.TicketPreview.Summary}}</strong>
+            </div>
+            <details>
+                <summary>View plain-text description preview</summary>
+                {{if .Chain.TicketPreview.Truncated}}<p class="ct-preview-note">Preview limited to 32 KiB; the immutable delivery payload is unchanged.</p>{{end}}
+                <pre class="ct-ticket-description">{{.Chain.TicketPreview.Description}}</pre>
+            </details>
+            {{end}}
+        </section>
+        {{end}}
+
         <section class="card" aria-labelledby="ct-complete-title">
             <div class="card-header">
-                <h2 id="ct-complete-title">Ordered changes</h2>
+                <div>
+                    <p class="ct-label">Canonical order: event time, then stored event ID</p>
+                    <h2 id="ct-complete-title">Ordered changes</h2>
+                </div>
                 <span class="ct-count">page {{.Page}} / {{.TotalPages}}</span>
             </div>
+            <nav class="ct-timeline-views" aria-label="Timeline view">
+                <a class="btn btn-sm" href="{{.ChronologicalURL}}"{{if eq .View "chronological"}} aria-current="page"{{end}}>Chronological</a>
+                <a class="btn btn-sm" href="{{.TransactionURL}}"{{if eq .View "transaction"}} aria-current="page"{{end}}>By transaction</a>
+                <a class="btn btn-sm" href="{{.ObjectURL}}"{{if eq .View "object"}} aria-current="page"{{end}}>By object</a>
+            </nav>
+            {{if eq .View "chronological"}}
             <ol class="ct-timeline ct-complete-timeline">
-                {{range .Chain.Events}}
-                <li class="ct-virtual-item" id="ct-event-{{.ID}}">
-                    <div class="ct-event-head">{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}{{if .GlobalIgnoreID}}<span class="pill ct-state-accepted">global {{.GlobalIgnoreKind}} ignore active</span>{{end}}</div>
-                    <div class="ct-event-body no-caps">
-                        {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}
-                        {{if .DeviceName}}<span><b>device:</b> {{.DeviceName}}</span>{{end}}
-                        {{if .DeviceID}}<span><b>device ID:</b> {{.DeviceID}}</span>{{end}}
-                        {{if .Path}}<span><b>path:</b> {{.Path}}</span>{{end}}
-                        {{if .Object}}<span><b>object:</b> {{.Object}}</span>{{end}}
-                        {{if .HasAttributeDiff}}
-                        <span class="ct-attribute-diff"><b>attribute:</b> {{.AttributeDiff.Name}} <del>{{if .AttributeDiff.Before}}{{.AttributeDiff.Before}}{{else}}∅{{end}}</del><span aria-hidden="true">→</span><ins>{{if .AttributeDiff.After}}{{.AttributeDiff.After}}{{else}}∅{{end}}</ins></span>
-                        {{else if .ConfigAttribute}}<span><b>attribute:</b> {{.ConfigAttribute}}</span>{{end}}
-                        {{if .LogDescription}}<span><b>description:</b> {{.LogDescription}}</span>{{end}}
-                        {{if .Message}}<span><b>message:</b> {{.Message}}</span>{{end}}
-                        <span><b>log ID:</b> {{.LogID}}</span>
-                        <span><b>attribution:</b> {{.UserAttribution}}</span>
-                    </div>
-                    {{if or .ConfigAttribute (and .Action .Path)}}
-                    <div class="ct-event-actions">
-                        <button type="button" class="btn btn-sm" data-ct-ignore-open
-                            data-event-id="{{.ID}}" data-attribute="{{.ConfigAttribute}}"
-                            data-operation="{{.Action}} {{.Path}}">Ignore globally…</button>
-                    </div>
-                    {{end}}
-                </li>
-                {{end}}
+                {{range .Chain.Events}}{{template "dashboardEvent" .}}{{end}}
             </ol>
+            {{else}}
+            <div class="ct-grouped-timeline">
+                {{range .EventGroups}}
+                <section class="ct-event-group">
+                    <div class="ct-event-group-heading"><h3 class="no-caps">{{.Label}}</h3><span class="ct-count">{{len .Events}} change(s) on this page</span></div>
+                    <ol class="ct-timeline ct-complete-timeline">
+                        {{range .Events}}{{template "dashboardEvent" .}}{{end}}
+                    </ol>
+                </section>
+                {{end}}
+            </div>
+            {{end}}
             <nav class="ct-pagination" aria-label="Complete timeline pagination">
                 {{if .PrevURL}}<a class="btn" rel="prev" href="{{.PrevURL}}">Previous</a>{{end}}
                 {{if .NextURL}}<a class="btn" rel="next" href="{{.NextURL}}">Next</a>{{end}}
@@ -90,6 +128,33 @@
 
 {{define "scripts"}}
     <script src="/fgt-conftail/static/conftail.js"></script>
+{{end}}
+
+{{define "dashboardEvent"}}
+<li class="ct-virtual-item" id="ct-event-{{.ID}}" data-canonical-position="{{.Sequence}}">
+    <div class="ct-event-head"><span class="ct-event-position">Change {{.Sequence}}</span>{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">late</span>{{end}}{{if .GlobalIgnoreID}}<span class="pill ct-state-accepted">global {{.GlobalIgnoreKind}} ignore active</span>{{end}}</div>
+    <div class="ct-event-body no-caps">
+        {{if .Source}}<span><b>source:</b> {{.Source}}</span>{{end}}
+        {{if .DeviceName}}<span><b>device:</b> {{.DeviceName}}</span>{{end}}
+        {{if .DeviceID}}<span><b>device ID:</b> {{.DeviceID}}</span>{{end}}
+        {{if .Path}}<span><b>path:</b> {{.Path}}</span>{{end}}
+        {{if .Object}}<span><b>object:</b> {{.Object}}</span>{{end}}
+        {{if .HasAttributeDiff}}
+        <span class="ct-attribute-diff"><b>attribute:</b> {{.AttributeDiff.Name}} <del>{{if .AttributeDiff.Before}}{{.AttributeDiff.Before}}{{else}}∅{{end}}</del><span aria-hidden="true">→</span><ins>{{if .AttributeDiff.After}}{{.AttributeDiff.After}}{{else}}∅{{end}}</ins></span>
+        {{else if .ConfigAttribute}}<span><b>attribute:</b> {{.ConfigAttribute}}</span>{{end}}
+        {{if .LogDescription}}<span><b>description:</b> {{.LogDescription}}</span>{{end}}
+        {{if .Message}}<span><b>message:</b> {{.Message}}</span>{{end}}
+        <span><b>log ID:</b> {{.LogID}}</span>
+        <span><b>attribution:</b> {{.UserAttribution}}</span>
+    </div>
+    {{if or .ConfigAttribute (and .Action .Path)}}
+    <div class="ct-event-actions">
+        <button type="button" class="btn btn-sm" data-ct-ignore-open
+            data-event-id="{{.ID}}" data-attribute="{{.ConfigAttribute}}"
+            data-operation="{{.Action}} {{.Path}}">Ignore globally…</button>
+    </div>
+    {{end}}
+</li>
 {{end}}
 
 {{define "dashboardTime"}}<time data-ct-time datetime="{{fmtMachineTime .}}">{{fmtTime .}}</time>{{end}}

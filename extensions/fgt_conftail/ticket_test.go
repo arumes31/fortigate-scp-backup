@@ -2,6 +2,7 @@ package fgtconftail
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -67,12 +68,33 @@ func TestBuildTicketPayloadProvidesHookwiseDisplayFields(t *testing.T) {
 		"Administrator: alice",
 		"Window: 2026-09-01T08:00:00Z to 2026-09-01T08:05:00Z",
 		"Changes: 1",
-		"Changes (oldest first):",
+		"Affected objects:",
+		"* firewall.policy / 17",
+		"Change excerpts (oldest first):",
 		"- 2026-09-01T08:00:00Z | Edit | firewall.policy | Object: 17",
 	} {
 		if !strings.Contains(payload.Message, expected) {
 			t.Fatalf("formatted Hookwise message does not contain %q:\n%s", expected, payload.Message)
 		}
+	}
+	if strings.Contains(payload.Message, `\"description\"`) || strings.Contains(payload.Message, `\n`) {
+		t.Fatalf("Hookwise description contains a JSON-escaped payload dump: %q", payload.Message)
+	}
+}
+
+func TestTicketAffectedObjectsAreDeduplicatedAndBounded(t *testing.T) {
+	t.Parallel()
+	events := make([]Event, 0, maxTicketAffectedObjects+3)
+	for index := 0; index < maxTicketAffectedObjects+2; index++ {
+		events = append(events, Event{Path: fmt.Sprintf("firewall.policy.%02d", index), Object: fmt.Sprintf("%d", index)})
+	}
+	events = append(events, events[0])
+	objects, omitted := ticketAffectedObjects(events)
+	if len(objects) != maxTicketAffectedObjects || omitted != 2 {
+		t.Fatalf("affected objects = %d / omitted %d", len(objects), omitted)
+	}
+	if objects[0] != "firewall.policy.00 / 0" || objects[1] != "firewall.policy.01 / 1" {
+		t.Fatalf("affected object order = %+v", objects[:2])
 	}
 }
 

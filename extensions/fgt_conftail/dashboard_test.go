@@ -193,7 +193,7 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(
 		response,
-		httptest.NewRequest(http.MethodGet, "/chain/"+chainID+"?page=2", nil),
+		httptest.NewRequest(http.MethodGet, "/chain/"+chainID+"?page=2&view=transaction", nil),
 	)
 	if response.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, body = %q", response.Code, response.Body.String())
@@ -203,7 +203,7 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		t.Fatalf("detail page did not autoescape the stored timeline: %q", body)
 	}
 	if strings.Contains(body, "<retry-error>") || !strings.Contains(body, "&lt;retry-error&gt;") ||
-		!strings.Contains(body, "Delivery attempts") {
+		!strings.Contains(body, ">Attempts<") {
 		t.Fatalf("detail page did not safely render delivery retry state: %q", body)
 	}
 	if strings.Count(body, `method="post"`) != 3 ||
@@ -214,6 +214,10 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	for _, want := range []string{
 		`class="ct-attribute-diff"`, "<del>before</del>", "<ins>after</ins>",
 		`global attribute ignore active`, `data-ct-ignore-open`, `id="ct-ignore-dialog"`, `Confirm global ignore`,
+		"Session facts", "Hookwise delivery", "Duration", "Chronological", "By transaction", "By object",
+		"Hookwise ticket preview", "Affected objects:", "Change excerpts (oldest first):",
+		`href="/fgt-conftail/chain/` + chainID + `?view=transaction"`,
+		`aria-current="page">By transaction`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail page does not contain structured cfgattr diff %q", want)
@@ -224,6 +228,7 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		`"code":"CT-UI-004"`,
 		`"actor":"reviewer"`,
 		`"chain_id":"` + chainID + `"`,
+		`"view":"transaction"`,
 		`"page":2`,
 		`"total_pages":2`,
 		`"event_rows":5`,
@@ -257,6 +262,153 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	router.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/chain/not-a-uuid", nil))
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid chain status = %d, want 400", invalid.Code)
+	}
+	invalidView := httptest.NewRecorder()
+	router.ServeHTTP(invalidView, httptest.NewRequest(http.MethodGet, "/chain/"+chainID+"?view=payload", nil))
+	if invalidView.Code != http.StatusBadRequest {
+		t.Fatalf("invalid chain view status = %d, want 400", invalidView.Code)
+	}
+}
+
+func TestDashboardEventGroupProjectionsPreserveCanonicalPositions(t *testing.T) {
+	t.Parallel()
+	events := []dashboardEvent{
+		{ID: 11, Sequence: 99, EventAt: time.Unix(1, 0), TransactionID: "tx-a", Path: "firewall.policy", Object: "1"},
+		{ID: 12, Sequence: 100, EventAt: time.Unix(2, 0), TransactionID: "tx-b", Path: "router.static", Object: "2"},
+		{ID: 13, Sequence: 101, EventAt: time.Unix(3, 0), TransactionID: "tx-a", Path: "firewall.policy", Object: "1"},
+		{ID: 14, Sequence: 102, EventAt: time.Unix(4, 0), Path: "system.central-management"},
+	}
+
+	tests := []struct {
+		view string
+		want [][]int64
+	}{
+		{view: dashboardChainViewTransaction, want: [][]int64{{11, 13}, {12}, {14}}},
+		{view: dashboardChainViewObject, want: [][]int64{{11, 13}, {12}, {14}}},
+	}
+	for _, test := range tests {
+		t.Run(test.view, func(t *testing.T) {
+			groups := dashboardEventGroups(events, test.view)
+			if len(groups) != len(test.want) {
+				t.Fatalf("group count = %d, want %d", len(groups), len(test.want))
+			}
+			for groupIndex, wantIDs := range test.want {
+				if len(groups[groupIndex].Events) != len(wantIDs) {
+					t.Fatalf("group %d event count = %d, want %d", groupIndex, len(groups[groupIndex].Events), len(wantIDs))
+				}
+				lastPosition := 0
+				for eventIndex, wantID := range wantIDs {
+					event := groups[groupIndex].Events[eventIndex]
+					if event.ID != wantID || event.Sequence <= lastPosition {
+						t.Fatalf("group %d event %d = id %d / position %d", groupIndex, eventIndex, event.ID, event.Sequence)
+					}
+					lastPosition = event.Sequence
+				}
+			}
+		})
+	}
+}
+
+func TestDashboardAndTicketKeepCanonicalOrderAcrossPollBatches(t *testing.T) {
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	first := testEvent(1, "fw-a", "alice", "event-first", base)
+	first.Message = "first-across-batches"
+	first.SemanticHash = semanticHash(first)
+	second := testEvent(1, "fw-a", "alice", "event-second", base.Add(time.Second))
+	second.Message = "second-across-batches"
+	second.SemanticHash = semanticHash(second)
+	for index, event := range []Event{first, second} {
+		if _, err := s.applyPoll(context.Background(), pollBatch{
+			EndedAt: base.Add(time.Duration(index+1) * time.Minute), Events: []Event{event},
+		}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.applyPoll(context.Background(), pollBatch{EndedAt: base.Add(32 * time.Minute)}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	chainID := chainIDForUser(t, s, "alice")
+	chain, _, err := s.dashboardChainPage(context.Background(), chainID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chain.Events) != 2 || chain.Events[0].Message != "first-across-batches" ||
+		chain.Events[1].Message != "second-across-batches" {
+		t.Fatalf("dashboard canonical order = %+v", chain.Events)
+	}
+	firstPosition := strings.Index(chain.TicketPreview.Description, "first-across-batches")
+	secondPosition := strings.Index(chain.TicketPreview.Description, "second-across-batches")
+	if firstPosition < 0 || secondPosition <= firstPosition {
+		t.Fatalf("ticket preview order does not match persisted order: %q", chain.TicketPreview.Description)
+	}
+}
+
+func TestDashboardTicketPreviewFailsClosedAndBoundsDisplayText(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t, time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
+	const chainID = "11111111-2222-3333-4444-555555555555"
+	if _, err := s.db.Exec(`INSERT INTO chains (
+		id, firewall_id, firewall_name, user, first_event_at_ns, last_event_at_ns,
+		event_count, state, late, unattributed, sealed_at_ns, created_at_ns
+	) VALUES (?, 1, 'edge.example.test', 'operator', 1, 2, 1, 'sealed', 0, 0, 2, 2)`, chainID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO outbox (
+		chain_id, payload_json, state, next_attempt_at_ns, updated_at_ns
+	) VALUES (?, ?, 'pending', 2, 2)`, chainID, []byte(`{"summary":"unsafe","description":`)); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := s.dashboardTicketPreview(context.Background(), chainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Unavailable || preview.Summary != "" || preview.Description != "" {
+		t.Fatalf("malformed preview = %+v", preview)
+	}
+
+	encoded, err := json.Marshal(ticketPayload{Summary: "Bounded preview", Description: strings.Repeat("x", dashboardPreviewTextBytes+100)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE outbox SET payload_json = ? WHERE chain_id = ?`, encoded, chainID); err != nil {
+		t.Fatal(err)
+	}
+	preview, err = s.dashboardTicketPreview(context.Background(), chainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Unavailable || !preview.Truncated || len(preview.Description) > dashboardPreviewTextBytes {
+		t.Fatalf("bounded preview = unavailable:%t truncated:%t bytes:%d", preview.Unavailable, preview.Truncated, len(preview.Description))
+	}
+}
+
+func TestDashboardChainViewAndTicketURLValidation(t *testing.T) {
+	t.Parallel()
+
+	for _, view := range []string{"", dashboardChainViewChronological, dashboardChainViewTransaction, dashboardChainViewObject} {
+		if got, err := normalizeDashboardChainView(view); err != nil || (view == "" && got != dashboardChainViewChronological) {
+			t.Fatalf("normalizeDashboardChainView(%q) = %q, %v", view, got, err)
+		}
+	}
+	if _, err := normalizeDashboardChainView("payload"); err == nil {
+		t.Fatal("unknown chain view accepted")
+	}
+
+	for _, test := range []struct {
+		value string
+		want  string
+	}{
+		{value: "https://tickets.example.test/ticket/123", want: "https://tickets.example.test/ticket/123"},
+		{value: "request-123"},
+		{value: "javascript:alert(1)"},
+		{value: "https://user:secret@tickets.example.test/123"},
+		{value: "https://tickets.example.test/123#unsafe"},
+		{value: "https://tickets.example.test/123?token=unsafe"},
+	} {
+		if got := dashboardSafeTicketURL(test.value); got != test.want {
+			t.Errorf("dashboardSafeTicketURL(%q) = %q, want %q", test.value, got, test.want)
+		}
 	}
 }
 

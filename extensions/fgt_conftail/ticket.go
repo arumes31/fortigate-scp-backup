@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 )
 
+const maxTicketAffectedObjects = 12
+
 type ticketFirewall struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -92,8 +94,7 @@ func buildTicketDescription(chain chainRecord, events []Event, maxBytes int) str
 			"Administrator: %s\n"+
 			"Window: %s to %s\n"+
 			"Changes: %d\n"+
-			"Session ID: %s\n\n"+
-			"Changes (oldest first):\n",
+			"Session ID: %s\n\n",
 		chain.FirewallName,
 		chain.FirewallID,
 		administrator,
@@ -102,6 +103,19 @@ func buildTicketDescription(chain chainRecord, events []Event, maxBytes int) str
 		changeCount,
 		chain.ID,
 	)
+	objects, omittedObjects := ticketAffectedObjects(events)
+	builder.WriteString("Affected objects:\n")
+	if len(objects) == 0 {
+		builder.WriteString("* Not identified\n")
+	} else {
+		for _, object := range objects {
+			builder.WriteString("* " + object + "\n")
+		}
+		if omittedObjects > 0 {
+			fmt.Fprintf(&builder, "… %d additional affected object(s) omitted\n", omittedObjects)
+		}
+	}
+	builder.WriteString("\nChange excerpts (oldest first):\n")
 	totalEvents := changeCount
 	included := 0
 	for _, event := range events {
@@ -127,6 +141,36 @@ func buildTicketDescription(chain chainRecord, events []Event, maxBytes int) str
 	}
 	prefix := truncateUTF8Bytes(builder.String(), maxBytes-len(footer))
 	return prefix + footer
+}
+
+func ticketAffectedObjects(events []Event) ([]string, int) {
+	objects := make([]string, 0, min(len(events), maxTicketAffectedObjects))
+	seen := make(map[string]struct{})
+	omitted := 0
+	for _, event := range events {
+		path := ticketText(event.Path)
+		object := ticketText(event.Object)
+		value := path
+		if value == "" {
+			value = object
+		} else if object != "" {
+			value += " / " + object
+		}
+		if value == "" {
+			continue
+		}
+		value = truncateString(value, 240)
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		if len(objects) < maxTicketAffectedObjects {
+			objects = append(objects, value)
+		} else {
+			omitted++
+		}
+	}
+	return objects, omitted
 }
 
 func ticketAdministrator(chain chainRecord) string {

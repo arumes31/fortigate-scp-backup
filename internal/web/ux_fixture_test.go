@@ -338,9 +338,10 @@ func loadUXExtensionTemplates() (*uxExtensionTemplates, error) {
 		return nil, err
 	}
 	confTailFuncs := template.FuncMap{
-		"fmtTime":        uxFormatTemplateTime,
-		"fmtMachineTime": uxFormatTemplateMachineTime,
-		"fmtDuration":    uxFormatTemplateDuration,
+		"fmtTime":            uxFormatTemplateTime,
+		"fmtMachineTime":     uxFormatTemplateMachineTime,
+		"fmtDuration":        uxFormatTemplateDuration,
+		"fmtSessionDuration": uxFormatTemplateSessionDuration,
 	}
 	confTailIndex, err := webui.ParsePage(
 		os.DirFS(root),
@@ -383,6 +384,15 @@ func uxFormatTemplateDuration(value any) string {
 		return duration.Round(time.Millisecond).String()
 	}
 	return "0s"
+}
+
+func uxFormatTemplateSessionDuration(startValue, endValue any) string {
+	start, startOK := startValue.(time.Time)
+	end, endOK := endValue.(time.Time)
+	if !startOK || !endOK || start.IsZero() || end.IsZero() || end.Before(start) {
+		return "-"
+	}
+	return end.Sub(start).Round(time.Second).String()
 }
 
 func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplates, defaultScenario uxScenario) {
@@ -556,7 +566,24 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("GET /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
 	mux.HandleFunc("POST /fgt-conftail/{$}", renderShared(templates.confTailIndex, uxConfTailFixture))
 	mux.HandleFunc("GET /fgt-conftail/status", jsonResponse(`{"running":false,"signature":"fixture"}`))
-	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", renderShared(templates.confTailChain, uxConfTailChainFixture))
+	mux.HandleFunc("GET /fgt-conftail/chain/{chainID}", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		view := strings.TrimSpace(r.URL.Query().Get("view"))
+		if view != "transaction" && view != "object" {
+			view = "chronological"
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page != 2 {
+			page = 1
+		}
+		if err := templates.confTailChain.RenderHTTP(w, uxConfTailChainFixture(scenario, view, page)); err != nil {
+			http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
+		}
+	})
 	mux.HandleFunc("POST /fgt-conftail/ignore-rules", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/fgt-conftail/?ignore=created#ct-global-ignores", http.StatusSeeOther)
 	})
@@ -709,22 +736,141 @@ func uxConfTailFixture(scenario uxScenario) any {
 	}
 }
 
-func uxConfTailChainFixture(uxScenario) any {
-	return map[string]any{
-		"Base": uxBase("Configuration Change Session", "conftail"), "Page": 1, "TotalPages": 1,
-		"Chain": map[string]any{
-			"ID": "fixture-chain", "FirewallID": 7, "FirewallName": "edge.example.test",
-			"User": "synthetic-admin", "State": "sealed", "DeliveryState": "accepted",
-			"FirstEventAt": uxFixtureNow.Add(-time.Minute), "LastEventAt": uxFixtureNow,
-			"EventCount": 1, "VDOMs": []string{"root"}, "Events": []any{map[string]any{
-				"ID": 41, "EventAt": uxFixtureNow, "Source": "FGT-SITE-A", "VDOM": "root",
-				"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
-				"Path": "system.central-management", "Object": "-",
-				"ConfigAttribute": `type[fortimanager->fortimanager]fmg["manager.example.test"->"manager.example.test"]serial-number["FMGVMTEST00000001"->"FMGVMTEST00000001"]`,
-				"LogID":           "0100044546", "LogDescription": "Attribute configured",
-			}}, "AcceptedAt": uxFixtureNow,
+func uxConfTailChainFixture(scenario uxScenario, view string, page int) any {
+	firstPage := []any{
+		map[string]any{
+			"ID": 41, "Sequence": 1, "EventAt": uxFixtureNow.Add(-4 * time.Minute), "Source": "FGT-SITE-A", "VDOM": "root",
+			"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
+			"Path": "system.central-management", "Object": "-",
+			"ConfigAttribute": `type[fortimanager->fortimanager]fmg["manager.example.test"->"manager.example.test"]serial-number["FMGVMTEST00000001"->"FMGVMTEST00000001"]`,
+			"LogID":           "0100044546", "LogDescription": "Attribute configured",
+		},
+		map[string]any{
+			"ID": 42, "Sequence": 2, "EventAt": uxFixtureNow.Add(-3 * time.Minute), "Source": "FGT-SITE-A", "VDOM": "root",
+			"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378753",
+			"Path": "firewall.policy", "Object": "17", "ConfigAttribute": "comments[before->after]",
+			"LogID": "0100044547", "LogDescription": "Attribute configured",
+		},
+		map[string]any{
+			"ID": 43, "Sequence": 3, "EventAt": uxFixtureNow.Add(-2 * time.Minute), "Source": "FGT-SITE-A", "VDOM": "root",
+			"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
+			"Path": "system.central-management", "Object": "-", "ConfigAttribute": strings.Repeat("long-redacted-value-", 32),
+			"LogID": "0100044546", "LogDescription": "Attribute configured",
 		},
 	}
+	secondPage := []any{
+		map[string]any{
+			"ID": 141, "Sequence": 101, "EventAt": uxFixtureNow.Add(-time.Minute), "Source": "FGT-SITE-A", "VDOM": "root",
+			"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
+			"Path": "system.central-management", "Object": "-", "ConfigAttribute": "type[normal->fortimanager]",
+			"LogID": "0100044546", "LogDescription": "Attribute configured",
+		},
+		map[string]any{
+			"ID": 142, "Sequence": 102, "EventAt": uxFixtureNow, "Source": "FGT-SITE-A", "VDOM": "root",
+			"UserAttribution": "exact", "Action": "Delete", "Path": "router.static", "Object": "7",
+			"LogID": "0100044545", "LogDescription": "Object deleted",
+		},
+	}
+	events := firstPage
+	if page == 2 {
+		events = secondPage
+	}
+	groups := []any{}
+	if view == "transaction" {
+		if page == 1 {
+			groups = []any{
+				map[string]any{"Label": "Transaction 82378752", "Events": []any{firstPage[0], firstPage[2]}},
+				map[string]any{"Label": "Transaction 82378753", "Events": []any{firstPage[1]}},
+			}
+		} else {
+			groups = []any{
+				map[string]any{"Label": "Transaction 82378752", "Events": []any{secondPage[0]}},
+				map[string]any{"Label": "Without transaction ID", "Events": []any{secondPage[1]}},
+			}
+		}
+	}
+	if view == "object" {
+		if page == 1 {
+			groups = []any{
+				map[string]any{"Label": "system.central-management", "Events": []any{firstPage[0], firstPage[2]}},
+				map[string]any{"Label": "firewall.policy / 17", "Events": []any{firstPage[1]}},
+			}
+		} else {
+			groups = []any{
+				map[string]any{"Label": "system.central-management", "Events": []any{secondPage[0]}},
+				map[string]any{"Label": "router.static / 7", "Events": []any{secondPage[1]}},
+			}
+		}
+	}
+	state := "sealed"
+	deliveryState := "accepted"
+	delivery := map[string]any{
+		"State": "accepted", "Label": "Accepted by Hookwise", "Detail": "Hookwise accepted the immutable ticket payload.",
+		"Attempts": 1, "AcceptedAt": uxFixtureNow, "RequestID": "https://tickets.example.test/ticket/123",
+		"TicketURL": "https://tickets.example.test/ticket/123",
+	}
+	if scenario == uxScenarioWarning {
+		deliveryState = "pending"
+		delivery = map[string]any{"State": "pending", "Label": "Queued", "Detail": "The immutable ticket is waiting for delivery.", "Attempts": 0, "NextAt": uxFixtureNow.Add(time.Minute)}
+	}
+	if scenario == uxScenarioError {
+		deliveryState = "failed"
+		delivery = map[string]any{
+			"State": "failed", "Label": "Delivery failed", "Detail": "Automatic delivery stopped after a non-retryable failure.",
+			"Attempts": 3, "LastError": "Synthetic classified failure " + strings.Repeat("diagnostic-value-", 24),
+			"Action": "Check Hookwise authentication, endpoint configuration, and application logs.",
+		}
+	}
+	if scenario == uxScenarioLoading {
+		state = "active"
+		deliveryState = ""
+		delivery = map[string]any{"State": "waiting", "Label": "Not queued", "Detail": "This session is still collecting changes.", "Attempts": 0}
+	}
+	if scenario == uxScenarioEmpty {
+		deliveryState = ""
+		delivery = map[string]any{
+			"State": "waiting", "Label": "No delivery record", "Detail": "No Hookwise delivery record is available for this sealed session.",
+			"Action": "Check the sealing worker and application logs.",
+		}
+	}
+	chainID := "fixture-chain"
+	viewURL := func(targetView string, targetPage int) string {
+		values := url.Values{}
+		if targetPage > 1 {
+			values.Set("page", strconv.Itoa(targetPage))
+		}
+		if targetView != "chronological" {
+			values.Set("view", targetView)
+		}
+		path := "/fgt-conftail/chain/" + chainID
+		if len(values) > 0 {
+			path += "?" + values.Encode()
+		}
+		return path
+	}
+	chain := map[string]any{
+		"ID": chainID, "FirewallID": 7, "FirewallName": "edge.example.test",
+		"User": "synthetic-admin", "State": state, "DeliveryState": deliveryState,
+		"FirstEventAt": uxFixtureNow.Add(-4 * time.Minute), "LastEventAt": uxFixtureNow,
+		"EventCount": 102, "VDOMs": []string{"root"}, "Events": events,
+	}
+	if scenario != uxScenarioLoading && scenario != uxScenarioEmpty {
+		chain["TicketPreview"] = map[string]any{
+			"Summary":     "[FortiSafe ID 7 · CT-fixture] edge.example.test / synthetic-admin / 102 changes",
+			"Description": "FortiGate configuration change session\n\nFirewall: edge.example.test (FortiSafe ID 7)\nAdministrator: synthetic-admin\n\nAffected objects:\n* system.central-management\n* firewall.policy / 17\n\nChange excerpts (oldest first):\n- 2026-09-02T10:26:00Z | Edit | system.central-management\n",
+		}
+	}
+	data := map[string]any{
+		"Base": uxBase("Configuration Change Session", "conftail"), "Page": page, "TotalPages": 2,
+		"Chain": chain, "Delivery": delivery, "EventGroups": groups, "View": view,
+		"ChronologicalURL": viewURL("chronological", page), "TransactionURL": viewURL("transaction", page), "ObjectURL": viewURL("object", page),
+	}
+	if page == 1 {
+		data["NextURL"] = viewURL(view, 2)
+	} else {
+		data["PrevURL"] = viewURL(view, 1)
+	}
+	return data
 }
 
 func ipamDataOutFixture(snapshot ipamSnapshot) map[string]any {
