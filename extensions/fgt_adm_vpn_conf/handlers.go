@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -73,6 +74,33 @@ type indexData struct {
 	Configs                []configRow
 	AvailableIPsCount      int
 	AvailableIPsPercentage string
+}
+
+// editFormData is an explicit browser-safe projection. Stored PSKs are
+// deliberately absent so adding a template field cannot accidentally disclose
+// either secret in the edit response.
+type editFormData struct {
+	ID               int64
+	Kundenname       string
+	Standort         string
+	RemoteipFull     string
+	WanInterface     string
+	LanInterface     string
+	Firewallname     string
+	Cid              string
+	Radiusmgt        string
+	GraylogEnabled   bool
+	ClusterHostnames string
+}
+
+func browserSafeEditFormData(c *VpnConfig) editFormData {
+	return editFormData{
+		ID: c.ID, Kundenname: c.Kundenname, Standort: c.Standort,
+		RemoteipFull: c.RemoteipFull, WanInterface: c.WanInterface,
+		LanInterface: c.LanInterface, Firewallname: c.Firewallname, Cid: c.Cid,
+		Radiusmgt: c.Radiusmgt, GraylogEnabled: c.GraylogEnabled,
+		ClusterHostnames: c.ClusterHostnames,
+	}
 }
 
 func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +211,10 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
-	e.log(r, "FGT ADM VPN - Add", fmt.Sprintf("Added config for %s - %s (%s)", kundenname, standort, remoteip))
+	e.log(r, "FGT ADM VPN - Add", fmt.Sprintf(
+		"Added entry (ID: %d) for %s - %s; fields: %s",
+		c.ID, kundenname, standort, strings.Join(admVPNAddFieldNames, ", "),
+	))
 	http.Redirect(w, r, e.Prefix()+"/", http.StatusSeeOther)
 }
 
@@ -205,7 +236,7 @@ func (e *Extension) editForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, c); err != nil {
+	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, browserSafeEditFormData(c)); err != nil {
 		e.serverError(w, err)
 		return
 	}
@@ -228,16 +259,14 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
-	// The edit modal submits via fetch() with a FormData body, which the browser
-	// sends as multipart/form-data -- ParseForm alone only reads
-	// application/x-www-form-urlencoded bodies and would silently leave
-	// PostForm empty, making every field below read as "". ParseMultipartForm
-	// handles both (it calls ParseForm internally) and still populates
-	// PostForm, so formGet/formHas need no changes.
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
+	if err := parseBoundedEditForm(w, r); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
+	before := *c
 
 	kundenname := strings.TrimSpace(r.PostForm.Get("kundenname"))
 	standort := strings.TrimSpace(r.PostForm.Get("standort"))
@@ -275,8 +304,20 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	c.RemoteipFull = newRemote
 	c.RemoteipFull1st = fmt.Sprintf("10.150.11.%d", ip4[3])
 
-	c.IpsecPskRo = r.PostForm.Get("ipsec_psk_ro")
-	c.IpsecPskHci = r.PostForm.Get("ipsec_psk_hci")
+	if replacement := r.PostForm.Get("ipsec_psk_ro"); replacement != "" {
+		if len(replacement) > 100 {
+			http.Error(w, "Error: IPsec PSK RO must not exceed 100 bytes.", http.StatusBadRequest)
+			return
+		}
+		c.IpsecPskRo = replacement
+	}
+	if replacement := r.PostForm.Get("ipsec_psk_hci"); replacement != "" {
+		if len(replacement) > 100 {
+			http.Error(w, "Error: IPsec PSK HCI must not exceed 100 bytes.", http.StatusBadRequest)
+			return
+		}
+		c.IpsecPskHci = replacement
+	}
 	c.Radiusmgt = r.PostForm.Get("radiusmgt")
 
 	firewallname := formGet(r, "firewallname", "")
@@ -305,8 +346,82 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
-	e.log(r, "FGT ADM VPN - Edit", fmt.Sprintf("Edited config for %s - %s (ID: %d)", c.Kundenname, c.Standort, c.ID))
+	changed := changedEditFieldNames(&before, c)
+	if len(changed) == 0 {
+		changed = []string{"none"}
+	}
+	e.log(r, "FGT ADM VPN - Edit", fmt.Sprintf(
+		"Edited entry (ID: %d) for %s - %s; changed fields: %s",
+		c.ID, c.Kundenname, c.Standort, strings.Join(changed, ", "),
+	))
 	http.Redirect(w, r, e.Prefix()+"/", http.StatusSeeOther)
+}
+
+const maxEditFormBytes = 1 << 20
+
+var admVPNEditFieldNames = []string{
+	"kundenname", "standort", "firewallname", "cid", "remoteip_full",
+	"wan_interface", "lan_interface", "ipsec_psk_ro", "ipsec_psk_hci",
+	"radiusmgt", "cluster_hostnames", "graylog_enabled",
+}
+
+var admVPNAddFieldNames = []string{
+	"kundenname", "standort", "firewallname", "cid", "remoteip_full",
+	"wan_interface", "lan_interface", "ipsec_psk_ro", "ipsec_psk_hci",
+	"radiusmgt", "dns_name_full", "graylog_enabled", "cluster_hostnames",
+}
+
+// parseBoundedEditForm accepts the browser's multipart FormData request and the
+// native form fallback, rejects files and ambiguous duplicate fields, and caps
+// the entire request before any database mutation is attempted.
+func parseBoundedEditForm(w http.ResponseWriter, r *http.Request) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxEditFormBytes)
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return err
+	}
+	switch mediaType {
+	case "multipart/form-data":
+		err = r.ParseMultipartForm(maxEditFormBytes)
+	case "application/x-www-form-urlencoded":
+		err = r.ParseForm()
+	default:
+		return fmt.Errorf("unsupported edit form content type")
+	}
+	if err != nil {
+		return err
+	}
+	if r.MultipartForm != nil && len(r.MultipartForm.File) != 0 {
+		return fmt.Errorf("edit form must not contain files")
+	}
+	for _, field := range admVPNEditFieldNames {
+		if len(r.PostForm[field]) > 1 {
+			return fmt.Errorf("duplicate edit field")
+		}
+	}
+	return nil
+}
+
+func changedEditFieldNames(before, after *VpnConfig) []string {
+	changed := make([]string, 0, len(admVPNEditFieldNames))
+	compare := func(name string, isChanged bool) {
+		if isChanged {
+			changed = append(changed, name)
+		}
+	}
+	compare("kundenname", before.Kundenname != after.Kundenname)
+	compare("standort", before.Standort != after.Standort)
+	compare("firewallname", before.Firewallname != after.Firewallname)
+	compare("cid", before.Cid != after.Cid)
+	compare("remoteip_full", before.RemoteipFull != after.RemoteipFull)
+	compare("wan_interface", before.WanInterface != after.WanInterface)
+	compare("lan_interface", before.LanInterface != after.LanInterface)
+	compare("ipsec_psk_ro", before.IpsecPskRo != after.IpsecPskRo)
+	compare("ipsec_psk_hci", before.IpsecPskHci != after.IpsecPskHci)
+	compare("radiusmgt", before.Radiusmgt != after.Radiusmgt)
+	compare("cluster_hostnames", before.ClusterHostnames != after.ClusterHostnames)
+	compare("graylog_enabled", before.GraylogEnabled != after.GraylogEnabled)
+	return changed
 }
 
 // ---- delete -----------------------------------------------------------------

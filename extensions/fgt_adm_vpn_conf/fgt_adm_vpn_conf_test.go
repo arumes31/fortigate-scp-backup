@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -361,6 +362,324 @@ func TestEditSubmit_MultipartFormData(t *testing.T) {
 	}
 	if updated.Kundenname != "panhoelzl" || updated.Standort != "ried" {
 		t.Fatalf("update did not apply: kundenname=%q standort=%q", updated.Kundenname, updated.Standort)
+	}
+}
+
+func TestEditFormDoesNotExposeStoredPSKs(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "edit-form.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	const roSecret = "SENTINEL-RO-SECRET-7f28"
+	const hciSecret = "SENTINEL-HCI-SECRET-91ac"
+	result, err := db.Exec(`INSERT INTO vpn_config
+		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro, ipsec_psk_hci)
+		VALUES ('customer', 'site', '10.105.1.120', 'edge.example.test', '101', ?, ?)`, roSecret, hciSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
+	if err := e.parseTemplates(); err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/edit/%d", id), nil)
+	rr := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Get("/edit/{id}", e.editForm)
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("editForm status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, secret := range []string{roSecret, hciSecret} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("edit form exposed stored PSK %q", secret)
+		}
+	}
+	for _, want := range []string{
+		`type="password" name="ipsec_psk_ro"`,
+		`type="password" name="ipsec_psk_hci"`,
+		`autocomplete="new-password"`,
+		`Leave blank to keep the current secret`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("edit form missing %q", want)
+		}
+	}
+}
+
+func TestEditSubmitBlankPSKsPreservesStoredSecretsAndLogsOnlyChangedFieldNames(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "edit-secrets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	const roSecret = "SENTINEL-RO-SECRET-1f5d"
+	const hciSecret = "SENTINEL-HCI-SECRET-8c22"
+	const replacement = "REPLACEMENT-RO-SECRET-e301"
+	result, err := db.Exec(`INSERT INTO vpn_config
+		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro, ipsec_psk_hci,
+		 wan_interface, lan_interface, radiusmgt)
+		VALUES ('customer', 'site', '10.105.1.121', 'edge.example.test', '101', ?, ?, 'wan1', 'loopback', 'YES')`, roSecret, hciSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var activity []string
+	e := &Extension{
+		db: db, logger: slog.New(slog.DiscardHandler),
+		logActivity: func(_, action, details string) { activity = append(activity, action+" "+details) },
+	}
+	baseFields := map[string]string{
+		"kundenname": "customer", "standort": "site", "firewallname": "edge.example.test",
+		"cid": "101", "remoteip_full": "10.105.1.121", "wan_interface": "wan1",
+		"lan_interface": "loopback", "radiusmgt": "YES", "ipsec_psk_ro": "", "ipsec_psk_hci": "",
+	}
+	postEditForm(t, e, id, baseFields, http.StatusSeeOther)
+	stored, err := e.getConfig(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.IpsecPskRo != roSecret || stored.IpsecPskHci != hciSecret {
+		t.Fatalf("blank PSKs changed stored values: ro=%q hci=%q", stored.IpsecPskRo, stored.IpsecPskHci)
+	}
+
+	activity = nil
+	replaceFields := make(map[string]string, len(baseFields))
+	for key, value := range baseFields {
+		replaceFields[key] = value
+	}
+	replaceFields["ipsec_psk_ro"] = replacement
+	postEditForm(t, e, id, replaceFields, http.StatusSeeOther)
+	stored, err = e.getConfig(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.IpsecPskRo != replacement || stored.IpsecPskHci != hciSecret {
+		t.Fatalf("single PSK replacement was not isolated: ro=%q hci=%q", stored.IpsecPskRo, stored.IpsecPskHci)
+	}
+	if len(activity) != 1 {
+		t.Fatalf("activity entries = %d, want 1", len(activity))
+	}
+	if !strings.Contains(activity[0], fmt.Sprintf("ID: %d", id)) || !strings.Contains(activity[0], "ipsec_psk_ro") {
+		t.Errorf("activity does not identify entry and changed field: %q", activity[0])
+	}
+	if strings.Contains(activity[0], "ipsec_psk_hci") {
+		t.Errorf("activity lists unchanged secret field: %q", activity[0])
+	}
+	for _, secret := range []string{roSecret, hciSecret, replacement} {
+		if strings.Contains(activity[0], secret) {
+			t.Errorf("activity exposed secret %q: %q", secret, activity[0])
+		}
+	}
+}
+
+func TestEditSubmitMalformedMultipartFailsClosed(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "edit-malformed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "SENTINEL-UNCHANGED-SECRET-40aa"
+	result, err := db.Exec(`INSERT INTO vpn_config
+		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro)
+		VALUES ('customer', 'site', '10.105.1.122', 'edge.example.test', '101', ?)`, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := false
+	e := &Extension{
+		db: db, logger: slog.New(slog.DiscardHandler),
+		logActivity: func(_, _, _ string) { logged = true },
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/edit/%d", id), strings.NewReader("not-a-valid-multipart-body"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
+	rr := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/edit/{id}", e.editSubmit)
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed edit status = %d, body = %q, want 400", rr.Code, rr.Body.String())
+	}
+	stored, err := e.getConfig(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.IpsecPskRo != secret || stored.Kundenname != "customer" {
+		t.Fatalf("malformed edit mutated row: %#v", stored)
+	}
+	if logged {
+		t.Fatal("malformed edit created an activity record")
+	}
+	if strings.Contains(rr.Body.String(), secret) {
+		t.Fatal("malformed edit response exposed stored secret")
+	}
+}
+
+func TestEditSubmitRejectsAmbiguousOrOversizedPSKFields(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "edit-invalid-secret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	const storedSecret = "SENTINEL-STORED-SECRET-115a"
+	result, err := db.Exec(`INSERT INTO vpn_config
+		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro)
+		VALUES ('customer', 'site', '10.105.1.123', 'edge.example.test', '101', ?)`, storedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	activityCount := 0
+	e := &Extension{
+		db: db, logger: slog.New(slog.DiscardHandler),
+		logActivity: func(_, _, _ string) { activityCount++ },
+	}
+	baseFields := map[string]string{
+		"kundenname": "customer", "standort": "site", "firewallname": "edge.example.test",
+		"cid": "101", "remoteip_full": "10.105.1.123", "wan_interface": "wan1",
+		"lan_interface": "loopback", "radiusmgt": "YES", "ipsec_psk_hci": "",
+	}
+
+	t.Run("oversized", func(t *testing.T) {
+		fields := make(map[string]string, len(baseFields)+1)
+		for key, value := range baseFields {
+			fields[key] = value
+		}
+		fields["ipsec_psk_ro"] = strings.Repeat("x", 101)
+		postEditForm(t, e, id, fields, http.StatusBadRequest)
+	})
+
+	t.Run("duplicate", func(t *testing.T) {
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		for key, value := range baseFields {
+			if err := mw.WriteField(key, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := mw.WriteField("ipsec_psk_ro", "first-value"); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.WriteField("ipsec_psk_ro", "second-value"); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/edit/%d", id), &body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rr := httptest.NewRecorder()
+		router := chi.NewRouter()
+		router.Post("/edit/{id}", e.editSubmit)
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("duplicate PSK status = %d, body = %q", rr.Code, rr.Body.String())
+		}
+	})
+
+	stored, err := e.getConfig(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.IpsecPskRo != storedSecret {
+		t.Fatalf("invalid PSK submission changed stored value to %q", stored.IpsecPskRo)
+	}
+	if activityCount != 0 {
+		t.Fatalf("invalid PSK submissions logged %d successful edits", activityCount)
+	}
+}
+
+func TestAddActivityIdentifiesEntryAndFieldsWithoutSecrets(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "add-activity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createTableSQL); err != nil {
+		t.Fatal(err)
+	}
+	const roSecret = "SENTINEL-ADD-RO-SECRET-5e18"
+	const hciSecret = "SENTINEL-ADD-HCI-SECRET-2ca4"
+	var activity string
+	e := &Extension{
+		db: db, logger: slog.New(slog.DiscardHandler),
+		logActivity: func(_, action, details string) { activity = action + " " + details },
+	}
+	values := url.Values{
+		"kundenname": {"customer"}, "standort": {"site"}, "firewallname": {"edge.example.test"},
+		"cid": {"101"}, "wan_interface": {"wan1"}, "lan_interface": {"loopback"},
+		"ipsec_psk_ro": {roSecret}, "ipsec_psk_hci": {hciSecret}, "radiusmgt": {"YES"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/add", strings.NewReader(values.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	e.add(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("add status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(activity, "ID:") || !strings.Contains(activity, "ipsec_psk_ro") || !strings.Contains(activity, "ipsec_psk_hci") {
+		t.Errorf("activity does not identify entry and field names: %q", activity)
+	}
+	for _, secret := range []string{roSecret, hciSecret} {
+		if strings.Contains(activity, secret) {
+			t.Errorf("activity exposed secret %q: %q", secret, activity)
+		}
+	}
+}
+
+func postEditForm(t *testing.T, e *Extension, id int64, fields map[string]string, wantStatus int) {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := mw.WriteField(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/edit/%d", id), &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/edit/{id}", e.editSubmit)
+	router.ServeHTTP(rr, req)
+	if rr.Code != wantStatus {
+		t.Fatalf("editSubmit status = %d, body = %q, want %d", rr.Code, rr.Body.String(), wantStatus)
 	}
 }
 

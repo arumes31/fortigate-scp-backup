@@ -30,11 +30,13 @@
         </div>
         <div class="field">
             <label for="edit-ipsec-psk-ro">IPsec PSK RO</label>
-            <input id="edit-ipsec-psk-ro" type="text" name="ipsec_psk_ro" value="{{.IpsecPskRo}}">
+            <input id="edit-ipsec-psk-ro" type="password" name="ipsec_psk_ro" autocomplete="new-password" maxlength="100" aria-describedby="edit-ipsec-psk-ro-hint">
+            <small id="edit-ipsec-psk-ro-hint" class="field-hint">Leave blank to keep the current secret.</small>
         </div>
         <div class="field">
             <label for="edit-ipsec-psk-hci">IPsec PSK HCI</label>
-            <input id="edit-ipsec-psk-hci" type="text" name="ipsec_psk_hci" value="{{.IpsecPskHci}}">
+            <input id="edit-ipsec-psk-hci" type="password" name="ipsec_psk_hci" autocomplete="new-password" maxlength="100" aria-describedby="edit-ipsec-psk-hci-hint">
+            <small id="edit-ipsec-psk-hci-hint" class="field-hint">Leave blank to keep the current secret.</small>
         </div>
         <div class="field">
             <label for="edit-radiusmgt">RADIUS management (YES/NO)</label>

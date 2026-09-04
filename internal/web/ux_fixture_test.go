@@ -413,7 +413,8 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		data := map[string]any{
 			"ID": 7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
 			"Cid": "101", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
-			"IpsecPskRo": "psauto", "IpsecPskHci": "psauto", "Radiusmgt": "YES", "GraylogEnabled": true,
+			"IpsecPskRo": "SENTINEL-STORED-RO-PSK-5e19", "IpsecPskHci": "SENTINEL-STORED-HCI-PSK-83d1",
+			"Radiusmgt": "YES", "GraylogEnabled": true,
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := templates.admVPNEdit.ExecuteTemplate(w, "fgt_adm_vpn_conf_edit_form.html", data); err != nil {

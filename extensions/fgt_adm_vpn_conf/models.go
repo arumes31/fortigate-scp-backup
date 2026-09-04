@@ -372,7 +372,7 @@ func boolToInt(b bool) int {
 // insertConfig inserts a new row. last_graylog_status/last_graylog_check take
 // their column defaults (unknown / NULL), matching the Python insert path.
 func (e *Extension) insertConfig(c *VpnConfig) error {
-	_, err := e.db.Exec(`INSERT INTO vpn_config
+	result, err := e.db.Exec(`INSERT INTO vpn_config
 		(kundenname, standort, remoteip_full, remoteip_full_1st, ike2_username,
 		 wan_interface, lan_interface, dns_name, firewallname, cid,
 		 ipsec_psk_ro, ipsec_psk_hci, radiusmgt, dns_name_full,
@@ -382,6 +382,10 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.Cid,
 		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames)
+	if err != nil {
+		return err
+	}
+	c.ID, err = result.LastInsertId()
 	return err
 }
 
