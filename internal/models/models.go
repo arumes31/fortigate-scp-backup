@@ -49,6 +49,16 @@ type ActivityLog struct {
 	Timestamp time.Time
 }
 
+// ActivityLogFilter is the validated database filter shared by activity-log
+// count and page queries. To is an exclusive upper bound.
+type ActivityLogFilter struct {
+	Query    string
+	Username string
+	Action   string
+	From     time.Time
+	To       time.Time
+}
+
 // FirewallSchedule is the minimal projection used to (re)build backup jobs.
 type FirewallSchedule struct {
 	ID          int

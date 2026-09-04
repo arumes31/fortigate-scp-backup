@@ -71,12 +71,16 @@ func (fakeStore) ListErrors(context.Context) ([]models.Firewall, error)     { re
 func (fakeStore) LastBackupTimes(context.Context) (map[int]time.Time, error) {
 	return map[int]time.Time{}, nil
 }
-func (fakeStore) CountActivityLogs(context.Context) (int, error) { return 0, nil }
+func (fakeStore) CountActivityLogs(context.Context, models.ActivityLogFilter) (int, error) {
+	return 0, nil
+}
 func (fakeStore) DashboardStats(context.Context) (models.DashboardStats, error) {
 	return models.DashboardStats{}, nil
 }
-func (s fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) { return s.refs, nil }
-func (fakeStore) ListActivityLogs(context.Context, int, int) ([]models.ActivityLog, error) {
+func (s fakeStore) ListFirewallRefs(context.Context) ([]models.FirewallRef, error) {
+	return s.refs, nil
+}
+func (fakeStore) ListActivityLogs(context.Context, models.ActivityLogFilter, int, int) ([]models.ActivityLog, error) {
 	return nil, nil
 }
 func (fakeStore) GetAuditFindings(context.Context, int) ([]models.AuditFinding, error) {

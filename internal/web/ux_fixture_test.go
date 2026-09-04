@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -747,7 +748,38 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	}))
 	mux.HandleFunc("GET /topology/shared/{token}/data", jsonResponse(`{"fw_id":7,"fqdn":"edge.example.test","has_config":true,"interfaces":[]}`))
 	mux.HandleFunc("GET /topology/shared/{token}/devices", jsonResponse(`{"devices":[]}`))
-	mux.HandleFunc("GET /activity_log", render("activity_log.html", uxActivityFixture))
+	mux.HandleFunc("GET /activity_log", func(w http.ResponseWriter, r *http.Request) {
+		scenario, ok := uxScenarioFromRequest(r, defaultScenario)
+		if !ok {
+			http.Error(w, "unknown fixture scenario", http.StatusBadRequest)
+			return
+		}
+		data := uxActivityFixture(scenario)
+		data.Filters = activityLogFilterView{
+			Query: r.URL.Query().Get("q"), User: r.URL.Query().Get("user"), Action: r.URL.Query().Get("action"),
+			From: r.URL.Query().Get("from"), To: r.URL.Query().Get("to"),
+		}
+		data.HasFilters = data.Filters.hasFilters()
+		if data.Filters.Query == "deep-synthetic-match" {
+			data.Logs = []models.ActivityLog{{
+				Username: "automation", Action: "Configuration Change",
+				Details: "Synthetic match originally beyond the first 100 rows", Timestamp: uxFixtureNow,
+			}}
+			data.Total, data.TotalPages = 101, 2
+		} else if data.Filters.Query == "no-match" {
+			data.Logs, data.Total, data.TotalPages = nil, 0, 1
+		}
+		if page, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && page > 0 {
+			data.Page = min(page, data.TotalPages)
+		}
+		if data.Page > 1 {
+			data.PrevURL = activityLogPageURL(data.Filters, data.Page-1)
+		}
+		if data.Page < data.TotalPages {
+			data.NextURL = activityLogPageURL(data.Filters, data.Page+1)
+		}
+		webServer.render(w, "activity_log.html", data)
+	})
 	mux.HandleFunc("GET /errors", render("errors.html", uxErrorsFixture))
 	mux.HandleFunc("GET /backups/{fwID}", render("backups.html", uxBackupsFixture))
 	mux.HandleFunc("GET /change_password", render("change_password.html", func(uxScenario) any {
@@ -897,10 +929,11 @@ func uxTopologyFixture(scenario uxScenario) any {
 	return data
 }
 
-func uxActivityFixture(scenario uxScenario) any {
+func uxActivityFixture(scenario uxScenario) activityLogData {
 	data := activityLogData{Base: uxBase("Activity log", "activity"), Page: 1, TotalPages: 1}
 	if scenario != uxScenarioEmpty {
 		data.Logs = []models.ActivityLog{{Username: "reviewer", Action: "Backup completed", Details: "edge.example.test", Timestamp: uxFixtureNow}}
+		data.Total = 1
 	}
 	if scenario == uxScenarioError {
 		data.Error = "Synthetic activity-log failure."

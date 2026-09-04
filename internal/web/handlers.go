@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -69,8 +71,27 @@ type activityLogData struct {
 	Base       BaseData
 	Logs       []models.ActivityLog
 	Error      string
+	Filters    activityLogFilterView
+	HasFilters bool
+	Total      int
 	Page       int
 	TotalPages int
+	PrevURL    string
+	NextURL    string
+}
+
+type activityLogFilterView struct {
+	Query  string
+	User   string
+	Action string
+	From   string
+	To     string
+}
+
+type activityLogRequest struct {
+	Filter models.ActivityLogFilter
+	View   activityLogFilterView
+	Page   int
 }
 
 type changePasswordData struct {
@@ -727,31 +748,129 @@ func searchLineSegments(line string, pattern *regexp.Regexp) []searchSegment {
 
 const activityPageSize = 100
 
+const (
+	activityQueryMaxRunes    = 256
+	activityIdentityMaxRunes = 128
+)
+
+func parseActivityLogRequest(r *http.Request, location *time.Location) (activityLogRequest, error) {
+	if location == nil {
+		location = time.UTC
+	}
+	values := r.URL.Query()
+	request := activityLogRequest{
+		View: activityLogFilterView{
+			Query:  strings.TrimSpace(values.Get("q")),
+			User:   strings.TrimSpace(values.Get("user")),
+			Action: strings.TrimSpace(values.Get("action")),
+			From:   strings.TrimSpace(values.Get("from")),
+			To:     strings.TrimSpace(values.Get("to")),
+		},
+		Page: 1,
+	}
+	if utf8.RuneCountInString(request.View.Query) > activityQueryMaxRunes {
+		return request, errors.New("query is too long")
+	}
+	if utf8.RuneCountInString(request.View.User) > activityIdentityMaxRunes {
+		return request, errors.New("user filter is too long")
+	}
+	if utf8.RuneCountInString(request.View.Action) > activityIdentityMaxRunes {
+		return request, errors.New("action filter is too long")
+	}
+	request.Filter.Query = request.View.Query
+	request.Filter.Username = request.View.User
+	request.Filter.Action = request.View.Action
+	if request.View.From != "" {
+		from, err := time.ParseInLocation(time.DateOnly, request.View.From, location)
+		if err != nil {
+			return request, errors.New("invalid from date; use YYYY-MM-DD")
+		}
+		request.Filter.From = from
+	}
+	if request.View.To != "" {
+		to, err := time.ParseInLocation(time.DateOnly, request.View.To, location)
+		if err != nil {
+			return request, errors.New("invalid to date; use YYYY-MM-DD")
+		}
+		request.Filter.To = to.AddDate(0, 0, 1)
+	}
+	if !request.Filter.From.IsZero() && !request.Filter.To.IsZero() && !request.Filter.From.Before(request.Filter.To) {
+		return request, errors.New("from date must not be after to date")
+	}
+	if page, err := strconv.Atoi(values.Get("page")); err == nil && page > 0 {
+		request.Page = page
+	}
+	return request, nil
+}
+
+func (view activityLogFilterView) hasFilters() bool {
+	return view.Query != "" || view.User != "" || view.Action != "" || view.From != "" || view.To != ""
+}
+
+func activityLogPageURL(view activityLogFilterView, page int) string {
+	values := url.Values{}
+	for key, value := range map[string]string{
+		"q": view.Query, "user": view.User, "action": view.Action, "from": view.From, "to": view.To,
+	} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(page))
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return "/activity_log?" + encoded
+	}
+	return "/activity_log"
+}
+
 // handleActivityLog renders a page of activity, newest first.
 func (s *Server) handleActivityLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	base := s.base(r, "Activity Log", "activity")
-
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
+	request, err := parseActivityLogRequest(r, s.cfg.TZ)
+	if err != nil {
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: err.Error(), Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: 1, TotalPages: 1,
+		})
+		return
 	}
-	total, err := s.store.CountActivityLogs(ctx)
+	total, err := s.store.CountActivityLogs(ctx, request.Filter)
 	if err != nil {
 		s.logger.Error("failed to count activity logs", "err", err)
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: "Failed to load activity-log count", Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: 1, TotalPages: 1,
+		})
+		return
 	}
 	totalPages := (total + activityPageSize - 1) / activityPageSize
 	if totalPages < 1 {
 		totalPages = 1
 	}
-	if page > totalPages {
-		page = totalPages
+	if request.Page > totalPages {
+		request.Page = totalPages
 	}
-	logs, err := s.store.ListActivityLogs(ctx, activityPageSize, (page-1)*activityPageSize)
+	logs, err := s.store.ListActivityLogs(ctx, request.Filter, activityPageSize, (request.Page-1)*activityPageSize)
 	if err != nil {
 		s.logger.Error("failed to retrieve activity logs", "err", err)
-		s.render(w, "activity_log.html", activityLogData{Base: base, Error: "Failed to load activity logs", Page: 1, TotalPages: 1})
+		s.render(w, "activity_log.html", activityLogData{
+			Base: base, Error: "Failed to load activity logs", Filters: request.View,
+			HasFilters: request.View.hasFilters(), Page: request.Page, TotalPages: totalPages,
+		})
 		return
 	}
-	s.render(w, "activity_log.html", activityLogData{Base: base, Logs: logs, Page: page, TotalPages: totalPages})
+	data := activityLogData{
+		Base: base, Logs: logs, Filters: request.View, HasFilters: request.View.hasFilters(),
+		Total: total, Page: request.Page, TotalPages: totalPages,
+	}
+	if request.Page > 1 {
+		data.PrevURL = activityLogPageURL(request.View, request.Page-1)
+	}
+	if request.Page < totalPages {
+		data.NextURL = activityLogPageURL(request.View, request.Page+1)
+	}
+	s.render(w, "activity_log.html", data)
 }

@@ -1012,6 +1012,27 @@ body.topo-embed .card { margin: 0 !important; border: none !important; }
 .finding-warning { color: var(--warning); }
 .finding-info { color: var(--info); }
 
+/* ---------- Activity log ---------- */
+.activity-filter {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) repeat(2, minmax(120px, 1fr)) repeat(2, minmax(130px, .8fr));
+  gap: 12px;
+  align-items: end;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.activity-filter label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.activity-filter input { width: 100%; min-width: 0; }
+.activity-filter .filter-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+
 /* Respect users who prefer reduced motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

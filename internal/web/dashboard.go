@@ -581,7 +581,7 @@ func (s *Server) computeDashboard(ctx context.Context) dashboardData {
 	}
 
 	// Seed the live log panel with the most recent activity entries.
-	events, err := s.store.ListActivityLogs(ctx, 12, 0)
+	events, err := s.store.ListActivityLogs(ctx, models.ActivityLogFilter{}, 12, 0)
 	if err != nil {
 		loadError = true
 		s.logger.Error("dashboard activity seed failed", "err", err)
