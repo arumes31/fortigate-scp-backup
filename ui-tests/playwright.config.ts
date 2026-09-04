@@ -4,6 +4,7 @@ const fixtureOrigin = 'http://127.0.0.1:18901';
 
 export default defineConfig({
   testDir: './tests',
+  globalTeardown: './global-teardown.ts',
   outputDir: 'test-results',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
