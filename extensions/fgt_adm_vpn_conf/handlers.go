@@ -76,6 +76,7 @@ type indexData struct {
 // either secret in the edit response.
 type editFormData struct {
 	Lang             string
+	CSRFToken        string
 	ID               int64
 	Kundenname       string
 	Standort         string
@@ -210,6 +211,7 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 
 // ---- edit -------------------------------------------------------------------
 
+// editForm renders the browser-safe edit fragment with its CSRF token.
 func (e *Extension) editForm(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -228,7 +230,9 @@ func (e *Extension) editForm(w http.ResponseWriter, r *http.Request) {
 	data := browserSafeEditFormData(c)
 	data.Lang = "en"
 	if e.pageBase != nil {
-		data.Lang = e.pageBase(r, "FGT ADM VPN Config", "admvpn").Lang
+		base := e.pageBase(r, "FGT ADM VPN Config", "admvpn")
+		data.Lang = base.Lang
+		data.CSRFToken = base.CSRFToken
 	}
 	var buf bytes.Buffer
 	if err := e.editTemplate.ExecuteTemplate(&buf, editFormTemplate, data); err != nil {

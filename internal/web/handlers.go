@@ -31,23 +31,34 @@ import (
 type loginData struct {
 	Error         string
 	Lang          string
-	TOTPEnabled   bool
 	RadiusEnabled bool
+	ShowTOTP      bool
+	Username      string
 }
 
 const csvRequestBodyTimeout = 2 * time.Minute
 
-// loginView builds the login page data, carrying the TOTP/RADIUS flags the
-// template needs to decide whether to reveal the TOTP field and show the
-// "approve on your mobile" RADIUS banner.
+// loginView builds the login page data. TOTP is shown only when the encrypted
+// pre-authentication cookie proves that this local user's password succeeded.
 func (s *Server) loginView(r *http.Request, errMsg string) loginData {
 	lang := langFromRequest(r)
+	username, pendingTOTP := s.sess.PendingTOTP(r)
 	return loginData{
 		Error:         webui.Localize(lang, errMsg),
 		Lang:          lang,
-		TOTPEnabled:   s.cfg.TOTPEnabled,
 		RadiusEnabled: s.cfg.RadiusEnabled,
+		ShowTOTP:      s.cfg.TOTPEnabled && pendingTOTP,
+		Username:      username,
 	}
+}
+
+// totpLoginView builds the second-factor form after the primary password step
+// has established pending TOTP state.
+func (s *Server) totpLoginView(r *http.Request, username, errMsg string) loginData {
+	view := s.loginView(r, errMsg)
+	view.ShowTOTP = true
+	view.Username = username
+	return view
 }
 
 type indexData struct {
@@ -137,11 +148,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "login.html", s.loginView(r, ""))
 		return
 	}
+	if r.FormValue("stage") == "totp" {
+		s.handleTOTPLogin(w, r)
+		return
+	}
+	s.handlePrimaryLogin(w, r)
+}
 
+// handlePrimaryLogin verifies a local password or RADIUS credentials and
+// starts a TOTP challenge only for eligible local users.
+func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	totpCode := r.FormValue("totp_code")
 
 	// Brute-force guard: a per-(IP,username) bucket stops repeated guesses
 	// against one account, and a per-IP aggregate bucket stops a password-spray
@@ -159,49 +178,126 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("login user lookup failed", "user", username, "err", err)
 	}
 
-	authenticated := localOK
-	isRadius := false
-	if !authenticated && s.auth.VerifyRadius(username, password) {
-		authenticated = true
-		isRadius = true
+	if localOK {
+		if s.cfg.TOTPEnabled {
+			if user == nil || user.TOTPSecret == "" {
+				s.recordLoginFailure(username, rlKey, ipKey, "TOTP required but no secret found")
+				s.render(w, "login.html", s.loginView(r, "TOTP required but no secret found"))
+				return
+			}
+			if err := s.sess.BeginTOTP(w, r, username); err != nil {
+				s.logger.Error("failed to begin TOTP login", "user", username, "err", err)
+				s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))
+				return
+			}
+			s.render(w, "login.html", s.totpLoginView(r, username, ""))
+			return
+		}
+		s.completeLogin(w, r, username, false, user, rlKey, ipKey)
+		return
+	}
+	// A local username must not be shadowed by an identically named RADIUS
+	// identity. Existing RADIUS rows remain eligible for their normal flow.
+	if user != nil && !user.IsRadiusUser {
+		s.recordLoginFailure(username, rlKey, ipKey, "Invalid credentials")
+		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+		return
+	}
+
+	if s.auth.VerifyRadius(username, password) {
 		if err := s.store.UpsertRadiusUser(ctx, username); err != nil {
 			s.logger.Error("failed to upsert radius user", "user", username, "err", err)
 		}
 		if u, uerr := s.store.GetUserForLogin(ctx, username); uerr == nil {
 			user = u
 		}
-	}
-
-	// TOTP is enforced only for local (non-RADIUS) users when enabled.
-	if authenticated && s.cfg.TOTPEnabled && !isRadius {
-		if user != nil && user.TOTPSecret != "" {
-			if !s.auth.VerifyTOTP(user.TOTPSecret, totpCode) {
-				s.limiter.fail(rlKey)
-				s.ipLimiter.fail(ipKey)
-				s.store.LogActivity(username, "Login Failed", "Invalid TOTP code")
-				s.render(w, "login.html", s.loginView(r, "Invalid TOTP code"))
-				return
-			}
-		} else {
-			s.limiter.fail(rlKey)
-			s.ipLimiter.fail(ipKey)
-			s.store.LogActivity(username, "Login Failed", "TOTP required but no secret found")
-			s.render(w, "login.html", s.loginView(r, "TOTP required but no secret found"))
-			return
-		}
-	}
-
-	if !authenticated {
-		s.limiter.fail(rlKey)
-		s.ipLimiter.fail(ipKey)
-		s.store.LogActivity(username, "Login Failed", "Invalid credentials")
-		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+		s.completeLogin(w, r, username, true, user, rlKey, ipKey)
 		return
 	}
 
+	s.recordLoginFailure(username, rlKey, ipKey, "Invalid credentials")
+	s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+}
+
+// handleTOTPLogin completes a pending local login when its bound session and
+// six-digit second-factor code remain valid.
+func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
+	username, ok := s.sess.PendingTOTP(r)
+	if !ok {
+		s.render(w, "login.html", s.loginView(r, "Your sign-in expired. Please enter your password again."))
+		return
+	}
+
+	ipKey := clientIP(r, s.cfg.TrustProxyHeaders)
+	rlKey := ipKey + "|" + username
+	if !s.limiter.allowed(rlKey) || !s.ipLimiter.allowed(ipKey) {
+		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
+		s.render(w, "login.html", s.totpLoginView(r, username, "Too many failed attempts. Please try again later."))
+		return
+	}
+
+	user, err := s.store.GetUserForLogin(r.Context(), username)
+	if err != nil {
+		s.logger.Error("TOTP user lookup failed", "user", username, "err", err)
+	}
+	if err != nil || user == nil || user.TOTPSecret == "" {
+		_ = s.sess.ClearPendingTOTP(w, r)
+		s.recordLoginFailure(username, rlKey, ipKey, "TOTP required but no secret found")
+		s.render(w, "login.html", s.loginView(r, "Your sign-in expired. Please enter your password again."))
+		return
+	}
+
+	totpCode := r.FormValue("totp_code")
+	timeStep, valid := s.auth.VerifyTOTP(user.TOTPSecret, totpCode)
+	if !validTOTPCode(totpCode) || !valid {
+		s.recordLoginFailure(username, rlKey, ipKey, "Invalid TOTP code")
+		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
+		return
+	}
+	consumed, err := s.store.ConsumeTOTP(r.Context(), user.ID, timeStep)
+	if err != nil {
+		s.logger.Error("failed to consume TOTP step", "user", username, "err", err)
+	}
+	if err != nil || !consumed {
+		s.recordLoginFailure(username, rlKey, ipKey, "Replayed or unavailable TOTP code")
+		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
+		return
+	}
+	s.completeLogin(w, r, username, false, user, rlKey, ipKey)
+}
+
+// validTOTPCode reports whether code has the six ASCII digits expected by the
+// TOTP verifier.
+func validTOTPCode(code string) bool {
+	if len(code) != 6 {
+		return false
+	}
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// recordLoginFailure charges both rate-limit buckets and records the rejected
+// attempt in the activity log.
+func (s *Server) recordLoginFailure(username, rlKey, ipKey, details string) {
+	s.limiter.fail(rlKey)
+	s.ipLimiter.fail(ipKey)
+	s.store.LogActivity(username, "Login Failed", details)
+}
+
+// completeLogin resets failure counters, persists the authenticated session,
+// and redirects first-time local users to change their password.
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, user *models.User, rlKey, ipKey string) {
 	s.limiter.reset(rlKey)
 	s.ipLimiter.reset(ipKey)
-	if err := s.sess.Login(w, r, username, isRadius); err != nil {
+	role := models.RoleOperator
+	if user != nil {
+		role = user.Role
+	}
+	if err := s.sess.Login(w, r, username, isRadius, role); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
 		s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))

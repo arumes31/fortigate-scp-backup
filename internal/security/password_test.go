@@ -38,6 +38,14 @@ func TestVerifyLegacyPlaintext(t *testing.T) {
 	}
 }
 
+// TestVerifyUnknownPasswordAlwaysRejects guards the dummy comparison contract.
+func TestVerifyUnknownPasswordAlwaysRejects(t *testing.T) {
+	t.Parallel()
+	if VerifyUnknownPassword("candidate password") {
+		t.Fatal("unknown user password must never authenticate")
+	}
+}
+
 func TestValidateNewPasswordPolicy(t *testing.T) {
 	valid16Bytes := "0123456789abcdef"
 	validUnicode16Bytes := strings.Repeat("ä", 8)

@@ -128,6 +128,7 @@
                 '<td class="muted">' + tt('dashboard.stale_every') + ' ' + esc(r.cadence) + '</td>' +
                 '<td><div class="actions">' +
                 '<form method="post" action="/backup_now/' + id + '" style="display:inline">' +
+                csrfInput() +
                 '<button type="submit" class="btn btn-sm">' + tt('dashboard.backup_now') + '</button></form> ' +
                 '<a class="btn btn-sm" href="/backups/' + id + '">' + tt('dashboard.backups') + '</a>' +
                 '</div></td></tr>';

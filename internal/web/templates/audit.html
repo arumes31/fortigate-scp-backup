@@ -33,6 +33,7 @@
         </span>
     </div>
     <form method="post" action="/audit/cve_refresh" style="margin: 0;">
+        {{template "csrf" .Base.CSRFToken}}
         <button type="submit" class="btn btn-small" style="background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); padding: 3px 10px;">{{T .Base.Lang "audit.cve_db_refresh"}}</button>
     </form>
 </div>
@@ -43,6 +44,7 @@
         <summary><span>[+]</span> {{T .Base.Lang "audit.custom_rules"}} <span class="pill">{{len .CustomRules}}</span></summary>
         <div class="audit-management-body">
         <form method="post" action="/audit/custom_rule" class="audit-rule-form">
+            {{template "csrf" .Base.CSRFToken}}
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <label>{{T .Base.Lang "audit.rule_name"}}<input type="text" name="name" required></label>
                 <label>{{T .Base.Lang "audit.rule_pattern"}}<input type="text" name="pattern" required></label>
@@ -68,6 +70,7 @@
                         <strong>{{.Name}}</strong>: <code>{{.Pattern}}</code> ({{.Severity}})
                     </div>
                     <form method="post" action="/audit/custom_rule" style="margin: 0;">
+                        {{template "csrf" $.Base.CSRFToken}}
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" value="{{.ID}}">
                         <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 1.1em;" title="{{T $.Base.Lang "audit.rule_delete"}}">&times;</button>
@@ -101,6 +104,7 @@
                 </div>
                 <div style="display: flex; gap: 6px; flex-shrink: 0;">
                     <form method="post" action="/audit/exemption" style="margin: 0;">
+                        {{template "csrf" $.Base.CSRFToken}}
                         <input type="hidden" name="action" value="set_scope">
                         <input type="hidden" name="id" value="{{.ID}}">
                         {{if eq .Scope "global"}}
@@ -112,6 +116,7 @@
                         {{end}}
                     </form>
                     <form method="post" action="/audit/exemption" style="margin: 0;">
+                        {{template "csrf" $.Base.CSRFToken}}
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" value="{{.ID}}">
                         <button type="submit" class="btn btn-small" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px;">{{T $.Base.Lang "audit.exemption_revoke"}}</button>

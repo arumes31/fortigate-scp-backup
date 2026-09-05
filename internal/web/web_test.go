@@ -34,12 +34,15 @@ import (
 // ---- fakes ----
 
 type fakeStore struct {
-	firewalls []models.Firewall
-	backups   []models.Backup
-	errors    []models.BackupError
-	errorsErr error
-	refs      []models.FirewallRef
-	activity  *[]string
+	firewalls   []models.Firewall
+	backups     []models.Backup
+	errors      []models.BackupError
+	errorsErr   error
+	refs        []models.FirewallRef
+	activity    *[]string
+	loginUser   *models.User
+	loginPass   string
+	consumeTOTP func(context.Context, int, int64) (bool, error)
 }
 
 func (fakeStore) Ping(context.Context) error { return nil }
@@ -48,16 +51,39 @@ func (s fakeStore) LogActivity(username, action, details string) {
 		*s.activity = append(*s.activity, "actor="+username+" operation="+action+" "+details)
 	}
 }
-func (fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
+
+// GetUserForLogin returns the configured login fixture or the legacy admin
+// fixture used by existing handler tests.
+func (s fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
+	if s.loginUser != nil && u == s.loginUser.Username {
+		return s.loginUser, nil
+	}
 	if u == "admin" {
-		return &models.User{Username: "admin", Password: "changeme", FirstLogin: 0}, nil
+		return &models.User{ID: 1, Username: "admin", Password: "changeme", FirstLogin: 0, Role: models.RoleAdmin}, nil
 	}
 	return nil, nil
 }
 func (fakeStore) UpsertRadiusUser(context.Context, string) error { return nil }
-func (fakeStore) AuthenticateLocal(_ context.Context, u, p string) (*models.User, bool, error) {
+
+// ConsumeTOTP delegates to a test hook or accepts the step by default.
+func (s fakeStore) ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error) {
+	if s.consumeTOTP != nil {
+		return s.consumeTOTP(ctx, userID, timeStep)
+	}
+	return true, nil
+}
+
+// AuthenticateLocal accepts the configured credential fixture while retaining
+// the default admin credentials expected by older tests.
+func (s fakeStore) AuthenticateLocal(_ context.Context, u, p string) (*models.User, bool, error) {
+	if s.loginUser != nil && u == s.loginUser.Username && p == s.loginPass {
+		return s.loginUser, true, nil
+	}
+	if s.loginUser != nil && u == s.loginUser.Username {
+		return s.loginUser, false, nil
+	}
 	if u == "admin" && p == "changeme" {
-		return &models.User{Username: "admin", FirstLogin: 0}, true, nil
+		return &models.User{ID: 1, Username: "admin", FirstLogin: 0, Role: models.RoleAdmin}, true, nil
 	}
 	return nil, false, nil
 }
@@ -103,20 +129,47 @@ func (fakeStore) GetAuditFindings(context.Context, int) ([]models.AuditFinding, 
 }
 func (fakeStore) SaveAuditFindings(context.Context, int, []models.AuditFinding) error { return nil }
 
-type fakeAuth struct{ totp bool }
+type fakeAuth struct {
+	totp        bool
+	radius      bool
+	totpCalls   *int
+	radiusCalls *int
+}
 
-func (fakeAuth) VerifyRadius(string, string) bool { return false }
-func (a fakeAuth) VerifyTOTP(string, string) bool { return a.totp }
+// VerifyRadius returns the configured RADIUS result and records verifier calls
+// when a test supplies a counter.
+func (a fakeAuth) VerifyRadius(string, string) bool {
+	if a.radiusCalls != nil {
+		*a.radiusCalls++
+	}
+	return a.radius
+}
 
+// VerifyTOTP returns the configured TOTP result and records verifier calls when
+// a test supplies a counter.
+func (a fakeAuth) VerifyTOTP(string, string) (int64, bool) {
+	if a.totpCalls != nil {
+		*a.totpCalls++
+	}
+	return 42, a.totp
+}
+
+// testServer constructs a handler server with the default fake dependencies.
 func testServer(t *testing.T) *Server {
+	return testServerWithAuth(t, fakeStore{}, fakeAuth{})
+}
+
+// testServerWithAuth constructs a handler server with caller-provided login
+// dependencies so authentication branches can be tested independently.
+func testServerWithAuth(t *testing.T, store Store, authenticator Authenticator) *Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	cfg := config.Load(logger)
 	cfg.LoginMaxAttempts = 3
 	cipher, _ := crypto.New(nil)
-	srv, err := New(cfg, fakeStore{}, scheduler.New(logger, time.UTC),
+	srv, err := New(cfg, store, scheduler.New(logger, time.UTC),
 		backup.New(nil, mailer.New(cfg, logger), cfg, cipher, logger),
-		session.New(nil, false, false), fakeAuth{}, cipher, logger)
+		session.New(nil, false, false), authenticator, cipher, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +438,243 @@ func TestLoginSuccess(t *testing.T) {
 	if len(rr.Result().Cookies()) == 0 {
 		t.Fatal("expected a session cookie")
 	}
+}
+
+// TestLoginShowsTOTPOnlyAfterValidLocalPassword covers the complete two-step flow.
+func TestLoginShowsTOTPOnlyAfterValidLocalPassword(t *testing.T) {
+	user := &models.User{ID: 17, Username: "operator", TOTPSecret: "JBSWY3DPEHPK3PXP", Role: models.RoleOperator}
+	totpCalls := 0
+	consumedUserID, consumedStep := 0, int64(0)
+	srv := testServerWithAuth(t,
+		fakeStore{loginUser: user, loginPass: "correct horse", consumeTOTP: func(_ context.Context, userID int, timeStep int64) (bool, error) {
+			consumedUserID, consumedStep = userID, timeStep
+			return true, nil
+		}},
+		fakeAuth{totp: true, totpCalls: &totpCalls},
+	)
+	srv.cfg.TOTPEnabled = true
+	srv.cfg.RadiusEnabled = true
+
+	initial := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if html := initial.Body.String(); strings.Contains(html, `id="totp_code"`) {
+		t.Fatal("initial login page exposes TOTP before password validation")
+	}
+
+	passwordForm := url.Values{"username": {"operator"}, "password": {"correct horse"}}
+	passwordRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(passwordForm.Encode()))
+	passwordRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	passwordResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(passwordResponse, passwordRequest)
+	if passwordResponse.Code != http.StatusOK {
+		t.Fatalf("password step status = %d, want 200", passwordResponse.Code)
+	}
+	passwordHTML := passwordResponse.Body.String()
+	for _, want := range []string{`name="stage" value="totp"`, `id="totp_code"`, `autocomplete="one-time-code"`} {
+		if !strings.Contains(passwordHTML, want) {
+			t.Errorf("TOTP step missing %q", want)
+		}
+	}
+	if strings.Contains(passwordHTML, `id="password"`) {
+		t.Error("TOTP step must not render or echo the password field")
+	}
+	if totpCalls != 0 {
+		t.Fatalf("TOTP verification calls after password step = %d, want 0", totpCalls)
+	}
+
+	pendingCookie := cookieNamed(t, passwordResponse, "fortisafe")
+	totpForm := url.Values{"stage": {"totp"}, "totp_code": {"123456"}}
+	totpRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(totpForm.Encode()))
+	totpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	totpRequest.AddCookie(pendingCookie)
+	totpResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(totpResponse, totpRequest)
+	if totpResponse.Code != http.StatusFound || totpResponse.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("TOTP step = %d %q, want 302 /dashboard", totpResponse.Code, totpResponse.Header().Get("Location"))
+	}
+	if totpCalls != 1 {
+		t.Fatalf("TOTP verification calls = %d, want 1", totpCalls)
+	}
+	if consumedUserID != 17 || consumedStep != 42 {
+		t.Fatalf("consumed TOTP = user %d step %d, want user 17 step 42", consumedUserID, consumedStep)
+	}
+}
+
+// TestLoginRejectsAlreadyConsumedTOTPTimeStep covers persistent replay denial.
+func TestLoginRejectsAlreadyConsumedTOTPTimeStep(t *testing.T) {
+	user := &models.User{ID: 17, Username: "operator", TOTPSecret: "JBSWY3DPEHPK3PXP", Role: models.RoleOperator}
+	srv := testServerWithAuth(t,
+		fakeStore{loginUser: user, loginPass: "correct horse", consumeTOTP: func(context.Context, int, int64) (bool, error) {
+			return false, nil
+		}},
+		fakeAuth{totp: true},
+	)
+	srv.cfg.TOTPEnabled = true
+	passwordForm := url.Values{"username": {"operator"}, "password": {"correct horse"}}
+	passwordRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(passwordForm.Encode()))
+	passwordRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	passwordResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(passwordResponse, passwordRequest)
+
+	totpForm := url.Values{"stage": {"totp"}, "totp_code": {"123456"}}
+	totpRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(totpForm.Encode()))
+	totpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	totpRequest.AddCookie(cookieNamed(t, passwordResponse, "fortisafe"))
+	totpResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(totpResponse, totpRequest)
+	if totpResponse.Code != http.StatusOK || !strings.Contains(totpResponse.Body.String(), "Invalid TOTP code") {
+		t.Fatalf("replayed TOTP response = %d %q", totpResponse.Code, totpResponse.Body.String())
+	}
+}
+
+// TestAuthenticatedUnsafeRoutesRequireCSRFAndAllowOperators covers the policy boundary.
+func TestAuthenticatedUnsafeRoutesRequireCSRFAndAllowOperators(t *testing.T) {
+	srv := testServer(t)
+	srv.cfg.BackupDir = t.TempDir()
+	operatorLogin := httptest.NewRequest(http.MethodPost, "/login", nil)
+	operatorLogin.RemoteAddr = "192.0.2.40:1234"
+	operatorResponse := httptest.NewRecorder()
+	if err := srv.sess.Login(operatorResponse, operatorLogin, "operator", true, models.RoleOperator); err != nil {
+		t.Fatal(err)
+	}
+	operatorCookie := cookieNamed(t, operatorResponse, "fortisafe")
+
+	missingCSRF := httptest.NewRequest(http.MethodPost, "/search", nil)
+	missingCSRF.RemoteAddr = operatorLogin.RemoteAddr
+	missingCSRF.AddCookie(operatorCookie)
+	missingResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(missingResponse, missingCSRF)
+	if missingResponse.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF status = %d, want 403", missingResponse.Code)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{name: "create firewall", path: "/", wantStatus: http.StatusOK},
+		{name: "delete firewall", path: "/delete/7", wantStatus: http.StatusFound},
+		{name: "accept SSH host key", path: "/ssh_host_key/accept/7", wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, nil)
+			request.RemoteAddr = operatorLogin.RemoteAddr
+			request.AddCookie(operatorCookie)
+			request.Header.Set("X-CSRF-Token", srv.sess.Current(request).CSRFToken)
+			response := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("operator request to %s status = %d, want %d", test.path, response.Code, test.wantStatus)
+			}
+		})
+	}
+}
+
+func TestRadiusLoginNeverShowsOrVerifiesTOTP(t *testing.T) {
+	radiusCalls, totpCalls := 0, 0
+	srv := testServerWithAuth(t, fakeStore{}, fakeAuth{
+		radius: true, radiusCalls: &radiusCalls, totpCalls: &totpCalls,
+	})
+	srv.cfg.TOTPEnabled = true
+	srv.cfg.RadiusEnabled = true
+
+	form := url.Values{"username": {"radius-user"}, "password": {"radius-password"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusFound || rr.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("RADIUS login = %d %q, want 302 /dashboard", rr.Code, rr.Header().Get("Location"))
+	}
+	if radiusCalls != 1 || totpCalls != 0 {
+		t.Fatalf("verification calls = radius:%d totp:%d, want radius:1 totp:0", radiusCalls, totpCalls)
+	}
+}
+
+// TestRadiusIdentityCannotShadowLocalAdministrator protects local account identity.
+func TestRadiusIdentityCannotShadowLocalAdministrator(t *testing.T) {
+	radiusCalls := 0
+	admin := &models.User{ID: 1, Username: "admin", Role: models.RoleAdmin}
+	srv := testServerWithAuth(t,
+		fakeStore{loginUser: admin, loginPass: "local-password"},
+		fakeAuth{radius: true, radiusCalls: &radiusCalls},
+	)
+	srv.cfg.RadiusEnabled = true
+	form := url.Values{"username": {"admin"}, "password": {"radius-password"}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Invalid credentials") {
+		t.Fatalf("shadow login response = %d %q", response.Code, response.Body.String())
+	}
+	if radiusCalls != 0 {
+		t.Fatalf("RADIUS verifier called %d times for a local username", radiusCalls)
+	}
+}
+
+func TestLoginRejectsTOTPStageWithoutPendingPasswordValidation(t *testing.T) {
+	totpCalls := 0
+	srv := testServerWithAuth(t, fakeStore{}, fakeAuth{totp: true, totpCalls: &totpCalls})
+	srv.cfg.TOTPEnabled = true
+
+	form := url.Values{"stage": {"totp"}, "totp_code": {"123456"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("forged TOTP step status = %d, want 200", rr.Code)
+	}
+	if totpCalls != 0 {
+		t.Fatalf("TOTP verifier called %d times without pending password validation", totpCalls)
+	}
+	if html := rr.Body.String(); strings.Contains(html, `id="totp_code"`) {
+		t.Error("forged TOTP step must return to the password form")
+	}
+}
+
+func TestLoginReturnsToPasswordWhenPendingTOTPUserLosesSecret(t *testing.T) {
+	user := &models.User{Username: "operator", TOTPSecret: "JBSWY3DPEHPK3PXP"}
+	srv := testServerWithAuth(t,
+		fakeStore{loginUser: user, loginPass: "correct horse"},
+		fakeAuth{},
+	)
+	srv.cfg.TOTPEnabled = true
+
+	passwordForm := url.Values{"username": {"operator"}, "password": {"correct horse"}}
+	passwordRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(passwordForm.Encode()))
+	passwordRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	passwordResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(passwordResponse, passwordRequest)
+	pendingCookie := cookieNamed(t, passwordResponse, "fortisafe")
+
+	user.TOTPSecret = ""
+	totpForm := url.Values{"stage": {"totp"}, "totp_code": {"123456"}}
+	totpRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(totpForm.Encode()))
+	totpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	totpRequest.AddCookie(pendingCookie)
+	totpResponse := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(totpResponse, totpRequest)
+
+	if html := totpResponse.Body.String(); strings.Contains(html, `id="totp_code"`) {
+		t.Error("invalidated TOTP enrollment must return to the password form")
+	}
+}
+
+// cookieNamed returns a response cookie by name and fails the calling test when
+// it is absent.
+func cookieNamed(t *testing.T, rr *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range rr.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response has no %q cookie", name)
+	return nil
 }
 
 func TestLoginRateLimit(t *testing.T) {
@@ -1276,14 +1566,18 @@ func TestLoginPageFormSemantics(t *testing.T) {
 		`id="password" autocomplete="current-password" required`,
 		`type="button" class="password-toggle" data-password-toggle="password"`,
 		`aria-controls="password" aria-pressed="false"`,
-		`id="totp_code" inputmode="numeric" autocomplete="one-time-code"`,
-		`pattern="[0-9]{6}" minlength="6" maxlength="6"`,
+		`class="password-toggle-icon password-toggle-icon-show"`,
+		`href="/static/icons.svg#password-show"`,
+		`id="radius-banner" role="status" aria-live="polite" hidden`,
 		`role="status" aria-live="polite" aria-atomic="true"`,
 		`<script src="/static/ui.js"></script>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("login page missing %q", want)
 		}
+	}
+	if strings.Contains(html, `id="totp_code"`) {
+		t.Error("initial login page must not render TOTP before password validation")
 	}
 	for _, forbidden := range []string{
 		`u === 'admin'`,

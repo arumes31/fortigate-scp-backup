@@ -9,6 +9,7 @@
 
 <div class="toolbar dash-actions">
     <form method="post" action="/backup_now_all_failed" data-confirm-submit="{{L .Base.Lang "Start backups for all failed firewalls?"}}" style="margin:0">
+        {{template "csrf" .Base.CSRFToken}}
         <button type="submit" class="btn btn-primary">[!] {{L .Base.Lang "Retry all failed"}}</button>
     </form>
     <a href="/download_bundle" class="btn">⤓ {{L .Base.Lang "Restore bundle (ZIP)"}}</a>
@@ -102,7 +103,7 @@
                     <td class="err-cell" title="{{.Error}}">{{.Error}}</td>
                     <td>
                         <div class="actions">
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.retry"}}</button></form>
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline">{{template "csrf" $.Base.CSRFToken}}<button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.retry"}}</button></form>
                             <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">{{T $.Base.Lang "dashboard.test"}}</button>
                             <a class="btn btn-sm" href="/backups/{{.ID}}">{{T $.Base.Lang "dashboard.backups"}}</a>
                         </div>
@@ -135,7 +136,7 @@
                     <td class="muted">{{T $.Base.Lang "dashboard.stale_every"}} {{.Cadence}}</td>
                     <td>
                         <div class="actions">
-                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline"><button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.backup_now"}}</button></form>
+                            <form method="post" action="/backup_now/{{.ID}}" style="display:inline">{{template "csrf" $.Base.CSRFToken}}<button type="submit" class="btn btn-sm">{{T $.Base.Lang "dashboard.backup_now"}}</button></form>
                             <a class="btn btn-sm" href="/backups/{{.ID}}">{{T $.Base.Lang "dashboard.backups"}}</a>
                         </div>
                     </td>

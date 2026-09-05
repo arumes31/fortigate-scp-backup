@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,52 @@ func TestStoreIntegration(t *testing.T) {
 	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+
+	admin, err := store.GetUserForLogin(ctx, "admin")
+	if err != nil || admin == nil || admin.Role != models.RoleAdmin || admin.IsRadiusUser {
+		t.Fatalf("migrated admin = %+v, err %v; want admin role", admin, err)
+	}
+	radiusUsername := "integration-radius-user"
+	_, _ = store.pool.Exec(ctx, `DELETE FROM users WHERE username = $1`, radiusUsername)
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM users WHERE username = $1`, radiusUsername)
+	})
+	if err := store.UpsertRadiusUser(ctx, radiusUsername); err != nil {
+		t.Fatalf("upsert radius user: %v", err)
+	}
+	radiusUser, err := store.GetUserForLogin(ctx, radiusUsername)
+	if err != nil || radiusUser == nil || radiusUser.Role != models.RoleOperator {
+		t.Fatalf("radius user = %+v, err %v; want operator role", radiusUser, err)
+	}
+
+	timeStep := time.Now().UnixNano()
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM totp_replay WHERE user_id = $1 AND time_step = $2`, admin.ID, timeStep)
+	})
+	results := make(chan bool, 16)
+	var wait sync.WaitGroup
+	for range 16 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			consumed, consumeErr := store.ConsumeTOTP(context.Background(), admin.ID, timeStep)
+			if consumeErr != nil {
+				t.Errorf("consume TOTP: %v", consumeErr)
+			}
+			results <- consumed
+		}()
+	}
+	wait.Wait()
+	close(results)
+	accepted := 0
+	for consumed := range results {
+		if consumed {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted concurrent TOTP attempts = %d, want 1", accepted)
 	}
 
 	id, err := store.AddFirewall(ctx, models.Firewall{

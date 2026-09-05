@@ -10,6 +10,7 @@
             <summary><span class="no-caps">{{L .Base.Lang "Add new entry"}}</span><span class="muted">{{L .Base.Lang "Create VPN configuration"}}</span></summary>
             <div>
                 <form action="/fgt-adm-vpn-conf/add" method="post">
+                    {{template "csrf" .Base.CSRFToken}}
                     <div class="form-grid">
                         <div class="field">
                             <label for="add-firewallname">{{L .Base.Lang "Firewall name"}}</label>
@@ -88,6 +89,7 @@
                     <span class="muted adm-search-count" id="vpnSearchCount" aria-live="polite"></span>
                 </div>
                 <form class="adm-bulk-bar" id="admBulkForm" method="post">
+                    {{template "csrf" .Base.CSRFToken}}
                     <button class="btn btn-sm" type="button" id="vpnSelectVisible">{{L .Base.Lang "Select visible"}}</button>
                     <button class="btn btn-sm" type="button" id="vpnClearSelection">{{L .Base.Lang "Clear"}}</button>
                     <strong id="vpnSelectionCount">0 {{L .Base.Lang "selected"}}</strong>
@@ -153,6 +155,7 @@
         <div class="card">
             <h2 class="mt-0">{{L .Base.Lang "Import / Export"}}</h2>
             <form action="/fgt-adm-vpn-conf/import" method="post" enctype="multipart/form-data" class="toolbar">
+                {{template "csrf" .Base.CSRFToken}}
                 <label>{{L .Base.Lang "CSV file"}} <input class="adm-import-file" type="file" name="file" accept=".csv"></label>
                 <button type="submit" class="btn">{{L .Base.Lang "Import"}}</button>
                 <a href="/fgt-adm-vpn-conf/export" class="btn">{{L .Base.Lang "Export All to CSV (Backup)"}}</a>
@@ -188,6 +191,7 @@
             <span class="spacer"></span>
             <button type="button" class="btn" id="removeCancelBtn" data-dialog-close>{{L .Base.Lang "Cancel"}}</button>
             <form method="post" id="removeForm" action="" class="adm-remove-form">
+                {{template "csrf" .Base.CSRFToken}}
                 <button type="submit" class="btn btn-danger" id="removeConfirmBtn" data-confirm-action disabled>{{L .Base.Lang "Remove entry"}}</button>
             </form>
         </div>

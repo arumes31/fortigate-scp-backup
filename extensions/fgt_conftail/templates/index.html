@@ -97,10 +97,12 @@
                                 <td><span class="no-caps">{{.CreatedBy}}</span><br>{{template "dashboardTime" .CreatedAt}}</td>
                                 <td class="ct-ignore-actions">
                                     <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/toggle">
+                                        {{template "csrf" $.Base.CSRFToken}}
                                         <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
                                         <button type="submit" class="btn btn-sm">{{if .Enabled}}{{L $.Base.Lang "Disable"}}{{else}}{{L $.Base.Lang "Enable"}}{{end}}</button>
                                     </form>
                                     <form method="post" action="/fgt-conftail/ignore-rules/{{.ID}}/delete" data-ct-ignore-delete>
+                                        {{template "csrf" $.Base.CSRFToken}}
                                         <button type="submit" class="btn btn-sm btn-danger">{{L $.Base.Lang "Delete"}}</button>
                                     </form>
                                 </td>
@@ -135,6 +137,7 @@
                 <span class="ct-view-feedback" role="status" aria-live="polite" data-ct-view-feedback></span>
             </div>
             <form method="post" action="/fgt-conftail/" class="ct-filter" id="ct-filter-form" role="search" data-ct-filter-form>
+                {{template "csrf" .Base.CSRFToken}}
                 <div class="ct-basic-filters">
                 <div class="field ct-filter-search">
                     <label for="ct-search">{{L .Base.Lang "Search redacted event text"}}</label>
@@ -211,6 +214,7 @@
                 <span class="ct-label">{{L .Base.Lang "Active"}}</span>
                 {{range .ActiveFilters}}
                 <form method="post" action="/fgt-conftail/" class="ct-filter-chip-form">
+                    {{template "csrf" $.Base.CSRFToken}}
                     {{template "dashboardHiddenFields" .Fields}}
                     <button type="submit" class="chip ct-filter-chip" aria-label="Remove {{.Label}} filter: {{.Value}}">{{.Label}}: <span class="no-caps">{{.Value}}</span> <span aria-hidden="true">×</span></button>
                 </form>
@@ -278,8 +282,8 @@
             </div>
             {{else}}<p class="empty">{{L .Base.Lang "No sealed change sessions match these filters."}}</p>{{end}}
             <nav class="ct-pagination" aria-label="{{L .Base.Lang "History pagination"}}">
-                {{if .HasPrev}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .PrevFields}}<button class="btn" type="submit" data-ct-page="previous">{{L .Base.Lang "Previous"}}</button></form>{{end}}
-                {{if .HasNext}}<form method="post" action="/fgt-conftail/">{{template "dashboardHiddenFields" .NextFields}}<button class="btn" type="submit" data-ct-page="next">{{L .Base.Lang "Next"}}</button></form>{{end}}
+                {{if .HasPrev}}<form method="post" action="/fgt-conftail/">{{template "csrf" .Base.CSRFToken}}{{template "dashboardHiddenFields" .PrevFields}}<button class="btn" type="submit" data-ct-page="previous">{{L .Base.Lang "Previous"}}</button></form>{{end}}
+                {{if .HasNext}}<form method="post" action="/fgt-conftail/">{{template "csrf" .Base.CSRFToken}}{{template "dashboardHiddenFields" .NextFields}}<button class="btn" type="submit" data-ct-page="next">{{L .Base.Lang "Next"}}</button></form>{{end}}
             </nav>
         </section>
         {{end}}

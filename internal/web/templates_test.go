@@ -67,6 +67,7 @@ func TestSharedIconSpriteKeepsButtonNamesInMarkup(t *testing.T) {
 	}
 }
 
+// TestAuthenticatedCorePageUsesSharedDesktopShell covers shared shell and CSRF markup.
 func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
 	t.Parallel()
 	s := &Server{logger: slog.New(slog.DiscardHandler)}
@@ -76,7 +77,7 @@ func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	s.render(recorder, "change_password.html", changePasswordData{Base: BaseData{
 		Title: "Change password", Username: "fixture-reviewer", Lang: "de", Active: "password",
-		ReturnTo: "/change_password", Shell: webui.ShellText("de"),
+		ReturnTo: "/change_password", Shell: webui.ShellText("de"), CSRFToken: "csrf-fixture-token",
 		Navigation: webui.Navigation(webui.NavigationOptions{Lang: "de", Active: "password", AdmVPN: true}),
 	}})
 
@@ -84,6 +85,11 @@ func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
 	for _, want := range []string{`<html lang="de">`, `class="skip-link"`, `class="app-rail"`, `aria-label="Primärnavigation"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Core shell missing %q", want)
+		}
+	}
+	for _, want := range []string{`<meta name="csrf-token" content="csrf-fixture-token">`, `name="csrf_token" value="csrf-fixture-token"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Core shell missing CSRF markup %q", want)
 		}
 	}
 	if strings.Count(body, `aria-current="page"`) != 1 {
@@ -96,6 +102,7 @@ func TestAuthenticatedCorePageUsesSharedDesktopShell(t *testing.T) {
 	}
 }
 
+// TestIndexRendersPendingSSHHostKeyAcceptance covers the operator trust action.
 func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 	s := &Server{logger: slog.New(slog.DiscardHandler)}
 	if err := s.parseTemplates(); err != nil {
@@ -118,6 +125,7 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 	}
 }
 
+// TestIndexRendersOperatorWorklist verifies all device controls are present.
 func TestIndexRendersOperatorWorklist(t *testing.T) {
 	s := &Server{logger: slog.New(slog.DiscardHandler)}
 	if err := s.parseTemplates(); err != nil {

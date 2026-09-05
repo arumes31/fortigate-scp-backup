@@ -34,11 +34,22 @@
         {{if .Error}}
             <p class="alert alert-error" role="alert">{{.Error}}</p>
         {{end}}
-        {{if .RadiusEnabled}}
-        <div class="alert alert-info radius-banner" id="radius-banner">
+        {{if and .RadiusEnabled (not .ShowTOTP)}}
+        <div class="alert alert-info radius-banner" id="radius-banner" role="status" aria-live="polite" hidden>
             <b>RADIUS / MFA:</b> {{L .Lang "Sign-in can take up to 60 seconds. If your account uses push or one-time-password MFA,"}} <b>{{L .Lang "approve the prompt on your mobile device"}}</b> {{L .Lang "after clicking Login."}}
         </div>
         {{end}}
+        {{if .ShowTOTP}}
+        <form method="post" action="/login" id="login-form" data-signing-in="{{L .Lang "Signing in…"}}" data-auth-stage="totp">
+            <input type="hidden" name="stage" value="totp">
+            <div class="field" id="totp-section">
+                <label for="totp_code">{{L .Lang "TOTP Code"}}</label>
+                <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code"
+                       pattern="[0-9]{6}" minlength="6" maxlength="6" required autofocus>
+            </div>
+            <input type="submit" value="{{L .Lang "Login"}}" id="login-submit" class="btn btn-primary login-submit">
+        </form>
+        {{else}}
         <form method="post" action="/login" id="login-form" data-signing-in="{{L .Lang "Signing in…"}}">
             <div class="field">
                 <label for="username">{{L .Lang "Username"}}</label>
@@ -49,22 +60,18 @@
                 <div class="password-field">
                     <input type="password" name="password" id="password" autocomplete="current-password" required>
                     <button type="button" class="password-toggle" data-password-toggle="password"
-                            data-show-label="{{L .Lang "Show"}}" data-hide-label="{{L .Lang "Hide"}}"
                             data-show-aria-label="{{L .Lang "Show password"}}" data-hide-aria-label="{{L .Lang "Hide password"}}"
-                            aria-label="{{L .Lang "Show password"}}" aria-controls="password" aria-pressed="false">{{L .Lang "Show"}}</button>
+                            aria-label="{{L .Lang "Show password"}}" aria-controls="password" aria-pressed="false">
+                        <svg class="password-toggle-icon password-toggle-icon-show" aria-hidden="true" focusable="false"><use href="/static/icons.svg#password-show"></use></svg>
+                        <svg class="password-toggle-icon password-toggle-icon-hide" aria-hidden="true" focusable="false"><use href="/static/icons.svg#password-hide"></use></svg>
+                    </button>
                 </div>
             </div>
-            {{if .TOTPEnabled}}
-                <div class="field" id="totp-section">
-                    <label for="totp_code">{{L .Lang "TOTP Code"}}</label>
-                    <input type="text" name="totp_code" id="totp_code" inputmode="numeric" autocomplete="one-time-code"
-                           pattern="[0-9]{6}" minlength="6" maxlength="6">
-                </div>
-            {{end}}
             <input type="submit" value="{{L .Lang "Login"}}" id="login-submit" class="btn btn-primary login-submit">
         </form>
+        {{end}}
         <div class="login-wait" id="login-wait" role="status" aria-live="polite" aria-atomic="true">
-            <span class="spinner"></span>{{L .Lang "Signing in… check your mobile device to confirm the login if prompted."}}
+            <span class="spinner"></span>{{L .Lang "Signing in…"}}
         </div>
     </div>
     <script src="/static/ui.js"></script>

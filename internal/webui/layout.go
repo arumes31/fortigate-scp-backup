@@ -31,6 +31,7 @@ type BaseData struct {
 	Username   string
 	Lang       string
 	IsRadius   bool
+	CSRFToken  string
 	Active     string
 	ReturnTo   string
 	Shell      ShellLabels

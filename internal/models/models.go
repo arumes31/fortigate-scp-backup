@@ -4,6 +4,13 @@ package models
 
 import "time"
 
+const (
+	// RoleAdmin identifies the built-in local administrator account.
+	RoleAdmin = "admin"
+	// RoleOperator identifies an authenticated operational account.
+	RoleOperator = "operator"
+)
+
 // Firewall mirrors a row of the `firewalls` table.
 type Firewall struct {
 	ID             int
@@ -50,6 +57,7 @@ type User struct {
 	FirstLogin   int
 	TOTPSecret   string // empty when NULL
 	IsRadiusUser bool
+	Role         string
 }
 
 // ActivityLog mirrors a row of the `activity_logs` table.
