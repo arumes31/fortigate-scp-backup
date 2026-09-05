@@ -52,6 +52,8 @@ func (s *Server) loginView(r *http.Request, errMsg string) loginData {
 	}
 }
 
+// totpLoginView builds the second-factor form after the primary password step
+// has established pending TOTP state.
 func (s *Server) totpLoginView(r *http.Request, username, errMsg string) loginData {
 	view := s.loginView(r, errMsg)
 	view.ShowTOTP = true
@@ -153,6 +155,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.handlePrimaryLogin(w, r)
 }
 
+// handlePrimaryLogin verifies a local password or RADIUS credentials and
+// starts a TOTP challenge only for eligible local users.
 func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	username := r.FormValue("username")
@@ -208,6 +212,8 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 }
 
+// handleTOTPLogin completes a pending local login when its bound session and
+// six-digit second-factor code remain valid.
 func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	username, ok := s.sess.PendingTOTP(r)
 	if !ok {
@@ -243,6 +249,8 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	s.completeLogin(w, r, username, false, user, rlKey, ipKey)
 }
 
+// validTOTPCode reports whether code has the six ASCII digits expected by the
+// TOTP verifier.
 func validTOTPCode(code string) bool {
 	if len(code) != 6 {
 		return false
@@ -255,12 +263,16 @@ func validTOTPCode(code string) bool {
 	return true
 }
 
+// recordLoginFailure charges both rate-limit buckets and records the rejected
+// attempt in the activity log.
 func (s *Server) recordLoginFailure(username, rlKey, ipKey, details string) {
 	s.limiter.fail(rlKey)
 	s.ipLimiter.fail(ipKey)
 	s.store.LogActivity(username, "Login Failed", details)
 }
 
+// completeLogin resets failure counters, persists the authenticated session,
+// and redirects first-time local users to change their password.
 func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, user *models.User, rlKey, ipKey string) {
 	s.limiter.reset(rlKey)
 	s.ipLimiter.reset(ipKey)

@@ -87,6 +87,8 @@ type startupLogEvent struct {
 	Error    string        `json:"err"`
 }
 
+// startupLogEvents decodes newline-delimited JSON logs for startup assertions
+// and fails the calling test when the log stream is malformed.
 func startupLogEvents(t *testing.T, output string) []startupLogEvent {
 	t.Helper()
 	var events []startupLogEvent
@@ -104,6 +106,8 @@ func startupLogEvents(t *testing.T, output string) []startupLogEvent {
 	return events
 }
 
+// UnmarshalJSON converts slog's integer duration fields into time.Duration
+// values so tests can compare startup timings directly.
 func (e *startupLogEvent) UnmarshalJSON(data []byte) error {
 	type wireEvent struct {
 		Message  string `json:"msg"`

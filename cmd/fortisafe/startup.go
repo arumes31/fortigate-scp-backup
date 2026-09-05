@@ -50,6 +50,8 @@ func runStartupPhase[T any](logger *slog.Logger, phase string, heartbeatInterval
 	return value, nil
 }
 
+// runStartupAction adapts an error-only startup task to the progress-reporting
+// startup phase runner.
 func runStartupAction(logger *slog.Logger, phase string, work func() error) error {
 	_, err := runStartupPhase(logger, phase, startupHeartbeatInterval, func() (struct{}, error) {
 		return struct{}{}, work()

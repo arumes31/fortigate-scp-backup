@@ -50,6 +50,9 @@ func (s fakeStore) LogActivity(username, action, details string) {
 		*s.activity = append(*s.activity, "actor="+username+" operation="+action+" "+details)
 	}
 }
+
+// GetUserForLogin returns the configured login fixture or the legacy admin
+// fixture used by existing handler tests.
 func (s fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, error) {
 	if s.loginUser != nil && u == s.loginUser.Username {
 		return s.loginUser, nil
@@ -60,6 +63,9 @@ func (s fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, e
 	return nil, nil
 }
 func (fakeStore) UpsertRadiusUser(context.Context, string) error { return nil }
+
+// AuthenticateLocal accepts the configured credential fixture while retaining
+// the default admin credentials expected by older tests.
 func (s fakeStore) AuthenticateLocal(_ context.Context, u, p string) (*models.User, bool, error) {
 	if s.loginUser != nil && u == s.loginUser.Username && p == s.loginPass {
 		return s.loginUser, true, nil
@@ -118,12 +124,17 @@ type fakeAuth struct {
 	radiusCalls *int
 }
 
+// VerifyRadius returns the configured RADIUS result and records verifier calls
+// when a test supplies a counter.
 func (a fakeAuth) VerifyRadius(string, string) bool {
 	if a.radiusCalls != nil {
 		*a.radiusCalls++
 	}
 	return a.radius
 }
+
+// VerifyTOTP returns the configured TOTP result and records verifier calls when
+// a test supplies a counter.
 func (a fakeAuth) VerifyTOTP(string, string) bool {
 	if a.totpCalls != nil {
 		*a.totpCalls++
@@ -131,10 +142,13 @@ func (a fakeAuth) VerifyTOTP(string, string) bool {
 	return a.totp
 }
 
+// testServer constructs a handler server with the default fake dependencies.
 func testServer(t *testing.T) *Server {
 	return testServerWithAuth(t, fakeStore{}, fakeAuth{})
 }
 
+// testServerWithAuth constructs a handler server with caller-provided login
+// dependencies so authentication branches can be tested independently.
 func testServerWithAuth(t *testing.T, store Store, authenticator Authenticator) *Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
@@ -536,6 +550,8 @@ func TestLoginReturnsToPasswordWhenPendingTOTPUserLosesSecret(t *testing.T) {
 	}
 }
 
+// cookieNamed returns a response cookie by name and fails the calling test when
+// it is absent.
 func cookieNamed(t *testing.T, rr *httptest.ResponseRecorder, name string) *http.Cookie {
 	t.Helper()
 	for _, cookie := range rr.Result().Cookies() {

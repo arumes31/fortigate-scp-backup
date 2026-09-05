@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pquerna/otp/totp"
@@ -27,11 +28,17 @@ const radiusTimeout = 60 * time.Second
 type Authenticator struct {
 	cfg    *config.Config
 	logger *slog.Logger
+
+	// usedTOTP tracks recently accepted TOTP codes (keyed by secret+code) so a
+	// valid code cannot be replayed within its validity window: pquerna/otp's
+	// Validate only checks time-skew and performs no one-time-use enforcement.
+	totpMu   sync.Mutex
+	usedTOTP map[string]time.Time
 }
 
 // New returns an Authenticator bound to the given config.
 func New(cfg *config.Config, logger *slog.Logger) *Authenticator {
-	return &Authenticator{cfg: cfg, logger: logger}
+	return &Authenticator{cfg: cfg, logger: logger, usedTOTP: make(map[string]time.Time)}
 }
 
 // VerifyRadius returns true when the RADIUS server accepts the credentials.
@@ -66,10 +73,40 @@ func (a *Authenticator) VerifyRadius(username, password string) bool {
 	return false
 }
 
-// VerifyTOTP validates a 6-digit code against a base32 secret.
+// totpReplayWindow covers the full acceptance span of a code (current 30s
+// period plus one skewed period on either side) with a safety margin.
+const totpReplayWindow = 3 * 30 * time.Second
+
+// VerifyTOTP validates a 6-digit code against a base32 secret. A code is
+// accepted at most once per totpReplayWindow: replays within the validity
+// window are rejected even though they are still time-valid.
 func (a *Authenticator) VerifyTOTP(secret, code string) bool {
 	if secret == "" {
 		return false
 	}
-	return totp.Validate(code, secret)
+
+	a.totpMu.Lock()
+	if a.usedTOTP == nil {
+		a.usedTOTP = make(map[string]time.Time)
+	}
+	key := secret + "|" + code
+	if usedAt, seen := a.usedTOTP[key]; seen && time.Since(usedAt) <= totpReplayWindow {
+		a.totpMu.Unlock()
+		return false
+	}
+	a.totpMu.Unlock()
+
+	if !totp.Validate(code, secret) {
+		return false
+	}
+
+	a.totpMu.Lock()
+	a.usedTOTP[key] = time.Now()
+	for k, usedAt := range a.usedTOTP {
+		if time.Since(usedAt) > totpReplayWindow {
+			delete(a.usedTOTP, k)
+		}
+	}
+	a.totpMu.Unlock()
+	return true
 }

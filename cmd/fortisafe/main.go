@@ -39,6 +39,8 @@ import (
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
 
+// main initializes FortiSafe's dependencies in order and starts its background
+// services and HTTP server.
 func main() {
 	bootstrap := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load(bootstrap)

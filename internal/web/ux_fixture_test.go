@@ -928,6 +928,8 @@ func uxIPAMSnapshotFixture() ipamSnapshot {
 	return ipamSnapshot{Firewalls: 3, Scanned: 3, Prefixes: len(entries), Entries: entries, Overlaps: overlaps}
 }
 
+// registerUXCoreRoutes mounts deterministic core-page fixtures used by browser
+// tests and local visual inspection.
 func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario uxScenario) {
 	render := func(name string, data func(uxScenario) any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

@@ -219,6 +219,8 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 	})
 }
 
+// dataFrom extracts the authentication fields that are safe to expose to
+// request handlers from a decoded session.
 func dataFrom(sess *sessions.Session) Data {
 	d := Data{}
 	if v, ok := sess.Values[keyLoggedIn].(bool); ok {
@@ -233,6 +235,8 @@ func dataFrom(sess *sessions.Session) Data {
 	return d
 }
 
+// clearPendingTOTP removes every value associated with an incomplete
+// second-factor challenge from a decoded session.
 func clearPendingTOTP(sess *sessions.Session) {
 	delete(sess.Values, keyPendingTOTPUsername)
 	delete(sess.Values, keyPendingTOTPIssued)
