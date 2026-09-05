@@ -7,12 +7,13 @@ package auth
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 
-	"github.com/pquerna/otp/totp"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/hotp"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 
@@ -28,17 +29,11 @@ const radiusTimeout = 60 * time.Second
 type Authenticator struct {
 	cfg    *config.Config
 	logger *slog.Logger
-
-	// usedTOTP tracks recently accepted TOTP codes (keyed by secret+code) so a
-	// valid code cannot be replayed within its validity window: pquerna/otp's
-	// Validate only checks time-skew and performs no one-time-use enforcement.
-	totpMu   sync.Mutex
-	usedTOTP map[string]time.Time
 }
 
 // New returns an Authenticator bound to the given config.
 func New(cfg *config.Config, logger *slog.Logger) *Authenticator {
-	return &Authenticator{cfg: cfg, logger: logger, usedTOTP: make(map[string]time.Time)}
+	return &Authenticator{cfg: cfg, logger: logger}
 }
 
 // VerifyRadius returns true when the RADIUS server accepts the credentials.
@@ -73,40 +68,31 @@ func (a *Authenticator) VerifyRadius(username, password string) bool {
 	return false
 }
 
-// totpReplayWindow covers the full acceptance span of a code (current 30s
-// period plus one skewed period on either side) with a safety margin.
-const totpReplayWindow = 3 * 30 * time.Second
+const totpPeriod = 30
 
-// VerifyTOTP validates a 6-digit code against a base32 secret. A code is
-// accepted at most once per totpReplayWindow: replays within the validity
-// window are rejected even though they are still time-valid.
-func (a *Authenticator) VerifyTOTP(secret, code string) bool {
+// VerifyTOTP validates a six-digit code and returns its exact accepted time
+// step. The caller must atomically consume that step before creating a session.
+func (a *Authenticator) VerifyTOTP(secret, code string) (int64, bool) {
+	return verifyTOTPAt(secret, code, time.Now().UTC())
+}
+
+// verifyTOTPAt validates current and adjacent time steps around a fixed time.
+func verifyTOTPAt(secret, code string, now time.Time) (int64, bool) {
 	if secret == "" {
-		return false
+		return 0, false
 	}
-
-	a.totpMu.Lock()
-	if a.usedTOTP == nil {
-		a.usedTOTP = make(map[string]time.Time)
-	}
-	key := secret + "|" + code
-	if usedAt, seen := a.usedTOTP[key]; seen && time.Since(usedAt) <= totpReplayWindow {
-		a.totpMu.Unlock()
-		return false
-	}
-	a.totpMu.Unlock()
-
-	if !totp.Validate(code, secret) {
-		return false
-	}
-
-	a.totpMu.Lock()
-	a.usedTOTP[key] = time.Now()
-	for k, usedAt := range a.usedTOTP {
-		if time.Since(usedAt) > totpReplayWindow {
-			delete(a.usedTOTP, k)
+	current := int64(math.Floor(float64(now.Unix()) / totpPeriod))
+	for _, step := range []int64{current, current + 1, current - 1} {
+		valid, err := hotp.ValidateCustom(code, uint64(step), secret, hotp.ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if err != nil {
+			return 0, false
+		}
+		if valid {
+			return step, true
 		}
 	}
-	a.totpMu.Unlock()
-	return true
+	return 0, false
 }

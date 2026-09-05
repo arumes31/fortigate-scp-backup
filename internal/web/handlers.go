@@ -196,6 +196,13 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 		s.completeLogin(w, r, username, false, user, rlKey, ipKey)
 		return
 	}
+	// A local username must not be shadowed by an identically named RADIUS
+	// identity. Existing RADIUS rows remain eligible for their normal flow.
+	if user != nil && !user.IsRadiusUser {
+		s.recordLoginFailure(username, rlKey, ipKey, "Invalid credentials")
+		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+		return
+	}
 
 	if s.auth.VerifyRadius(username, password) {
 		if err := s.store.UpsertRadiusUser(ctx, username); err != nil {
@@ -241,8 +248,18 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totpCode := r.FormValue("totp_code")
-	if !validTOTPCode(totpCode) || !s.auth.VerifyTOTP(user.TOTPSecret, totpCode) {
+	timeStep, valid := s.auth.VerifyTOTP(user.TOTPSecret, totpCode)
+	if !validTOTPCode(totpCode) || !valid {
 		s.recordLoginFailure(username, rlKey, ipKey, "Invalid TOTP code")
+		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
+		return
+	}
+	consumed, err := s.store.ConsumeTOTP(r.Context(), user.ID, timeStep)
+	if err != nil {
+		s.logger.Error("failed to consume TOTP step", "user", username, "err", err)
+	}
+	if err != nil || !consumed {
+		s.recordLoginFailure(username, rlKey, ipKey, "Replayed or unavailable TOTP code")
 		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
 		return
 	}
@@ -276,7 +293,11 @@ func (s *Server) recordLoginFailure(username, rlKey, ipKey, details string) {
 func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, user *models.User, rlKey, ipKey string) {
 	s.limiter.reset(rlKey)
 	s.ipLimiter.reset(ipKey)
-	if err := s.sess.Login(w, r, username, isRadius); err != nil {
+	role := models.RoleOperator
+	if user != nil {
+		role = user.Role
+	}
+	if err := s.sess.Login(w, r, username, isRadius, role); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
 		s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))

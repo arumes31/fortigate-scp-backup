@@ -16,6 +16,7 @@ type Store interface {
 	GetUserForLogin(ctx context.Context, username string) (*models.User, error)
 	UpsertRadiusUser(ctx context.Context, username string) error
 	AuthenticateLocal(ctx context.Context, username, password string) (*models.User, bool, error)
+	ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error)
 	GetFirstLogin(ctx context.Context, username string) (int, bool, error)
 	ChangePassword(ctx context.Context, username, oldPassword, newPassword string) (bool, error)
 	ListFirewalls(ctx context.Context) ([]models.Firewall, error)

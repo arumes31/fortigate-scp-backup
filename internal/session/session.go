@@ -4,11 +4,18 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
+	"encoding/base64"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/sessions"
@@ -23,6 +30,8 @@ const (
 	keyLoggedIn            = "logged_in"
 	keyUsername            = "username"
 	keyIsRadius            = "is_radius_user"
+	keyRole                = "role"
+	keyCSRFToken           = "csrf_token"
 	keyLastActive          = "last_activity"
 	keyXForwarded          = "x_forwarded_for"
 	keyPendingTOTPUsername = "pending_totp_username"
@@ -37,6 +46,8 @@ type Data struct {
 	LoggedIn     bool
 	Username     string
 	IsRadiusUser bool
+	Role         string
+	CSRFToken    string
 }
 
 // Manager wraps the cookie store.
@@ -87,12 +98,14 @@ func New(key []byte, secure, trustProxy bool) *Manager {
 }
 
 // Login establishes an authenticated session.
-func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool) error {
+func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string) error {
 	sess, _ := m.store.Get(r, sessionName)
 	clearPendingTOTP(sess)
 	sess.Values[keyLoggedIn] = true
 	sess.Values[keyUsername] = username
 	sess.Values[keyIsRadius] = isRadius
+	sess.Values[keyRole] = role
+	sess.Values[keyCSRFToken] = randomToken()
 	sess.Values[keyLastActive] = time.Now().Unix()
 	sess.Values[keyXForwarded] = m.clientIP(r)
 	return sess.Save(r, w)
@@ -106,6 +119,8 @@ func (m *Manager) BeginTOTP(w http.ResponseWriter, r *http.Request, username str
 	delete(sess.Values, keyLoggedIn)
 	delete(sess.Values, keyUsername)
 	delete(sess.Values, keyIsRadius)
+	delete(sess.Values, keyRole)
+	delete(sess.Values, keyCSRFToken)
 	delete(sess.Values, keyLastActive)
 	delete(sess.Values, keyXForwarded)
 	sess.Values[keyPendingTOTPUsername] = username
@@ -212,11 +227,84 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 
 		sess.Values[keyLastActive] = time.Now().Unix()
 		sess.Values[keyXForwarded] = clientIP
+		if d.CSRFToken == "" {
+			sess.Values[keyCSRFToken] = randomToken()
+			d = dataFrom(sess)
+		}
 		_ = sess.Save(r, w)
 
 		ctx := context.WithValue(r.Context(), ctxKey{}, d)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// CSRFProtected rejects unsafe requests made with an authenticated session
+// unless they return the session's synchronizer token in a form field or
+// X-CSRF-Token header. Mounting it on the root router also protects extensions.
+func (m *Manager) CSRFProtected(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if csrfSafeMethod(r.Method) || r.URL.Path == "/login" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sess, _ := m.store.Get(r, sessionName)
+		d := dataFrom(sess)
+		if !d.LoggedIn {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := requestCSRFToken(r)
+		if d.CSRFToken == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(d.CSRFToken)) != 1 {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+const csrfTokenReadLimit = 64 << 10
+
+// requestCSRFToken reads a header or an early form field without parsing the
+// entire body. The consumed prefix is restored so route-specific body limits
+// and multipart cleanup remain effective in the destination handler.
+func requestCSRFToken(r *http.Request) string {
+	if token := r.Header.Get("X-CSRF-Token"); token != "" {
+		return token
+	}
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || (mediaType != "application/x-www-form-urlencoded" && mediaType != "multipart/form-data") {
+		return ""
+	}
+	prefix, err := io.ReadAll(io.LimitReader(r.Body, csrfTokenReadLimit))
+	if err != nil {
+		return ""
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{Reader: io.MultiReader(bytes.NewReader(prefix), r.Body), Closer: r.Body}
+	if mediaType == "application/x-www-form-urlencoded" {
+		values, _ := url.ParseQuery(string(prefix))
+		return values.Get("csrf_token")
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return ""
+	}
+	reader := multipart.NewReader(bytes.NewReader(prefix), boundary)
+	for {
+		part, partErr := reader.NextPart()
+		if partErr != nil {
+			return ""
+		}
+		if part.FormName() == "csrf_token" {
+			value, readErr := io.ReadAll(io.LimitReader(part, 512))
+			if readErr != nil {
+				return ""
+			}
+			return string(value)
+		}
+	}
 }
 
 // dataFrom extracts the authentication fields that are safe to expose to
@@ -232,7 +320,23 @@ func dataFrom(sess *sessions.Session) Data {
 	if v, ok := sess.Values[keyIsRadius].(bool); ok {
 		d.IsRadiusUser = v
 	}
+	if v, ok := sess.Values[keyRole].(string); ok {
+		d.Role = v
+	}
+	if v, ok := sess.Values[keyCSRFToken].(string); ok {
+		d.CSRFToken = v
+	}
 	return d
+}
+
+// csrfSafeMethod reports whether an HTTP method is defined as read-only.
+func csrfSafeMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions || method == http.MethodTrace
+}
+
+// randomToken returns a 256-bit URL-safe token from the system CSPRNG.
+func randomToken() string {
+	return base64.RawURLEncoding.EncodeToString(randomBytes(32))
 }
 
 // clearPendingTOTP removes every value associated with an incomplete

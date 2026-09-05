@@ -105,6 +105,7 @@ func (a *loginAuth) Next(_ []byte, more bool) ([]byte, error) {
 	}
 }
 
+// send performs one STARTTLS-protected, authenticated SMTP transaction.
 func (m *Mailer) send(subject, body, to string) error {
 	c := m.cfg
 	addr := net.JoinHostPort(c.MailServer, strconv.Itoa(c.MailPort))
@@ -125,7 +126,7 @@ func (m *Mailer) send(subject, body, to string) error {
 	// Fail closed: never fall back to plaintext transport or unauthenticated
 	// delivery, which would expose the message and the SMTP credentials.
 	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: c.MailServer}); err != nil {
+		if err := client.StartTLS(smtpTLSConfig(c.MailServer)); err != nil {
 			return fmt.Errorf("starttls: %w", err)
 		}
 	} else {
@@ -166,4 +167,9 @@ func (m *Mailer) send(subject, body, to string) error {
 		return fmt.Errorf("close data: %w", err)
 	}
 	return client.Quit()
+}
+
+// smtpTLSConfig returns the strict transport policy used for SMTP STARTTLS.
+func smtpTLSConfig(serverName string) *tls.Config {
+	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
 }

@@ -1219,6 +1219,7 @@ func uxBase(title, active string) BaseData {
 	return uxBaseLang(title, active, "en")
 }
 
+// uxBaseLang builds deterministic authenticated shell data for browser fixtures.
 func uxBaseLang(title, active, lang string) BaseData {
 	returnTo := "/" + active
 	if active == "firewalls" {
@@ -1226,7 +1227,8 @@ func uxBaseLang(title, active, lang string) BaseData {
 	}
 	return BaseData{
 		Title: title, Username: "reviewer", Lang: lang, Active: active, ReturnTo: returnTo,
-		Shell: webui.ShellText(lang),
+		CSRFToken: "fixture-csrf-token",
+		Shell:     webui.ShellText(lang),
 		Navigation: webui.Navigation(webui.NavigationOptions{
 			Lang: lang, Active: active, AdmVPN: true, ConfGen: true, PolSplit: true, ConfConv: true, ConfTail: true,
 		}),

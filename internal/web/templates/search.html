@@ -5,6 +5,7 @@
 
 <div class="card">
     <form method="post" action="/search">
+        {{template "csrf" .Base.CSRFToken}}
         <div class="field">
             <label for="query">{{L .Base.Lang "Search term"}}</label>
             <input type="search" id="query" name="query" value="{{.Query}}" placeholder="{{L .Base.Lang "e.g. set hostname* (use * as wildcard)"}}" autofocus>

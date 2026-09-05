@@ -35,6 +35,7 @@
             <footer class="backup-error__footer">
                 <p>{{L $.Base.Lang "Retry starts one asynchronous backup attempt for this firewall."}}</p>
                 <form method="post" action="/backup_now/{{.ID}}">
+                    {{template "csrf" $.Base.CSRFToken}}
                     <input type="hidden" name="return_to" value="/errors">
                     <button type="submit" class="btn btn-primary">{{L $.Base.Lang "Retry now"}}</button>
                 </form>

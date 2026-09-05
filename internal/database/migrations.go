@@ -64,6 +64,23 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_audit_findings_fw ON audit_findings (fw_id)`,
 		)
 	}},
+	{8, "user_roles", func(ctx context.Context, s *Store) error {
+		return s.execAll(ctx,
+			`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator'))`,
+			`UPDATE users SET role = 'admin', is_radius_user = FALSE WHERE username = 'admin'`,
+		)
+	}},
+	{9, "totp_replay", func(ctx context.Context, s *Store) error {
+		return s.execAll(ctx,
+			`CREATE TABLE IF NOT EXISTS totp_replay (
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				time_step BIGINT NOT NULL,
+				accepted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+				PRIMARY KEY (user_id, time_step)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_totp_replay_accepted_at ON totp_replay (accepted_at)`,
+		)
+	}},
 }
 
 // Migrate applies any pending migrations in order.

@@ -158,7 +158,8 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret, bo
 			password TEXT,
 			first_login INTEGER DEFAULT 1,
 			totp_secret TEXT,
-			is_radius_user BOOLEAN DEFAULT FALSE
+			is_radius_user BOOLEAN DEFAULT FALSE,
+			role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator'))
 		)`,
 		`CREATE TABLE IF NOT EXISTS activity_logs (
 			id SERIAL PRIMARY KEY,
@@ -317,8 +318,8 @@ func (s *Store) GetUserForLogin(ctx context.Context, username string) (*models.U
 		totpSecret *string
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT password, first_login, totp_secret, is_radius_user FROM users WHERE username = $1`, username).
-		Scan(&u.Password, &u.FirstLogin, &totpSecret, &u.IsRadiusUser)
+		`SELECT id, password, first_login, totp_secret, is_radius_user, role FROM users WHERE username = $1`, username).
+		Scan(&u.ID, &u.Password, &u.FirstLogin, &totpSecret, &u.IsRadiusUser, &u.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -339,7 +340,7 @@ func (s *Store) UpsertRadiusUser(ctx context.Context, username string) error {
 	err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = s.pool.Exec(ctx,
-			`INSERT INTO users (username, password, first_login, is_radius_user) VALUES ($1, '', 0, TRUE)`,
+			`INSERT INTO users (username, password, first_login, is_radius_user, role) VALUES ($1, '', 0, TRUE, 'operator')`,
 			username)
 		return err
 	}
@@ -399,6 +400,7 @@ func (s *Store) AuthenticateLocal(ctx context.Context, username, password string
 		return nil, false, err
 	}
 	if u == nil {
+		security.VerifyUnknownPassword(password)
 		return nil, false, nil
 	}
 	if !security.VerifyPassword(u.Password, password) {
@@ -413,6 +415,25 @@ func (s *Store) AuthenticateLocal(ctx context.Context, username, password string
 		}
 	}
 	return u, true, nil
+}
+
+// ConsumeTOTP atomically records one accepted TOTP time step for a user.
+// A false result with no error means another request or replica consumed it.
+func (s *Store) ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO totp_replay (user_id, time_step) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		userID, timeStep)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM totp_replay WHERE accepted_at < now() - interval '5 minutes'`); err != nil {
+		s.logger.Warn("failed to prune consumed TOTP steps", "err", err)
+	}
+	return true, nil
 }
 
 // ListFirewalls returns all firewalls ordered by id.
