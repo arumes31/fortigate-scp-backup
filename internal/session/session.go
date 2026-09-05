@@ -17,13 +17,17 @@ import (
 )
 
 const (
-	sessionName   = "fortisafe"
-	idleTimeout   = time.Hour
-	keyLoggedIn   = "logged_in"
-	keyUsername   = "username"
-	keyIsRadius   = "is_radius_user"
-	keyLastActive = "last_activity"
-	keyXForwarded = "x_forwarded_for"
+	sessionName            = "fortisafe"
+	idleTimeout            = time.Hour
+	pendingTOTPTimeout     = 5 * time.Minute
+	keyLoggedIn            = "logged_in"
+	keyUsername            = "username"
+	keyIsRadius            = "is_radius_user"
+	keyLastActive          = "last_activity"
+	keyXForwarded          = "x_forwarded_for"
+	keyPendingTOTPUsername = "pending_totp_username"
+	keyPendingTOTPIssued   = "pending_totp_issued"
+	keyPendingTOTPIP       = "pending_totp_ip"
 )
 
 type ctxKey struct{}
@@ -85,11 +89,53 @@ func New(key []byte, secure, trustProxy bool) *Manager {
 // Login establishes an authenticated session.
 func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool) error {
 	sess, _ := m.store.Get(r, sessionName)
+	clearPendingTOTP(sess)
 	sess.Values[keyLoggedIn] = true
 	sess.Values[keyUsername] = username
 	sess.Values[keyIsRadius] = isRadius
 	sess.Values[keyLastActive] = time.Now().Unix()
 	sess.Values[keyXForwarded] = m.clientIP(r)
+	return sess.Save(r, w)
+}
+
+// BeginTOTP records a short-lived, encrypted pre-authentication state after a
+// local password has been verified. It deliberately stores no password or TOTP
+// secret and binds the second step to the same client IP as the first.
+func (m *Manager) BeginTOTP(w http.ResponseWriter, r *http.Request, username string) error {
+	sess, _ := m.store.Get(r, sessionName)
+	delete(sess.Values, keyLoggedIn)
+	delete(sess.Values, keyUsername)
+	delete(sess.Values, keyIsRadius)
+	delete(sess.Values, keyLastActive)
+	delete(sess.Values, keyXForwarded)
+	sess.Values[keyPendingTOTPUsername] = username
+	sess.Values[keyPendingTOTPIssued] = time.Now().Unix()
+	sess.Values[keyPendingTOTPIP] = m.clientIP(r)
+	return sess.Save(r, w)
+}
+
+// PendingTOTP returns the local username awaiting its second factor when the
+// signed state is fresh and comes from the same client IP as the password step.
+func (m *Manager) PendingTOTP(r *http.Request) (string, bool) {
+	sess, _ := m.store.Get(r, sessionName)
+	username, usernameOK := sess.Values[keyPendingTOTPUsername].(string)
+	issued, issuedOK := sess.Values[keyPendingTOTPIssued].(int64)
+	clientIP, ipOK := sess.Values[keyPendingTOTPIP].(string)
+	if !usernameOK || username == "" || !issuedOK || !ipOK || clientIP != m.clientIP(r) {
+		return "", false
+	}
+	age := time.Since(time.Unix(issued, 0))
+	if age < 0 || age > pendingTOTPTimeout {
+		return "", false
+	}
+	return username, true
+}
+
+// ClearPendingTOTP removes an incomplete second-factor login without creating
+// an authenticated session.
+func (m *Manager) ClearPendingTOTP(w http.ResponseWriter, r *http.Request) error {
+	sess, _ := m.store.Get(r, sessionName)
+	clearPendingTOTP(sess)
 	return sess.Save(r, w)
 }
 
@@ -185,6 +231,12 @@ func dataFrom(sess *sessions.Session) Data {
 		d.IsRadiusUser = v
 	}
 	return d
+}
+
+func clearPendingTOTP(sess *sessions.Session) {
+	delete(sess.Values, keyPendingTOTPUsername)
+	delete(sess.Values, keyPendingTOTPIssued)
+	delete(sess.Values, keyPendingTOTPIP)
 }
 
 func randomBytes(n int) []byte {

@@ -947,7 +947,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	}
 
 	mux.HandleFunc("GET /login", render("login.html", func(uxScenario) any {
-		return loginData{Lang: "en", TOTPEnabled: true, RadiusEnabled: true}
+		return loginData{Lang: "en", RadiusEnabled: true}
 	}))
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
