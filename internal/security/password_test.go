@@ -46,6 +46,38 @@ func TestVerifyUnknownPasswordAlwaysRejects(t *testing.T) {
 	}
 }
 
+// TestFailedPasswordVerificationPerformsOneBcryptComparison guards uniform work.
+func TestFailedPasswordVerificationPerformsOneBcryptComparison(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		stored   string
+		provided string
+	}{
+		{name: "unknown user", provided: "candidate"},
+		{name: "blank supplied password", stored: "legacy-password"},
+		{name: "empty stored password", provided: "candidate"},
+		{name: "both passwords empty"},
+		{name: "wrong legacy password", stored: "legacy-password", provided: "wrong"},
+		{name: "wrong bcrypt password", stored: "$2a$10$fixture", provided: "wrong"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			comparisons := 0
+			matched := verifyPassword(test.stored, test.provided, func(_, _ []byte) error {
+				comparisons++
+				return errors.New("password mismatch")
+			})
+			if matched {
+				t.Fatal("failed password unexpectedly matched")
+			}
+			if comparisons != 1 {
+				t.Fatalf("bcrypt comparisons = %d, want 1", comparisons)
+			}
+		})
+	}
+}
+
 func TestValidateNewPasswordPolicy(t *testing.T) {
 	valid16Bytes := "0123456789abcdef"
 	validUnicode16Bytes := strings.Repeat("ä", 8)

@@ -400,8 +400,7 @@ func (s *Store) AuthenticateLocal(ctx context.Context, username, password string
 		return nil, false, err
 	}
 	if u == nil {
-		security.VerifyUnknownPassword(password)
-		return nil, false, nil
+		return nil, security.VerifyUnknownPassword(password), nil
 	}
 	if !security.VerifyPassword(u.Password, password) {
 		return u, false, nil

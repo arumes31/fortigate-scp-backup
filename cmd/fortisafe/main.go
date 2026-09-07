@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -221,12 +222,16 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}
-	logger.Info("startup completed", "duration", time.Since(startupStarted).Round(time.Millisecond))
+	listener, err := bindHTTPAndCompleteStartup(logger, httpSrv.Addr, startupStarted)
+	if err != nil {
+		logger.Error("http server error", "err", err)
+		os.Exit(1)
+	}
 
 	// Graceful shutdown.
 	go func() {
 		logger.Info("listening", "addr", httpSrv.Addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("http server error", "err", err)
 			os.Exit(1)
 		}
@@ -244,6 +249,17 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	sched.Stop()
 	logger.Info("shutdown complete")
+}
+
+// bindHTTPAndCompleteStartup binds the HTTP socket before reporting startup
+// completion, preventing a bind failure from being advertised as readiness.
+func bindHTTPAndCompleteStartup(logger *slog.Logger, addr string, startupStarted time.Time) (net.Listener, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("startup completed", "duration", time.Since(startupStarted).Round(time.Millisecond))
+	return listener, nil
 }
 
 // pruneActivityLogs periodically deletes activity rows older than the retention

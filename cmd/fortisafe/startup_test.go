@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -53,6 +54,39 @@ func TestRunStartupPhaseReportsProgressAndCompletion(t *testing.T) {
 			t.Errorf("completion duration = %v, want 25s", events[3].Duration)
 		}
 	})
+}
+
+// TestBindHTTPAndCompleteStartupLogsOnlyAfterBinding guards startup readiness.
+func TestBindHTTPAndCompleteStartupLogsOnlyAfterBinding(t *testing.T) {
+	t.Parallel()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	var failedOutput bytes.Buffer
+	failedLogger := slog.New(slog.NewJSONHandler(&failedOutput, nil))
+	listener, err := bindHTTPAndCompleteStartup(failedLogger, occupied.Addr().String(), time.Now())
+	if err == nil {
+		_ = listener.Close()
+		t.Fatal("binding an occupied address unexpectedly succeeded")
+	}
+	if strings.Contains(failedOutput.String(), "startup completed") {
+		t.Fatal("startup completion was logged before the HTTP socket was bound")
+	}
+
+	var successOutput bytes.Buffer
+	successLogger := slog.New(slog.NewJSONHandler(&successOutput, nil))
+	listener, err = bindHTTPAndCompleteStartup(successLogger, "127.0.0.1:0", time.Now())
+	if err != nil {
+		t.Fatalf("bindHTTPAndCompleteStartup() error = %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	if !strings.Contains(successOutput.String(), "startup completed") {
+		t.Fatal("successful HTTP bind did not log startup completion")
+	}
 }
 
 func TestRunStartupPhaseReportsFailure(t *testing.T) {
