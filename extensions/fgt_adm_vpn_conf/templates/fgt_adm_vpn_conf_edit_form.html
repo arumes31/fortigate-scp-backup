@@ -1,4 +1,5 @@
 <form action="/fgt-adm-vpn-conf/edit/{{.ID}}" method="post">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="form-grid">
         <div class="field">
             <label for="edit-kundenname">{{L .Lang "Customer name"}}</label>

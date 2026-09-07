@@ -34,8 +34,10 @@
             var loginForm = document.getElementById('login-form');
             var loginSubmit = document.getElementById('login-submit');
             var loginWait = document.getElementById('login-wait');
+            var radiusBanner = document.getElementById('radius-banner');
             if (loginForm) {
                 loginForm.addEventListener('submit', function () {
+                    if (radiusBanner) { radiusBanner.hidden = false; }
                     if (loginWait) { loginWait.classList.add('show'); }
                     if (loginSubmit) {
                         loginSubmit.disabled = true;

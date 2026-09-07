@@ -2,6 +2,30 @@
 // that builds DOM from strings, so there is exactly one HTML-escaping
 // primitive and one i18n lookup in the app.
 
+// Attach the authenticated session's synchronizer token to same-origin unsafe
+// fetch requests. Native forms render the same token as a hidden field.
+(function () {
+    'use strict';
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta && meta.content;
+    if (!token || !window.fetch) return;
+    var originalFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+        var options = Object.assign({}, init || {});
+        var method = String(options.method || (input && input.method) || 'GET').toUpperCase();
+        if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
+            var requestURL = (typeof input === 'string' || input instanceof URL) ? input : input.url;
+            var url = new URL(requestURL, window.location.href);
+            if (url.origin === window.location.origin) {
+                var headers = new Headers(options.headers || (input && input.headers) || undefined);
+                headers.set('X-CSRF-Token', token);
+                options.headers = headers;
+            }
+        }
+        return originalFetch(input, options);
+    };
+})();
+
 // esc HTML-escapes a value for safe interpolation into innerHTML strings.
 function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, c => ({
@@ -15,6 +39,14 @@ function esc(s) {
 var fortiSafeI18nMeta = document.querySelector('meta[name="fortisafe-i18n"]');
 if (fortiSafeI18nMeta) {
     try { window.I18N = JSON.parse(fortiSafeI18nMeta.content || '{}'); } catch (error) { window.I18N = {}; }
+}
+
+// csrfInput returns the hidden synchronizer field for forms built dynamically.
+function csrfInput() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    return meta && meta.content
+        ? '<input type="hidden" name="csrf_token" value="' + esc(meta.content) + '">'
+        : '';
 }
 function tt(key) { return (window.I18N && window.I18N[key]) || key; }
 

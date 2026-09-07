@@ -1,6 +1,10 @@
         /* Center the login panel over the animated backdrop. Overrides the
            app.css body (which is a flex column app shell) for this page only. */
         body {
+            --accent: var(--brand);
+            --accent-hover: #ffb2a7;
+            --accent-soft: var(--brand-soft);
+            --glow: 0 0 8px rgba(255, 139, 123, 0.45);
             height: 100vh;
             overflow: hidden;
             position: relative;
@@ -136,9 +140,27 @@
 
         .login-submit { width: 100%; justify-content: center; padding: 11px 12px; font-size: 13px; margin-top: 4px; }
 
-        .password-field { display: flex; gap: 8px; align-items: stretch; }
-        .password-field input { min-width: 0; flex: 1; }
-        .password-toggle { flex: none; min-width: 72px; }
+        .password-field { position: relative; }
+        .password-field input { width: 100%; min-width: 0; padding-right: 44px; }
+        .password-toggle {
+            position: absolute;
+            top: 50%;
+            right: 6px;
+            width: 32px;
+            height: 32px;
+            padding: 6px;
+            transform: translateY(-50%);
+            border: 0;
+            background: transparent;
+            color: var(--accent);
+            cursor: pointer;
+        }
+        .password-toggle:hover { color: var(--accent-hover); }
+        .password-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+        .password-toggle-icon { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+        .password-toggle-icon-hide { display: none; }
+        .password-toggle[aria-pressed="true"] .password-toggle-icon-show { display: none; }
+        .password-toggle[aria-pressed="true"] .password-toggle-icon-hide { display: block; }
 
         /* Prose blocks reset the global UPPERCASE chrome for readability, the same
            way toasts / stdout do in app.css. Account-specific authentication
@@ -152,6 +174,7 @@
             font-size: 12px;
             line-height: 1.45;
         }
+        .radius-banner[hidden] { display: none; }
         .radius-banner b { color: var(--accent); }
 
         .login-wait {

@@ -19,6 +19,14 @@ const (
 	MaxPasswordBytes = 72
 )
 
+var unknownUserHash = func() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("fortisafe-unknown-user"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("security: generate unknown-user password hash: " + err.Error())
+	}
+	return hash
+}()
+
 type passwordValidationError string
 
 func (e passwordValidationError) Error() string { return string(e) }
@@ -80,13 +88,27 @@ func IsHashed(stored string) bool {
 // local check), and an empty-vs-empty comparison would otherwise let anyone log
 // in as such a user with a blank password, bypassing RADIUS entirely.
 func VerifyPassword(stored, provided string) bool {
-	if stored == "" || provided == "" {
-		return false
-	}
+	return verifyPassword(stored, provided, bcrypt.CompareHashAndPassword)
+}
+
+// verifyPassword implements password verification with an injectable bcrypt
+// comparison so tests can enforce equal work across all failed attempts.
+func verifyPassword(stored, provided string, compare func([]byte, []byte) error) bool {
 	if IsHashed(stored) {
-		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
+		return compare([]byte(stored), []byte(provided)) == nil
 	}
-	return subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1
+	if stored != "" && provided != "" && subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1 {
+		return true
+	}
+	_ = compare(unknownUserHash, []byte(provided))
+	return false
+}
+
+// VerifyUnknownPassword performs the same expensive bcrypt comparison used by
+// a real hashed account and always returns false. Login code calls it when no
+// username exists to reduce timing-based account discovery.
+func VerifyUnknownPassword(provided string) bool {
+	return VerifyPassword("", provided)
 }
 
 // NeedsUpgrade reports whether a verified stored value should be re-hashed

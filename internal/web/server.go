@@ -49,7 +49,7 @@ func init() {
 // Authenticator is the subset of internal/auth used by the login handler.
 type Authenticator interface {
 	VerifyRadius(username, password string) bool
-	VerifyTOTP(secret, code string) bool
+	VerifyTOTP(secret, code string) (int64, bool)
 }
 
 // BaseData carries the shared layout fields every page embeds as `.Base`.
@@ -61,7 +61,8 @@ type BaseData struct {
 	ExtFgtPolSplitEnabled bool
 	ExtFgtConfConvEnabled bool
 	ExtFgtConfTailEnabled bool
-	IsRadius              bool   // RADIUS users cannot change their password locally
+	IsRadius              bool // RADIUS users cannot change their password locally
+	CSRFToken             string
 	Lang                  string // UI language: "en" (default) or "de"
 	Active                string // nav key: firewalls|search|activity|admvpn|password
 	ReturnTo              string
@@ -358,6 +359,7 @@ func (s *Server) base(r *http.Request, title, active string) BaseData {
 		ExtFgtConfConvEnabled: s.cfg.ExtFgtConfConv,
 		ExtFgtConfTailEnabled: s.cfg.ExtFgtConfTail,
 		IsRadius:              page.IsRadius,
+		CSRFToken:             page.CSRFToken,
 		Lang:                  page.Lang,
 		Active:                page.Active,
 		ReturnTo:              page.ReturnTo,
@@ -383,6 +385,7 @@ func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData 
 
 	base.Username = d.Username
 	base.IsRadius = d.IsRadiusUser
+	base.CSRFToken = d.CSRFToken
 	base.Navigation = webui.Navigation(webui.NavigationOptions{
 		Lang:     lang,
 		Active:   active,
@@ -409,6 +412,7 @@ func (s *Server) Routes() chi.Router {
 	// Keep recovery inside response/security middleware so a generated 500 page
 	// retains the same headers and compression behavior as every other page.
 	r.Use(s.recoverer)
+	r.Use(s.sess.CSRFProtected)
 
 	r.NotFound(s.handleNotFound)
 	r.MethodNotAllowed(s.handleMethodNotAllowed)
@@ -460,17 +464,17 @@ func (s *Server) Routes() chi.Router {
 		pr.Get("/backups/{fwID}", s.handleListBackups)
 		pr.Get("/backups/{fwID}/compare", s.handleBackupCompare)
 		pr.Get("/download/*", s.handleDownload)
-		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)
 		pr.Post("/backup_now/{fwID}", s.handleBackupNow)
 		pr.Post("/test_connection/{fwID}", s.handleTestConnection)
-		pr.Post("/ssh_host_key/accept/{fwID}", s.handleAcceptHostKey)
 		pr.Get("/change_password", s.handleChangePassword)
 		pr.Post("/change_password", s.handleChangePassword)
 		pr.Get("/search", s.handleSearch)
 		pr.Post("/search", s.handleSearch)
 		pr.Get("/activity_log", s.handleActivityLog)
 		pr.Get("/events", s.handleEvents)
+		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
+		pr.Post("/ssh_host_key/accept/{fwID}", s.handleAcceptHostKey)
 	})
 
 	return r

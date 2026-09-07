@@ -285,6 +285,14 @@ On a new database, FortiSafe creates the `admin` account with the value from `BO
 
 You are required to change the password on first login. Enable `TOTP_ENABLED` and/or `RADIUS_ENABLED` to add multi-factor authentication.
 
+The built-in local account has the `admin` role, while RADIUS accounts are
+assigned the `operator` role. Both roles have the same authenticated application
+permissions: operators can add and delete firewall connection definitions and
+accept replacement SSH host keys. The role remains available for identity and
+auditing, but it is not an authorization boundary. TOTP time steps are consumed
+atomically in PostgreSQL, so a code cannot be replayed after an application
+restart or against another replica sharing the database.
+
 ---
 
 ## ⚙️ Configuration Reference
@@ -327,7 +335,7 @@ FortiSafe is configured entirely via environment variables.
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Minutes a user is locked out after the limit is exceeded. |
 | `SESSION_KEY` / `SESSION_KEY_FILE` | *(Required)* | Stable session signing secret, minimum 32 bytes. |
 | `BOOTSTRAP_ADMIN_PASSWORD` / `BOOTSTRAP_ADMIN_PASSWORD_FILE` | *(Required for a new DB)* | Initial `admin` password, minimum 16 bytes; never has a built-in default. |
-| `COOKIE_SECURE` | `false` | Set the `Secure` flag on session cookies (requires HTTPS). |
+| `COOKIE_SECURE` | `true` | Set the `Secure` flag on session cookies. Keep this enabled behind HTTPS termination; set `false` only for explicit plaintext local development. |
 | `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP. The bundled loopback-only Compose deployments set this to `true` and require a trusted proxy that overwrites forwarded headers. |
 

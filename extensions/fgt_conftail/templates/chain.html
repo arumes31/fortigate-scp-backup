@@ -114,6 +114,7 @@
 
         <dialog class="ct-ignore-dialog" id="ct-ignore-dialog" aria-labelledby="ct-ignore-title">
             <form method="post" action="/fgt-conftail/ignore-rules">
+                {{template "csrf" .Base.CSRFToken}}
                 <h2 id="ct-ignore-title">{{L .Base.Lang "Confirm global ignore"}}</h2>
                 <p>{{L .Base.Lang "This affects every firewall and all future sessions. Existing events remain in history."}}</p>
                 <input type="hidden" name="event_id" id="ct-ignore-event-id">

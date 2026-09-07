@@ -58,6 +58,7 @@ func TestPageBaseDerivesAuthenticatedPresentationContext(t *testing.T) {
 	}
 }
 
+// TestPageBaseDoesNotExposeAuthenticatedShellOutsideAuthMiddleware guards public views.
 func TestPageBaseDoesNotExposeAuthenticatedShellOutsideAuthMiddleware(t *testing.T) {
 	t.Parallel()
 
@@ -65,7 +66,7 @@ func TestPageBaseDoesNotExposeAuthenticatedShellOutsideAuthMiddleware(t *testing
 	loginRequest := httptest.NewRequest(http.MethodPost, "/login", nil)
 	loginRequest.RemoteAddr = "192.0.2.10:1234"
 	loginRecorder := httptest.NewRecorder()
-	if err := manager.Login(loginRecorder, loginRequest, "cookie-user", true); err != nil {
+	if err := manager.Login(loginRecorder, loginRequest, "cookie-user", true, "operator"); err != nil {
 		t.Fatal(err)
 	}
 

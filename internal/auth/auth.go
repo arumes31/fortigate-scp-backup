@@ -7,11 +7,13 @@ package auth
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"time"
 
-	"github.com/pquerna/otp/totp"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/hotp"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 
@@ -66,10 +68,31 @@ func (a *Authenticator) VerifyRadius(username, password string) bool {
 	return false
 }
 
-// VerifyTOTP validates a 6-digit code against a base32 secret.
-func (a *Authenticator) VerifyTOTP(secret, code string) bool {
+const totpPeriod = 30
+
+// VerifyTOTP validates a six-digit code and returns its exact accepted time
+// step. The caller must atomically consume that step before creating a session.
+func (a *Authenticator) VerifyTOTP(secret, code string) (int64, bool) {
+	return verifyTOTPAt(secret, code, time.Now().UTC())
+}
+
+// verifyTOTPAt validates current and adjacent time steps around a fixed time.
+func verifyTOTPAt(secret, code string, now time.Time) (int64, bool) {
 	if secret == "" {
-		return false
+		return 0, false
 	}
-	return totp.Validate(code, secret)
+	current := int64(math.Floor(float64(now.Unix()) / totpPeriod))
+	for _, step := range []int64{current, current + 1, current - 1} {
+		valid, err := hotp.ValidateCustom(code, uint64(step), secret, hotp.ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if err != nil {
+			return 0, false
+		}
+		if valid {
+			return step, true
+		}
+	}
+	return 0, false
 }

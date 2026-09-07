@@ -11,11 +11,12 @@ import (
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
+// TestLoadDefaults verifies security-sensitive and operational defaults.
 func TestLoadDefaults(t *testing.T) {
 	// Clear every env var the assertions below depend on so an ambient value in
 	// CI or a developer shell cannot influence the default-path behavior.
 	for _, k := range []string{
-		"PG_HOST", "PORT", "SCP_TIMEOUT", "ENCRYPTION_KEY", "MAX_CONCURRENT_BACKUPS",
+		"PG_HOST", "PORT", "SCP_TIMEOUT", "ENCRYPTION_KEY", "MAX_CONCURRENT_BACKUPS", "COOKIE_SECURE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -31,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.EncryptionKey != nil {
 		t.Error("encryption disabled by default")
+	}
+	if !c.CookieSecure {
+		t.Error("session cookies must be secure by default")
 	}
 }
 

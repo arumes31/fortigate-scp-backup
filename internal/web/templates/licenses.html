@@ -37,6 +37,7 @@
             </span>
             {{if .Rows}}
         <form method="post" action="/licenses/refresh_all">
+            {{template "csrf" .Base.CSRFToken}}
             <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
         </form>
             {{end}}
@@ -81,6 +82,7 @@
                     <td class="actions">
                         {{if or .Entitlements .Devices}}<button type="button" class="btn btn-sm lic-toggle" data-fw="{{.FwID}}" aria-expanded="false" aria-controls="license-detail-{{.FwID}}">{{T $.Base.Lang "lic.details"}}</button>{{end}}
                         <form method="post" action="/licenses/refresh/{{.FwID}}" style="display:inline">
+                            {{template "csrf" $.Base.CSRFToken}}
                             <button type="submit" class="btn btn-sm">{{T $.Base.Lang "lic.refresh"}}</button>
                         </form>
                     </td>
@@ -133,6 +135,7 @@
                 <tr><td colspan="10" class="empty license-empty-state">
                     <p>{{T .Base.Lang "lic.none"}}</p>
                     <form method="post" action="/licenses/refresh_all">
+                        {{template "csrf" $.Base.CSRFToken}}
                         <button type="submit" class="btn btn-sm">{{T .Base.Lang "lic.refresh_all"}}</button>
                     </form>
                 </td></tr>

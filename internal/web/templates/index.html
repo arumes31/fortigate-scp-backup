@@ -10,6 +10,7 @@
     </div>
     <div id="addBody" hidden>
         <form method="post" action="/">
+            {{template "csrf" .Base.CSRFToken}}
             <div class="form-grid">
                 <div class="field">
                     <label for="fqdn">FQDN / IP</label>
@@ -50,6 +51,7 @@
         <h3>{{L .Base.Lang "Bulk Upload (CSV)"}}</h3>
         <p class="hint">{{L .Base.Lang "Headers:"}} <code>fqdn,username,password,interval_minutes,retention_count,ssh_port</code>. {{L .Base.Lang "Required:"}} <code>fqdn</code>, <code>interval_minutes</code>, <code>retention_count</code>.</p>
         <form method="post" action="/" enctype="multipart/form-data">
+            {{template "csrf" .Base.CSRFToken}}
             <div class="toolbar">
                 <input type="file" name="csv_file" accept=".csv" required>
                 <button type="submit" class="btn">{{L .Base.Lang "Upload CSV"}}</button>
@@ -57,7 +59,6 @@
         </form>
     </div>
 </div>
-
 <div class="card pad-0">
     <div class="card-header">
         <h2 class="mt-0 mb-0">{{L .Base.Lang "Configured Firewalls"}}</h2>
@@ -93,7 +94,7 @@
                     <td>
                         <div class="actions">
                             <div class="primary-actions">
-                                <form method="post" action="/backup_now/{{.ID}}"><button type="submit" class="btn btn-sm btn-primary">{{L $root.Base.Lang "Backup Now"}}</button></form>
+                                <form method="post" action="/backup_now/{{.ID}}">{{template "csrf" $root.Base.CSRFToken}}<button type="submit" class="btn btn-sm btn-primary">{{L $root.Base.Lang "Backup Now"}}</button></form>
                                 <button type="button" class="btn btn-sm test-conn" data-fw="{{.ID}}">{{L $root.Base.Lang "Test"}}</button>
                             </div>
                             <details class="row-actions-menu"><summary class="btn btn-sm">{{L $root.Base.Lang "More"}}</summary><div>
@@ -108,6 +109,7 @@
                             </div>
                             <dialog class="ui-dialog" id="acceptHostKey{{$firewall.ID}}" data-ui-dialog aria-labelledby="acceptHostKeyTitle{{$firewall.ID}}">
                                 <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" class="ui-dialog__body">
+                                    {{template "csrf" $root.Base.CSRFToken}}
                                     <h2 id="acceptHostKeyTitle{{$firewall.ID}}">{{L $root.Base.Lang "Accept SSH host key for"}} {{$firewall.FQDN}}</h2>
                                     <p>{{L $root.Base.Lang "Confirm fingerprint"}} <code>{{.Fingerprint}}</code> {{L $root.Base.Lang "before replacing the trusted key."}}</p>
                                     <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>{{L $root.Base.Lang "Cancel"}}</button><button type="submit" class="btn btn-danger">{{L $root.Base.Lang "Accept new SSH key"}}</button></div>
@@ -117,6 +119,7 @@
                         </div>
                         <dialog class="ui-dialog" id="deleteFirewall{{.ID}}" data-ui-dialog data-confirm-text="{{.FQDN}}" aria-labelledby="deleteFirewallTitle{{.ID}}">
                             <form method="post" action="/delete/{{.ID}}" class="ui-dialog__body">
+                                {{template "csrf" $root.Base.CSRFToken}}
                                 <h2 id="deleteFirewallTitle{{.ID}}">{{L $root.Base.Lang "Delete"}} {{.FQDN}}</h2>
                                 <p>{{L $root.Base.Lang "This removes the firewall, its scheduled job, and its stored backups."}}</p>
                                 <label>{{L $root.Base.Lang "Type"}} {{.FQDN}} {{L $root.Base.Lang "to confirm"}}<input type="text" data-confirm-input autocomplete="off"></label>

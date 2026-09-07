@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{.Base.CSRFToken}}">
     <title>{{L .Base.Lang .Base.Title}} · FortiSafe</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/app.css">
@@ -36,6 +37,7 @@
                 </div>
                 <div class="utility-switches">
                     <form method="post" action="/lang" class="language-form">
+                        {{template "csrf" .Base.CSRFToken}}
                         <input type="hidden" name="back" value="{{.Base.ReturnTo}}">
                         <svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-language"></use></svg>
                         <span class="utility-copy">
@@ -63,6 +65,7 @@
                 </div>
                 {{if not .Base.IsRadius}}<a class="utility-link" href="/change_password"{{if eq .Base.Active "password"}} aria-current="page"{{end}}><svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-password"></use></svg><span class="utility-copy">{{.Base.Shell.ChangePassword}}</span></a>{{end}}
                 <form method="post" action="/logout" class="logout-form">
+                    {{template "csrf" .Base.CSRFToken}}
                     <button type="submit" class="utility-link logout-btn"><svg class="utility-icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#utility-logout"></use></svg><span class="utility-copy">{{.Base.Shell.Logout}}</span></button>
                 </form>
             </section>
@@ -74,3 +77,4 @@
     {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}
+{{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.}}">{{end}}

@@ -188,7 +188,7 @@ func Load(logger *slog.Logger) *Config {
 		BootstrapAdminPassword: secretEnv("BOOTSTRAP_ADMIN_PASSWORD", logger),
 
 		SessionKey:        deriveOrNil(secretEnv("SESSION_KEY", logger)),
-		CookieSecure:      boolenv("COOKIE_SECURE", false),
+		CookieSecure:      boolenv("COOKIE_SECURE", true),
 		EnableHSTS:        boolenv("ENABLE_HSTS", false),
 		TrustProxyHeaders: boolenv("TRUST_PROXY_HEADERS", false),
 

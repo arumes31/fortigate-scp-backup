@@ -928,6 +928,8 @@ func uxIPAMSnapshotFixture() ipamSnapshot {
 	return ipamSnapshot{Firewalls: 3, Scanned: 3, Prefixes: len(entries), Entries: entries, Overlaps: overlaps}
 }
 
+// registerUXCoreRoutes mounts deterministic core-page fixtures used by browser
+// tests and local visual inspection.
 func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario uxScenario) {
 	render := func(name string, data func(uxScenario) any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -947,7 +949,7 @@ func registerUXCoreRoutes(mux *http.ServeMux, webServer *Server, defaultScenario
 	}
 
 	mux.HandleFunc("GET /login", render("login.html", func(uxScenario) any {
-		return loginData{Lang: "en", TOTPEnabled: true, RadiusEnabled: true}
+		return loginData{Lang: "en", RadiusEnabled: true}
 	}))
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
@@ -1217,6 +1219,7 @@ func uxBase(title, active string) BaseData {
 	return uxBaseLang(title, active, "en")
 }
 
+// uxBaseLang builds deterministic authenticated shell data for browser fixtures.
 func uxBaseLang(title, active, lang string) BaseData {
 	returnTo := "/" + active
 	if active == "firewalls" {
@@ -1224,7 +1227,8 @@ func uxBaseLang(title, active, lang string) BaseData {
 	}
 	return BaseData{
 		Title: title, Username: "reviewer", Lang: lang, Active: active, ReturnTo: returnTo,
-		Shell: webui.ShellText(lang),
+		CSRFToken: "fixture-csrf-token",
+		Shell:     webui.ShellText(lang),
 		Navigation: webui.Navigation(webui.NavigationOptions{
 			Lang: lang, Active: active, AdmVPN: true, ConfGen: true, PolSplit: true, ConfConv: true, ConfTail: true,
 		}),

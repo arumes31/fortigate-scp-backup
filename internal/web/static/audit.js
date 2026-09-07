@@ -56,6 +56,7 @@ function findingCard(f, fwid) {
         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
             <strong style="color: #fff;">${esc(f.text)}</strong>
             <form method="post" action="/audit/exemption" style="margin: 0; display: flex; gap: 4px; flex-shrink: 0;">
+                ${csrfInput()}
                 <input type="hidden" name="fw_id" value="${fwid}">
                 <input type="hidden" name="finding_key" value="${esc(f.key || "")}">
                 <input type="hidden" name="finding_text" value="${esc(f.text)}">
@@ -98,6 +99,7 @@ function renderRow(tr, res) {
 
     ticketCell.innerHTML = `
         <form method="post" action="/audit/ticket" class="audit-ticket-form">
+            ${csrfInput()}
             <input type="hidden" name="backup_filename" value="${esc(res.backup_filename)}">
             <label>${tt("audit.ticket_id_label")}<input type="text" name="ticket_id" value="${esc(res.ticket_id || "")}" placeholder="${tt("audit.ticket_id")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>
             <label>${tt("audit.ticket_comment_label")}<input type="text" name="details" value="${esc(res.ticket_detail || "")}" placeholder="${tt("audit.ticket_comment")}" autocomplete="off" data-bwignore data-lpignore="true" data-1p-ignore></label>

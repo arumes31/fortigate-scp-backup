@@ -1,9 +1,22 @@
 package mailer
 
 import (
+	"crypto/tls"
 	"net/smtp"
 	"testing"
 )
+
+// TestSMTPTLSConfigRequiresTLS12 pins the explicit SMTP transport floor.
+func TestSMTPTLSConfigRequiresTLS12(t *testing.T) {
+	t.Parallel()
+	config := smtpTLSConfig("smtp.example.com")
+	if config.ServerName != "smtp.example.com" {
+		t.Fatalf("ServerName = %q", config.ServerName)
+	}
+	if config.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %d, want TLS 1.2", config.MinVersion)
+	}
+}
 
 func TestSMTPAuthenticationSelectsAdvertisedMechanism(t *testing.T) {
 	t.Parallel()
