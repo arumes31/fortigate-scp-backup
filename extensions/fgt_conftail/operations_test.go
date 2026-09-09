@@ -65,6 +65,8 @@ func TestConfTailDiagnosticCodesAreStableAndBounded(t *testing.T) {
 		{code: codeMaintenanceFailed, want: "CT-MAINT-001"},
 		{code: codeIndexMaintenanceFailed, want: "CT-IDX-001"},
 		{code: codeSessionExported, want: "CT-UI-007"},
+		{code: codeHookwiseQueueCleared, want: "CT-UI-008"},
+		{code: codeHookwiseQueueClearFailed, want: "CT-UI-009"},
 	}
 	for _, test := range tests {
 		if got := test.code.String(); got != test.want {

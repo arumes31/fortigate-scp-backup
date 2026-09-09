@@ -95,6 +95,7 @@ type dashboardCounts struct {
 	Retry    int
 	Failed   int
 	Accepted int
+	Cleared  int
 }
 
 type dashboardEvent struct {
@@ -222,28 +223,30 @@ type dashboardHealth struct {
 }
 
 type dashboardPageData struct {
-	Base            webui.BaseData
-	Dashboard       dashboardData
-	Filters         dashboardFilterView
-	Health          dashboardHealth
-	SessionHealth   dashboardHealth
-	DeliveryHealth  dashboardHealth
-	NextPollRun     time.Time
-	PollRunning     bool
-	PollSignature   string
-	CoverageEnabled bool
-	Coverage        []sourceCoverage
-	Firewalls       []sourceCoverage
-	Warnings        []string
-	ActiveOmitted   int
-	IgnoreRules     []globalIgnoreRule
-	IgnoreNotice    string
-	ActiveFilters   []dashboardFilterChip
-	AdvancedOpen    bool
-	HasPrev         bool
-	HasNext         bool
-	PrevFields      []dashboardFormField
-	NextFields      []dashboardFormField
+	Base                webui.BaseData
+	Dashboard           dashboardData
+	Filters             dashboardFilterView
+	Health              dashboardHealth
+	SessionHealth       dashboardHealth
+	DeliveryHealth      dashboardHealth
+	NextPollRun         time.Time
+	PollRunning         bool
+	PollSignature       string
+	CoverageEnabled     bool
+	Coverage            []sourceCoverage
+	Firewalls           []sourceCoverage
+	Warnings            []string
+	ActiveOmitted       int
+	IgnoreRules         []globalIgnoreRule
+	IgnoreNotice        string
+	QueueNotice         string
+	ClearableDeliveries int
+	ActiveFilters       []dashboardFilterChip
+	AdvancedOpen        bool
+	HasPrev             bool
+	HasNext             bool
+	PrevFields          []dashboardFormField
+	NextFields          []dashboardFormField
 }
 
 type dashboardChainPageData struct {
@@ -364,7 +367,7 @@ var dashboardFilterKeys = map[string]bool{
 
 var dashboardGETKeys = map[string]bool{
 	"firewall": true, "state": true, "from": true, "to": true,
-	"page": true, "ignore": true,
+	"page": true, "ignore": true, "queue": true,
 }
 
 func validateDashboardKeys(values url.Values, allowed map[string]bool) error {
@@ -463,7 +466,8 @@ func parseDashboardTime(value string) (time.Time, error) {
 func validDashboardState(state string) bool {
 	switch state {
 	case dashboardStateAll, chainStateActive, chainStateSealed,
-		deliveryStatePending, deliveryStateRetry, deliveryStateFailed, deliveryStateAccepted:
+		deliveryStatePending, deliveryStateRetry, deliveryStateFailed,
+		deliveryStateAccepted, deliveryStateCleared:
 		return true
 	default:
 		return false
@@ -542,7 +546,8 @@ func (s *store) dashboardCounts(ctx context.Context) (dashboardCounts, error) {
 		COALESCE(SUM(CASE WHEN o.state = 'pending' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN o.state = 'retry' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN o.state = 'failed' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN o.state = 'accepted' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN o.state = 'accepted' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN o.state = 'cleared' THEN 1 ELSE 0 END), 0)
 		FROM chains c LEFT JOIN outbox o ON o.chain_id = c.id`).Scan(
 		&counts.Active,
 		&counts.Sealed,
@@ -550,6 +555,7 @@ func (s *store) dashboardCounts(ctx context.Context) (dashboardCounts, error) {
 		&counts.Retry,
 		&counts.Failed,
 		&counts.Accepted,
+		&counts.Cleared,
 	)
 	if err != nil {
 		return dashboardCounts{}, fmt.Errorf("read conftail dashboard counts: %w", err)
@@ -582,7 +588,8 @@ func dashboardQueryArgs(filters dashboardFilters, chainState string) []any {
 
 func isDashboardDeliveryState(state string) bool {
 	switch state {
-	case deliveryStatePending, deliveryStateRetry, deliveryStateFailed, deliveryStateAccepted:
+	case deliveryStatePending, deliveryStateRetry, deliveryStateFailed,
+		deliveryStateAccepted, deliveryStateCleared:
 		return true
 	default:
 		return false
@@ -914,24 +921,26 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	pollInterval := adaptivePollInterval(data.Poll, data.Poll.LastIngestedAt, now)
 	page := dashboardPageData{
-		Base:            e.pageBase(r, "Configuration Change Tail", "conftail"),
-		Dashboard:       data,
-		Filters:         dashboardFiltersView(filters),
-		Health:          dashboardPollHealth(data.Poll, now, pollInterval),
-		SessionHealth:   dashboardSessionHealth(data.Counts, now),
-		DeliveryHealth:  dashboardDeliveryHealth(data.Counts, now),
-		NextPollRun:     dashboardNextPollRun(data.Poll, pollInterval),
-		PollRunning:     dashboardPollRunning(data.Poll),
-		PollSignature:   dashboardPollSignature(data.Poll),
-		CoverageEnabled: e.cfg != nil && e.cfg.ExtAdmVpnConf,
-		Coverage:        coverage,
-		Firewalls:       coverage,
-		Warnings:        warnings,
-		ActiveOmitted:   max(0, data.ActiveTotal-len(data.Active)),
-		IgnoreRules:     ignoreRules,
-		IgnoreNotice:    dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
-		ActiveFilters:   dashboardActiveFilterChips(filters),
-		AdvancedOpen:    dashboardAdvancedFiltersSet(filters),
+		Base:                e.pageBase(r, "Configuration Change Tail", "conftail"),
+		Dashboard:           data,
+		Filters:             dashboardFiltersView(filters),
+		Health:              dashboardPollHealth(data.Poll, now, pollInterval),
+		SessionHealth:       dashboardSessionHealth(data.Counts, now),
+		DeliveryHealth:      dashboardDeliveryHealth(data.Counts, now),
+		NextPollRun:         dashboardNextPollRun(data.Poll, pollInterval),
+		PollRunning:         dashboardPollRunning(data.Poll),
+		PollSignature:       dashboardPollSignature(data.Poll),
+		CoverageEnabled:     e.cfg != nil && e.cfg.ExtAdmVpnConf,
+		Coverage:            coverage,
+		Firewalls:           coverage,
+		Warnings:            warnings,
+		ActiveOmitted:       max(0, data.ActiveTotal-len(data.Active)),
+		IgnoreRules:         ignoreRules,
+		IgnoreNotice:        dashboardIgnoreNotice(r.URL.Query().Get("ignore")),
+		QueueNotice:         dashboardQueueNotice(r.URL.Query().Get("queue")),
+		ClearableDeliveries: data.Counts.Pending + data.Counts.Retry + data.Counts.Failed,
+		ActiveFilters:       dashboardActiveFilterChips(filters),
+		AdvancedOpen:        dashboardAdvancedFiltersSet(filters),
 	}
 	for index := range page.Dashboard.Active {
 		page.Dashboard.Active[index].Lang = page.Base.Lang
@@ -1132,6 +1141,17 @@ func dashboardIgnoreNotice(value string) string {
 	}
 }
 
+func dashboardQueueNotice(value string) string {
+	switch value {
+	case "cleared":
+		return "Pending Hookwise queue cleared. Configuration-change history was retained."
+	case "empty":
+		return "The pending Hookwise queue was already empty."
+	default:
+		return ""
+	}
+}
+
 func parseDashboardChainRequest(r *http.Request) (string, int, string, error) {
 	chainID := strings.TrimSpace(chi.URLParam(r, "chainID"))
 	parsedID, err := uuid.Parse(chainID)
@@ -1241,6 +1261,10 @@ func buildDashboardDeliverySummary(chain dashboardChain) dashboardDeliverySummar
 	case deliveryStateAccepted:
 		summary.Label = "Accepted by Hookwise"
 		summary.Detail = "Hookwise accepted the immutable ticket payload."
+	case deliveryStateCleared:
+		summary.Label = "Cleared manually"
+		summary.Detail = "An operator removed this delivery from the Hookwise queue."
+		summary.Action = "The retained configuration-change history will not be sent automatically."
 	default:
 		summary.State = "waiting"
 		summary.Label = "No delivery record"

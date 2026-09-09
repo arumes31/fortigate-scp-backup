@@ -195,6 +195,19 @@ func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *te
 			ignoreResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
+	queueResponse := httptest.NewRecorder()
+	router.ServeHTTP(
+		queueResponse,
+		httptest.NewRequest(http.MethodPost, "/hookwise-queue/clear", nil),
+	)
+	if queueResponse.Code != http.StatusSeeOther ||
+		queueResponse.Header().Get("X-Test-Authenticated") != "yes" {
+		t.Fatalf(
+			"authenticated POST /hookwise-queue/clear = %d/header %q, want 303/auth marker",
+			queueResponse.Code,
+			queueResponse.Header().Get("X-Test-Authenticated"),
+		)
+	}
 	if len(jobs) != 4 {
 		t.Fatalf("scheduled jobs = %d, want poll, delivery, ADM catalog refresh, and maintenance", len(jobs))
 	}

@@ -25,8 +25,9 @@ const (
 	deliveryStateRetry        = "retry"
 	deliveryStateFailed       = "failed"
 	deliveryStateAccepted     = "accepted"
+	deliveryStateCleared      = "cleared"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 3
+	conftailSchemaVersion     = 4
 )
 
 type store struct {
@@ -76,6 +77,22 @@ type chainRecord struct {
 	Unattributed bool
 	SealedAt     time.Time
 }
+
+const (
+	outboxTableSchema = `CREATE TABLE IF NOT EXISTS outbox (
+		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
+		payload_json BLOB NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('pending','retry','failed','accepted','cleared')),
+		attempt_count INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at_ns INTEGER NOT NULL,
+		last_error TEXT NOT NULL DEFAULT '',
+		request_id TEXT NOT NULL DEFAULT '',
+		accepted_at_ns INTEGER NOT NULL DEFAULT 0,
+		updated_at_ns INTEGER NOT NULL
+	)`
+	outboxDueIndexSchema = `CREATE INDEX IF NOT EXISTS outbox_due
+		ON outbox(state, next_attempt_at_ns)`
+)
 
 var conftailSchema = []string{
 	`CREATE TABLE IF NOT EXISTS schema_meta (
@@ -182,19 +199,8 @@ var conftailSchema = []string{
 			new.config_object, new.config_attribute, new.log_description, new.message
 		);
 	END`,
-	`CREATE TABLE IF NOT EXISTS outbox (
-		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
-		payload_json BLOB NOT NULL,
-		state TEXT NOT NULL CHECK (state IN ('pending','retry','failed','accepted')),
-		attempt_count INTEGER NOT NULL DEFAULT 0,
-		next_attempt_at_ns INTEGER NOT NULL,
-		last_error TEXT NOT NULL DEFAULT '',
-		request_id TEXT NOT NULL DEFAULT '',
-		accepted_at_ns INTEGER NOT NULL DEFAULT 0,
-		updated_at_ns INTEGER NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS outbox_due
-		ON outbox(state, next_attempt_at_ns)`,
+	outboxTableSchema,
+	outboxDueIndexSchema,
 	`CREATE TABLE IF NOT EXISTS global_ignore_rules (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		kind TEXT NOT NULL CHECK (kind IN ('attribute','operation')),
@@ -356,6 +362,15 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		version = 2
 	}
 	if version == 2 {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 3 WHERE id = 1`); err != nil {
+			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = 3
+	}
+	if version == 3 {
+		if err := migrateOutboxClearedState(ctx, tx); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
 			return fmt.Errorf("upgrade conftail schema version: %w", err)
 		}
@@ -373,6 +388,28 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit conftail schema: %w", err)
+	}
+	return nil
+}
+
+func migrateOutboxClearedState(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`ALTER TABLE outbox RENAME TO outbox_v3`,
+		outboxTableSchema,
+		`INSERT INTO outbox (
+			chain_id, payload_json, state, attempt_count, next_attempt_at_ns,
+			last_error, request_id, accepted_at_ns, updated_at_ns
+		) SELECT
+			chain_id, payload_json, state, attempt_count, next_attempt_at_ns,
+			last_error, request_id, accepted_at_ns, updated_at_ns
+		FROM outbox_v3`,
+		`DROP TABLE outbox_v3`,
+		outboxDueIndexSchema,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("upgrade conftail outbox schema: %w", err)
+		}
 	}
 	return nil
 }
@@ -1619,6 +1656,23 @@ func (s *store) dueDeliveries(
 	return deliveries, nil
 }
 
+func (s *store) clearPendingDeliveries(ctx context.Context, clearedAt time.Time) (int, error) {
+	if !unixNanoRepresentable(clearedAt) {
+		return 0, errors.New("invalid conftail queue clear timestamp")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE outbox SET
+		state = 'cleared', next_attempt_at_ns = 0, last_error = '', updated_at_ns = ?
+		WHERE state IN ('pending','retry','failed')`, unixNanos(clearedAt))
+	if err != nil {
+		return 0, fmt.Errorf("clear pending conftail deliveries: %w", err)
+	}
+	cleared, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect cleared conftail deliveries: %w", err)
+	}
+	return int(cleared), nil
+}
+
 func (s *store) markAccepted(
 	ctx context.Context,
 	chainID string,
@@ -1628,7 +1682,7 @@ func (s *store) markAccepted(
 	result, err := s.db.ExecContext(ctx, `UPDATE outbox SET
 		state = 'accepted', attempt_count = attempt_count + 1, request_id = ?,
 		accepted_at_ns = ?, last_error = '', updated_at_ns = ?
-		WHERE chain_id = ? AND state != 'accepted'`,
+		WHERE chain_id = ? AND state IN ('pending','retry','failed')`,
 		truncateString(requestID, maxIdentityRunes),
 		unixNanos(acceptedAt),
 		unixNanos(acceptedAt),
@@ -1661,7 +1715,7 @@ func (s *store) markDeliveryFailure(
 	result, err := s.db.ExecContext(ctx, `UPDATE outbox SET
 		state = ?, attempt_count = attempt_count + 1, next_attempt_at_ns = ?,
 		last_error = ?, updated_at_ns = ?
-		WHERE chain_id = ? AND state != 'accepted'`,
+		WHERE chain_id = ? AND state IN ('pending','retry','failed')`,
 		state,
 		unixNanos(nextAttempt),
 		sanitizeDeliveryError(deliveryErr),
@@ -1710,11 +1764,13 @@ func (s *store) prune(ctx context.Context, now time.Time, retentionDays int) (in
 	result, err := s.db.ExecContext(ctx, `DELETE FROM chains WHERE id IN (
 		SELECT chains.id FROM chains
 		JOIN outbox ON outbox.chain_id = chains.id
-		WHERE chains.state = 'sealed' AND outbox.state = 'accepted'
-		  AND outbox.accepted_at_ns > 0 AND outbox.accepted_at_ns < ?
-	)`, unixNanos(cutoff))
+		WHERE chains.state = 'sealed' AND (
+			(outbox.state = 'accepted' AND outbox.accepted_at_ns > 0 AND outbox.accepted_at_ns < ?) OR
+			(outbox.state = 'cleared' AND outbox.updated_at_ns > 0 AND outbox.updated_at_ns < ?)
+		)
+	)`, unixNanos(cutoff), unixNanos(cutoff))
 	if err != nil {
-		return 0, fmt.Errorf("prune accepted conftail history: %w", err)
+		return 0, fmt.Errorf("prune terminal conftail history: %w", err)
 	}
 	deleted, err := result.RowsAffected()
 	if err != nil {

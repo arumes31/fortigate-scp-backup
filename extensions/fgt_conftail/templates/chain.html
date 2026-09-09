@@ -39,7 +39,7 @@
                     <h2 id="ct-delivery-facts-title">{{L .Base.Lang "Hookwise delivery"}}</h2>
                     <span class="pill ct-state-{{.Delivery.State}}">{{L .Base.Lang .Delivery.Label}}</span>
                 </div>
-                <p class="ct-delivery-detail">{{.Delivery.Detail}}</p>
+                <p class="ct-delivery-detail">{{L .Base.Lang .Delivery.Detail}}</p>
                 <div class="ct-fact-grid">
                     <div><span class="ct-label">{{L .Base.Lang "Attempts"}}</span><strong>{{.Delivery.Attempts}}</strong></div>
                     <div><span class="ct-label">{{L .Base.Lang "Next attempt"}}</span><strong>{{template "dashboardTime" .Delivery.NextAt}}</strong></div>
@@ -47,7 +47,7 @@
                     <div><span class="ct-label">{{L .Base.Lang "Ticket / request ID"}}</span><strong class="no-caps">{{if .Delivery.RequestID}}{{if .Delivery.TicketURL}}<a href="{{.Delivery.TicketURL}}" target="_blank" rel="noopener noreferrer">{{L $.Base.Lang "Open Hookwise ticket"}}</a>{{else}}{{.Delivery.RequestID}}{{end}}{{else}}-{{end}}</strong></div>
                 </div>
                 {{if .Delivery.LastError}}<p class="ct-delivery-error no-caps"><strong>{{L .Base.Lang "Last error:"}}</strong> {{.Delivery.LastError}}</p>{{end}}
-                {{if .Delivery.Action}}<p class="ct-action no-caps"><strong>{{L .Base.Lang "Next:"}}</strong> {{.Delivery.Action}}</p>{{end}}
+                {{if .Delivery.Action}}<p class="ct-action no-caps"><strong>{{L .Base.Lang "Next:"}}</strong> {{L .Base.Lang .Delivery.Action}}</p>{{end}}
             </section>
         </div>
 

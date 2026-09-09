@@ -16,6 +16,7 @@
         "Enter a view name using at most 48 printable characters.": "Geben Sie einen Ansichtsnamen mit höchstens 48 druckbaren Zeichen ein.",
         "Delete a local view before saving another; the limit is 10.": "Löschen Sie eine lokale Ansicht, bevor Sie eine weitere speichern; das Limit ist 10.",
         "Delete this global ignore rule? Future matching events will enter sessions again.": "Diese globale Ignorierregel löschen? Zukünftige passende Ereignisse werden wieder in Sitzungen aufgenommen.",
+        "Clear all pending, retrying, and failed Hookwise deliveries? They will not be sent, but configuration-change history will be kept.": "Alle ausstehenden, erneut versuchten und fehlgeschlagenen Hookwise-Zustellungen entfernen? Sie werden nicht gesendet, der Konfigurationsänderungsverlauf bleibt jedoch erhalten.",
     };
     const t = (english) => de ? (messages[english] || english) : english;
 
@@ -133,7 +134,7 @@
         const viewStorageKey = "fortisafe.conftail.views.v2";
         const legacyViewStorageKey = "fortisafe.conftail.views.v1";
         const maxViews = 10;
-        const allowedStates = new Set(["all", "active", "sealed", "pending", "retry", "failed", "accepted"]);
+        const allowedStates = new Set(["all", "active", "sealed", "pending", "retry", "failed", "accepted", "cleared"]);
         const storedFilterNames = ["firewall", "user", "source", "device", "serial", "action", "transaction", "log_id", "state", "from", "to"];
         const advancedFilterNames = new Set(["source", "device", "serial", "action", "transaction", "log_id"]);
         let views = [];
@@ -383,6 +384,14 @@
     root.querySelectorAll("[data-ct-ignore-delete]").forEach((form) => {
         form.addEventListener("submit", (event) => {
             if (!window.confirm(t("Delete this global ignore rule? Future matching events will enter sessions again."))) {
+                event.preventDefault();
+            }
+        });
+    });
+
+    root.querySelectorAll("[data-ct-queue-clear]").forEach((form) => {
+        form.addEventListener("submit", (event) => {
+            if (!window.confirm(t("Clear all pending, retrying, and failed Hookwise deliveries? They will not be sent, but configuration-change history will be kept."))) {
                 event.preventDefault();
             }
         });

@@ -679,6 +679,147 @@ func TestDueDeliveriesFollowRetryAndAcceptanceState(t *testing.T) {
 	}
 }
 
+func TestClearPendingDeliveriesPreservesHistoryAndAcceptedRecords(t *testing.T) {
+	base := time.Date(2026, time.September, 9, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	events := []Event{
+		testEvent(1, "fw-a", "pending", "clear-pending", base),
+		testEvent(1, "fw-a", "retry", "clear-retry", base),
+		testEvent(1, "fw-a", "failed", "clear-failed", base),
+		testEvent(1, "fw-a", "accepted", "clear-accepted", base),
+	}
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(30 * time.Minute),
+		Events:  events,
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	retryChain := chainIDForUser(t, s, "retry")
+	if err := s.markDeliveryFailure(
+		context.Background(),
+		retryChain,
+		deliveryStateRetry,
+		base.Add(time.Hour),
+		context.DeadlineExceeded,
+		base.Add(31*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	failedChain := chainIDForUser(t, s, "failed")
+	if err := s.markDeliveryFailure(
+		context.Background(),
+		failedChain,
+		deliveryStateFailed,
+		base.Add(24*time.Hour),
+		context.Canceled,
+		base.Add(31*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	acceptedChain := chainIDForUser(t, s, "accepted")
+	if err := s.markAccepted(
+		context.Background(),
+		acceptedChain,
+		"hookwise-request",
+		base.Add(31*time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	clearedAt := base.Add(32 * time.Minute)
+	cleared, err := s.clearPendingDeliveries(context.Background(), clearedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 3 {
+		t.Fatalf("cleared deliveries = %d, want 3", cleared)
+	}
+	for user, wantState := range map[string]string{
+		"pending":  deliveryStateCleared,
+		"retry":    deliveryStateCleared,
+		"failed":   deliveryStateCleared,
+		"accepted": deliveryStateAccepted,
+	} {
+		var state string
+		var payload []byte
+		var updatedAt int64
+		if err := s.db.QueryRow(`SELECT outbox.state, outbox.payload_json, outbox.updated_at_ns
+			FROM outbox JOIN chains ON chains.id = outbox.chain_id WHERE chains.user = ?`, user).Scan(
+			&state,
+			&payload,
+			&updatedAt,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if state != wantState || len(payload) == 0 {
+			t.Fatalf("%s delivery = %q/%d bytes, want %q/nonempty", user, state, len(payload), wantState)
+		}
+		if state == deliveryStateCleared && updatedAt != unixNanos(clearedAt) {
+			t.Fatalf("%s cleared timestamp = %d, want %d", user, updatedAt, unixNanos(clearedAt))
+		}
+	}
+	if got := countRows(t, s, "chains"); got != 4 {
+		t.Fatalf("chains after clear = %d, want 4", got)
+	}
+	if got := countRows(t, s, "events"); got != 4 {
+		t.Fatalf("events after clear = %d, want 4", got)
+	}
+	counts, err := s.dashboardCounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Pending != 0 || counts.Retry != 0 || counts.Failed != 0 ||
+		counts.Cleared != 3 || counts.Accepted != 1 {
+		t.Fatalf("dashboard counts after clear = %+v", counts)
+	}
+	dashboard, err := s.queryDashboard(context.Background(), dashboardFilters{
+		State: deliveryStateCleared,
+		Page:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dashboard.HistoryTotal != 3 || len(dashboard.History) != 3 {
+		t.Fatalf("cleared dashboard history = %d/%d, want 3/3", len(dashboard.History), dashboard.HistoryTotal)
+	}
+	due, err := s.dueDeliveries(context.Background(), base.Add(48*time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("cleared deliveries remained due: %+v", due)
+	}
+	cleared, err = s.clearPendingDeliveries(context.Background(), clearedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 0 {
+		t.Fatalf("second clear changed %d deliveries, want 0", cleared)
+	}
+}
+
+func TestPruneRetentionIncludesClearedHistory(t *testing.T) {
+	base := time.Date(2026, time.September, 9, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(30 * time.Minute),
+		Events:  []Event{testEvent(1, "fw-a", "cleared", "prune-cleared", base)},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if cleared, err := s.clearPendingDeliveries(context.Background(), base.Add(time.Hour)); err != nil || cleared != 1 {
+		t.Fatalf("clear = %d, err %v", cleared, err)
+	}
+	deleted, err := s.prune(context.Background(), base.Add(32*24*time.Hour), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 || countRows(t, s, "chains") != 0 {
+		t.Fatalf("pruned cleared history = %d, remaining chains = %d", deleted, countRows(t, s, "chains"))
+	}
+}
+
 func TestStoreRestartPreservesChainsOutboxStatesAndFrozenRetryPayload(t *testing.T) {
 	base := time.Date(2026, time.September, 1, 10, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "conftail.db")
@@ -1049,6 +1190,59 @@ func TestStoreMigratesVersionTwoAndCreatesGlobalIgnoreTables(t *testing.T) {
 		base.Add(3*time.Minute),
 	); err != nil || !created {
 		t.Fatalf("create rule after v2 migration: created=%t err=%v", created, err)
+	}
+}
+
+func TestStoreMigratesVersionThreeOutboxWithoutLosingDeliveries(t *testing.T) {
+	base := time.Date(2026, 9, 9, 9, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	event := testEvent(1, "fw-migration.example.test", "operator", "outbox-migration", base)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(30 * time.Minute),
+		Events:  []Event{event},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOutboxSchema := `CREATE TABLE outbox (
+		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
+		payload_json BLOB NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('pending','retry','failed','accepted')),
+		attempt_count INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at_ns INTEGER NOT NULL,
+		last_error TEXT NOT NULL DEFAULT '',
+		request_id TEXT NOT NULL DEFAULT '',
+		accepted_at_ns INTEGER NOT NULL DEFAULT 0,
+		updated_at_ns INTEGER NOT NULL
+	)`
+	for _, statement := range []string{
+		`ALTER TABLE outbox RENAME TO outbox_v4`,
+		oldOutboxSchema,
+		`INSERT INTO outbox SELECT * FROM outbox_v4`,
+		`DROP TABLE outbox_v4`,
+		outboxDueIndexSchema,
+		`UPDATE schema_meta SET version = 3 WHERE id = 1`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.initSchema(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, conftailSchemaVersion)
+	}
+	if got := countRowsWhere(t, s, "outbox", "state = 'pending'"); got != 1 {
+		t.Fatalf("pending deliveries after migration = %d, want 1", got)
+	}
+	if cleared, err := s.clearPendingDeliveries(context.Background(), base.Add(time.Hour)); err != nil || cleared != 1 {
+		t.Fatalf("clear after migration = %d, err %v", cleared, err)
 	}
 }
 
