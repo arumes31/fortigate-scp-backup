@@ -86,6 +86,53 @@ func TestDashboardPagesUseIndependentSharedShellRenderers(t *testing.T) {
 	}
 }
 
+func TestDashboardChainPageLocalizesClearedDelivery(t *testing.T) {
+	t.Parallel()
+
+	_, chainPage := testDashboardRenderers(t)
+	base := webui.BaseData{
+		Title: "Configuration Change Tail", Username: "reviewer", Lang: "de", Active: "conftail",
+		ReturnTo: "/fgt-conftail/chain/fixture-chain", Shell: webui.ShellText("de"),
+		Navigation: webui.Navigation(webui.NavigationOptions{Lang: "de", Active: "conftail", ConfTail: true}),
+	}
+	page := dashboardChainPageData{
+		Base: base,
+		Chain: dashboardChain{
+			ID:            "fixture-chain",
+			FirewallName:  "edge.example.test",
+			State:         chainStateSealed,
+			DeliveryState: deliveryStateCleared,
+		},
+		Delivery: buildDashboardDeliverySummary(dashboardChain{
+			State:         chainStateSealed,
+			DeliveryState: deliveryStateCleared,
+		}),
+		Page: 1, TotalPages: 1,
+	}
+
+	var output bytes.Buffer
+	if err := chainPage.Render(&output, page); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		"Ein Bediener hat diese Zustellung aus der Hookwise-Warteschlange entfernt.",
+		"Der beibehaltene Konfigurationsänderungsverlauf wird nicht automatisch gesendet.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("German chain page missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"An operator removed this delivery from the Hookwise queue.",
+		"The retained configuration-change history will not be sent automatically.",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("German chain page contains English fallback %q", unwanted)
+		}
+	}
+}
+
 func testDashboardRenderers(t *testing.T) (*webui.Renderer, *webui.Renderer) {
 	t.Helper()
 	indexPage, chainPage, err := parseDashboardPages()

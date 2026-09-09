@@ -290,6 +290,8 @@ var germanPageText = map[string]string{
 	"Clear pending queue":         "Ausstehende Warteschlange leeren",
 	"Delivery cleared":            "Zustellung entfernt",
 	"Cleared manually":            "Manuell entfernt",
+	"An operator removed this delivery from the Hookwise queue.":                 "Ein Bediener hat diese Zustellung aus der Hookwise-Warteschlange entfernt.",
+	"The retained configuration-change history will not be sent automatically.":  "Der beibehaltene Konfigurationsänderungsverlauf wird nicht automatisch gesendet.",
 	"Pending Hookwise queue cleared. Configuration-change history was retained.": "Ausstehende Hookwise-Warteschlange geleert. Der Konfigurationsänderungsverlauf wurde beibehalten.",
 	"The pending Hookwise queue was already empty.":                              "Die ausstehende Hookwise-Warteschlange war bereits leer.",
 	"Evidence:":                             "Nachweis:",
