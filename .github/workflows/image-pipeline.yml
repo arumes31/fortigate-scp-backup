@@ -300,7 +300,27 @@ jobs:
           IMAGE: ${{ needs.build_candidate.outputs.image }}
           EXPECTED_DIGEST: ${{ needs.build_candidate.outputs.digest }}
         run: |
-          actual=$(docker buildx imagetools inspect "$IMAGE:latest" | awk '/^Digest:/ { print $2; exit }')
-          test "$actual" = "$EXPECTED_DIGEST"
+          for attempt in 1 2 3 4 5; do
+            set +e
+            inspect_output=$(docker buildx imagetools inspect "$IMAGE:latest" 2>&1)
+            inspect_status=$?
+            set -e
+
+            if [ "$inspect_status" -eq 0 ]; then
+              actual=$(awk '/^Digest:/ { print $2; exit }' <<<"$inspect_output")
+              if [ "$actual" = "$EXPECTED_DIGEST" ]; then
+                break
+              fi
+            fi
+
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::latest did not resolve to the promoted digest after $attempt attempts"
+              printf '%s\n' "$inspect_output" >&2
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
+
           echo "Promoted $IMAGE@$EXPECTED_DIGEST"
           echo "Previous latest: ${{ steps.previous.outputs.digest }}"
