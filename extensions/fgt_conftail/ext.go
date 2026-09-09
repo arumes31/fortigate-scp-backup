@@ -181,6 +181,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 		protected.Get("/status", e.dashboardStatus)
 		protected.Get("/chain/{chainID}", e.dashboardChain)
 		protected.Get("/chain/{chainID}/export/{format}", e.exportSession)
+		protected.Post("/hookwise-queue/clear", e.clearHookwiseQueue)
 		protected.Post("/ignore-rules", e.createGlobalIgnoreRule)
 		protected.Post("/ignore-rules/{ruleID}/toggle", e.toggleGlobalIgnoreRule)
 		protected.Post("/ignore-rules/{ruleID}/delete", e.deleteGlobalIgnoreRule)

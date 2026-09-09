@@ -8,7 +8,7 @@
             <h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Configuration Change Tail"}}</h1>
             <button type="button" class="btn btn-sm" data-ct-time-toggle aria-pressed="false" title="{{L .Base.Lang "Switch between UTC and the browser time zone"}}">{{L .Base.Lang "Time: UTC"}}</button>
         </div>
-        <p class="ct-intro">{{L .Base.Lang "Read-only configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window."}}</p>
+        <p class="ct-intro">{{L .Base.Lang "Configuration-change sessions grouped by firewall and administrator. A sealed session is queued once for Hookwise after the administrator has been quiet for the configured idle window."}}</p>
 
         <section class="ct-metrics" aria-label="{{L .Base.Lang "Configuration change health"}}">
             <article class="card ct-metric ct-health-{{.Health.State}}" data-ct-poll-status data-poll-running="{{.PollRunning}}" data-poll-signature="{{.PollSignature}}">
@@ -29,7 +29,7 @@
                 <span class="ct-detail">{{L .Base.Lang "Last check:"}} {{template "dashboardTime" .SessionHealth.CheckedAt}}</span>
                 {{if .SessionHealth.Action}}<span class="ct-action no-caps">{{L .Base.Lang "Next:"}} {{.SessionHealth.Action}}</span>{{end}}
             </article>
-            <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}">
+            <article class="card ct-metric ct-health-{{.DeliveryHealth.State}}" id="ct-hookwise-delivery">
                 <span class="ct-label">{{L .Base.Lang "Hookwise delivery"}}</span>
                 <strong>{{L .Base.Lang .DeliveryHealth.Label}}</strong>
                 {{if .DeliveryHealth.Code}}<span class="ct-code no-caps">{{.DeliveryHealth.Code}}</span>{{end}}
@@ -37,8 +37,14 @@
                 {{if .DeliveryHealth.Evidence}}<span class="ct-evidence no-caps">{{L .Base.Lang "Evidence:"}} {{.DeliveryHealth.Evidence}}</span>{{end}}
                 <span class="ct-detail">{{L .Base.Lang "Last check:"}} {{template "dashboardTime" .DeliveryHealth.CheckedAt}}</span>
                 {{if .DeliveryHealth.Action}}<span class="ct-action no-caps">{{L .Base.Lang "Next:"}} {{.DeliveryHealth.Action}}</span>{{end}}
+                <form method="post" action="/fgt-conftail/hookwise-queue/clear" class="ct-queue-clear" data-ct-queue-clear>
+                    {{template "csrf" .Base.CSRFToken}}
+                    <span class="ct-detail">{{.ClearableDeliveries}} {{L .Base.Lang "queued delivery(s)"}}</span>
+                    <button type="submit" class="btn btn-sm btn-danger" {{if not .ClearableDeliveries}}disabled{{end}}>{{L .Base.Lang "Clear pending queue"}}</button>
+                </form>
             </article>
         </section>
+        {{if .QueueNotice}}<p class="ct-notice ct-queue-notice" role="status">{{L .Base.Lang .QueueNotice}}</p>{{end}}
         <p class="ct-next-poll"><span class="ct-label">{{L .Base.Lang "Next collector check"}}</span> {{template "dashboardTime" .NextPollRun}} · <span id="ct-next-poll-countdown" data-next-poll="{{fmtMachineTime .NextPollRun}}">{{L .Base.Lang "Countdown unavailable"}}</span></p>
 
         {{if .CoverageEnabled}}
@@ -164,6 +170,7 @@
                         <option value="retry" {{if eq .Filters.State "retry"}}selected{{end}}>{{L .Base.Lang "Delivery retry"}}</option>
                         <option value="failed" {{if eq .Filters.State "failed"}}selected{{end}}>{{L .Base.Lang "Delivery failed"}}</option>
                         <option value="accepted" {{if eq .Filters.State "accepted"}}selected{{end}}>{{L .Base.Lang "Delivery accepted"}}</option>
+                        <option value="cleared" {{if eq .Filters.State "cleared"}}selected{{end}}>{{L .Base.Lang "Delivery cleared"}}</option>
                     </select>
                 </div>
                 <div class="field">

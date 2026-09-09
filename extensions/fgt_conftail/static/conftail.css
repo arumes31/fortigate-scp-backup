@@ -390,6 +390,7 @@
 .conftail-page .ct-state-waiting { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }
 .conftail-page .ct-state-retry { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }
 .conftail-page .ct-state-failed { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.conftail-page .ct-state-cleared { color: var(--text-muted); border-color: var(--border-strong); background: var(--surface-raised); }
 
 .conftail-page .ct-omitted {
     color: var(--warning);
@@ -629,6 +630,16 @@
     padding: 10px 12px;
     background: var(--success-soft);
 }
+
+.conftail-page .ct-queue-clear {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 6px;
+}
+
+.conftail-page .ct-queue-notice { margin: -8px 0 20px; }
 
 .conftail-page .ct-ignore-actions,
 .conftail-page .ct-event-actions,

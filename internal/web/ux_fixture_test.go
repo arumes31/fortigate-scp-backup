@@ -711,11 +711,13 @@ func uxConfConvFixture(scenario uxScenario) any {
 }
 
 func uxConfTailFixture(scenario uxScenario) any {
+	clearableDeliveries := 0
 	health := map[string]any{
 		"State": "healthy", "Label": "Healthy", "Detail": "Synthetic fixture data",
 		"Evidence": "1 page / 6 fetched / 6 inserted", "CheckedAt": uxFixtureNow,
 	}
 	if scenario == uxScenarioWarning {
+		clearableDeliveries = 3
 		health = map[string]any{
 			"State": "warning", "Label": "Warning", "Detail": "Synthetic delayed poll",
 			"Evidence": "1 page / 6 fetched / 6 inserted", "CheckedAt": uxFixtureNow,
@@ -723,6 +725,7 @@ func uxConfTailFixture(scenario uxScenario) any {
 		}
 	}
 	if scenario == uxScenarioError {
+		clearableDeliveries = 2
 		health = map[string]any{
 			"State": "failed", "Label": "Failed",
 			"Detail":   "Synthetic Graylog failure: an intentionally long unbroken diagnostic-value-that-must-wrap-without-expanding-the-health-card-beyond-the-desktop-content-region",
@@ -752,7 +755,8 @@ func uxConfTailFixture(scenario uxScenario) any {
 			map[string]any{"Name": "page", "Value": "2"},
 		},
 		"PollRunning": scenario == uxScenarioLoading, "PollSignature": "fixture", "CoverageEnabled": true,
-		"Coverage": []any{}, "Firewalls": []any{}, "Warnings": []string{},
+		"ClearableDeliveries": clearableDeliveries,
+		"Coverage":            []any{}, "Firewalls": []any{}, "Warnings": []string{},
 		"IgnoreRules": []any{map[string]any{
 			"ID": 17, "Kind": "operation", "DisplayValue": "Edit system.central-management",
 			"Enabled": true, "CreatedBy": "fixture-operator", "CreatedAt": uxFixtureNow.Add(-time.Hour),

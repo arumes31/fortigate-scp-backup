@@ -12,12 +12,21 @@ test('ConfTail index and session use isolated shared-shell pages', async ({ page
   await expect(coverage).toBeVisible();
   await expect(coverage).not.toHaveAttribute('open', '');
   await expect(coverage.getByText('0 Graylog-enabled firewall(s)')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Clear pending queue' })).toBeDisabled();
 
   const indexScreenshot = await page.screenshot({
     path: testInfo.outputPath('conftail-index.png'),
     animations: 'disabled',
   });
   expect(indexScreenshot.byteLength).toBeGreaterThan(10_000);
+
+  await page.goto('/fgt-conftail/?scenario=warning', { waitUntil: 'networkidle' });
+  const clearQueue = page.getByRole('button', { name: 'Clear pending queue' });
+  await expect(clearQueue).toBeEnabled();
+  await expect(page.getByText('3 queued delivery(s)')).toBeVisible();
+  page.once('dialog', confirmation => confirmation.dismiss());
+  await clearQueue.click();
+  await expect(page).toHaveURL(/\/fgt-conftail\/\?scenario=warning$/);
 
   await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
 

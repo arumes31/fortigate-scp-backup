@@ -618,6 +618,42 @@ func TestDashboardShowsPollLifecycleAndNextRun(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersConfirmedHookwiseQueueClearAction(t *testing.T) {
+	t.Parallel()
+	indexPage, _ := testDashboardRenderers(t)
+	base := testDashboardPageBase("operator")(
+		httptest.NewRequest(http.MethodGet, "/fgt-conftail/?queue=cleared", nil),
+		"Configuration Change Tail",
+		"conftail",
+	)
+	base.CSRFToken = "queue-csrf-token"
+	page := dashboardPageData{
+		Base:                base,
+		Dashboard:           dashboardData{TotalPages: 1},
+		Filters:             dashboardFilterView{State: dashboardStateAll, Page: 1},
+		ClearableDeliveries: 3,
+		QueueNotice:         "Pending Hookwise queue cleared.",
+	}
+	var output bytes.Buffer
+	if err := indexPage.Render(&output, page); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		`id="ct-hookwise-delivery"`,
+		`method="post" action="/fgt-conftail/hookwise-queue/clear"`,
+		`name="csrf_token" value="queue-csrf-token"`,
+		`data-ct-queue-clear`,
+		`Clear pending queue`,
+		`3 queued delivery(s)`,
+		`Pending Hookwise queue cleared.`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard does not contain %q", want)
+		}
+	}
+}
+
 func TestDashboardShowsRunningPollAndStatusRefreshContract(t *testing.T) {
 	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	s := newTestStore(t, base)
@@ -731,6 +767,8 @@ func TestDashboardScriptPollsStatusAndTogglesBrowserTime(t *testing.T) {
 		`root.querySelectorAll("[data-ct-time]")`,
 		"Intl.DateTimeFormat",
 		"fortisafe.conftail.timezone.v1",
+		`root.querySelectorAll("[data-ct-queue-clear]")`,
+		"Clear all pending, retrying, and failed Hookwise deliveries?",
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Errorf("ConfTail script does not contain %q", want)
