@@ -160,6 +160,9 @@
 .topology-restore { position: fixed; top: 10px; right: 12px; z-index: 60; display: none; border-color: rgba(255,255,255,.2); background: rgba(10,12,18,.9); color: #fff; }
 body.topo-max .topology-heading, body.topo-max nav, body.topo-max header:not(.topology-faceplate__header), body.topo-max #topoControls, body.topo-max #topologyLegend, body.topo-max #devPanel, body.topo-max footer, body.topo-max .app-rail { display: none !important; }
 body.topo-max #topoRestoreBtn { display: inline-flex; }
+/* The hidden rail must also release its grid column to the workspace. */
+body.topo-max .app-shell { grid-template-columns: minmax(0, 1fr); }
+body.topo-max .app-workspace > main { width: 100%; }
 body.topo-max main, body.topo-max .content, body.topo-max #content, body.topo-max .app-workspace { padding: 0 !important; margin: 0 !important; max-width: none !important; }
 body.topo-max .topology-canvas { border: 0; }
 
