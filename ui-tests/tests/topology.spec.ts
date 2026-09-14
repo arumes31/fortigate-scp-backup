@@ -4,6 +4,30 @@ import { expect, test } from './quality-fixture';
 
 test.setTimeout(60_000);
 
+test('maximized topology fills the viewport and restores its normal layout', async ({ page }) => {
+  await page.goto('/topology', { waitUntil: 'networkidle' });
+  const graph = page.locator('#topoSvg');
+  const maximize = page.getByRole('button', { name: 'Maximize' });
+  const originalBounds = await graph.boundingBox();
+  const viewport = page.viewportSize()!;
+
+  for (const exit of ['button', 'Escape']) {
+    await maximize.click();
+    await expect.poll(async () => {
+      const bounds = await graph.boundingBox();
+      return bounds && Math.abs(bounds.x) < 1 && Math.abs(bounds.y) < 1
+        && Math.abs(bounds.width - viewport.width) < 1
+        && bounds.height >= viewport.height - 8;
+    }, { message: 'maximized graph should fill the viewport, including the former sidebar column' }).toBe(true);
+
+    if (exit === 'button') await page.getByRole('button', { name: 'Exit', exact: true }).click();
+    else await page.keyboard.press('Escape');
+
+    await expect(maximize).toBeFocused();
+    await expect.poll(() => graph.boundingBox()).toEqual(originalBounds);
+  }
+});
+
 test('topology keeps the graph primary and makes share, debug, maximize, and faceplate flows keyboard safe', async ({ page }, testInfo) => {
   let shares: Array<{ token: string; fw_id: number; created_at: string; expires_at: string; include_devices: boolean }> = [];
   await page.route('**/topology/**', async route => {
