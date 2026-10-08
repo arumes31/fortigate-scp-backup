@@ -113,6 +113,19 @@ func TestManagedFirewallIndexChangesQueryPlan(t *testing.T) {
 	}
 }
 
+func TestDashboardLastIngestedUsesCoveringIndex(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC))
+	var id, parent, unused int
+	var plan string
+	if err := s.db.QueryRow(`EXPLAIN QUERY PLAN SELECT MAX(ingested_at_ns) FROM events`).Scan(&id, &parent, &unused, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "COVERING INDEX events_ingested_at") {
+		t.Fatalf("dashboard poll state scans event history: %s", plan)
+	}
+}
+
 func TestShouldRunFullVacuumOnlyOnSundayAtTwentyPercent(t *testing.T) {
 	t.Parallel()
 	sunday := time.Date(2026, 9, 6, 3, 30, 0, 0, time.UTC)

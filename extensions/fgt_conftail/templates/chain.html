@@ -91,7 +91,7 @@
                 <a class="btn btn-sm" href="{{.ObjectURL}}"{{if eq .View "object"}} aria-current="page"{{end}}>{{L .Base.Lang "By object"}}</a>
             </nav>
             {{if not .Chain.Events}}
-            <p class="empty">{{L .Base.Lang "All messages in this session are hidden by global ignore rules."}}</p>
+            <p class="empty">{{L .Base.Lang "No messages remain in this session."}}</p>
             {{else if eq .View "chronological"}}
             <ol class="ct-timeline ct-complete-timeline">
                 {{range .Chain.Events}}{{template "dashboardEvent" .}}{{end}}
@@ -118,7 +118,7 @@
             <form method="post" action="/fgt-conftail/ignore-rules">
                 {{template "csrf" .Base.CSRFToken}}
                 <h2 id="ct-ignore-title">{{L .Base.Lang "Confirm global ignore"}}</h2>
-                <p>{{L .Base.Lang "This hides matching messages from session history across every firewall and suppresses future matches. Stored records and existing tickets are retained."}}</p>
+                <p>{{L .Base.Lang "This permanently deletes matching stored messages across every firewall and suppresses future matches. Removed messages cannot be restored by deleting the rule. Existing external tickets are unchanged."}}</p>
                 <input type="hidden" name="event_id" id="ct-ignore-event-id">
                 <fieldset>
                     <legend>{{L .Base.Lang "Ignore messages matching:"}}</legend>

@@ -27,7 +27,7 @@ const (
 	deliveryStateAccepted     = "accepted"
 	deliveryStateCleared      = "cleared"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 4
+	conftailSchemaVersion     = 5
 )
 
 type store struct {
@@ -152,6 +152,7 @@ var conftailSchema = []string{
 		ON events(correlation_hash) WHERE user_was_missing = 1`,
 	`CREATE INDEX IF NOT EXISTS events_chain_timeline
 		ON events(chain_id, event_at_ns, semantic_hash)`,
+	`CREATE INDEX IF NOT EXISTS events_ingested_at ON events(ingested_at_ns)`,
 	`CREATE VIRTUAL TABLE IF NOT EXISTS event_search USING fts5(
 		firewall_name, user, source, device_name, device_id, vdom, action,
 		config_path, config_object, config_attribute, log_description, message,
@@ -371,8 +372,17 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		if err := migrateOutboxClearedState(ctx, tx); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 4 WHERE id = 1`); err != nil {
 			return fmt.Errorf("upgrade conftail schema version: %w", err)
+		}
+		version = 4
+	}
+	if version == 4 {
+		if err := purgeGloballyIgnoredEvents(ctx, tx, 0, time.Now().UTC()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail ignore history: %w", err)
 		}
 		version = conftailSchemaVersion
 	}
