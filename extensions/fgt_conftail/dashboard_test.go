@@ -1227,6 +1227,78 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 	}
 }
 
+func TestDashboardVisibleEventBoundsAndDateFilters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	first := testEvent(7, "fw-a", "alice", "hidden-first", base)
+	first.ConfigAttribute = "noise[old->new]"
+	first.SemanticHash = semanticHash(first)
+	last := first
+	last.GraylogID, last.EventAt = "hidden-last", base.Add(4*time.Minute)
+	last.SemanticHash = semanticHash(last)
+	visible := testEvent(7, "fw-a", "alice", "visible-middle", base.Add(2*time.Minute))
+	newer := testEvent(8, "fw-b", "bob", "visible-newer", base.Add(3*time.Minute))
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(5 * time.Minute), Events: []Event{first, visible, newer, last}}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.createGlobalIgnoreRule(ctx, storedEventID(t, s, first.GraylogID), ignoreRuleKindAttribute, "operator", base.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	_, chainPage := testDashboardRenderers(t)
+	extension := &Extension{store: s, chainPage: chainPage, pageBase: testDashboardPageBase("operator")}
+	response := serveDashboardChain(t, extension, chainIDForUser(t, s, "alice"))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), last.EventAt.Add(30*time.Minute).Format(time.RFC3339)) {
+		t.Fatal("active session deadline no longer follows stored activity")
+	}
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour)}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	chain, _, err := s.dashboardChainPage(ctx, chainIDForUser(t, s, "alice"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain.EventCount != 1 || !chain.FirstEventAt.Equal(visible.EventAt) || !chain.LastEventAt.Equal(visible.EventAt) {
+		t.Errorf("visible bounds = %v to %v (%d events), want %v", chain.FirstEventAt, chain.LastEventAt, chain.EventCount, visible.EventAt)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, count, err := loadSessionExportMetadata(ctx, tx, chain.ID)
+	_ = tx.Rollback()
+	if err != nil || count != 3 || !exported.FirstEventAt.Equal(first.EventAt) || !exported.LastEventAt.Equal(last.EventAt) {
+		t.Fatalf("export lost stored bounds: %+v, count=%d, err=%v", exported, count, err)
+	}
+	for _, tc := range []struct {
+		name     string
+		from, to time.Time
+		want     int
+	}{
+		{"before visible events", time.Time{}, base.Add(time.Minute), 0},
+		{"after visible events", base.Add(3*time.Minute + time.Second), time.Time{}, 0},
+		{"inclusive visible event", visible.EventAt, visible.EventAt, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := s.queryDashboard(ctx, dashboardFilters{State: dashboardStateAll, Page: 1, From: tc.from, To: tc.to})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data.HistoryTotal != tc.want || len(data.History) != tc.want {
+				t.Fatalf("date-filtered count = %d, rows = %d, want %d", data.HistoryTotal, len(data.History), tc.want)
+			}
+		})
+	}
+	data, err := s.queryDashboard(ctx, dashboardFilters{State: dashboardStateAll, Page: 1})
+	if err != nil || len(data.History) != 2 {
+		t.Fatalf("history = %+v, err = %v", data.History, err)
+	}
+	if data.History[0].User != "bob" || !data.History[1].FirstEventAt.Equal(visible.EventAt) || !data.History[1].LastEventAt.Equal(visible.EventAt) {
+		t.Fatalf("history order or bounds include hidden events: %+v", data.History)
+	}
+}
+
 func TestDashboardRequestRejectsOversizedAndAmbiguousForms(t *testing.T) {
 	t.Parallel()
 

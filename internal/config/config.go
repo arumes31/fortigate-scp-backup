@@ -196,7 +196,7 @@ func Load(logger *slog.Logger) *Config {
 
 		EncryptionKey:            decodeKey(secretEnv("ENCRYPTION_KEY", logger), logger),
 		SSHKnownHostsFile:        os.Getenv("SSH_KNOWN_HOSTS_FILE"),
-		SSHAutoAcceptChangedKeys: boolenv("SSH_AUTO_ACCEPT_CHANGED_KEYS", true),
+		SSHAutoAcceptChangedKeys: boolenv("SSH_AUTO_ACCEPT_CHANGED_KEYS", false),
 
 		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "fortisafe"),
 		DefaultSCPPassword:   secretEnv("DEFAULT_SCP_PASSWORD", logger),

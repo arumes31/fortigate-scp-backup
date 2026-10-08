@@ -69,20 +69,21 @@ const (
 			AND ef.transaction_id = ?))
 		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND ef.log_id = ?))
-		AND (? = 0 OR c.last_event_at_ns >= ?)
-		AND (? = 0 OR c.first_event_at_ns <= ?)
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ev WHERE ev.chain_id = c.id AND ev.event_at_ns >= ?))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ev WHERE ev.chain_id = c.id AND ev.event_at_ns <= ?))
 		AND (? = 0 OR o.state = ?)`
 	dashboardChainSelectPrefixSQL = `SELECT
-		c.id, c.firewall_id, c.firewall_name, c.user, c.first_event_at_ns,
-		c.last_event_at_ns, `
+		c.id, c.firewall_id, c.firewall_name, c.user, `
 	dashboardChainSelectSuffixSQL = `, c.state, c.late, c.unattributed,
 		c.sealed_at_ns, COALESCE(o.state, ''), COALESCE(o.attempt_count, 0),
 		COALESCE(o.next_attempt_at_ns, 0), COALESCE(o.last_error, ''),
-		COALESCE(o.request_id, ''), COALESCE(o.accepted_at_ns, 0)
+		COALESCE(o.request_id, ''), COALESCE(o.accepted_at_ns, 0), c.last_event_at_ns
 		FROM chains c LEFT JOIN outbox o ON o.chain_id = c.id`
-	dashboardChainSelectSQL        = dashboardChainSelectPrefixSQL + `c.event_count` + dashboardChainSelectSuffixSQL
+	dashboardChainSelectSQL        = dashboardChainSelectPrefixSQL + `c.first_event_at_ns, c.last_event_at_ns, c.event_count` + dashboardChainSelectSuffixSQL
 	dashboardVisibleChainSelectSQL = dashboardEventsCTE + dashboardChainSelectPrefixSQL +
-		`(SELECT COUNT(*) FROM dashboard_events ev WHERE ev.chain_id = c.id)` + dashboardChainSelectSuffixSQL
+		`COALESCE((SELECT MIN(ev.event_at_ns) FROM dashboard_events ev WHERE ev.chain_id = c.id), 0),
+		COALESCE((SELECT MAX(ev.event_at_ns) FROM dashboard_events ev WHERE ev.chain_id = c.id), 0) AS visible_last_event_at_ns,
+		(SELECT COUNT(*) FROM dashboard_events ev WHERE ev.chain_id = c.id)` + dashboardChainSelectSuffixSQL
 )
 
 //go:embed templates/*.html static/*
@@ -162,6 +163,8 @@ type dashboardChain struct {
 	VDOMsOmitted     int
 	QuietEligibleAt  time.Time
 	TicketPreview    dashboardTicketPreview
+	// Sealing follows stored activity, even when ignore rules hide later events.
+	lastStoredEventAt time.Time
 }
 
 type dashboardTicketPreview struct {
@@ -637,7 +640,7 @@ func (s *store) dashboardChains(
 	offset int,
 ) ([]dashboardChain, error) {
 	query := dashboardVisibleChainSelectSQL + ` WHERE ` + dashboardWhereSQL + `
-		ORDER BY c.last_event_at_ns DESC, c.id LIMIT ? OFFSET ?`
+		ORDER BY visible_last_event_at_ns DESC, c.id LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -675,7 +678,7 @@ type dashboardScanner interface {
 
 func scanDashboardChain(scanner dashboardScanner) (dashboardChain, error) {
 	var chain dashboardChain
-	var first, last, sealed, nextAttempt, accepted int64
+	var first, last, sealed, nextAttempt, accepted, lastStored int64
 	var late, unattributed int
 	if err := scanner.Scan(
 		&chain.ID,
@@ -695,11 +698,13 @@ func scanDashboardChain(scanner dashboardScanner) (dashboardChain, error) {
 		&chain.LastError,
 		&chain.RequestID,
 		&accepted,
+		&lastStored,
 	); err != nil {
 		return dashboardChain{}, err
 	}
 	chain.FirstEventAt = timeFromNanos(first)
 	chain.LastEventAt = timeFromNanos(last)
+	chain.lastStoredEventAt = timeFromNanos(lastStored)
 	chain.SealedAt = timeFromNanos(sealed)
 	chain.NextAttemptAt = timeFromNanos(nextAttempt)
 	chain.AcceptedAt = timeFromNanos(accepted)
@@ -910,7 +915,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		e.logger.Warn("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
 	}
 	for index := range data.Active {
-		data.Active[index].QuietEligibleAt = data.Active[index].LastEventAt.Add(e.dashboardIdleDuration())
+		data.Active[index].QuietEligibleAt = data.Active[index].lastStoredEventAt.Add(e.dashboardIdleDuration())
 	}
 	ignoreRules, err := e.store.listGlobalIgnoreRules(r.Context())
 	if err != nil {
@@ -1065,7 +1070,7 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if chain.State == chainStateActive {
-		chain.QuietEligibleAt = chain.LastEventAt.Add(e.dashboardIdleDuration())
+		chain.QuietEligibleAt = chain.lastStoredEventAt.Add(e.dashboardIdleDuration())
 	}
 	base := e.pageBase(r, "Configuration Change Session", "conftail")
 	chain.Lang = base.Lang
@@ -1130,7 +1135,7 @@ func dashboardIgnoreNotice(value string) string {
 	case "updated":
 		return "Global ignore rule status updated."
 	case "deleted":
-		return "Global ignore rule deleted. Previously ignored events remain suppressed."
+		return "Global ignore rule deleted. Previously ignored stored events are visible again unless another enabled rule matches."
 	default:
 		return ""
 	}
