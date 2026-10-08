@@ -58,6 +58,8 @@ type Config struct {
 	// SSHKnownHostsFile is the application-managed OpenSSH known_hosts file used
 	// for persistent trust-on-first-use verification.
 	SSHKnownHostsFile string
+	// SSHAutoAcceptChangedKeys trusts and persists changed keys without approval.
+	SSHAutoAcceptChangedKeys bool
 
 	// SCP / backup defaults
 	DefaultSCPUser       string
@@ -192,8 +194,9 @@ func Load(logger *slog.Logger) *Config {
 		EnableHSTS:        boolenv("ENABLE_HSTS", false),
 		TrustProxyHeaders: boolenv("TRUST_PROXY_HEADERS", false),
 
-		EncryptionKey:     decodeKey(secretEnv("ENCRYPTION_KEY", logger), logger),
-		SSHKnownHostsFile: os.Getenv("SSH_KNOWN_HOSTS_FILE"),
+		EncryptionKey:            decodeKey(secretEnv("ENCRYPTION_KEY", logger), logger),
+		SSHKnownHostsFile:        os.Getenv("SSH_KNOWN_HOSTS_FILE"),
+		SSHAutoAcceptChangedKeys: boolenv("SSH_AUTO_ACCEPT_CHANGED_KEYS", true),
 
 		DefaultSCPUser:       getenv("DEFAULT_SCP_USER", "fortisafe"),
 		DefaultSCPPassword:   secretEnv("DEFAULT_SCP_PASSWORD", logger),

@@ -103,6 +103,20 @@ func TestSSHKnownHostsDefaultsToDataDir(t *testing.T) {
 	}
 }
 
+func TestSSHAutoAcceptChangedKeysDefaultsOnAndCanBeDisabled(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{{"", true}, {"true", true}, {"false", false}} {
+		t.Run("value="+test.value, func(t *testing.T) {
+			t.Setenv("SSH_AUTO_ACCEPT_CHANGED_KEYS", test.value)
+			if got := Load(discard()).SSHAutoAcceptChangedKeys; got != test.want {
+				t.Fatalf("SSHAutoAcceptChangedKeys = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadFgtConfTailDefaultsAndTokenPrecedence(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "hookwise_token")
 	if err := os.WriteFile(tokenFile, []byte("file-token\n"), 0o600); err != nil {
