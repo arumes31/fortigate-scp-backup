@@ -430,7 +430,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/edit/{id}", func(w http.ResponseWriter, r *http.Request) {
 		data := map[string]any{
 			"Lang": uxLanguageFromRequest(r),
-			"ID":   7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
+			"ID":   r.PathValue("id"), "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
 			"CompanyName": "Acme-Europe", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
 			"IpsecPskRo": "SENTINEL-STORED-RO-PSK-5e19", "IpsecPskHci": "SENTINEL-STORED-HCI-PSK-83d1",
 			"Radiusmgt": "YES", "GraylogEnabled": true,

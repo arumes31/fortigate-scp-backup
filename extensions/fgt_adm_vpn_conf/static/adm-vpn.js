@@ -156,6 +156,20 @@
         var modalBody = root.querySelector('#modal-body-content');
         var editFeedback = root.querySelector('#editFeedback');
         var editRequest = null;
+        var editRestoreKey = 'fortisafe.adm-vpn.after-edit.v1';
+        var tableWrap = root.querySelector('.adm-fleet-table-wrap');
+        var detailRegion = root.querySelector('#vpnDetailRegion');
+        function rememberEditView(id) {
+            // One-time, tab-local navigation state. Never store edit form values.
+            try {
+                window.sessionStorage.setItem(editRestoreKey, JSON.stringify({
+                    savedAt: Date.now(), search: searchInput.value, selected: id,
+                    x: window.scrollX, y: window.scrollY,
+                    tableX: tableWrap.scrollLeft, tableY: tableWrap.scrollTop,
+                    detailY: detailRegion.scrollTop,
+                }));
+            } catch (_) { /* saving still works when browser storage is unavailable */ }
+        }
         root.querySelectorAll('.open-edit-modal').forEach(function (button) {
             button.addEventListener('click', function () {
                 if (editRequest) { editRequest.abort(); }
@@ -179,6 +193,7 @@
                             fetch(form.action, { method: 'POST', body: new FormData(form) })
                                 .then(function (response) {
                                     if (!response.ok) { return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); }); }
+                                    rememberEditView(button.dataset.id);
                                     window.location.assign('/fgt-adm-vpn-conf/');
                                 })
                                 .catch(function (error) { announce(editFeedback, 'error', (de ? 'Konfiguration konnte nicht aktualisiert werden: ' : 'Could not update configuration: ') + error.message); });
@@ -257,6 +272,35 @@
                 if (selectedHidden) { clearSelection(); }
             });
         }
+
+        function restoreEditView() {
+            var state;
+            try {
+                var saved = window.sessionStorage.getItem(editRestoreKey);
+                window.sessionStorage.removeItem(editRestoreKey);
+                state = JSON.parse(saved || 'null');
+            } catch (_) { return; }
+            if (!state || typeof state.search !== 'string' || typeof state.selected !== 'string' ||
+                !Number.isFinite(state.savedAt) || Date.now() - state.savedAt < 0 || Date.now() - state.savedAt > 300000) { return; }
+            searchInput.value = state.search;
+            searchInput.dispatchEvent(new Event('input'));
+            selectRow(state.selected, false);
+            function position(value) { return Number.isFinite(value) && value >= 0 ? value : 0; }
+            function restorePosition() {
+                window.requestAnimationFrame(function () {
+                    tableWrap.scrollLeft = position(state.tableX);
+                    tableWrap.scrollTop = position(state.tableY);
+                    detailRegion.scrollTop = position(state.detailY);
+                    window.scrollTo({ left: position(state.x), top: position(state.y), behavior: 'instant' });
+                    var panel = root.querySelector('[data-vpn-detail="' + CSS.escape(state.selected) + '"]');
+                    var focusTarget = panel && !panel.hidden ? panel.querySelector('.open-edit-modal') : searchInput;
+                    if (focusTarget) { focusTarget.focus({ preventScroll: true }); }
+                });
+            }
+            if (document.readyState === 'complete') { restorePosition(); }
+            else { window.addEventListener('load', restorePosition, { once: true }); }
+        }
+        restoreEditView();
 
         function updateGraylogCheckTimers() {
             var now = Date.now();
