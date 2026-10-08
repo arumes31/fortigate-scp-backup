@@ -126,6 +126,41 @@ func replaceInterfaceInPolicies(cfg *FGConfig, oldName, newName string) []int {
 	return touched
 }
 
+// vipPolicyInterfaceWarnings flags the one watched-reference case made
+// ambiguous by policy interface conversion: a VIP remains bound to its
+// physical extintf while an inbound policy moves from that interface to a
+// zone. Other references remain valid because the interface itself is not
+// renamed or removed.
+func vipPolicyInterfaceWarnings(cfg *FGConfig, recipeKey, oldName, newName string) []Warning {
+	var inboundPolicy bool
+	for _, policy := range cfg.Policies {
+		if containsStr(policy.SrcIntf, oldName) {
+			inboundPolicy = true
+			break
+		}
+	}
+	if !inboundPolicy {
+		return nil
+	}
+
+	var warnings []Warning
+	for _, hit := range ScanReferences(cfg, oldName) {
+		key, _ := parseSetLine(hit.Line)
+		if hit.Section != "firewall vip" || key != "extintf" {
+			continue
+		}
+		warnings = append(warnings, Warning{
+			Recipe:  recipeKey,
+			Section: hit.Section,
+			Line:    hit.Line,
+			Detail: fmt.Sprintf(
+				"VIP %q keeps extintf %q while inbound policies move to %q -- review the VIP and policy interface relationship",
+				hit.Edit, oldName, newName),
+		})
+	}
+	return warnings
+}
+
 // policyByID finds a policy by ID (nil if not found).
 func policyByID(cfg *FGConfig, id int) *PolicyEntry {
 	for _, p := range cfg.Policies {

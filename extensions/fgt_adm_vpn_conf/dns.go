@@ -122,7 +122,9 @@ func (e *Extension) dnsSweep() error {
 	for _, c := range configs {
 		if strings.TrimSpace(c.DnsNameFull) == "" || net.ParseIP(strings.TrimSpace(c.RemoteipFull)) == nil {
 			if c.LastDnsStatus != dnsStatusUnknown {
-				if err := e.updateDNSStatus(c.ID, now, dnsStatusUnknown, ""); err != nil {
+				if err := e.updateDNSStatus(
+					c.ID, c.DnsNameFull, c.RemoteipFull, now, dnsStatusUnknown, "",
+				); err != nil {
 					return err
 				}
 			}
@@ -136,7 +138,9 @@ func (e *Extension) dnsSweep() error {
 			e.logger.Info("dns status transition", "firewall", c.Firewallname,
 				"dns_name", c.DnsNameFull, "from", c.LastDnsStatus, "to", status, "resolved", resolved)
 		}
-		if err := e.updateDNSStatus(c.ID, time.Now().UTC(), status, resolved); err != nil {
+		if err := e.updateDNSStatus(
+			c.ID, c.DnsNameFull, c.RemoteipFull, time.Now().UTC(), status, resolved,
+		); err != nil {
 			return err
 		}
 	}

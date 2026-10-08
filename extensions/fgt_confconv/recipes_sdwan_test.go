@@ -147,3 +147,25 @@ func TestSDWANRecipe_NoWarningForUntouchedReferences(t *testing.T) {
 		}
 	}
 }
+
+func TestSDWANRecipe_WarnsWhenInboundPolicyMovesAwayFromVIPInterface(t *testing.T) {
+	cfg := freshSDWANConfig()
+	cfg.Policies = append(cfg.Policies, &PolicyEntry{
+		ID: 2, SrcIntf: []string{"wan1"}, DstIntf: []string{"lan1"},
+	})
+	cfg.WatchedLines = []WatchedLine{
+		{Section: "firewall vip", Edit: "VIP-WEB", Line: `set extintf "wan1"`},
+	}
+
+	_, warnings, err := (sdwanRecipe{}).Run(cfg, mustJSON(t, SDWANOptions{Members: []string{"wan1", "wan2"}}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Section == "firewall vip" && warning.Line == `set extintf "wan1"` &&
+			strings.Contains(warning.Detail, "VIP-WEB") && strings.Contains(warning.Detail, defaultSDWANZone) {
+			return
+		}
+	}
+	t.Fatalf("expected targeted VIP/inbound-policy warning, got %v", warnings)
+}

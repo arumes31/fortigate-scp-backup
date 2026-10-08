@@ -50,6 +50,42 @@ type Policy struct {
 	Groups                 []string  `json:"groups"`
 }
 
+type policyRequest struct {
+	Policies []Policy `json:"policies"`
+}
+
+type validationIssue struct {
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	PolicyID    string `json:"policy_id,omitempty"`
+	PolicyIndex int    `json:"policy_index"`
+}
+
+type validationResponse struct {
+	Valid    bool              `json:"valid"`
+	Errors   []validationIssue `json:"errors"`
+	Warnings []validationIssue `json:"warnings"`
+}
+
+type generatedPolicyOutputs struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Output1    string `json:"output1"`
+	Output2    string `json:"output2"`
+	Output3    string `json:"output3"`
+}
+
+type generateResponse struct {
+	Outputs    []generatedPolicyOutputs `json:"outputs"`
+	Validation validationResponse       `json:"validation"`
+}
+
+type apiErrorResponse struct {
+	Code       string              `json:"code"`
+	Message    string              `json:"message"`
+	Validation *validationResponse `json:"validation,omitempty"`
+}
+
 // TemplateData matches the JSON structure stored inside templates.data.
 type TemplateData struct {
 	Policies []Policy `json:"policies"`

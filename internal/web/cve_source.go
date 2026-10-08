@@ -156,11 +156,39 @@ func nvdEntryToDef(v nvdVuln) (cveDef, bool) {
 			}
 		}
 	}
+	def.ranges = collapseCVERanges(def.ranges)
 	if len(def.ranges) == 0 || def.summaryEN == "" {
 		return cveDef{}, false
 	}
 	def.remediation = nvdRemediation(def.ranges)
 	return def, true
+}
+
+// collapseCVERanges keeps one entry per FortiOS major/minor train in source
+// order. A concrete fixed patch supersedes neverFixed, and duplicate concrete
+// ranges keep the highest fixed patch reported for the train.
+func collapseCVERanges(ranges []cveRange) []cveRange {
+	type train struct {
+		major int
+		minor int
+	}
+	collapsed := make([]cveRange, 0, len(ranges))
+	indexByTrain := make(map[train]int, len(ranges))
+	for _, candidate := range ranges {
+		key := train{major: candidate.major, minor: candidate.minor}
+		index, exists := indexByTrain[key]
+		if !exists {
+			indexByTrain[key] = len(collapsed)
+			collapsed = append(collapsed, candidate)
+			continue
+		}
+		current := collapsed[index]
+		if candidate.fixedPatch != neverFixed &&
+			(current.fixedPatch == neverFixed || candidate.fixedPatch > current.fixedPatch) {
+			collapsed[index] = candidate
+		}
+	}
+	return collapsed
 }
 
 func nvdSeverity(sets ...[]nvdCvssMetric) string {
@@ -185,9 +213,10 @@ func nvdSeverity(sets ...[]nvdCvssMetric) string {
 }
 
 // nvdCpeRange converts one cpeMatch's version bounds into the fixedPatch
-// representation getCVEs already understands. Only proper ranges (a start AND
-// an end bound within the same train) are converted; single exact-version
-// matches without range fields are skipped rather than approximated.
+// representation getCVEs already understands. End-only ranges derive their
+// train from the fixed-version bound; start-only ranges have no fixed version
+// and therefore mark that train as neverFixed. Exact-version matches without
+// range fields are skipped rather than approximated.
 func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 	startStr := m.VersionStartIncluding
 	if startStr == "" {
@@ -199,12 +228,19 @@ func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 		endStr = m.VersionEndIncluding
 		endIncluding = true
 	}
-	if startStr == "" || endStr == "" {
+	if startStr == "" && endStr == "" {
 		return cveRange{}, false
 	}
-	major, minor, _, ok := splitVersion(startStr)
+	trainVersion := startStr
+	if trainVersion == "" {
+		trainVersion = endStr
+	}
+	major, minor, _, ok := splitVersion(trainVersion)
 	if !ok {
 		return cveRange{}, false
+	}
+	if endStr == "" {
+		return cveRange{major: major, minor: minor, fixedPatch: neverFixed}, true
 	}
 	endMajor, endMinor, endPatch, ok2 := splitVersion(endStr)
 	if !ok2 || endMajor != major || endMinor != minor {
@@ -220,8 +256,9 @@ func nvdCpeRange(m nvdCpeMatch) (cveRange, bool) {
 func truncateCVESummary(s string) string {
 	s = strings.TrimSpace(s)
 	const max = 240
-	if len(s) > max {
-		return s[:max] + "…"
+	runes := []rune(s)
+	if len(runes) > max {
+		return string(runes[:max]) + "…"
 	}
 	return s
 }

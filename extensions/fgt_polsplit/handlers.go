@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,7 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // ErrNotFound is returned by loadBackup when the firewall or backup does not
@@ -42,19 +42,21 @@ func (e *Extension) jsonError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+type indexData struct {
+	Base      webui.BaseData
+	Firewalls []FirewallRef
+}
+
 func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	firewalls, err := e.fetchFirewalls(r.Context())
 	if err != nil {
 		e.logger.Error("polsplit: failed to fetch firewalls", "err", err)
 	}
-	data := struct {
-		Base      baseData
-		Firewalls []FirewallRef
-	}{
-		Base:      e.baseData(r, "Policy Split Advisor", "polsplit"),
+	data := indexData{
+		Base:      e.pageBase(r, "Policy Split Advisor", "polsplit"),
 		Firewalls: firewalls,
 	}
-	if err := e.tmpl.ExecuteTemplate(w, "fgt_polsplit_index.html", data); err != nil {
+	if err := e.page.RenderHTTP(w, data); err != nil {
 		e.logger.Error("polsplit: template render failed", "err", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
@@ -104,17 +106,16 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (fqdn, content str
 		}
 		return "", "", ts, err
 	}
-	diskPath := filepath.Join(e.cfg.BackupDir, filepath.FromSlash(filename))
+	diskPath, err := appsecurity.JoinWithin(e.cfg.BackupDir, filename)
+	if err != nil {
+		return "", "", ts, fmt.Errorf("invalid backup path: %w", err)
+	}
 	encData, err := os.ReadFile(diskPath)
 	if err != nil {
 		e.logger.Error("polsplit: failed to read backup file", "path", diskPath, "err", err)
 		return "", "", ts, errors.New("failed to read backup file from disk")
 	}
-	cipher, err := crypto.New(e.cfg.EncryptionKey)
-	if err != nil {
-		return "", "", ts, errors.New("failed to init cipher")
-	}
-	plain, err := cipher.Decrypt(encData)
+	plain, err := e.cipher.Decrypt(encData)
 	if err != nil {
 		e.logger.Error("polsplit: failed to decrypt backup", "path", diskPath, "err", err)
 		return "", "", ts, errors.New("failed to decrypt backup")
@@ -778,27 +779,32 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 		logMsg += " [ticket " + t + "]"
 	}
 	e.log(r, "PolSplit Analyze", logMsg)
-	e.writeJSON(w, map[string]any{
-		"firewall":         FirewallRef{ID: req.FwID, FQDN: fqdn},
-		"policy":           parsed.Policy,
-		"action_display":   displayAction(parsed.Policy.Action),
-		"backup_time":      ts.In(e.tz).Format("2006-01-02 15:04"),
-		"total_messages":   totalMessages,
-		"tuple_count":      len(analysis.Tuples),
-		"src_count":        len(srcsMap),
-		"dst_count":        len(dstsMap),
-		"svc_count":        len(svcsMap),
-		"tuples":           respTuples,
-		"stale_tuples":     staleTuples,
-		"dns_suggestions":  dnsSuggestions,
-		"isdb_suggestions": isdbSugg,
-		"utm_blocked":      utmDsts,
-		"user_activity":    users,
-		"app_usage":        apps,
-		"wan_as_all":       wanAsAll,
-		"strategies":       strategies,
-		"warnings":         warnings,
+	owner := ""
+	if e.currentUser != nil {
+		owner = e.currentUser(r)
+	}
+	if owner == "" {
+		e.jsonError(w, http.StatusUnauthorized, "authenticated user is required for result storage")
+		return
+	}
+	_, summary, err := e.storeResult(owner, analysisResult{
+		Firewall: FirewallRef{ID: req.FwID, FQDN: fqdn}, Policy: parsed.Policy,
+		BackupTime: ts.In(e.tz).Format("2006-01-02 15:04"), TotalMessages: totalMessages,
+		TupleCount: len(analysis.Tuples), SrcCount: len(srcsMap), DstCount: len(dstsMap), ServiceCount: len(svcsMap),
+		Warnings: warnings,
+		Traffic: trafficResultPanel{
+			Tuples: respTuples, StaleTuples: staleTuples, DNSSuggestions: dnsSuggestions,
+			ISDBSuggestions: isdbSugg, UTMBlocked: utmDsts, UserActivity: users, AppUsage: apps,
+		},
+		Strategies: strategies,
 	})
+	if err != nil {
+		e.logger.Warn("polsplit: result exceeds bounded review store", "err", err, "policy_id", req.PolicyID, "firewall_id", req.FwID)
+		e.jsonError(w, http.StatusRequestEntityTooLarge, "analysis result is too large to review safely")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	e.writeJSON(w, summary)
 }
 
 // markRecommended flags the strategy with the lowest score: policy count

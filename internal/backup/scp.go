@@ -23,7 +23,7 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	clientConfig := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: s.hostKeyCallback,
 		Timeout:         time.Duration(timeout) * time.Second,
 	}
 
@@ -100,7 +100,7 @@ func (s *Service) TestConnection(fwID int) (string, error) {
 	clientConfig := &ssh.ClientConfig{
 		User:            fw.Username,
 		Auth:            []ssh.AuthMethod{ssh.Password(fw.Password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: s.hostKeyCallback,
 		Timeout:         time.Duration(s.cfg.SCPTimeout) * time.Second,
 	}
 	addr := net.JoinHostPort(fw.FQDN, strconv.Itoa(fw.SSHPort))
@@ -115,7 +115,7 @@ func (s *Service) TestConnection(fwID int) (string, error) {
 		return "Connected (auth OK), but could not open a session: " + err.Error(), nil
 	}
 	defer func() { _ = session.Close() }()
-	if out, err := session.CombinedOutput("ls " + s.cfg.FortigateConfigPath); err != nil {
+	if out, err := session.CombinedOutput("ls -- " + quotePOSIXShell(s.cfg.FortigateConfigPath)); err != nil {
 		return fmt.Sprintf("Connected (auth OK), but config path %q was not found: %s",
 			s.cfg.FortigateConfigPath, strings.TrimSpace(string(out))), nil
 	}
@@ -134,11 +134,16 @@ func (s *Service) remoteCheck(conn *ssh.Client, remotePath, fqdn string) {
 	}
 	defer func() { _ = session.Close() }()
 
-	out, err := session.CombinedOutput("ls " + remotePath)
+	out, err := session.CombinedOutput("ls -- " + quotePOSIXShell(remotePath))
 	if err != nil {
 		s.logger.Warn("Remote file check failed, proceeding with SCP transfer",
 			"fqdn", fqdn, "path", remotePath, "err", err, "output", strings.TrimSpace(string(out)))
 		return
 	}
 	s.logger.Debug("Remote file exists", "fqdn", fqdn, "path", remotePath)
+}
+
+// quotePOSIXShell makes one arbitrary string safe as a literal shell word.
+func quotePOSIXShell(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

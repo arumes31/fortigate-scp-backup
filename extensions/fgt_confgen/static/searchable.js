@@ -1,4 +1,7 @@
 // searchable.js (Version 1.4)
+(function () {
+'use strict';
+
 function initSearchableSelect(selectElement, options = {}) {
     if (selectElement._searchableTeardown) {
         selectElement._searchableTeardown();
@@ -323,3 +326,6 @@ function initSearchableSelect(selectElement, options = {}) {
         }
     }, { signal });
 }
+
+window.FortiSafeConfGen = Object.freeze({ initSearchableSelect });
+})();

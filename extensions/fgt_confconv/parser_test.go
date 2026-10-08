@@ -123,6 +123,15 @@ config system sdwan
             set server "8.8.8.8"
         next
     end
+    config service
+        edit 9
+            set name "existing-rule"
+            set mode manual
+            set dst "all"
+            set src "all"
+            set priority-members 1 2
+        next
+    end
 end
 `
 
@@ -294,6 +303,9 @@ func TestParseConfigSDWAN(t *testing.T) {
 	if len(cfg.SDWANHealthChecks) != 1 || cfg.SDWANHealthChecks[0] != "ping-ISP" {
 		t.Errorf("sdwan health checks = %v, want [ping-ISP]", cfg.SDWANHealthChecks)
 	}
+	if len(cfg.SDWANRules) != 1 || cfg.SDWANRules[0].Seq != 9 || cfg.SDWANRules[0].Name != "existing-rule" || cfg.SDWANRules[0].PriorityMembers != "1 2" {
+		t.Errorf("sdwan rules = %+v, want parsed service rule 9", cfg.SDWANRules)
+	}
 
 	// A plain `config system zone` (top-level) must never be confused with
 	// sdwan's nested `config zone` -- confirm the DMZ zone from testConfig
@@ -304,6 +316,20 @@ func TestParseConfigSDWAN(t *testing.T) {
 	}
 	if _, ok := cfg.Zones["virtual-wan-link"]; ok {
 		t.Error("sdwan zone must not leak into the plain Zones map")
+	}
+}
+
+func TestParseConfigPreservesDisabledStaticRouteState(t *testing.T) {
+	cfg := ParseConfig(`#config-version=FGT90G-7.6.7-FW-build3704-260601
+config router static
+    edit 12
+        set device "virtual-wan-link"
+        set status disable
+    next
+end
+`)
+	if len(cfg.StaticRoutes) != 1 || !cfg.StaticRoutes[0].Disabled {
+		t.Fatalf("static routes = %+v, want disabled route 12", cfg.StaticRoutes)
 	}
 }
 

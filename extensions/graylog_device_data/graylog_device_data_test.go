@@ -588,6 +588,68 @@ func TestBestMacPins(t *testing.T) {
 	}
 }
 
+func TestRetentionTimestampsUseOneUTCInstantAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localNow := time.Date(2026, time.October, 25, 3, 30, 0, 0, loc)
+	stamp, cutoff := retentionTimestamps(localNow, deviceRetention)
+
+	wantStamp := localNow.UTC().Format(storageTimeLayout)
+	wantCutoff := localNow.UTC().Add(-deviceRetention).Format(storageTimeLayout)
+	if stamp != wantStamp || cutoff != wantCutoff {
+		t.Fatalf("retention timestamps = (%q, %q), want (%q, %q)", stamp, cutoff, wantStamp, wantCutoff)
+	}
+}
+
+func TestStoreStpRetentionKeepsExactBoundary(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "graylog-device-data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(createStpTableSQL); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, time.October, 25, 2, 30, 0, 0, time.UTC)
+	nowText, cutoff := retentionTimestamps(now, stpRetention)
+	before := now.Add(-stpRetention - time.Second).Format(storageTimeLayout)
+	for _, row := range []struct {
+		port, updated string
+	}{
+		{port: "port1", updated: cutoff},
+		{port: "port2", updated: before},
+	} {
+		if _, err := db.Exec(`INSERT INTO stp_ports (fw_id, switch_name, port, updated_at) VALUES (1, 'SW1', ?, ?)`, row.port, row.updated); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler)}
+	if err := e.storeStp(1, nil, nowText); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT port FROM stp_ports ORDER BY port`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ports []string
+	for rows.Next() {
+		var port string
+		if err := rows.Scan(&port); err != nil {
+			t.Fatal(err)
+		}
+		ports = append(ports, port)
+	}
+	if len(ports) != 1 || ports[0] != "port1" {
+		t.Fatalf("ports after retention = %v, want exact-boundary port1 only", ports)
+	}
+}
+
 // TestStoreStpKeepsAgedOutBlock guards the retention contract: once an STP
 // block is stored, a later fetch that only re-sees the port via a different
 // event kind (e.g. a link flap, after the blocking event has aged out of the
@@ -677,11 +739,13 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	if err := e.storeSwitchEdges(1, []SwitchEdge{{
-		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port29"},
+		SwitchSN: "S124EN0000000001", SwitchName: "SW1", Trunk: "SW2-trunk", Ports: []string{"port28", "port29"},
 	}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.storeStp(1, []StpPort{
+		// Role alone can block a forwarding trunk leg; report the triggering role.
+		{SwitchName: "SW1", Port: "port28", Role: "alternate", State: "forwarding", LastChange: "T1"},
 		// Trunk leg out of forwarding: a real broken loop → listed.
 		{SwitchName: "SW1", Port: "port29", Role: "alternate", State: "discarding", LastChange: "T1"},
 		// Access port whose client went away: role disabled/discarding → NOT listed.
@@ -717,17 +781,22 @@ func TestListBlockedPortsEdgeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotPorts := map[string]bool{}
+	gotPorts := map[string]string{}
 	for _, b := range blocked {
-		gotPorts[b.Switch+"|"+b.Port] = true
+		gotPorts[b.Switch+"|"+b.Port] = b.Reason
 	}
-	if len(blocked) != 3 || !gotPorts["SW1|port29"] || !gotPorts["SW1|port6"] || !gotPorts["SW2|port1"] {
+	if len(blocked) != 4 || gotPorts["SW1|port28"] == "" || gotPorts["SW1|port29"] == "" ||
+		gotPorts["SW1|port6"] == "" || gotPorts["SW2|port1"] == "" {
 		t.Fatalf("edge gate wrong, got %+v", blocked)
 	}
-	if gotPorts["SW1|port5"] {
+	if gotPorts["SW1|port28"] != "alternate" || gotPorts["SW1|port29"] != "discarding" ||
+		gotPorts["SW1|port6"] != "bpdu-guard" {
+		t.Fatalf("blocked reasons do not identify the triggering condition: %+v", blocked)
+	}
+	if gotPorts["SW1|port5"] != "" {
 		t.Fatalf("edge port in discarding must not be listed: %+v", blocked)
 	}
-	if gotPorts["SW9|port2"] {
+	if gotPorts["SW9|port2"] != "" {
 		t.Fatalf("another firewall's switch name must not classify fw 2's port: %+v", blocked)
 	}
 }
@@ -788,7 +857,7 @@ func TestStoreLiveStpCheck_PreservesSinceOnReconfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t2 := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 7, 27, 11, 0, 0, 0, time.FixedZone("CEST", 2*60*60))
 	stillBlocked, err := e.storeLiveStpCheck(1, "SW1", "port16", "disabled", "discarding", "bpdu-guard", t2)
 	if err != nil {
 		t.Fatal(err)
@@ -806,6 +875,13 @@ func TestStoreLiveStpCheck_PreservesSinceOnReconfirm(t *testing.T) {
 	}
 	if got[0].LastChange != t1 {
 		t.Errorf("last_change = %q, want unchanged %q (a reconfirmation must not rewrite history)", got[0].LastChange, t1)
+	}
+	var updatedAt string
+	if err := db.QueryRow(`SELECT updated_at FROM stp_ports WHERE fw_id = 1 AND switch_name = 'SW1' AND port = 'port16'`).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if want := t2.UTC().Format(storageTimeLayout); updatedAt != want {
+		t.Errorf("updated_at = %q, want UTC %q", updatedAt, want)
 	}
 }
 

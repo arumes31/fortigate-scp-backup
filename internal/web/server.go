@@ -5,10 +5,12 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -25,6 +27,9 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
+	"golang.org/x/crypto/ssh"
 )
 
 //go:embed templates/*.html
@@ -44,7 +49,7 @@ func init() {
 // Authenticator is the subset of internal/auth used by the login handler.
 type Authenticator interface {
 	VerifyRadius(username, password string) bool
-	VerifyTOTP(secret, code string) bool
+	VerifyTOTP(secret, code string) (int64, bool)
 }
 
 // BaseData carries the shared layout fields every page embeds as `.Base`.
@@ -55,9 +60,14 @@ type BaseData struct {
 	ExtFgtConfGenEnabled  bool
 	ExtFgtPolSplitEnabled bool
 	ExtFgtConfConvEnabled bool
-	IsRadius              bool   // RADIUS users cannot change their password locally
+	ExtFgtConfTailEnabled bool
+	IsRadius              bool // RADIUS users cannot change their password locally
+	CSRFToken             string
 	Lang                  string // UI language: "en" (default) or "de"
 	Active                string // nav key: firewalls|search|activity|admvpn|password
+	ReturnTo              string
+	Shell                 webui.ShellLabels
+	Navigation            []webui.NavGroup
 }
 
 // Server holds the dependencies shared by every handler.
@@ -73,9 +83,14 @@ type Server struct {
 	// ipLimiter is a per-source-IP aggregate guard so a password-spray across
 	// many usernames from one host is throttled even though each (IP,username)
 	// bucket in limiter never reaches its own threshold.
-	ipLimiter *loginLimiter
-	hub       *sseHub
-	logger    *slog.Logger
+	ipLimiter       *loginLimiter
+	hub             *sseHub
+	logger          *slog.Logger
+	hostKeyMu       sync.RWMutex
+	hostKeyCallback ssh.HostKeyCallback
+	hostKeyManager  *sshhostkey.Manager
+	healthMu        sync.RWMutex
+	healthProbes    map[string]func(context.Context) string
 
 	pages map[string]pageTmpl
 
@@ -100,11 +115,43 @@ type Server struct {
 	// JS); begin() on each also coalesces concurrent sweeps.
 	licenseProgress sweepProgress
 	ipamProgress    sweepProgress
+
+	// CVE refreshes are coalesced across scheduled and manual triggers. The
+	// server-owned context lets Shutdown cancel and join a running refresh.
+	cveRefresh         func(context.Context, *sql.DB, string) error
+	cveRefreshMu       sync.Mutex
+	cveRefreshActive   bool
+	cveRefreshStopping bool
+	cveRefreshWG       sync.WaitGroup
+	cveRefreshCtx      context.Context
+	cveRefreshCancel   context.CancelFunc
+}
+
+// SetHostKeyCallback configures the verified host-key policy used by live SSH
+// collectors. It must be called before a collection is started.
+func (s *Server) SetHostKeyCallback(callback ssh.HostKeyCallback) {
+	s.hostKeyMu.Lock()
+	defer s.hostKeyMu.Unlock()
+	s.hostKeyCallback = callback
+}
+
+// SetHostKeyManager wires the application-managed persistent TOFU policy and
+// makes pending key rotations available to the firewall UI.
+func (s *Server) SetHostKeyManager(manager *sshhostkey.Manager) {
+	s.hostKeyManager = manager
+	if manager != nil {
+		s.SetHostKeyCallback(manager.Callback())
+	}
+}
+
+func (s *Server) hostKeyCallbackForSSH() ssh.HostKeyCallback {
+	s.hostKeyMu.RLock()
+	defer s.hostKeyMu.RUnlock()
+	return s.hostKeyCallback
 }
 
 type pageTmpl struct {
-	t    *template.Template
-	exec string // template name to execute ("base" for content pages)
+	render func(io.Writer, any) error
 }
 
 // BackupJobID is the scheduler job id for a firewall. main.go and the handlers
@@ -114,15 +161,21 @@ func BackupJobID(fwID int) string { return fmt.Sprintf("backup_firewall_%d", fwI
 // New builds the Server and parses all templates.
 func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	backupSvc *backup.Service, sess *session.Manager, auth Authenticator, cipher *crypto.Cipher, logger *slog.Logger) (*Server, error) {
+	cveCtx, cveCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, store: store, sched: sched, backup: backupSvc,
 		sess: sess, auth: auth, cipher: cipher, logger: logger,
-		limiter:   newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		ipLimiter: newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
-		hub:       newSSEHub(),
-		warmSem:   make(chan struct{}, 2),
+		limiter:          newLoginLimiter(cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		ipLimiter:        newLoginLimiter(cfg.LoginMaxAttempts*4, time.Duration(cfg.LoginLockoutMinutes)*time.Minute),
+		hub:              newSSEHub(),
+		healthProbes:     make(map[string]func(context.Context) string),
+		warmSem:          make(chan struct{}, 2),
+		cveRefresh:       refreshCVECache,
+		cveRefreshCtx:    cveCtx,
+		cveRefreshCancel: cveCancel,
 	}
 	if err := s.parseTemplates(); err != nil {
+		cveCancel()
 		return nil, err
 	}
 	if cfg.CVEAutoUpdate {
@@ -140,6 +193,18 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 	// ever parsing configs inside a page request.
 	sched.Schedule("ipam-refresh", 24*time.Hour, 5*time.Minute, s.refreshIPAM)
 	return s, nil
+}
+
+// RegisterHealth adds or replaces a bounded component probe exposed by
+// /healthz. The endpoint remains a liveness probe and never exposes raw errors.
+func (s *Server) RegisterHealth(name string, probe func(context.Context) string) {
+	name = strings.TrimSpace(name)
+	if name == "" || probe == nil {
+		return
+	}
+	s.healthMu.Lock()
+	s.healthProbes[name] = probe
+	s.healthMu.Unlock()
 }
 
 // BroadcastStatus pushes a firewall status change to any connected SSE clients.
@@ -166,22 +231,34 @@ func (s *Server) BroadcastOp(kind string, fwID int, status string) {
 // (which does not cancel their request contexts) can complete promptly.
 func (s *Server) Shutdown() {
 	s.hub.shutdown()
+	s.limiter.Close()
+	s.ipLimiter.Close()
+	s.cveRefreshMu.Lock()
+	s.cveRefreshStopping = true
+	if s.cveRefreshCancel != nil {
+		s.cveRefreshCancel()
+	}
+	s.cveRefreshMu.Unlock()
+	s.cveRefreshWG.Wait()
 }
 
 var funcMap = template.FuncMap{
-	"hasPrefix": strings.HasPrefix,
-	"hasSuffix": strings.HasSuffix,
-	"contains":  strings.Contains,
-	"lower":     strings.ToLower,
-	"upper":     strings.ToUpper,
-	"trim":      strings.TrimSpace,
-	"add":       func(a, b int) int { return a + b },
-	"sub":       func(a, b int) int { return a - b },
-	"fmtTime":   fmtTime,
-	"fmtBytes":  fmtBytes,
-	"T":         tr,
-	"i18nJSON":  i18nJSON,
-	"isZero":    func(t time.Time) bool { return t.IsZero() },
+	"hasPrefix":      strings.HasPrefix,
+	"hasSuffix":      strings.HasSuffix,
+	"contains":       strings.Contains,
+	"lower":          strings.ToLower,
+	"upper":          strings.ToUpper,
+	"trim":           strings.TrimSpace,
+	"add":            func(a, b int) int { return a + b },
+	"sub":            func(a, b int) int { return a - b },
+	"fmtTime":        fmtTime,
+	"fmtMachineTime": fmtMachineTime,
+	"fmtBytes":       fmtBytes,
+	"T":              tr,
+	"L":              webui.Localize,
+	"i18nJSON":       i18nJSON,
+	"i18nJSONAttr":   i18nJSONAttr,
+	"isZero":         func(t time.Time) bool { return t.IsZero() },
 }
 
 // fmtTime renders a timestamp for display, or "—" when zero.
@@ -189,7 +266,17 @@ func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return "—"
 	}
-	return t.Local().Format("2006-01-02 15:04:05")
+	return t.UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+// fmtMachineTime renders an instant for the datetime attribute of a time
+// element. UTC keeps server output deterministic; ui.js may switch the visible
+// value to the user's browser timezone.
+func fmtMachineTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // fmtBytes renders a byte count in human units.
@@ -211,10 +298,6 @@ func (s *Server) parseTemplates() error {
 	if err != nil {
 		return err
 	}
-	base, err := templatesFS.ReadFile("templates/base.html")
-	if err != nil {
-		return err
-	}
 	pages := make(map[string]pageTmpl)
 	for _, e := range entries {
 		name := e.Name()
@@ -226,20 +309,20 @@ func (s *Server) parseTemplates() error {
 			return err
 		}
 		if strings.Contains(string(content), `{{define "content"}}`) {
-			t := template.New("layout").Funcs(funcMap)
-			if _, err := t.Parse(string(base)); err != nil {
+			renderer, err := webui.ParsePage(templatesFS, "templates/"+name, funcMap)
+			if err != nil {
 				return err
 			}
-			if _, err := t.Parse(string(content)); err != nil {
-				return err
-			}
-			pages[name] = pageTmpl{t: t, exec: "base"}
+			pages[name] = pageTmpl{render: renderer.Render}
 		} else {
 			t := template.New(name).Funcs(funcMap)
 			if _, err := t.Parse(string(content)); err != nil {
 				return err
 			}
-			pages[name] = pageTmpl{t: t, exec: name}
+			execName := name
+			pages[name] = pageTmpl{render: func(destination io.Writer, data any) error {
+				return t.ExecuteTemplate(destination, execName, data)
+			}}
 		}
 	}
 	s.pages = pages
@@ -255,7 +338,7 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := p.t.ExecuteTemplate(&buf, p.exec, data); err != nil {
+	if err := p.render(&buf, data); err != nil {
 		s.logger.Error("template render failed", "name", name, "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 		return
@@ -266,31 +349,70 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 
 // base builds the shared layout data for the current request.
 func (s *Server) base(r *http.Request, title, active string) BaseData {
-	d := s.sess.User(r)
+	page := s.PageBase(r, title, active)
 	return BaseData{
-		Title:                 title,
-		Username:              d.Username,
+		Title:                 page.Title,
+		Username:              page.Username,
 		ExtEnabled:            s.cfg.ExtAdmVpnConf,
 		ExtFgtConfGenEnabled:  s.cfg.ExtFgtConfGen,
 		ExtFgtPolSplitEnabled: s.cfg.ExtFgtPolSplit,
 		ExtFgtConfConvEnabled: s.cfg.ExtFgtConfConv,
-		IsRadius:              d.IsRadiusUser,
-		Lang:                  langFromRequest(r),
-		Active:                active,
+		ExtFgtConfTailEnabled: s.cfg.ExtFgtConfTail,
+		IsRadius:              page.IsRadius,
+		CSRFToken:             page.CSRFToken,
+		Lang:                  page.Lang,
+		Active:                page.Active,
+		ReturnTo:              page.ReturnTo,
+		Shell:                 page.Shell,
+		Navigation:            page.Navigation,
 	}
+}
+
+// PageBase builds the shared presentation-only context for an authenticated
+// Core or extension page. Identity and navigation are exposed only when the
+// request has passed through LoginRequired; a valid cookie on a public route
+// is intentionally insufficient.
+func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData {
+	lang := langFromRequest(r)
+	base := webui.BaseData{
+		Title: title, Lang: lang, Active: active, ReturnTo: r.URL.RequestURI(),
+		Shell: webui.ShellText(lang),
+	}
+	d, ok := s.sess.AuthenticatedUser(r)
+	if !ok {
+		return base
+	}
+
+	base.Username = d.Username
+	base.IsRadius = d.IsRadiusUser
+	base.CSRFToken = d.CSRFToken
+	base.Navigation = webui.Navigation(webui.NavigationOptions{
+		Lang:     lang,
+		Active:   active,
+		AdmVPN:   s.cfg.ExtAdmVpnConf,
+		ConfGen:  s.cfg.ExtFgtConfGen,
+		PolSplit: s.cfg.ExtFgtPolSplit,
+		ConfConv: s.cfg.ExtFgtConfConv,
+		ConfTail: s.cfg.ExtFgtConfTail,
+	})
+	return base
 }
 
 // Routes builds the main router. Extensions are mounted by the caller.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(exposeRequestID)
 	r.Use(s.accessLog)
-	r.Use(middleware.Recoverer)
 	// gzip/deflate for HTML/JSON/JS/CSS: the fleet-sized JSON payloads (IPAM
 	// snapshot, topology data) compress ~10×. SSE is unaffected — chi only
 	// compresses its default content types, which exclude text/event-stream.
 	r.Use(middleware.Compress(5))
 	r.Use(securityHeaders(s.cfg.EnableHSTS))
+	// Keep recovery inside response/security middleware so a generated 500 page
+	// retains the same headers and compression behavior as every other page.
+	r.Use(s.recoverer)
+	r.Use(s.sess.CSRFProtected)
 
 	r.NotFound(s.handleNotFound)
 	r.MethodNotAllowed(s.handleMethodNotAllowed)
@@ -340,15 +462,19 @@ func (s *Server) Routes() chi.Router {
 		pr.Post("/topology/share/revoke", s.handleTopologyShareRevoke)
 		pr.Get("/download_bundle", s.handleDownloadBundle)
 		pr.Get("/backups/{fwID}", s.handleListBackups)
+		pr.Get("/backups/{fwID}/compare", s.handleBackupCompare)
 		pr.Get("/download/*", s.handleDownload)
-		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
 		pr.Get("/errors", s.handleErrors)
 		pr.Post("/backup_now/{fwID}", s.handleBackupNow)
-		pr.Get("/test_connection/{fwID}", s.handleTestConnection)
-		pr.HandleFunc("/change_password", s.handleChangePassword)
-		pr.HandleFunc("/search", s.handleSearch)
+		pr.Post("/test_connection/{fwID}", s.handleTestConnection)
+		pr.Get("/change_password", s.handleChangePassword)
+		pr.Post("/change_password", s.handleChangePassword)
+		pr.Get("/search", s.handleSearch)
+		pr.Post("/search", s.handleSearch)
 		pr.Get("/activity_log", s.handleActivityLog)
 		pr.Get("/events", s.handleEvents)
+		pr.Post("/delete/{fwID}", s.handleDeleteFirewall)
+		pr.Post("/ssh_host_key/accept/{fwID}", s.handleAcceptHostKey)
 	})
 
 	return r

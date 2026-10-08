@@ -139,6 +139,7 @@ func (r fortiLinkRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock
 		if len(cfg.Interfaces[name].Members) == 0 {
 			delete(memberChanged, name)
 			emptied[name] = true
+			delete(cfg.Interfaces, name)
 			warnings = append(warnings, Warning{
 				Recipe: r.Key(), Section: "system interface",
 				Detail: fmt.Sprintf("%q has no member ports left after moving them onto the FortiLink and is deleted in the output -- re-point anything still using it", name),

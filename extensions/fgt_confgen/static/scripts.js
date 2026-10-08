@@ -1,4 +1,85 @@
 // scripts.js (Version 1.17)
+(function () {
+'use strict';
+
+const confGenRoot = document.getElementById('confgen-page');
+if (!confGenRoot) return;
+
+const confGenDE = document.documentElement.lang === 'de';
+const confGenMessages = {
+    'Unnamed Policy': 'Unbenannte Richtlinie',
+    'Clone policy': 'Richtlinie duplizieren',
+    'Delete policy': 'Richtlinie löschen',
+    'Delete': 'Löschen',
+    'Select Interface': 'Schnittstelle auswählen',
+    'Select Address/ISDB': 'Adresse/ISDB auswählen',
+    'Addresses': 'Adressen',
+    'Address Groups': 'Adressgruppen',
+    'Internet Services': 'Internetdienste',
+    'Virtual IPs': 'Virtuelle IPs',
+    'Select Service/Group': 'Dienst/Gruppe auswählen',
+    'Service Groups': 'Dienstgruppen',
+    'Individual Services': 'Einzelne Dienste',
+    'Custom': 'Benutzerdefiniert',
+    'Service Name': 'Dienstname',
+    'Custom service name': 'Name des benutzerdefinierten Dienstes',
+    'Custom service protocol': 'Protokoll des benutzerdefinierten Dienstes',
+    'Custom service port': 'Port des benutzerdefinierten Dienstes',
+    'Select User/Group': 'Benutzer/Gruppe auswählen',
+    'Users': 'Benutzer',
+    'Groups': 'Gruppen',
+    'Error: Policy ID not found': 'Fehler: Richtlinien-ID nicht gefunden',
+    'Error: Policy not found': 'Fehler: Richtlinie nicht gefunden',
+    'Error: Policy form not found': 'Fehler: Richtlinienformular nicht gefunden',
+    'Policy saved successfully': 'Richtlinie erfolgreich gespeichert',
+    'Policy not found': 'Richtlinie nicht gefunden',
+    'Policy cloned successfully': 'Richtlinie erfolgreich dupliziert',
+    'Please enter a template name': 'Bitte einen Vorlagennamen eingeben',
+    'Error saving template': 'Fehler beim Speichern der Vorlage',
+    'Select Template': 'Vorlage auswählen',
+    'Error loading templates': 'Fehler beim Laden der Vorlagen',
+    'Please select a template': 'Bitte eine Vorlage auswählen',
+    'Please select a template to clone': 'Bitte eine zu duplizierende Vorlage auswählen',
+    'Error cloning template': 'Fehler beim Duplizieren der Vorlage',
+    'Error loading template': 'Fehler beim Laden der Vorlage',
+    'Error deleting template': 'Fehler beim Löschen der Vorlage',
+    'Please select a template to rename': 'Bitte eine umzubenennende Vorlage auswählen',
+    'Please enter a new template name': 'Bitte einen neuen Vorlagennamen eingeben',
+    'The new template name is the same as the current name': 'Der neue Vorlagenname entspricht dem aktuellen Namen',
+    'Error renaming template': 'Fehler beim Umbenennen der Vorlage',
+    'Please select a template to copy its URL': 'Bitte eine Vorlage auswählen, um ihre URL zu kopieren',
+    'URL copied to clipboard': 'URL in die Zwischenablage kopiert',
+    'Error generating URL': 'Fehler beim Erzeugen der URL',
+    'Please select a JSON file to import': 'Bitte eine JSON-Datei zum Importieren auswählen',
+    'Error importing template': 'Fehler beim Importieren der Vorlage',
+    'Please select a template to export': 'Bitte eine Vorlage zum Exportieren auswählen',
+    'Please select a file': 'Bitte eine Datei auswählen',
+    'Configuration imported successfully': 'Konfiguration erfolgreich importiert',
+    'Error importing config': 'Fehler beim Importieren der Konfiguration',
+    'Run validation to review this policy set.': 'Validierung ausführen, um diesen Richtliniensatz zu prüfen.',
+    'Policy review failed.': 'Richtlinienprüfung fehlgeschlagen.',
+    'Validating policies…': 'Richtlinien werden validiert…',
+    'Server validation passed': 'Servervalidierung erfolgreich',
+    'Server validation found blocking issues': 'Servervalidierung hat blockierende Probleme gefunden',
+    'No policies to generate': 'Keine Richtlinien zum Erzeugen vorhanden',
+    'Generating policies…': 'Richtlinien werden erzeugt…',
+    'Policies generated successfully': 'Richtlinien erfolgreich erzeugt',
+    'No content to copy': 'Kein Inhalt zum Kopieren vorhanden',
+    'Output copied to clipboard': 'Ausgabe in die Zwischenablage kopiert',
+    'No content to download': 'Kein Inhalt zum Herunterladen vorhanden',
+    'Output download started': 'Download der Ausgabe gestartet',
+    'Select Firewall': 'Firewall auswählen',
+    'Please select a firewall': 'Bitte eine Firewall auswählen',
+    'Loading firewall config...': 'Firewall-Konfiguration wird geladen…',
+    'Configuration loaded successfully': 'Konfiguration erfolgreich geladen'
+};
+
+function confGenT(english) {
+    return confGenDE ? (confGenMessages[english] || english) : english;
+}
+
+const initSearchableSelect = window.FortiSafeConfGen?.initSearchableSelect;
+let preselectedTemplate = confGenRoot.dataset.preselectedTemplate || '';
 let policies = [];
 let interfaces = [];
 let addresses = [];
@@ -15,28 +96,39 @@ let avProfiles = [];
 let ipsSensors = [];
 let users = [];
 let groups = [];
+let workspaceDirty = false;
+let dirtyTrackingReady = false;
+
+function setWorkspaceDirty(dirty) {
+    if (!dirtyTrackingReady && dirty) return;
+    workspaceDirty = dirty;
+    const marker = document.getElementById('confgen-dirty');
+    if (marker) marker.hidden = !dirty;
+    confGenRoot.dataset.dirty = String(dirty);
+}
+
+function markWorkspaceDirty() {
+    if (!dirtyTrackingReady) return;
+    setWorkspaceDirty(true);
+    resetReviewResults();
+}
+function markWorkspaceClean() { setWorkspaceDirty(false); }
+
+window.addEventListener('beforeunload', event => {
+    if (!workspaceDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+});
 
 function showNotification(message, type = 'success') {
-    const container = document.getElementById('notification-container');
-    if (!container) {
-        console.error('Notification container not found');
-        logToBackend('Notification container not found');
-        return;
+    const feedback = document.getElementById('confgen-feedback');
+    const kind = type === 'info' ? 'loading' : type;
+    if (window.FortiSafeUI?.announce) {
+        window.FortiSafeUI.announce(feedback, kind, message);
+    } else if (feedback) {
+        feedback.dataset.feedback = kind;
+        feedback.textContent = message;
     }
-
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.textContent = message;
-
-    container.appendChild(notification);
-
-    setTimeout(() => {
-        notification.style.opacity = '0';
-        notification.style.transform = 'translateX(100%)';
-        setTimeout(() => {
-            notification.remove();
-        }, 500);
-    }, 3000);
 }
 
 // New function to send logs to backend
@@ -96,6 +188,7 @@ function addPolicy() {
     });
     renderPolicyList();
     selectPolicy(policyId);
+    markWorkspaceDirty();
 }
 
 function renderPolicyList() {
@@ -111,7 +204,7 @@ function renderPolicyList() {
         div.className = 'policy-item';
 
         const span = document.createElement('span');
-        span.textContent = policy.name || 'Unnamed Policy';
+        span.textContent = policy.name || confGenT('Unnamed Policy');
         span.addEventListener('click', () => selectPolicy(policy.id));
         div.appendChild(span);
 
@@ -119,16 +212,16 @@ function renderPolicyList() {
         cloneBtn.className = 'clone-btn';
         cloneBtn.textContent = '➕';
         cloneBtn.dataset.policyId = policy.id;
-        cloneBtn.setAttribute('aria-label', 'Clone policy');
-        cloneBtn.title = 'Clone policy';
+        cloneBtn.setAttribute('aria-label', confGenT('Clone policy'));
+        cloneBtn.title = confGenT('Clone policy');
         cloneBtn.addEventListener('click', function() { clonePolicy(this); });
         div.appendChild(cloneBtn);
 
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
         deleteBtn.textContent = '🗑️';
-        deleteBtn.setAttribute('aria-label', 'Delete policy');
-        deleteBtn.title = 'Delete policy';
+        deleteBtn.setAttribute('aria-label', confGenT('Delete policy'));
+        deleteBtn.title = confGenT('Delete policy');
         deleteBtn.addEventListener('click', () => deletePolicy(policy.id));
         div.appendChild(deleteBtn);
 
@@ -136,13 +229,13 @@ function renderPolicyList() {
     });
     const genBtn = document.querySelector('.generate-policies-btn');
     if (genBtn) {
-        genBtn.style.display = policies.length > 0 ? 'block' : 'none';
+        genBtn.hidden = policies.length === 0;
     }
     if (policies.length === 0) {
         document.getElementById('policy-form').style.display = 'none';
         document.getElementById('policy-form-placeholder').style.display = 'block';
         const outSec = document.querySelector('.output-section');
-        if (outSec) outSec.style.display = 'none';
+        if (outSec) outSec.hidden = true;
     }
 }
 
@@ -271,11 +364,11 @@ function renderInterfaces(container, items, type) {
         const div = document.createElement('div');
         div.className = 'interface-item';
         div.innerHTML = `
-            <select onchange="updateInterface('${type}', ${index}, this.value)">
-                <option value="">Select Interface</option>
+            <select data-change-action="update-interface" data-item-type="${type}" data-item-index="${index}">
+                <option value="">${confGenT('Select Interface')}</option>
                 ${interfaces.map(intf => `<option value="${escHtml(intf)}" ${item === intf ? 'selected' : ''}>${escHtml(intf)}</option>`).join('')}
             </select>
-            <button onclick="deleteInterface('${type}', ${index})">Delete</button>
+            <button type="button" data-action="delete-interface" data-item-type="${type}" data-item-index="${index}">${confGenT('Delete')}</button>
         `;
         container.appendChild(div);
     });
@@ -299,26 +392,26 @@ function renderAddresses(container, addrItems, addrGroupItems, isdbItems, vipIte
         const div = document.createElement('div');
         div.className = 'address-item';
         div.innerHTML = `
-            <select class="address-select" onchange="updateAddressOrInternetService('${type}', ${index}, this.value)">
-                <option value="">Select Address/ISDB</option>
-                <optgroup label="Addresses">
+            <select class="address-select" data-change-action="update-address" data-item-type="${type}" data-item-index="${index}">
+                <option value="">${confGenT('Select Address/ISDB')}</option>
+                <optgroup label="${confGenT('Addresses')}">
                     ${addresses.map(addr => `<option value="address:${escHtml(addr)}" ${item.type === 'address' && item.value === addr ? 'selected' : ''}>${escHtml(addr)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Address Groups">
+                <optgroup label="${confGenT('Address Groups')}">
                     ${addressGroups.map(agrp => `<option value="address_group:${escHtml(agrp)}" ${item.type === 'address_group' && item.value === agrp ? 'selected' : ''}>${escHtml(agrp)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Internet Services">
+                <optgroup label="${confGenT('Internet Services')}">
                     ${internetServices.map(isdb => `<option value="isdb:${escHtml(isdb)}" ${item.type === 'isdb' && item.value === isdb ? 'selected' : ''}>${escHtml(isdb)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Virtual IPs">
+                <optgroup label="${confGenT('Virtual IPs')}">
                     ${vips.map(vip => `<option value="vip:${escHtml(vip)}" ${item.type === 'vip' && item.value === vip ? 'selected' : ''}>${escHtml(vip)}</option>`).join('')}
                 </optgroup>
             </select>
-            <button onclick="deleteAddressOrInternetService('${type}', ${index})">Delete</button>
+            <button type="button" data-action="delete-address" data-item-type="${type}" data-item-index="${index}">${confGenT('Delete')}</button>
         `;
         container.appendChild(div);
         initSearchableSelect(div.querySelector('.address-select'), {
-            placeholder: 'Select Address/ISDB'
+            placeholder: confGenT('Select Address/ISDB')
         });
     });
 }
@@ -334,29 +427,29 @@ function renderServices(container, items) {
         const div = document.createElement('div');
         div.className = 'service-item';
         div.innerHTML = `
-            <select onchange="updateService(${index}, this.value)">
-                <option value="">Select Service/Group</option>
-                <optgroup label="Service Groups">
+            <select data-change-action="update-service" data-item-index="${index}">
+                <option value="">${confGenT('Select Service/Group')}</option>
+                <optgroup label="${confGenT('Service Groups')}">
                     ${Object.keys(serviceGroups).map(group => `<option value="group:${escHtml(group)}" ${item.type === 'group' && item.name === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Individual Services">
+                <optgroup label="${confGenT('Individual Services')}">
                     ${services.map(svc => `<option value="template:${escHtml(svc.name)}" ${item.type === 'template' && item.name === svc.name ? 'selected' : ''}>${escHtml(svc.name)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Custom">
-                    <option value="custom" ${item.type === 'custom' ? 'selected' : ''}>Custom</option>
+                <optgroup label="${confGenT('Custom')}">
+                    <option value="custom" ${item.type === 'custom' ? 'selected' : ''}>${confGenT('Custom')}</option>
                 </optgroup>
             </select>
             ${item.type === 'custom' ? `
-                <input type="text" value="${escHtml(item.name)}" onchange="updateCustomService(${index}, 'name', this.value)" placeholder="Service Name">
-                <select onchange="updateCustomService(${index}, 'protocol', this.value)">
+                <input type="text" value="${escHtml(item.name)}" data-change-action="update-custom-service" data-item-index="${index}" data-item-field="name" placeholder="${confGenT('Service Name')}" aria-label="${confGenT('Custom service name')}">
+                <select data-change-action="update-custom-service" data-item-index="${index}" data-item-field="protocol" aria-label="${confGenT('Custom service protocol')}">
                     <option value="TCP" ${item.protocol === 'TCP' ? 'selected' : ''}>TCP</option>
                     <option value="UDP" ${item.protocol === 'UDP' ? 'selected' : ''}>UDP</option>
                     <option value="SCTP" ${item.protocol === 'SCTP' ? 'selected' : ''}>SCTP</option>
                     <option value="ICMP" ${item.protocol === 'ICMP' ? 'selected' : ''}>ICMP</option>
                 </select>
-                <input type="text" value="${escHtml(item.port)}" onchange="updateCustomService(${index}, 'port', this.value)" placeholder="Port">
+                <input type="text" value="${escHtml(item.port)}" data-change-action="update-custom-service" data-item-index="${index}" data-item-field="port" placeholder="Port" aria-label="${confGenT('Custom service port')}">
             ` : ''}
-            <button onclick="deleteService(${index})">Delete</button>
+            <button type="button" data-action="delete-service" data-item-index="${index}">${confGenT('Delete')}</button>
         `;
         container.appendChild(div);
     });
@@ -374,20 +467,20 @@ function renderUsersGroups(container, userItems, groupItems) {
         const div = document.createElement('div');
         div.className = 'user-group-item';
         div.innerHTML = `
-            <select class="user-group-select" onchange="updateUserOrGroup(${index}, this.value)">
-                <option value="">Select User/Group</option>
-                <optgroup label="Users">
+            <select class="user-group-select" data-change-action="update-user-group" data-item-index="${index}">
+                <option value="">${confGenT('Select User/Group')}</option>
+                <optgroup label="${confGenT('Users')}">
                     ${users.map(user => `<option value="user:${escHtml(user)}" ${isUser && item === user ? 'selected' : ''}>${escHtml(user)}</option>`).join('')}
                 </optgroup>
-                <optgroup label="Groups">
+                <optgroup label="${confGenT('Groups')}">
                     ${groups.map(group => `<option value="group:${escHtml(group)}" ${!isUser && item === group ? 'selected' : ''}>${escHtml(group)}</option>`).join('')}
                 </optgroup>
             </select>
-            <button onclick="deleteUserOrGroup(${index})">Delete</button>
+            <button type="button" data-action="delete-user-group" data-item-index="${index}">${confGenT('Delete')}</button>
         `;
         container.appendChild(div);
         initSearchableSelect(div.querySelector('.user-group-select'), {
-            placeholder: 'Select User/Group'
+            placeholder: confGenT('Select User/Group')
         });
     });
 }
@@ -421,7 +514,7 @@ function updateDropdowns() {
     ipPoolSelect.innerHTML = opts(ipPools);
 
     const policyId = form.dataset.policyId;
-    if (policyId) {
+    if (policyId && policies.some(policy => policy.id === policyId)) {
         selectPolicy(policyId);
     }
 }
@@ -803,40 +896,37 @@ function deletePolicy(policyId) {
     } else {
         clearForm();
     }
+    markWorkspaceDirty();
 }
 
 function savePolicy(button) {
-    console.log('savePolicy triggered');
     logToBackend('savePolicy triggered');
     try {
         const policyId = button.closest('#policy-form')?.dataset.policyId;
         if (!policyId) {
             console.error('Policy ID not found in form dataset');
             logToBackend('Policy ID not found in form dataset');
-            showNotification('Error: Policy ID not found', 'error');
+            showNotification(confGenT('Error: Policy ID not found'), 'error');
             return;
         }
-        console.log('Policy ID:', policyId);
         logToBackend(`Policy ID: ${policyId}`);
 
         const policy = policies.find(p => p.id === policyId);
         if (!policy) {
             console.error(`Policy with ID ${policyId} not found`);
             logToBackend(`Policy with ID ${policyId} not found`);
-            showNotification('Error: Policy not found', 'error');
+            showNotification(confGenT('Error: Policy not found'), 'error');
             return;
         }
-        console.log('Policy found:', policy);
         logToBackend(`Policy found with ID: ${policyId}`);
 
         const form = button.closest('#policy-form');
         if (!form) {
             console.error('Policy form not found');
             logToBackend('Policy form not found');
-            showNotification('Error: Policy form not found', 'error');
+            showNotification(confGenT('Error: Policy form not found'), 'error');
             return;
         }
-        console.log('Form found');
         logToBackend('Form found');
 
         const policyName = form.querySelector('.policy-name')?.value || '';
@@ -858,27 +948,6 @@ function savePolicy(button) {
         const nat = form.querySelector('.nat')?.value || 'disable';
         const ipPool = nat === 'enable' ? (form.querySelector('.ip-pool')?.value || '') : '';
 
-        console.log('Form values:', {
-            policyName,
-            policyComment,
-            action,
-            inspectionMode,
-            sslSshProfile,
-            webfilterProfile: webfilterProfile.value,
-            webfilterEnabled,
-            applicationList: applicationList.value,
-            applicationListEnabled,
-            avProfile: avProfile.value,
-            avEnabled,
-            ipsSensor: ipsSensor.value,
-            ipsSensorEnabled,
-            logtraffic,
-            logtrafficStart,
-            autoAsicOffload,
-            nat,
-            ipPool
-        });
-
         policy.name = policyName;
         policy.comment = policyComment;
         policy.action = action;
@@ -898,18 +967,16 @@ function savePolicy(button) {
         policy.nat = nat;
         policy.ip_pool = ipPool;
 
-        console.log('Policy updated:', policy);
         logToBackend(`Policy updated with ID: ${policyId}`);
 
         renderPolicyList();
         selectPolicy(policyId);
-        console.log('Policy saved successfully');
         logToBackend('Policy saved successfully');
-        showNotification('Policy saved successfully', 'success');
+        showNotification(confGenT('Policy saved successfully'), 'success');
     } catch (error) {
         console.error('Error in savePolicy:', error);
         logToBackend(`Error in savePolicy: ${error.message}`);
-        showNotification('Error saving policy: ' + error.message, 'error');
+        showNotification(`${confGenDE ? 'Fehler beim Speichern der Richtlinie' : 'Error saving policy'}: ${error.message}`, 'error');
     }
 }
 
@@ -924,7 +991,7 @@ function clonePolicy(button) {
     if (!policy) {
         console.error(`Policy with ID ${policyId} not found`);
         logToBackend(`Policy with ID ${policyId} not found`);
-        showNotification('Policy not found', 'error');
+        showNotification(confGenT('Policy not found'), 'error');
         return;
     }
     const clone = JSON.parse(JSON.stringify(policy));
@@ -937,12 +1004,13 @@ function clonePolicy(button) {
     policies.push(clone);
     renderPolicyList();
     selectPolicy(clone.id);
-    showNotification('Policy cloned successfully', 'success');
+    showNotification(confGenT('Policy cloned successfully'), 'success');
     logToBackend('Policy cloned successfully (client-side)');
+    markWorkspaceDirty();
 }
 
 function clearForm(button) {
-    const form = button ? button.closest('#policy-form') : document.getElementById('policy-form');
+    const form = button?.closest('#policy-form') || document.getElementById('policy-form');
     if (!form) {
         console.error('Policy form not found for clearing');
         logToBackend('Policy form not found for clearing');
@@ -1031,6 +1099,8 @@ function clearForm(button) {
         policy.ip_pool = '';
         renderPolicyList();
     }
+    resetReviewResults();
+    markWorkspaceClean();
 }
 
 function saveTemplate() {
@@ -1038,7 +1108,7 @@ function saveTemplate() {
     if (!templateName) {
         console.error('Template name not provided');
         logToBackend('Template name not provided');
-        showNotification('Please enter a template name', 'error');
+        showNotification(confGenT('Please enter a template name'), 'error');
         return;
     }
     const formData = new FormData();
@@ -1085,21 +1155,21 @@ function saveTemplate() {
     })
     .then(response => response.json())
     .then(data => {
-        showNotification(data.message, 'success');
+        showNotification(confGenT(data.message), 'success');
         logToBackend(`Template saved: ${data.message}`);
         loadTemplateList();
     })
     .catch(error => {
         console.error('Error saving template:', error);
         logToBackend(`Error saving template: ${error.message}`);
-        showNotification('Error saving template', 'error');
+        showNotification(confGenT('Error saving template'), 'error');
     });
 }
 
 function loadTemplateList() {
     return new Promise((resolve, reject) => {
-        console.log('Loading template list, checking for preselected template:', window.preselectedTemplate);
-        logToBackend(`Loading template list, preselected template: ${window.preselectedTemplate || 'none'}`);
+        console.log('Loading template list, checking for preselected template:', preselectedTemplate);
+        logToBackend(`Loading template list, preselected template: ${preselectedTemplate || 'none'}`);
         fetch('/fgt-confgen/load_templates')
         .then(response => response.json())
         .then(data => {
@@ -1110,7 +1180,7 @@ function loadTemplateList() {
                 reject('Template select element not found');
                 return;
             }
-            select.innerHTML = '<option value="">Select Template</option>';
+            select.innerHTML = `<option value="">${confGenT('Select Template')}</option>`;
             data.templates.forEach(template => {
                 const option = document.createElement('option');
                 option.value = template;
@@ -1119,20 +1189,20 @@ function loadTemplateList() {
             });
             console.log('Templates loaded:', data.templates);
             logToBackend(`Templates loaded: ${JSON.stringify(data.templates)}`);
-            if (window.preselectedTemplate) {
-                console.log('Attempting to select preselected template:', window.preselectedTemplate);
-                logToBackend(`Attempting to select preselected template: ${window.preselectedTemplate}`);
-                if (data.templates.includes(window.preselectedTemplate)) {
-                    select.value = window.preselectedTemplate;
-                    console.log(`Preselected template ${window.preselectedTemplate} found, loading template`);
-                    logToBackend(`Preselected template ${window.preselectedTemplate} found, loading template`);
+            if (preselectedTemplate) {
+                console.log('Attempting to select preselected template:', preselectedTemplate);
+                logToBackend(`Attempting to select preselected template: ${preselectedTemplate}`);
+                if (data.templates.includes(preselectedTemplate)) {
+                    select.value = preselectedTemplate;
+                    console.log(`Preselected template ${preselectedTemplate} found, loading template`);
+                    logToBackend(`Preselected template ${preselectedTemplate} found, loading template`);
                     loadTemplate();
                 } else {
-                    console.warn(`Preselected template "${window.preselectedTemplate}" not found in available templates:`, data.templates);
-                    logToBackend(`Preselected template "${window.preselectedTemplate}" not found in available templates: ${JSON.stringify(data.templates)}`);
-                    showNotification(`Template "${window.preselectedTemplate}" not found`, 'error');
+                    console.warn(`Preselected template "${preselectedTemplate}" not found in available templates:`, data.templates);
+                    logToBackend(`Preselected template "${preselectedTemplate}" not found in available templates: ${JSON.stringify(data.templates)}`);
+                    showNotification(confGenDE ? `Vorlage „${preselectedTemplate}“ nicht gefunden` : `Template "${preselectedTemplate}" not found`, 'error');
                     // Clear preselected template to prevent repeated attempts
-                    window.preselectedTemplate = null;
+                    preselectedTemplate = '';
                 }
             } else {
                 console.log('No preselected template provided');
@@ -1143,7 +1213,7 @@ function loadTemplateList() {
         .catch(error => {
             console.error('Error loading templates:', error);
             logToBackend(`Error loading templates: ${error.message}`);
-            showNotification('Error loading templates', 'error');
+            showNotification(confGenT('Error loading templates'), 'error');
             reject(error);
         });
     });
@@ -1155,7 +1225,7 @@ function loadTemplate() {
     if (!templateName) {
         console.error('No template selected');
         logToBackend('No template selected');
-        showNotification('Please select a template', 'error');
+        showNotification(confGenT('Please select a template'), 'error');
         return;
     }
     console.log(`Loading template: ${templateName}`);
@@ -1249,8 +1319,10 @@ function loadTemplate() {
                         if (templateNameInput) {
                             templateNameInput.value = templateName;
                         }
-                        showNotification(`Template '${templateName}' loaded successfully`, 'success');
+                        showNotification(confGenDE ? `Vorlage „${templateName}“ erfolgreich geladen` : `Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        resetReviewResults();
+                        markWorkspaceClean();
                     })
                     .catch(() => {
                         updateDropdowns();
@@ -1262,8 +1334,10 @@ function loadTemplate() {
                         if (templateNameInput) {
                             templateNameInput.value = templateName;
                         }
-                        showNotification(`Template '${templateName}' loaded successfully`, 'success');
+                        showNotification(confGenDE ? `Vorlage „${templateName}“ erfolgreich geladen` : `Template '${templateName}' loaded successfully`, 'success');
                         logToBackend(`Template '${templateName}' loaded successfully`);
+                        resetReviewResults();
+                        markWorkspaceClean();
                     });
             } catch (error) {
                 console.error('Error merging config data:', error);
@@ -1277,19 +1351,21 @@ function loadTemplate() {
                 if (templateNameInput) {
                     templateNameInput.value = templateName;
                 }
-                showNotification(`Template '${templateName}' loaded successfully`, 'success');
+                showNotification(confGenDE ? `Vorlage „${templateName}“ erfolgreich geladen` : `Template '${templateName}' loaded successfully`, 'success');
                 logToBackend(`Template '${templateName}' loaded successfully`);
+                resetReviewResults();
+                markWorkspaceClean();
             }
         } else {
             console.error('Error loading template:', data.error);
             logToBackend(`Error loading template: ${data.error}`);
-            showNotification('Error loading template: ' + data.error, 'error');
+            showNotification(`${confGenT('Error loading template')}: ${data.error}`, 'error');
         }
     })
     .catch(error => {
         console.error('Error loading template:', error);
         logToBackend(`Error loading template: ${error.message}`);
-        showNotification('Error loading template', 'error');
+        showNotification(confGenT('Error loading template'), 'error');
     });
 }
 
@@ -1298,7 +1374,7 @@ function cloneTemplate() {
     if (!templateName) {
         console.error('No template selected for cloning');
         logToBackend('No template selected for cloning');
-        showNotification('Please select a template to clone', 'error');
+        showNotification(confGenT('Please select a template to clone'), 'error');
         return;
     }
     fetch(`/fgt-confgen/clone_template/${templateName}`, {
@@ -1311,19 +1387,19 @@ function cloneTemplate() {
             if (isGlobalCheckbox) {
                 isGlobalCheckbox.checked = data.is_global || false;
             }
-            showNotification(`Template cloned as ${data.new_template_name}`, 'success');
+            showNotification(confGenDE ? `Vorlage als ${data.new_template_name} dupliziert` : `Template cloned as ${data.new_template_name}`, 'success');
             logToBackend(`Template cloned as ${data.new_template_name}`);
             loadTemplateList();
         } else {
             console.error('Error cloning template:', data.error);
             logToBackend(`Error cloning template: ${data.error}`);
-            showNotification('Error cloning template: ' + data.error, 'error');
+            showNotification(`${confGenT('Error cloning template')}: ${data.error}`, 'error');
         }
     })
     .catch(error => {
         console.error('Error cloning template:', error);
         logToBackend(`Error cloning template: ${error.message}`);
-        showNotification('Error cloning template', 'error');
+        showNotification(confGenT('Error cloning template'), 'error');
     });
 }
 
@@ -1332,16 +1408,16 @@ function deleteTemplate() {
     if (!templateName) {
         console.error('No template selected for deletion');
         logToBackend('No template selected for deletion');
-        showNotification('Please select a template', 'error');
+        showNotification(confGenT('Please select a template'), 'error');
         return;
     }
-    if (confirm(`Are you sure you want to delete ${templateName}?`)) {
+    if (confirm(confGenDE ? `Vorlage „${templateName}“ wirklich löschen?` : `Are you sure you want to delete ${templateName}?`)) {
         fetch(`/fgt-confgen/delete_template/${templateName}?is_global=` + (document.getElementById('template-global')?.checked ? 'true' : 'false'), {
             method: 'DELETE'
         })
         .then(response => response.json())
         .then(data => {
-            showNotification(data.message, 'success');
+            showNotification(confGenT(data.message), 'success');
             logToBackend(`Template deleted: ${data.message}`);
             loadTemplateList();
             const templateNameInput = document.getElementById('template-name');
@@ -1352,7 +1428,7 @@ function deleteTemplate() {
         .catch(error => {
             console.error('Error deleting template:', error);
             logToBackend(`Error deleting template: ${error.message}`);
-            showNotification('Error deleting template', 'error');
+            showNotification(confGenT('Error deleting template'), 'error');
         });
     }
 }
@@ -1364,19 +1440,19 @@ function renameTemplate() {
     if (!oldName) {
         console.error('No template selected for renaming');
         logToBackend('No template selected for renaming');
-        showNotification('Please select a template to rename', 'error');
+        showNotification(confGenT('Please select a template to rename'), 'error');
         return;
     }
     if (!newName) {
         console.error('New template name not provided');
         logToBackend('New template name not provided');
-        showNotification('Please enter a new template name', 'error');
+        showNotification(confGenT('Please enter a new template name'), 'error');
         return;
     }
     if (oldName === newName) {
         console.warn('Old and new template names are the same');
         logToBackend('Old and new template names are the same');
-        showNotification('The new template name is the same as the current name', 'error');
+        showNotification(confGenT('The new template name is the same as the current name'), 'error');
         return;
     }
 
@@ -1392,20 +1468,20 @@ function renameTemplate() {
             if (isGlobalCheckbox) {
                 isGlobalCheckbox.checked = data.is_global || false;
             }
-            showNotification(`Template renamed to ${newName}`, 'success');
+            showNotification(confGenDE ? `Vorlage in ${newName} umbenannt` : `Template renamed to ${newName}`, 'success');
             logToBackend(`Template renamed to ${newName}`);
-            window.preselectedTemplate = newName;
+            preselectedTemplate = newName;
             loadTemplateList();
         } else {
             console.error('Error renaming template:', data.error);
             logToBackend(`Error renaming template: ${data.error}`);
-            showNotification('Error renaming template: ' + data.error, 'error');
+            showNotification(`${confGenT('Error renaming template')}: ${data.error}`, 'error');
         }
     })
     .catch(error => {
         console.error('Error renaming template:', error);
         logToBackend(`Error renaming template: ${error.message}`);
-        showNotification('Error renaming template', 'error');
+        showNotification(confGenT('Error renaming template'), 'error');
     });
 }
 
@@ -1414,7 +1490,7 @@ function copyUrl() {
     if (!templateName) {
         console.error('No template selected for copying URL');
         logToBackend('No template selected for copying URL');
-        showNotification('Please select a template to copy its URL', 'error');
+        showNotification(confGenT('Please select a template to copy its URL'), 'error');
         return;
     }
 
@@ -1439,7 +1515,7 @@ function copyUrl() {
                 .then(() => {
                     console.log(`Successfully copied URL: ${shortUrl}`);
                     logToBackend(`Successfully copied URL: ${shortUrl}`);
-                    showNotification('URL copied to clipboard', 'success');
+                    showNotification(confGenT('URL copied to clipboard'), 'success');
                 })
                 .catch(error => {
                     console.error('Error copying URL:', error.message);
@@ -1447,25 +1523,25 @@ function copyUrl() {
                     if (error.message.includes('secure context')) {
                         console.error('Clipboard API requires a secure context (HTTPS or localhost). Ensure the page is served over HTTPS.');
                         logToBackend('Clipboard API requires a secure context (HTTPS or localhost). Ensure the page is served over HTTPS.');
-                        showNotification('Error copying URL: This feature requires a secure context (HTTPS or localhost)', 'error');
+                        showNotification(confGenDE ? 'Fehler beim Kopieren der URL: Diese Funktion benötigt einen sicheren Kontext (HTTPS oder localhost)' : 'Error copying URL: This feature requires a secure context (HTTPS or localhost)', 'error');
                     } else if (error.message.includes('permission')) {
                         console.error('Clipboard access denied. Check browser permissions for clipboard access.');
                         logToBackend('Clipboard access denied. Check browser permissions for clipboard access.');
-                        showNotification('Error copying URL: Clipboard access denied. Please allow clipboard permissions in your browser', 'error');
+                        showNotification(confGenDE ? 'Fehler beim Kopieren der URL: Zugriff auf die Zwischenablage verweigert. Bitte im Browser erlauben.' : 'Error copying URL: Clipboard access denied. Please allow clipboard permissions in your browser', 'error');
                     } else {
-                        showNotification('Error copying URL: ' + error.message, 'error');
+                        showNotification(`${confGenDE ? 'Fehler beim Kopieren der URL' : 'Error copying URL'}: ${error.message}`, 'error');
                     }
                 });
         } else {
             console.error('Error generating URL:', data.error);
             logToBackend(`Error generating URL: ${data.error}`);
-            showNotification('Error generating URL: ' + data.error, 'error');
+            showNotification(`${confGenT('Error generating URL')}: ${data.error}`, 'error');
         }
     })
     .catch(error => {
         console.error('Error generating URL:', error);
         logToBackend(`Error generating URL: ${error.message}`);
-        showNotification('Error generating URL', 'error');
+        showNotification(confGenT('Error generating URL'), 'error');
     });
 }
 
@@ -1474,7 +1550,7 @@ function importTemplate(event) {
     if (!fileInput?.files.length) {
         console.error('No template file selected');
         logToBackend('No template file selected');
-        showNotification('Please select a JSON file to import', 'error');
+        showNotification(confGenT('Please select a JSON file to import'), 'error');
         return;
     }
 
@@ -1503,32 +1579,32 @@ function importTemplate(event) {
             if (isGlobalCheckbox) {
                 isGlobalCheckbox.checked = data.is_global || false;
             }
-                    showNotification(`Template '${templateData.name}' imported successfully`, 'success');
+                    showNotification(confGenDE ? `Vorlage „${templateData.name}“ erfolgreich importiert` : `Template '${templateData.name}' imported successfully`, 'success');
                     logToBackend(`Template '${templateData.name}' imported successfully`);
                     loadTemplateList();
                     fileInput.value = '';
                 } else {
                     console.error('Error importing template:', data.error);
                     logToBackend(`Error importing template: ${data.error}`);
-                    showNotification('Error importing template: ' + data.error, 'error');
+                    showNotification(`${confGenT('Error importing template')}: ${data.error}`, 'error');
                 }
             })
             .catch(error => {
                 console.error('Error importing template:', error);
                 logToBackend(`Error importing template: ${error.message}`);
-                showNotification('Error importing template', 'error');
+                showNotification(confGenT('Error importing template'), 'error');
             });
         } catch (error) {
             console.error('Error parsing template file:', error);
             logToBackend(`Error parsing template file: ${error.message}`);
-            showNotification('Error parsing template file: ' + error.message, 'error');
+            showNotification(`${confGenDE ? 'Fehler beim Verarbeiten der Vorlagendatei' : 'Error parsing template file'}: ${error.message}`, 'error');
         }
     };
 
     reader.onerror = function() {
         console.error('Error reading template file');
         logToBackend('Error reading template file');
-        showNotification('Error reading template file', 'error');
+        showNotification(confGenDE ? 'Fehler beim Lesen der Vorlagendatei' : 'Error reading template file', 'error');
     };
 
     reader.readAsText(file);
@@ -1539,7 +1615,7 @@ function exportTemplate() {
     if (!templateName) {
         console.error('No template selected for export');
         logToBackend('No template selected for export');
-        showNotification('Please select a template to export', 'error');
+        showNotification(confGenT('Please select a template to export'), 'error');
         return;
     }
 
@@ -1561,13 +1637,13 @@ function exportTemplate() {
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
-        showNotification(`Template '${templateName}' exported successfully`, 'success');
+        showNotification(confGenDE ? `Vorlage „${templateName}“ erfolgreich exportiert` : `Template '${templateName}' exported successfully`, 'success');
         logToBackend(`Template '${templateName}' exported successfully`);
     })
     .catch(error => {
         console.error('Error exporting template:', error);
         logToBackend(`Error exporting template: ${error.message}`);
-        showNotification('Error exporting template: ' + error.message, 'error');
+        showNotification(`${confGenDE ? 'Fehler beim Exportieren der Vorlage' : 'Error exporting template'}: ${error.message}`, 'error');
     });
 }
 
@@ -1576,7 +1652,7 @@ function importConfig() {
     if (!fileInput?.files.length) {
         console.error('No config file selected');
         logToBackend('No config file selected');
-        showNotification('Please select a file', 'error');
+        showNotification(confGenT('Please select a file'), 'error');
         return;
     }
     const formData = new FormData();
@@ -1609,25 +1685,18 @@ function importConfig() {
         if (policies.length > 0) {
             selectPolicy(policies[0].id);
         }
-        showNotification('Configuration imported successfully', 'success');
+        showNotification(confGenT('Configuration imported successfully'), 'success');
         logToBackend('Configuration imported successfully');
     })
     .catch(error => {
         console.error('Error importing config:', error);
         logToBackend(`Error importing config: ${error.message}`);
-        showNotification('Error importing config', 'error');
+        showNotification(confGenT('Error importing config'), 'error');
     });
 }
 
-function generatePolicies() {
-    if (!policies.length) {
-        console.error('No policies to generate');
-        logToBackend('No policies to generate');
-        showNotification('No policies to generate', 'error');
-        return;
-    }
-    const formData = new FormData();
-    formData.append('policies', JSON.stringify(policies.map(p => ({
+function policyRequestPayload() {
+    return { policies: policies.map(p => ({
         policy_id: p.id,
         policy_name: p.name,
         policy_comment: p.comment,
@@ -1660,35 +1729,146 @@ function generatePolicies() {
         ip_pool: p.ip_pool,
         users: p.users,
         groups: p.groups
-    }))));
+    })) };
+}
 
-    fetch('/fgt-confgen/generate_policy', {
-        method: 'POST',
-        body: formData
-    })
-    .then(async response => {
+function setReviewTab(name, focus = false) {
+    const tabs = Array.from(confGenRoot.querySelectorAll('[data-review-tab]'));
+    tabs.forEach(tab => {
+        const selected = tab.dataset.reviewTab === name;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(tab.getAttribute('aria-controls'));
+        if (panel) panel.hidden = !selected;
+        if (selected && focus) tab.focus();
+    });
+}
+
+function renderIssueList(listID, issues) {
+    const list = document.getElementById(listID);
+    if (!list) return;
+    const items = issues.map(issue => {
+        const item = document.createElement('li');
+        item.textContent = `${issue.code}: ${issue.message}`;
+        return item;
+    });
+    list.replaceChildren(...items);
+}
+
+function renderValidationReview(validation) {
+    const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+    const warnings = Array.isArray(validation?.warnings) ? validation.warnings : [];
+    document.getElementById('validation-count').textContent = String(errors.length);
+    document.getElementById('warning-count').textContent = String(warnings.length);
+    document.getElementById('validation-summary').textContent = errors.length
+        ? (confGenDE
+            ? `${errors.length} blockierende${errors.length === 1 ? 's Problem' : ' Probleme'} gefunden.`
+            : `${errors.length} blocking ${errors.length === 1 ? 'issue' : 'issues'} found.`)
+        : (confGenDE ? 'Servervalidierung erfolgreich.' : 'Server validation passed.');
+    document.getElementById('warning-summary').textContent = warnings.length
+        ? (confGenDE
+            ? `${warnings.length} nicht blockierende Warnung${warnings.length === 1 ? '' : 'en'} gefunden.`
+            : `${warnings.length} non-blocking ${warnings.length === 1 ? 'warning' : 'warnings'} found.`)
+        : (confGenDE ? 'Keine Warnungen gemeldet.' : 'No warnings reported.');
+    renderIssueList('validation-list', errors);
+    renderIssueList('warning-list', warnings);
+    return { errors, warnings };
+}
+
+function resetReviewResults() {
+    renderValidationReview({ errors: [], warnings: [] });
+    const validationSummary = document.getElementById('validation-summary');
+    if (validationSummary) validationSummary.textContent = confGenT('Run validation to review this policy set.');
+    const outputSection = document.querySelector('.output-section');
+    if (outputSection) outputSection.hidden = true;
+    const outputPlaceholder = document.getElementById('output-placeholder');
+    if (outputPlaceholder) outputPlaceholder.hidden = false;
+    ['output1', 'output2', 'output3'].forEach(id => {
+        const output = document.getElementById(id);
+        if (output) output.textContent = '';
+    });
+    setReviewTab('validation');
+}
+
+async function requestPolicyReview(path) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 3500);
+    try {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(policyRequestPayload()),
+            signal: controller.signal
+        });
+        const data = await response.json().catch(() => ({ code: 'invalid_response', message: 'The server returned an unreadable response.' }));
         if (!response.ok) {
-            // Validation failures come back as plain text — surface the
-            // server's message instead of a JSON parse error.
-            const text = await response.text();
-            throw new Error(text.trim() || `HTTP ${response.status}`);
+            const error = new Error(data.message || `Request failed with HTTP ${response.status}.`);
+            error.apiResponse = data;
+            throw error;
         }
-        return response.json();
-    })
-    .then(data => {
+        return data;
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            const timeoutError = new Error('Policy processing timed out. Try a smaller policy set.');
+            timeoutError.apiResponse = { code: 'request_timeout', message: timeoutError.message };
+            throw timeoutError;
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timeout);
+    }
+}
+
+function showReviewFailure(error) {
+    const response = error.apiResponse || { code: 'request_failed', message: 'Policy review failed.' };
+    const validation = response.validation || {
+        valid: false,
+        errors: [{ code: response.code || 'request_failed', message: response.message || 'Policy review failed.' }],
+        warnings: []
+    };
+    renderValidationReview(validation);
+    setReviewTab('validation');
+    logToBackend(`Policy review failed (${response.code || 'request_failed'})`);
+    showNotification(response.message ? confGenT(response.message) : confGenT('Policy review failed.'), 'error');
+}
+
+async function validatePoliciesOnServer() {
+    showNotification(confGenT('Validating policies…'), 'info');
+    try {
+        const validation = await requestPolicyReview('/fgt-confgen/validate_policy');
+        const result = renderValidationReview(validation);
+        setReviewTab(result.errors.length ? 'validation' : (result.warnings.length ? 'warnings' : 'validation'));
+        showNotification(confGenT(validation.valid ? 'Server validation passed' : 'Server validation found blocking issues'), validation.valid ? 'success' : 'error');
+        logToBackend(`Policy validation completed (errors=${result.errors.length}, warnings=${result.warnings.length})`);
+    } catch (error) {
+        showReviewFailure(error);
+    }
+}
+
+async function generatePolicies() {
+    if (!policies.length) {
+        showNotification(confGenT('No policies to generate'), 'error');
+        return;
+    }
+
+    showNotification(confGenT('Generating policies…'), 'info');
+    try {
+        const data = await requestPolicyReview('/fgt-confgen/generate_policy');
+        renderValidationReview(data.validation || { valid: true, errors: [], warnings: [] });
         document.getElementById('output1').textContent = data.outputs.map(o => o.output1).join('\n\n');
         document.getElementById('output2').textContent = data.outputs.map(o => o.output2).join('\n\n');
         document.getElementById('output3').textContent = data.outputs.map(o => o.output3).join('\n\n');
-        showNotification('Policies generated successfully', 'success');
         const outSec = document.querySelector('.output-section');
-        if (outSec) outSec.style.display = 'block';
+        if (outSec) outSec.hidden = false;
+        const outputPlaceholder = document.getElementById('output-placeholder');
+        if (outputPlaceholder) outputPlaceholder.hidden = true;
+        setReviewTab('cli');
+        showNotification(confGenT('Policies generated successfully'), 'success');
         logToBackend('Policies generated successfully');
-    })
-    .catch(error => {
-        console.error('Error generating policies:', error);
-        logToBackend(`Error generating policies: ${error.message}`);
-        showNotification(`Error generating policies: ${error.message}`, 'error');
-    });
+        markWorkspaceClean();
+    } catch (error) {
+        showReviewFailure(error);
+    }
 }
 
 function copyOutput(outputId) {
@@ -1702,14 +1882,14 @@ function copyOutput(outputId) {
     if (!text) {
         console.error(`No content to copy for element ${outputId}`);
         logToBackend(`No content to copy for element ${outputId}`);
-        showNotification('No content to copy', 'error');
+        showNotification(confGenT('No content to copy'), 'error');
         return;
     }
     navigator.clipboard.writeText(text)
         .then(() => {
             console.log(`Successfully copied content for ${outputId}`);
             logToBackend(`Successfully copied content for ${outputId}`);
-            showNotification('Output copied to clipboard', 'success');
+            showNotification(confGenT('Output copied to clipboard'), 'success');
         })
         .catch(error => {
             console.error('Error copying output:', error.message);
@@ -1717,54 +1897,127 @@ function copyOutput(outputId) {
             if (error.message.includes('secure context')) {
                 console.error('Clipboard API requires a secure context (HTTPS or localhost). Ensure the page is served over HTTPS.');
                 logToBackend('Clipboard API requires a secure context (HTTPS or localhost). Ensure the page is served over HTTPS.');
-                showNotification('Error copying output: This feature requires a secure context (HTTPS or localhost)', 'error');
+                showNotification(confGenDE ? 'Fehler beim Kopieren der Ausgabe: Diese Funktion benötigt einen sicheren Kontext (HTTPS oder localhost)' : 'Error copying output: This feature requires a secure context (HTTPS or localhost)', 'error');
             } else if (error.message.includes('permission')) {
                 console.error('Clipboard access denied. Check browser permissions for clipboard access.');
                 logToBackend('Clipboard access denied. Check browser permissions for clipboard access.');
-                showNotification('Error copying output: Clipboard access denied. Please allow clipboard permissions in your browser', 'error');
+                showNotification(confGenDE ? 'Fehler beim Kopieren der Ausgabe: Zugriff auf die Zwischenablage verweigert. Bitte im Browser erlauben.' : 'Error copying output: Clipboard access denied. Please allow clipboard permissions in your browser', 'error');
             } else {
-                showNotification('Error copying output: ' + error.message, 'error');
+                showNotification(`${confGenDE ? 'Fehler beim Kopieren der Ausgabe' : 'Error copying output'}: ${error.message}`, 'error');
             }
         });
 }
 
 
 
-function toggleTheme() {
-    const html = document.documentElement;
-    const currentTheme = html.getAttribute('data-theme') || 'light';
-    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    
-    html.setAttribute('data-theme', newTheme);
-    localStorage.setItem('theme', newTheme);
-    
-    const toggleButton = document.getElementById('theme-toggle');
-    if (toggleButton) {
-        toggleButton.textContent = newTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-        toggleButton.setAttribute('aria-label', `Toggle ${newTheme === 'dark' ? 'light' : 'dark'} mode`);
+function itemIndex(control) {
+    return Number.parseInt(control.dataset.itemIndex, 10);
+}
+
+function downloadOutput(outputId) {
+    const outputElement = document.getElementById(outputId);
+    const text = outputElement?.textContent || '';
+    if (!text) {
+        showNotification(confGenT('No content to download'), 'error');
+        return;
     }
-    
-    logToBackend(`Theme toggled to: ${newTheme}`);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `fortisafe-confgen-${outputId}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    logToBackend(`Downloaded generated output ${outputId}`);
+    showNotification(confGenT('Output download started'), 'success');
+}
+
+function bindPageActions() {
+    const clickActions = {
+        'load-template': () => loadTemplate(),
+        'clone-template': () => cloneTemplate(),
+        'copy-url': () => copyUrl(),
+        'save-template': () => saveTemplate(),
+        'delete-template': () => deleteTemplate(),
+        'rename-template': () => renameTemplate(),
+        'export-template': () => exportTemplate(),
+        'choose-template-file': () => document.getElementById('import-template')?.click(),
+        'add-policy': () => addPolicy(),
+        'load-firewall-config': () => loadFirewallConfig(),
+        'add-src-interface': button => addSrcInterface(button),
+        'add-src-address': button => addSrcAddress(button),
+        'add-src-user-group': button => addSrcUserOrGroup(button),
+        'add-dst-interface': button => addDstInterface(button),
+        'add-dst-address': button => addDstAddress(button),
+        'add-service': button => addService(button),
+        'save-policy': button => savePolicy(button),
+        'clear-form': button => clearForm(button),
+        'clone-policy': button => clonePolicy(button),
+        'validate-policies': () => validatePoliciesOnServer(),
+        'generate-policies': () => generatePolicies(),
+        'copy-output': button => copyOutput(button.dataset.outputId),
+        'download-output': button => downloadOutput(button.dataset.outputId),
+        'delete-interface': button => deleteInterface(button.dataset.itemType, itemIndex(button)),
+        'delete-address': button => deleteAddressOrInternetService(button.dataset.itemType, itemIndex(button)),
+        'delete-service': button => deleteService(itemIndex(button)),
+        'delete-user-group': button => deleteUserOrGroup(itemIndex(button)),
+    };
+    const changeActions = {
+        'import-template': (control, event) => importTemplate(event),
+        'toggle-profile-fields': control => toggleProfileFields(control),
+        'toggle-ip-pool-field': control => toggleIpPoolField(control),
+        'update-interface': control => updateInterface(control.dataset.itemType, itemIndex(control), control.value),
+        'update-address': control => updateAddressOrInternetService(control.dataset.itemType, itemIndex(control), control.value),
+        'update-service': control => updateService(itemIndex(control), control.value),
+        'update-custom-service': control => updateCustomService(itemIndex(control), control.dataset.itemField, control.value),
+        'update-user-group': control => updateUserOrGroup(itemIndex(control), control.value),
+    };
+
+    confGenRoot.addEventListener('click', event => {
+        const reviewTab = event.target.closest('[data-review-tab]');
+        if (reviewTab && confGenRoot.contains(reviewTab)) {
+            setReviewTab(reviewTab.dataset.reviewTab);
+        }
+        const button = event.target.closest('[data-action]');
+        if (!button || !confGenRoot.contains(button)) return;
+        const action = clickActions[button.dataset.action];
+        if (action) {
+            action(button, event);
+            if (['add-src-interface', 'add-src-address', 'add-src-user-group', 'add-dst-interface', 'add-dst-address', 'add-service'].includes(button.dataset.action)) {
+                markWorkspaceDirty();
+            }
+        }
+        if (event.target.closest('.remove-btn, .delete-btn')) markWorkspaceDirty();
+    });
+    confGenRoot.addEventListener('change', event => {
+        const control = event.target.closest('[data-change-action]');
+        if (!control || !confGenRoot.contains(control)) return;
+        const action = changeActions[control.dataset.changeAction];
+        if (action) action(control, event);
+        if (event.target.closest('#policy-form')) markWorkspaceDirty();
+    });
+    confGenRoot.addEventListener('input', event => {
+        if (event.target.closest('#policy-form')) markWorkspaceDirty();
+    });
+    confGenRoot.addEventListener('keydown', event => {
+        const current = event.target.closest('[data-review-tab]');
+        if (!current || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = Array.from(confGenRoot.querySelectorAll('[data-review-tab]'));
+        const currentIndex = tabs.indexOf(current);
+        let nextIndex = currentIndex;
+        if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        event.preventDefault();
+        setReviewTab(tabs[nextIndex].dataset.reviewTab, true);
+    });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Determine initial theme
-    let initialTheme = localStorage.getItem('theme');
-    if (!initialTheme) {
-        initialTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        localStorage.setItem('theme', initialTheme);
-    }
-    
-    // Apply initial theme
-    const html = document.documentElement;
-    html.setAttribute('data-theme', initialTheme);
-    
-    const toggleButton = document.getElementById('theme-toggle');
-    if (toggleButton) {
-        toggleButton.textContent = initialTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
-        toggleButton.setAttribute('aria-label', `Toggle ${initialTheme === 'dark' ? 'light' : 'dark'} mode`);
-        toggleButton.addEventListener('click', toggleTheme);
-    }
+	bindPageActions();
 
     const form = document.getElementById('policy-form');
     if (form) {
@@ -1802,22 +2055,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // Firewall dropdown becomes a searchable combobox.
     const fwSelect = document.getElementById('firewall-select');
     if (fwSelect && typeof initSearchableSelect === 'function') {
-        initSearchableSelect(fwSelect, { placeholder: 'Select Firewall' });
+        initSearchableSelect(fwSelect, { placeholder: confGenT('Select Firewall') });
     }
 
-    console.log('DOM loaded, checking preselected template immediately:', window.preselectedTemplate);
-    logToBackend(`DOM loaded, initial preselected template: ${window.preselectedTemplate || 'none'}`);
+    console.log('DOM loaded, checking preselected template immediately:', preselectedTemplate);
+    logToBackend(`DOM loaded, initial preselected template: ${preselectedTemplate || 'none'}`);
 
     // Function to initialize templates
     let _templatesInitialized = false;
     const initializeTemplates = () => {
         if (_templatesInitialized) return;
         _templatesInitialized = true;
-        console.log('Initializing template list, final preselected template:', window.preselectedTemplate);
-        logToBackend(`Initializing template list, final preselected template: ${window.preselectedTemplate || 'none'}`);
+        console.log('Initializing template list, final preselected template:', preselectedTemplate);
+        logToBackend(`Initializing template list, final preselected template: ${preselectedTemplate || 'none'}`);
         loadTemplateList().then(() => {
             updateDropdowns();
-            if (!window.preselectedTemplate) {
+            if (!preselectedTemplate) {
                 console.log('No preselected template, adding new policy');
                 logToBackend('No preselected template, adding new policy');
                 addPolicy();
@@ -1827,43 +2080,23 @@ document.addEventListener('DOMContentLoaded', () => {
             logToBackend(`Failed to initialize templates: ${error.message}`);
             addPolicy();
             updateDropdowns();
+        }).finally(() => {
+            dirtyTrackingReady = true;
+            markWorkspaceClean();
         });
     };
 
-    // If preselectedTemplate is already set, initialize immediately
-    if (typeof window.preselectedTemplate !== 'undefined') {
-        initializeTemplates();
-    } else {
-        // Otherwise, wait for the window 'load' event to ensure inline scripts have run
-        window.addEventListener('load', () => {
-            console.log('Window load event, preselected template:', window.preselectedTemplate);
-            logToBackend(`Window load event, preselected template: ${window.preselectedTemplate || 'none'}`);
-            initializeTemplates();
-        });
-        // Fallback: if load event takes too long, check after a short delay
-        setTimeout(() => {
-            if (typeof window.preselectedTemplate !== 'undefined') {
-                console.log('Fallback check, preselected template set:', window.preselectedTemplate);
-                logToBackend(`Fallback check, preselected template set: ${window.preselectedTemplate}`);
-                initializeTemplates();
-            } else {
-                console.warn('Fallback check, preselected template still not set, proceeding without it');
-                logToBackend('Fallback check, preselected template still not set, proceeding without it');
-                window.preselectedTemplate = null;
-                initializeTemplates();
-            }
-        }, 1000);
-    }
+    initializeTemplates();
 });
 
 function loadFirewallConfig() {
     const select = document.getElementById('firewall-select');
     const fwId = select?.value;
     if (!fwId) {
-        showNotification('Please select a firewall', 'error');
+        showNotification(confGenT('Please select a firewall'), 'error');
         return;
     }
-    showNotification('Loading firewall config...', 'info');
+    showNotification(confGenT('Loading firewall config...'), 'info');
     fetch('/fgt-confgen/load_firewall_config?fw_id=' + fwId)
     .then(response => {
         if (!response.ok) {
@@ -1896,10 +2129,14 @@ function loadFirewallConfig() {
             document.getElementById('policy-form').style.display = 'none';
             document.getElementById('policy-form-placeholder').style.display = 'block';
         }
-        showNotification('Configuration loaded successfully', 'success');
+        showNotification(confGenT('Configuration loaded successfully'), 'success');
+        resetReviewResults();
+        markWorkspaceClean();
     })
     .catch(error => {
         console.error('Error loading config:', error);
-        showNotification('Error loading config: ' + error.message, 'error');
+        showNotification(`${confGenDE ? 'Fehler beim Laden der Konfiguration' : 'Error loading config'}: ${error.message}`, 'error');
     });
 }
+
+})();

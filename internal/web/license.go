@@ -19,9 +19,9 @@ package web
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -92,38 +92,14 @@ type licenseDevice struct {
 
 // ---- SSH collection ---------------------------------------------------------
 
-// hostKeyTOFU returns a trust-on-first-use host-key callback: the first key a
-// firewall presents is pinned in the insights DB, and every later connection
-// must present the same key. A mismatch (device replaced, or a
-// man-in-the-middle) fails the fetch with a clear error; the stale pin can be
-// cleared from ssh_known_hosts to re-trust after a legitimate hardware swap.
-// HA failover keeps the pin valid because FortiGate clusters share host keys.
-func (s *Server) hostKeyTOFU(db *sql.DB, fwID int) ssh.HostKeyCallback {
-	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
-		presented := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
-		var stored string
-		err := db.QueryRow(`SELECT host_key FROM ssh_known_hosts WHERE fw_id = ?`, fwID).Scan(&stored)
-		if err == sql.ErrNoRows {
-			s.logger.Info("pinning SSH host key on first use", "fwID", fwID, "host", hostname, "type", key.Type())
-			_, ierr := db.Exec(`INSERT INTO ssh_known_hosts (fw_id, host_key, first_seen) VALUES (?, ?, ?)`,
-				fwID, presented, time.Now().UTC().Format(time.RFC3339))
-			return ierr
-		}
-		if err != nil {
-			return err
-		}
-		if subtle.ConstantTimeCompare([]byte(stored), []byte(presented)) != 1 {
-			return fmt.Errorf("SSH host key for %s changed since first use (pinned %s); if the device was legitimately replaced, clear its ssh_known_hosts row to re-trust", hostname, strings.Fields(stored)[0])
-		}
-		return nil
-	}
-}
-
 // sshRunCommands opens one SSH connection to the firewall (same credentials
 // the backup engine uses) and runs each command in its own session. A single
 // deadline covers the whole exchange: on expiry the client is closed, which
 // unblocks any in-flight session read.
 func sshRunCommands(fw models.Firewall, hostKey ssh.HostKeyCallback, cmds []string) (map[string]string, error) {
+	if hostKey == nil {
+		return nil, errors.New("SSH host key verification is not configured")
+	}
 	cfg := &ssh.ClientConfig{
 		User:            fw.Username,
 		Auth:            []ssh.AuthMethod{ssh.Password(fw.Password)},
@@ -313,7 +289,9 @@ func parseSwitchInfoStatus(out string) []licenseDevice {
 		case "Serial-Number":
 			cur.Serial = val
 		case "Hostname":
-			cur.Name = val
+			if cur.Name == "" {
+				cur.Name = val
+			}
 		}
 	}
 	return devs
@@ -512,15 +490,15 @@ func parseWTPConfig(out string) []licenseDevice {
 
 // storeLicenseResult upserts one device's collection outcome. On success the
 // entitlement and child-device rows are replaced atomically; on failure only
-// the error and attempt time are recorded, so the last good data stays
-// visible.
+// the error is recorded, so the last good data and its successful fetch time
+// stay visible.
 func storeLicenseResult(db *sql.DB, fwID int, st *licenseStatus, ents []licenseEntitlement, devs []licenseDevice, fetchErr string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if fetchErr != "" {
 		_, err := db.Exec(`INSERT INTO license_status (fw_id, fetched_at, fetch_error)
-			VALUES (?, ?, ?)
-			ON CONFLICT(fw_id) DO UPDATE SET fetched_at=excluded.fetched_at, fetch_error=excluded.fetch_error`,
-			fwID, now, fetchErr)
+			VALUES (?, '', ?)
+			ON CONFLICT(fw_id) DO UPDATE SET fetch_error=excluded.fetch_error`,
+			fwID, fetchErr)
 		return err
 	}
 	tx, err := db.Begin()
@@ -578,7 +556,7 @@ func (s *Server) fetchLicense(fw models.Firewall) {
 		s.logger.Error("license fetch: insights DB unavailable", "err", err)
 		return
 	}
-	out, err := sshRunCommands(fw, s.hostKeyTOFU(db, fw.ID), []string{
+	out, err := sshRunCommands(fw, s.hostKeyCallbackForSSH(), []string{
 		"get system status",
 		"diagnose autoupdate versions",
 		"diagnose switch-controller switch-info status",
@@ -654,7 +632,7 @@ type licenseRow struct {
 	Build        string
 	Registration string
 	HAMode       string
-	FetchedAt    string
+	FetchedAt    time.Time
 	FetchError   string
 	Expiry       string // driving entitlement expiry (ISO), "" unknown
 	DaysLeft     int
@@ -757,14 +735,18 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 	rows := make([]licenseRow, 0, len(fws))
 	for _, fw := range fws {
 		row := licenseRow{FwID: fw.ID, FQDN: fw.FQDN, Level: "unknown"}
+		var fetchedAt string
 		err := db.QueryRow(`SELECT COALESCE(serial,''), COALESCE(hostname,''), COALESCE(model,''),
 			COALESCE(version,''), COALESCE(build,''), COALESCE(registration,''), COALESCE(ha_mode,''),
 			COALESCE(fetched_at,''), COALESCE(fetch_error,'')
 			FROM license_status WHERE fw_id = ?`, fw.ID).Scan(
 			&row.Serial, &row.Hostname, &row.Model, &row.Version, &row.Build,
-			&row.Registration, &row.HAMode, &row.FetchedAt, &row.FetchError)
+			&row.Registration, &row.HAMode, &fetchedAt, &row.FetchError)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, err
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339, fetchedAt); parseErr == nil {
+			row.FetchedAt = parsed
 		}
 		ents, err := db.Query(`SELECT COALESCE(service,''), COALESCE(version,''), COALESCE(expiry,''),
 			COALESCE(last_update,''), COALESCE(result,'')
@@ -820,12 +802,23 @@ func (s *Server) loadLicenseRows(ctx context.Context) ([]licenseRow, error) {
 }
 
 type licensesData struct {
-	Base     BaseData
-	Rows     []licenseRow
-	Expiring int // devices at warn/crit
-	Expired  int
-	Unknown  int // never fetched or fetch failed
-	Error    string
+	Base          BaseData
+	Rows          []licenseRow
+	Expiring      int // devices at warn/crit
+	Expired       int
+	Unknown       int // never fetched or fetch failed
+	LastFetchedAt time.Time
+	Error         string
+}
+
+func latestLicenseFetch(rows []licenseRow) time.Time {
+	var latest time.Time
+	for _, row := range rows {
+		if row.FetchedAt.After(latest) {
+			latest = row.FetchedAt
+		}
+	}
+	return latest
 }
 
 func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
@@ -836,6 +829,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		data.Error = "Failed to load license data. Check logs for details."
 	}
 	data.Rows = rows
+	data.LastFetchedAt = latestLicenseFetch(rows)
 	for _, row := range rows {
 		switch row.Level {
 		case "warn", "crit":

@@ -4,6 +4,7 @@ package mailer
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -47,6 +48,64 @@ func sanitizeHeader(v string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(v)
 }
 
+func smtpAuthentication(advertised, username, password, host string) (smtp.Auth, error) {
+	mechanisms := strings.Fields(advertised)
+	if supportsSMTPAuth(mechanisms, "PLAIN") {
+		return smtp.PlainAuth("", username, password, host), nil
+	}
+	if supportsSMTPAuth(mechanisms, "LOGIN") {
+		return &loginAuth{username: username, password: password, host: host}, nil
+	}
+	return nil, errors.New("smtp: server does not advertise a supported AUTH mechanism (PLAIN or LOGIN)")
+}
+
+func supportsSMTPAuth(mechanisms []string, wanted string) bool {
+	for _, mechanism := range mechanisms {
+		if strings.EqualFold(mechanism, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+type loginAuth struct {
+	username string
+	password string
+	host     string
+	step     int
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	if !server.TLS {
+		return "", nil, errors.New("smtp: LOGIN authentication requires TLS")
+	}
+	if !strings.EqualFold(server.Name, a.host) {
+		return "", nil, errors.New("smtp: wrong host name for LOGIN authentication")
+	}
+	if !supportsSMTPAuth(server.Auth, "LOGIN") {
+		return "", nil, errors.New("smtp: server does not support LOGIN authentication")
+	}
+	a.step = 0
+	return "LOGIN", nil, nil
+}
+
+func (a *loginAuth) Next(_ []byte, more bool) ([]byte, error) {
+	if !more {
+		return nil, nil
+	}
+	switch a.step {
+	case 0:
+		a.step++
+		return []byte(a.username), nil
+	case 1:
+		a.step++
+		return []byte(a.password), nil
+	default:
+		return nil, errors.New("smtp: unexpected LOGIN authentication challenge")
+	}
+}
+
+// send performs one STARTTLS-protected, authenticated SMTP transaction.
 func (m *Mailer) send(subject, body, to string) error {
 	c := m.cfg
 	addr := net.JoinHostPort(c.MailServer, strconv.Itoa(c.MailPort))
@@ -67,15 +126,18 @@ func (m *Mailer) send(subject, body, to string) error {
 	// Fail closed: never fall back to plaintext transport or unauthenticated
 	// delivery, which would expose the message and the SMTP credentials.
 	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: c.MailServer}); err != nil {
+		if err := client.StartTLS(smtpTLSConfig(c.MailServer)); err != nil {
 			return fmt.Errorf("starttls: %w", err)
 		}
 	} else {
 		return fmt.Errorf("smtp: server does not advertise STARTTLS; refusing to send over plaintext")
 	}
 
-	if ok, _ := client.Extension("AUTH"); ok {
-		auth := smtp.PlainAuth("", c.MailUser, c.MailPassword, c.MailServer)
+	if ok, mechanisms := client.Extension("AUTH"); ok {
+		auth, err := smtpAuthentication(mechanisms, c.MailUser, c.MailPassword, c.MailServer)
+		if err != nil {
+			return err
+		}
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("auth: %w", err)
 		}
@@ -105,4 +167,9 @@ func (m *Mailer) send(subject, body, to string) error {
 		return fmt.Errorf("close data: %w", err)
 	}
 	return client.Quit()
+}
+
+// smtpTLSConfig returns the strict transport policy used for SMTP STARTTLS.
+func smtpTLSConfig(serverName string) *tls.Config {
+	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
 }

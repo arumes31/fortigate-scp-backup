@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // ErrNotFound is returned by loadBackup when the firewall or backup does not
@@ -26,19 +26,21 @@ type FirewallRef struct {
 	FQDN string `json:"fqdn"`
 }
 
+type indexData struct {
+	Base      webui.BaseData
+	Firewalls []FirewallRef
+}
+
 func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	firewalls, err := e.fetchFirewalls(r.Context())
 	if err != nil {
 		e.logger.Error("confconv: failed to fetch firewalls", "err", err)
 	}
-	data := struct {
-		Base      baseData
-		Firewalls []FirewallRef
-	}{
-		Base:      e.baseData(r, "Configuration Conversions", "confconv"),
+	data := indexData{
+		Base:      e.pageBase(r, "Configuration Conversions", "confconv"),
 		Firewalls: firewalls,
 	}
-	if err := e.tmpl.ExecuteTemplate(w, "fgt_confconv_index.html", data); err != nil {
+	if err := e.page.RenderHTTP(w, data); err != nil {
 		e.logger.Error("confconv: template render failed", "err", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
@@ -99,17 +101,16 @@ func (e *Extension) loadBackup(ctx context.Context, fwID int) (content string, t
 		}
 		return "", ts, err
 	}
-	diskPath := filepath.Join(e.cfg.BackupDir, filepath.FromSlash(filename))
+	diskPath, err := appsecurity.JoinWithin(e.cfg.BackupDir, filename)
+	if err != nil {
+		return "", ts, fmt.Errorf("invalid backup path: %w", err)
+	}
 	encData, err := os.ReadFile(diskPath)
 	if err != nil {
 		e.logger.Error("confconv: failed to read backup file", "path", diskPath, "err", err)
 		return "", ts, errors.New("failed to read backup file from disk")
 	}
-	cipher, err := crypto.New(e.cfg.EncryptionKey)
-	if err != nil {
-		return "", ts, errors.New("failed to init cipher")
-	}
-	plain, err := cipher.Decrypt(encData)
+	plain, err := e.cipher.Decrypt(encData)
 	if err != nil {
 		e.logger.Error("confconv: failed to decrypt backup", "path", diskPath, "err", err)
 		return "", ts, errors.New("failed to decrypt backup")

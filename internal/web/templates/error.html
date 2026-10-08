@@ -1,9 +1,17 @@
 {{define "content"}}
-<div class="card" style="text-align:center; max-width:520px; margin:60px auto;">
-    <h1 class="page-title" style="justify-content:center;"><span class="accent-bar"></span>{{.Code}}</h1>
-    <p class="muted">{{.Message}}</p>
-    <div class="toolbar" style="justify-content:center;">
-        <a href="/" class="btn btn-primary">Back to Firewalls</a>
+<section class="card error-page" role="alert" aria-labelledby="errorPageTitle">
+    <p class="eyebrow">{{T .Base.Lang "error.code"}} {{.Code}}</p>
+    <h1 id="errorPageTitle">{{.Title}}</h1>
+    <p class="error-page__message">{{.Message}}</p>
+    <div class="error-page__reference">
+        <span>{{T .Base.Lang "error.request_id"}}</span>
+        <code>{{if .RequestID}}{{.RequestID}}{{else}}{{T .Base.Lang "error.request_id_unavailable"}}{{end}}</code>
     </div>
-</div>
+    <p class="hint">{{T .Base.Lang "error.support_hint"}}</p>
+    <div class="toolbar error-page__actions">
+        {{if .RetryURL}}<a href="{{.RetryURL}}" class="btn btn-primary" data-error-retry>{{T .Base.Lang "error.retry"}}</a>{{end}}
+        <a href="{{.BackURL}}" class="btn">{{T .Base.Lang "error.back"}}</a>
+        <a href="/dashboard" class="btn">{{T .Base.Lang "error.dashboard"}}</a>
+    </div>
+</section>
 {{end}}

@@ -77,14 +77,12 @@ func (r zoneRecipe) Run(cfg *FGConfig, rawOpts json.RawMessage) ([]CLIBlock, []W
 		},
 	})
 
-	// A zone is just a grouping on top of interfaces that keep their own
-	// name/IP/role unchanged -- unlike a FortiLink member port, nothing about
-	// an interface's own identity changes by joining one. VIPs/IPsec/DHCP/HA/
-	// etc. referencing it by name stay exactly as valid as before, so
-	// ScanReferences is deliberately not run here: there is nothing for the
-	// operator to review.
+	// References to an interface remain valid after it joins a zone, except
+	// that a VIP's physical extintf may no longer match an inbound policy moved
+	// to the zone.
 	touched := map[int]bool{}
 	for _, name := range opts.Interfaces {
+		warnings = append(warnings, vipPolicyInterfaceWarnings(cfg, r.Key(), name, opts.ZoneName)...)
 		for _, id := range replaceInterfaceInPolicies(cfg, name, opts.ZoneName) {
 			touched[id] = true
 		}

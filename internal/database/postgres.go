@@ -132,7 +132,7 @@ func (s *Store) Now() time.Time { return time.Now().In(s.tz) }
 // InitSchema creates every table if missing and applies the same idempotent
 // migrations the Python init_db performed. Safe to run on an empty database or
 // one created by the previous Python version.
-func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret string) error {
+func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret, bootstrapAdminPassword string) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS firewalls (
 			id SERIAL PRIMARY KEY,
@@ -158,7 +158,8 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 			password TEXT,
 			first_login INTEGER DEFAULT 1,
 			totp_secret TEXT,
-			is_radius_user BOOLEAN DEFAULT FALSE
+			is_radius_user BOOLEAN DEFAULT FALSE,
+			role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator'))
 		)`,
 		`CREATE TABLE IF NOT EXISTS activity_logs (
 			id SERIAL PRIMARY KEY,
@@ -174,14 +175,24 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 		}
 	}
 
-	adminHash, err := security.HashPassword("changeme")
-	if err != nil {
-		return fmt.Errorf("hash admin password: %w", err)
+	var adminExists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE username = 'admin')`).Scan(&adminExists); err != nil {
+		return fmt.Errorf("check bootstrap admin: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO users (username, password, first_login, is_radius_user)
-		 VALUES ('admin', $1, 1, FALSE) ON CONFLICT DO NOTHING`, adminHash); err != nil {
-		return fmt.Errorf("seed admin: %w", err)
+	if !adminExists {
+		if len(bootstrapAdminPassword) < 16 || strings.EqualFold(bootstrapAdminPassword, "changeme") {
+			return errors.New("BOOTSTRAP_ADMIN_PASSWORD(_FILE) must contain at least 16 bytes for a new database")
+		}
+		adminHash, err := security.HashPassword(bootstrapAdminPassword)
+		if err != nil {
+			return fmt.Errorf("hash admin password: %w", err)
+		}
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO users (username, password, first_login, is_radius_user)
+			 VALUES ('admin', $1, 1, FALSE)`, adminHash); err != nil {
+			return fmt.Errorf("seed admin: %w", err)
+		}
 	}
 
 	if totpEnabled {
@@ -203,7 +214,7 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 
 	// ssh_port column back-compat (older databases may lack it).
 	var col string
-	err = s.pool.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		`SELECT column_name FROM information_schema.columns
 		 WHERE table_name = 'firewalls' AND column_name = 'ssh_port'`).Scan(&col)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -229,6 +240,65 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret str
 	return nil
 }
 
+// MigrateFirewallEncryption encrypts every legacy plaintext firewall password
+// and verifies existing envelopes in one transaction. A wrong key or malformed
+// ciphertext aborts startup without partially migrating the table.
+func (s *Store) MigrateFirewallEncryption(ctx context.Context) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin credential encryption migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	type credential struct {
+		id       int
+		password string
+	}
+	rows, err := tx.Query(ctx, `SELECT id, password FROM firewalls ORDER BY id FOR UPDATE`)
+	if err != nil {
+		return 0, fmt.Errorf("list credentials for encryption migration: %w", err)
+	}
+	var credentials []credential
+	for rows.Next() {
+		var item credential
+		if err := rows.Scan(&item.id, &item.password); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan credential for encryption migration: %w", err)
+		}
+		credentials = append(credentials, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate credentials for encryption migration: %w", err)
+	}
+	rows.Close()
+
+	migrated := 0
+	for _, item := range credentials {
+		if crypto.IsEncryptedString(item.password) {
+			if _, err := s.cipher.DecryptString(item.password); err != nil {
+				return 0, fmt.Errorf("verify encrypted credential for firewall %d: %w", item.id, err)
+			}
+			continue
+		}
+		encrypted, err := s.cipher.EncryptString(item.password)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt credential for firewall %d: %w", item.id, err)
+		}
+		if !crypto.IsEncryptedString(encrypted) {
+			return 0, errors.New("credential encryption migration requires an enabled cipher")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE firewalls SET password = $1 WHERE id = $2`, encrypted, item.id); err != nil {
+			return 0, fmt.Errorf("store encrypted credential for firewall %d: %w", item.id, err)
+		}
+		migrated++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit credential encryption migration: %w", err)
+	}
+	return migrated, nil
+}
+
 // LogActivity records a user action. Fire-and-forget: failures are logged, not
 // returned, matching the original best-effort behavior.
 func (s *Store) LogActivity(username, action, details string) {
@@ -248,8 +318,8 @@ func (s *Store) GetUserForLogin(ctx context.Context, username string) (*models.U
 		totpSecret *string
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT password, first_login, totp_secret, is_radius_user FROM users WHERE username = $1`, username).
-		Scan(&u.Password, &u.FirstLogin, &totpSecret, &u.IsRadiusUser)
+		`SELECT id, password, first_login, totp_secret, is_radius_user, role FROM users WHERE username = $1`, username).
+		Scan(&u.ID, &u.Password, &u.FirstLogin, &totpSecret, &u.IsRadiusUser, &u.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -270,7 +340,7 @@ func (s *Store) UpsertRadiusUser(ctx context.Context, username string) error {
 	err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = s.pool.Exec(ctx,
-			`INSERT INTO users (username, password, first_login, is_radius_user) VALUES ($1, '', 0, TRUE)`,
+			`INSERT INTO users (username, password, first_login, is_radius_user, role) VALUES ($1, '', 0, TRUE, 'operator')`,
 			username)
 		return err
 	}
@@ -330,7 +400,7 @@ func (s *Store) AuthenticateLocal(ctx context.Context, username, password string
 		return nil, false, err
 	}
 	if u == nil {
-		return nil, false, nil
+		return nil, security.VerifyUnknownPassword(password), nil
 	}
 	if !security.VerifyPassword(u.Password, password) {
 		return u, false, nil
@@ -344,6 +414,25 @@ func (s *Store) AuthenticateLocal(ctx context.Context, username, password string
 		}
 	}
 	return u, true, nil
+}
+
+// ConsumeTOTP atomically records one accepted TOTP time step for a user.
+// A false result with no error means another request or replica consumed it.
+func (s *Store) ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO totp_replay (user_id, time_step) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		userID, timeStep)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM totp_replay WHERE accepted_at < now() - interval '5 minutes'`); err != nil {
+		s.logger.Warn("failed to prune consumed TOTP steps", "err", err)
+	}
+	return true, nil
 }
 
 // ListFirewalls returns all firewalls ordered by id.
@@ -469,37 +558,95 @@ func (s *Store) ListBackups(ctx context.Context, fwID int) ([]models.Backup, err
 	return out, rows.Err()
 }
 
-// ListErrors returns firewalls whose status marks a failed backup.
-func (s *Store) ListErrors(ctx context.Context) ([]models.Firewall, error) {
+// ListErrors returns a credential-free diagnosis projection for failed backups,
+// newest failure first. updated_at is written with each status transition and
+// therefore represents the attempt that produced the current failed status.
+func (s *Store) ListErrors(ctx context.Context) ([]models.BackupError, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, fqdn, last_backup, status FROM firewalls WHERE status LIKE 'Failed:%'`)
+		`SELECT id, fqdn, updated_at, last_backup, status
+		 FROM firewalls
+		 WHERE status LIKE 'Failed:%'
+		 ORDER BY updated_at DESC NULLS LAST, id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Firewall
+	var out []models.BackupError
 	for rows.Next() {
-		var fw models.Firewall
-		var lastBackup *time.Time
-		if err := rows.Scan(&fw.ID, &fw.FQDN, &lastBackup, &fw.Status); err != nil {
+		var (
+			failure                  models.BackupError
+			lastAttempt, lastSuccess *time.Time
+			status                   string
+		)
+		if err := rows.Scan(&failure.ID, &failure.FQDN, &lastAttempt, &lastSuccess, &status); err != nil {
 			return nil, err
 		}
-		if lastBackup != nil {
-			fw.LastBackup = *lastBackup
+		if lastAttempt != nil {
+			failure.LastAttempt = *lastAttempt
 		}
-		out = append(out, fw)
+		if lastSuccess != nil {
+			failure.LastSuccess = *lastSuccess
+		}
+		failure.Reason = backupFailureReason(status)
+		out = append(out, failure)
 	}
 	return out, rows.Err()
 }
 
-// ListActivityLogs returns a page of activity, newest first.
-func (s *Store) ListActivityLogs(ctx context.Context, limit, offset int) ([]models.ActivityLog, error) {
+func backupFailureReason(status string) string {
+	reason := strings.TrimSpace(strings.TrimPrefix(status, "Failed:"))
+	if reason == "" {
+		return "Backup failed without a reported reason."
+	}
+	return reason
+}
+
+func activityLogWhere(filter models.ActivityLogFilter) (string, []any) {
+	clauses := make([]string, 0, 5)
+	args := make([]any, 0, 5)
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if filter.Query != "" {
+		parameter := placeholder(filter.Query)
+		clauses = append(clauses, fmt.Sprintf(`(
+			strpos(lower(COALESCE(username, '')), lower(%[1]s)) > 0 OR
+			strpos(lower(COALESCE(action, '')), lower(%[1]s)) > 0 OR
+			strpos(lower(COALESCE(details, '')), lower(%[1]s)) > 0
+		)`, parameter))
+	}
+	if filter.Username != "" {
+		parameter := placeholder(filter.Username)
+		clauses = append(clauses, "strpos(lower(COALESCE(username, '')), lower("+parameter+")) > 0")
+	}
+	if filter.Action != "" {
+		parameter := placeholder(filter.Action)
+		clauses = append(clauses, "strpos(lower(COALESCE(action, '')), lower("+parameter+")) > 0")
+	}
+	if !filter.From.IsZero() {
+		clauses = append(clauses, "timestamp >= "+placeholder(filter.From))
+	}
+	if !filter.To.IsZero() {
+		clauses = append(clauses, "timestamp < "+placeholder(filter.To))
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// ListActivityLogs returns a filtered page of activity, newest first.
+func (s *Store) ListActivityLogs(ctx context.Context, filter models.ActivityLogFilter, limit, offset int) ([]models.ActivityLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	where, args := activityLogWhere(filter)
+	args = append(args, limit, max(0, offset))
 	rows, err := s.pool.Query(ctx,
-		`SELECT username, action, details, timestamp FROM activity_logs
-		 ORDER BY timestamp DESC LIMIT $1 OFFSET $2`, limit, offset)
+		`SELECT username, action, details, timestamp FROM activity_logs`+where+
+			fmt.Sprintf(" ORDER BY timestamp DESC NULLS LAST, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)),
+		args...)
 	if err != nil {
 		return nil, err
 	}
@@ -515,10 +662,11 @@ func (s *Store) ListActivityLogs(ctx context.Context, limit, offset int) ([]mode
 	return out, rows.Err()
 }
 
-// CountActivityLogs returns the total number of activity rows.
-func (s *Store) CountActivityLogs(ctx context.Context) (int, error) {
+// CountActivityLogs returns the total number of matching activity rows.
+func (s *Store) CountActivityLogs(ctx context.Context, filter models.ActivityLogFilter) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs`).Scan(&n)
+	where, args := activityLogWhere(filter)
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs`+where, args...).Scan(&n)
 	return n, err
 }
 

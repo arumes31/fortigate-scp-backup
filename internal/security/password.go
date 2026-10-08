@@ -7,9 +7,65 @@ package security
 import (
 	"crypto/subtle"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	// MinPasswordBytes is the minimum accepted local-password length.
+	MinPasswordBytes = 16
+	// MaxPasswordBytes matches bcrypt's maximum useful input length.
+	MaxPasswordBytes = 72
+)
+
+var unknownUserHash = func() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("fortisafe-unknown-user"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("security: generate unknown-user password hash: " + err.Error())
+	}
+	return hash
+}()
+
+type passwordValidationError string
+
+func (e passwordValidationError) Error() string { return string(e) }
+
+var (
+	ErrPasswordRequired    error = passwordValidationError("Enter a new password.")
+	ErrPasswordInvalidUTF8 error = passwordValidationError("New password must be valid UTF-8.")
+	ErrPasswordTooShort    error = passwordValidationError("New password must contain at least 16 UTF-8 bytes.")
+	ErrPasswordTooLong     error = passwordValidationError("New password must contain at most 72 UTF-8 bytes.")
+	ErrPasswordUnchanged   error = passwordValidationError("New password must be different from your current password.")
+	ErrPasswordMismatch    error = passwordValidationError("New password confirmation does not match.")
+)
+
+// ValidateNewPassword applies the complete local-password change policy. Byte
+// length is intentional: bcrypt accepts at most 72 bytes, and a Unicode code
+// point may occupy more than one UTF-8 byte. Clients may mirror these checks for
+// feedback, but callers must always enforce this function server-side.
+func ValidateNewPassword(oldPassword, newPassword, confirmation string) error {
+	if newPassword == "" {
+		return ErrPasswordRequired
+	}
+	if !utf8.ValidString(newPassword) {
+		return ErrPasswordInvalidUTF8
+	}
+	length := len([]byte(newPassword))
+	if length < MinPasswordBytes {
+		return ErrPasswordTooShort
+	}
+	if length > MaxPasswordBytes {
+		return ErrPasswordTooLong
+	}
+	if subtle.ConstantTimeCompare([]byte(oldPassword), []byte(newPassword)) == 1 {
+		return ErrPasswordUnchanged
+	}
+	if newPassword != confirmation {
+		return ErrPasswordMismatch
+	}
+	return nil
+}
 
 // HashPassword returns a bcrypt hash of the given plaintext.
 func HashPassword(plain string) (string, error) {
@@ -32,13 +88,27 @@ func IsHashed(stored string) bool {
 // local check), and an empty-vs-empty comparison would otherwise let anyone log
 // in as such a user with a blank password, bypassing RADIUS entirely.
 func VerifyPassword(stored, provided string) bool {
-	if stored == "" || provided == "" {
-		return false
-	}
+	return verifyPassword(stored, provided, bcrypt.CompareHashAndPassword)
+}
+
+// verifyPassword implements password verification with an injectable bcrypt
+// comparison so tests can enforce equal work across all failed attempts.
+func verifyPassword(stored, provided string, compare func([]byte, []byte) error) bool {
 	if IsHashed(stored) {
-		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
+		return compare([]byte(stored), []byte(provided)) == nil
 	}
-	return subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1
+	if stored != "" && provided != "" && subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1 {
+		return true
+	}
+	_ = compare(unknownUserHash, []byte(provided))
+	return false
+}
+
+// VerifyUnknownPassword performs the same expensive bcrypt comparison used by
+// a real hashed account and always returns false. Login code calls it when no
+// username exists to reduce timing-based account discovery.
+func VerifyUnknownPassword(provided string) bool {
+	return VerifyPassword("", provided)
 }
 
 // NeedsUpgrade reports whether a verified stored value should be re-hashed

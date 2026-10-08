@@ -27,6 +27,7 @@ tmp/
 # Runtime data — never bake into the image
 backups/
 data/
+secrets/
 
 # Local build artifacts
 /fortisafe

@@ -96,6 +96,18 @@ type SDWANZone struct {
 	Name string `json:"name"`
 }
 
+// SDWANRule is the minimal service-rule projection required to compare the
+// source and post-pipeline models without returning raw rule configuration.
+type SDWANRule struct {
+	Seq             int
+	Name            string
+	Mode            string
+	Dst             string
+	Src             string
+	HealthCheck     string
+	PriorityMembers string
+}
+
 // WatchedLine is one raw `set` line captured from a config section that
 // recipes never rewrite automatically (VIPs, IPsec phase1, DHCP servers, HA,
 // SNMP, syslog, admin access). ScanReferences token-matches these against an
@@ -130,6 +142,7 @@ type FGConfig struct {
 	StaticRoutes   []*RouteEntry
 	SDWANMembers   []*SDWANMember
 	SDWANZones     map[string]*SDWANZone
+	SDWANRules     []*SDWANRule
 	// SDWANHealthChecks holds just the names of `config system sdwan ->
 	// config health-check` entries -- enough for recipes to tell whether any
 	// exist, without needing to model ping-server details.
@@ -172,6 +185,10 @@ func (c *FGConfig) Clone() *FGConfig {
 	for _, m := range c.SDWANMembers {
 		cp := *m
 		out.SDWANMembers = append(out.SDWANMembers, &cp)
+	}
+	for _, rule := range c.SDWANRules {
+		cp := *rule
+		out.SDWANRules = append(out.SDWANRules, &cp)
 	}
 	for k, v := range c.SDWANZones {
 		cp := *v

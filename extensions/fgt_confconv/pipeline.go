@@ -42,10 +42,13 @@ func (e *PipelineError) Error() string {
 
 // ConvertResult is one pipeline run's full output.
 type ConvertResult struct {
-	Sections     []CLIBlock `json:"sections"`
-	Warnings     []Warning  `json:"warnings"`
-	AppliedOrder []string   `json:"appliedOrder"`
-	Combined     string     `json:"combined"`
+	Sections         []CLIBlock     `json:"sections"`
+	Warnings         []Warning      `json:"warnings"`
+	AppliedOrder     []string       `json:"appliedOrder"`
+	Combined         string         `json:"combined"`
+	Changes          []ConfigChange `json:"changes"`
+	ChangeCount      int            `json:"changeCount"`
+	ChangesTruncated bool           `json:"changesTruncated"`
 }
 
 // RecipeSelection is one operator-picked recipe plus its options, as
@@ -152,5 +155,6 @@ func RunPipeline(cfg *FGConfig, selections []RecipeSelection) (*ConvertResult, e
 	}
 
 	result.Combined = RenderScript(result.Sections)
+	result.Changes, result.ChangeCount, result.ChangesTruncated = DiffConfigs(cfg, working)
 	return result, nil
 }

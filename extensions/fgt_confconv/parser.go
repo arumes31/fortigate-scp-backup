@@ -62,7 +62,7 @@ func getActiveContext(stack []stackElem) (section, edit string) {
 }
 
 // insideSDWAN reports whether the second-nearest config frame (the one
-// enclosing "members"/"zone"/"health-check") is "system sdwan" -- needed
+// enclosing "members"/"zone"/"health-check"/"service") is "system sdwan" -- needed
 // because both `config system zone` (top level) and `config system sdwan`'s
 // nested `config zone` produce different frame names ("system zone" vs
 // "zone"), but "members"/"zone"/"health-check" alone don't say which parent
@@ -75,7 +75,7 @@ func insideSDWAN(stack []stackElem) bool {
 		}
 	}
 	for i := len(configs) - 1; i > 0; i-- {
-		if configs[i] == "members" || configs[i] == "zone" || configs[i] == "health-check" {
+		if configs[i] == "members" || configs[i] == "zone" || configs[i] == "health-check" || configs[i] == "service" {
 			return configs[i-1] == "system sdwan"
 		}
 	}
@@ -174,6 +174,7 @@ func ParseConfig(content string) *FGConfig {
 	var curPolicy *PolicyEntry
 	var curRoute *RouteEntry
 	var curMember *SDWANMember
+	var curRule *SDWANRule
 
 	lines := strings.Split(content, "\n")
 	for _, raw := range lines {
@@ -224,6 +225,9 @@ func ParseConfig(content string) *FGConfig {
 			case sec == "members" && insideSDWAN(stack) && curMember != nil:
 				cfg.SDWANMembers = append(cfg.SDWANMembers, curMember)
 				curMember = nil
+			case sec == "service" && insideSDWAN(stack) && curRule != nil:
+				cfg.SDWANRules = append(cfg.SDWANRules, curRule)
+				curRule = nil
 			case sec == "zone" && insideSDWAN(stack) && edit != "":
 				cfg.SDWANZones[edit] = &SDWANZone{Name: edit}
 			case sec == "health-check" && insideSDWAN(stack) && edit != "":
@@ -268,6 +272,10 @@ func ParseConfig(content string) *FGConfig {
 			case sec == "members" && insideSDWAN(stack):
 				if seq, err := strconv.Atoi(name); err == nil {
 					curMember = &SDWANMember{Seq: seq}
+				}
+			case sec == "service" && insideSDWAN(stack):
+				if seq, err := strconv.Atoi(name); err == nil {
+					curRule = &SDWANRule{Seq: seq}
 				}
 			}
 			continue
@@ -338,6 +346,8 @@ func ParseConfig(content string) *FGConfig {
 				curRoute.Device = strings.Trim(val, `"`)
 			case "gateway":
 				curRoute.Gateway = val
+			case "status":
+				curRoute.Disabled = val == "disable"
 			}
 
 		case sec == "members" && insideSDWAN(stack) && curMember != nil:
@@ -348,6 +358,22 @@ func ParseConfig(content string) *FGConfig {
 				curMember.Gateway = val
 			case "zone":
 				curMember.Zone = strings.Trim(val, `"`)
+			}
+
+		case sec == "service" && insideSDWAN(stack) && curRule != nil:
+			switch key {
+			case "name":
+				curRule.Name = strings.Trim(val, `"`)
+			case "mode":
+				curRule.Mode = val
+			case "dst":
+				curRule.Dst = val
+			case "src":
+				curRule.Src = val
+			case "health-check":
+				curRule.HealthCheck = strings.Trim(val, `"`)
+			case "priority-members":
+				curRule.PriorityMembers = val
 			}
 		}
 	}

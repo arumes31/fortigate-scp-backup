@@ -1,10 +1,75 @@
 /* Policy Split Advisor front-end: load the target policy from the latest
  * backup, run the Graylog traffic analysis, render tuples + strategies. */
+(function () {
 'use strict';
 
-const psState = { rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null };
+const psRoot = document.getElementById('polsplit-page');
+if (!psRoot) return;
+const psDE = document.documentElement.lang === 'de';
+const psMessages = {
+    'Destinations': 'Ziele',
+    'Hits': 'Treffer',
+    'No policy loaded': 'Keine Richtlinie geladen',
+    'Auto': 'Automatisch',
+    'Select target': 'Ziel auswählen',
+    'Loading policy': 'Richtlinie wird geladen',
+    'Choose VDOM': 'VDOM auswählen',
+    'VDOM selection cancelled': 'VDOM-Auswahl abgebrochen',
+    'Ready to analyze': 'Bereit zur Analyse',
+    'Load failed': 'Laden fehlgeschlagen',
+    'Review options': 'Optionen prüfen',
+    'Starting analysis': 'Analyse wird gestartet',
+    'Analyzing traffic': 'Datenverkehr wird analysiert',
+    'Review results': 'Ergebnisse prüfen',
+    'Analysis failed': 'Analyse fehlgeschlagen',
+    'Recommended': 'Empfohlen',
+    'Sources': 'Quellen',
+    'Targets': 'Ziele',
+    'Services': 'Dienste',
+    'Warnings': 'Warnungen',
+    'Missing objects': 'Fehlende Objekte',
+    'Artifacts': 'Artefakte',
+    'Log messages': 'Log-Nachrichten',
+    'Traffic tuples': 'Datenverkehrstupel',
+    'Distinct sources': 'Eindeutige Quellen',
+    'Distinct destinations': 'Eindeutige Ziele',
+    'Distinct services': 'Eindeutige Dienste',
+    'No strategy data is available.': 'Es sind keine Strategiedaten verfügbar.',
+    'Copied!': 'Kopiert!',
+    'Copy failed — select & copy manually': 'Kopieren fehlgeschlagen — manuell markieren und kopieren',
+    'Copy Config': 'Konfiguration kopieren',
+    'No traffic observed — nothing to split.': 'Kein Datenverkehr beobachtet — keine Aufteilung erforderlich.',
+    'Select Firewall': 'Firewall auswählen',
+};
+function psT(english) { return psDE ? (psMessages[english] || english) : english; }
 
-function $(id) { return document.getElementById(id); }
+const psState = {
+    rangeSec: 86400, policyLoaded: false, vdom: '', abortCtrl: null, analyzeCtrl: null,
+    resultID: '', resultSummary: null, resultPanels: [], panelCache: new Map(), activePanel: ''
+};
+
+function $(id) { return psRoot.querySelector('#' + CSS.escape(id)); }
+
+function setPhase(phase) {
+    $('ps-context-phase').textContent = phase;
+}
+
+function updateTargetContext(policy) {
+    const firewall = $('ps-firewall');
+    const fqdn = firewall.selectedOptions[0]?.textContent?.trim();
+    const policyID = $('ps-policy-id').value.trim();
+    $('ps-context-target').textContent = fqdn && firewall.value && policyID
+        ? `${fqdn} · ${psDE ? 'Richtlinie' : 'Policy'} ${policyID}`
+        : psT('No policy loaded');
+    $('ps-context-vdom').textContent = policy?.vdom || psState.vdom || psT('Auto');
+}
+
+function showFeedback(message, type = 'info') {
+    const feedback = $('ps-feedback');
+    feedback.textContent = message;
+    feedback.dataset.feedback = type;
+    feedback.setAttribute('role', type === 'error' ? 'alert' : 'status');
+}
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -24,52 +89,132 @@ async function fetchJSON(url, opts) {
 
 /* ---------------- target policy ---------------- */
 
+function chooseVDOM(vdoms) {
+    const dialog = $('ps-vdom-dialog');
+    const options = $('ps-vdom-options');
+    const confirm = $('ps-vdom-confirm');
+    const cancel = $('ps-vdom-cancel');
+    const returnFocus = $('ps-load-btn');
+    const uniqueVDOMs = Array.from(new Set(vdoms.map(value => String(value).trim()).filter(Boolean)));
+    options.replaceChildren();
+    uniqueVDOMs.forEach((vdom, index) => {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        const text = document.createElement('span');
+        radio.type = 'radio';
+        radio.name = 'ps-vdom-choice';
+        radio.value = vdom;
+        radio.checked = index === 0;
+        text.textContent = vdom;
+        label.append(radio, text);
+        options.appendChild(label);
+    });
+    confirm.disabled = uniqueVDOMs.length === 0;
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = choice => {
+            if (settled) return;
+            settled = true;
+            dialog.removeEventListener('submit', onSubmit);
+            dialog.removeEventListener('cancel', onCancel);
+            dialog.removeEventListener('keydown', onKeydown);
+            cancel.removeEventListener('click', onCancelClick);
+            if (dialog.open) dialog.close();
+            window.setTimeout(() => returnFocus.focus(), 0);
+            resolve(choice);
+        };
+        const onSubmit = event => {
+            event.preventDefault();
+            finish(options.querySelector('input[name="ps-vdom-choice"]:checked')?.value || null);
+        };
+        const onCancel = event => {
+            event.preventDefault();
+            finish(null);
+        };
+        const onCancelClick = () => finish(null);
+        const onKeydown = event => {
+            if (event.key !== 'Tab') return;
+            const focusable = Array.from(dialog.querySelectorAll('input:not(:disabled), button:not(:disabled)'));
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        dialog.addEventListener('submit', onSubmit);
+        dialog.addEventListener('cancel', onCancel);
+        dialog.addEventListener('keydown', onKeydown);
+        cancel.addEventListener('click', onCancelClick);
+        dialog.showModal();
+        options.querySelector('input')?.focus();
+    });
+}
+
 async function loadPolicy() {
     const fwID = $('ps-firewall').value;
     const polID = $('ps-policy-id').value;
-    if (!fwID || polID === '') { alert('Select a firewall and enter a policy ID'); return; }
+    if (!fwID || polID === '') {
+        showFeedback(psDE ? 'Wählen Sie eine Firewall aus und geben Sie eine Richtlinien-ID ein.' : 'Select a firewall and enter a policy ID.', 'error');
+        setPhase(psT('Select target'));
+        return;
+    }
     if (psState.abortCtrl) psState.abortCtrl.abort();
     psState.abortCtrl = new AbortController();
     const signal = psState.abortCtrl.signal;
     const btn = $('ps-load-btn');
     btn.disabled = true;
+    setPhase(psT('Loading policy'));
+    showFeedback(psDE ? 'Die neueste Richtliniendefinition wird geladen…' : 'Loading the latest policy definition…', 'info');
     try {
-        let url = `/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`;
-        if (psState.vdom) {
-            url += `&vdom=${encodeURIComponent(psState.vdom)}`;
-        }
-        const resp = await fetch(url, { signal });
-        let body = null;
-        try { body = await resp.json(); } catch { }
-        if (!resp.ok) {
-            if (body && body.ambiguous && body.vdoms) {
-                const choice = prompt(`Policy ID ${polID} is ambiguous. Please select a VDOM from the following options:\n${body.vdoms.join(', ')}`);
-                if (choice) {
-                    const matchedVdom = body.vdoms.find(v => v.toLowerCase() === choice.trim().toLowerCase());
-                    if (matchedVdom) {
-                        psState.vdom = matchedVdom;
-                        setTimeout(loadPolicy, 0);
-                        return;
-                    } else {
-                        alert('Invalid VDOM selected');
-                    }
+        while (true) {
+            let url = `/fgt-polsplit/policy_info?fw_id=${encodeURIComponent(fwID)}&policy_id=${encodeURIComponent(polID)}`;
+            if (psState.vdom) url += `&vdom=${encodeURIComponent(psState.vdom)}`;
+            const resp = await fetch(url, { signal });
+            let body = null;
+            try { body = await resp.json(); } catch { /* handled below */ }
+            if (!resp.ok && body?.ambiguous && Array.isArray(body.vdoms)) {
+                setPhase(psT('Choose VDOM'));
+                const choice = await chooseVDOM(body.vdoms);
+                if (!choice) {
+                    setPhase(psT('VDOM selection cancelled'));
+                    showFeedback(psDE ? 'VDOM-Auswahl abgebrochen. Es wurde keine Richtlinie geladen.' : 'VDOM selection cancelled. No policy was loaded.', 'info');
+                    return;
                 }
+                psState.vdom = choice;
+                updateTargetContext();
+                setPhase(psT('Loading policy'));
+                continue;
             }
-            throw new Error((body && body.error) || ('HTTP ' + resp.status));
-        }
+            if (!resp.ok) throw new Error((body && body.error) || ('HTTP ' + resp.status));
 
-        renderPolicy(body);
-        psState.policyLoaded = true;
-        $('ps-options-card').hidden = false;
-        $('ps-prefix').placeholder = 'PS' + polID;
-        $('ps-results').hidden = true;
+            renderPolicy(body);
+            psState.policyLoaded = true;
+            $('ps-options-card').hidden = false;
+            $('ps-prefix').placeholder = 'PS' + polID;
+            $('ps-results').hidden = true;
+            updateOptionsSummary();
+            updateTargetContext(body.policy);
+            setPhase(psT('Ready to analyze'));
+            if (body.warnings?.length) {
+                showFeedback(body.warnings.join(' '), 'warning');
+            } else {
+                showFeedback(psDE ? 'Richtlinie aus dem neuesten Backup geladen.' : 'Policy loaded from the latest backup.', 'success');
+            }
+            return;
+        }
     } catch (err) {
         if (err.name === 'AbortError') return;
         psState.policyLoaded = false;
-        psState.vdom = '';
         $('ps-policy-card').hidden = true;
         $('ps-options-card').hidden = true;
-        alert('Failed to load policy: ' + err.message);
+        setPhase(psT('Load failed'));
+        showFeedback((psDE ? 'Richtlinie konnte nicht geladen werden: ' : 'Failed to load policy: ') + err.message, 'error');
     } finally {
         btn.disabled = false;
     }
@@ -83,22 +228,23 @@ function renderPolicy(data) {
     const p = data.policy;
     const list = a => (a && a.length) ? a.map(esc).join(', ') : '—';
     let html = '';
-    html += kv('Name', esc(p.name || '(unnamed)') + (p.vdom ? ` <span class="ps-muted">[vdom ${esc(p.vdom)}]</span>` : ''));
-    html += kv('Src Interface', list(p.srcintf));
-    html += kv('Dst Interface', list(p.dstintf));
-    html += kv('Src Address', list(p.srcaddr));
-    html += kv('Dst Address', list(p.dstaddr));
-    html += kv('Service', list(p.services));
-    html += kv('Action', esc(data.action_display));
-    html += kv('Schedule', esc(p.schedule || '—'));
+    html += kv(psDE ? 'Name' : 'Name', esc(p.name || (psDE ? '(unbenannt)' : '(unnamed)')) + (p.vdom ? ` <span class="ps-muted">[vdom ${esc(p.vdom)}]</span>` : ''));
+    html += kv(psDE ? 'Quellschnittstelle' : 'Src Interface', list(p.srcintf));
+    html += kv(psDE ? 'Zielschnittstelle' : 'Dst Interface', list(p.dstintf));
+    html += kv(psDE ? 'Quelladresse' : 'Src Address', list(p.srcaddr));
+    html += kv(psDE ? 'Zieladresse' : 'Dst Address', list(p.dstaddr));
+    html += kv(psDE ? 'Dienst' : 'Service', list(p.services));
+    html += kv(psDE ? 'Aktion' : 'Action', esc(data.action_display));
+    html += kv(psDE ? 'Zeitplan' : 'Schedule', esc(p.schedule || '—'));
     html += kv('NAT', esc(p.nat || 'disable'));
-    if (p.comments) html += kv('Comments', esc(p.comments));
+    if (p.comments) html += kv(psDE ? 'Kommentare' : 'Comments', esc(p.comments));
     $('ps-policy-summary').innerHTML = html;
-    $('ps-backup-time').textContent = `(backup from ${data.backup_time})`;
+    const backup = $('ps-backup-time');
+    const time = document.createElement('time');
+    time.dateTime = data.backup_time;
+    time.textContent = data.backup_time;
+    backup.replaceChildren(document.createTextNode(psDE ? '(Backup vom ' : '(backup from '), time, document.createTextNode(')'));
     $('ps-policy-card').hidden = false;
-    if (data.warnings && data.warnings.length) {
-        alert(data.warnings.join('\n'));
-    }
 }
 
 /* ---------------- analysis ---------------- */
@@ -106,12 +252,32 @@ function renderPolicy(data) {
 function selectedRange() {
     if (psState.rangeSec > 0) return { range_seconds: psState.rangeSec };
     const from = $('ps-from').value, to = $('ps-to').value;
-    if (!from || !to) throw new Error('Set both custom range fields');
+    if (!from || !to) throw new Error(psDE ? 'Legen Sie beide Felder des benutzerdefinierten Zeitraums fest' : 'Set both custom range fields');
     return {
         range_seconds: 0,
         from: new Date(from).toISOString(),
         to: new Date(to).toISOString(),
     };
+}
+
+function updateOptionsSummary() {
+    const rangeLabel = $('ps-range-row').querySelector('.ps-range.active')?.textContent?.trim() || 'Custom';
+    const comparison = $('ps-compare').selectedOptions[0]?.textContent?.trim() || 'Off';
+    const prefix = $('ps-prefix').value.trim() || $('ps-prefix').placeholder;
+    const ticket = $('ps-ticket').value.trim() || (psDE ? 'keines' : 'none');
+    const parts = [
+        `${psDE ? 'Zeitraum' : 'Window'} ${rangeLabel}`,
+        `${psDE ? 'Quellzusammenfassung' : 'source rollup'} ${$('ps-rollup-src').checked ? (psDE ? 'ein' : 'on') : (psDE ? 'aus' : 'off')}`,
+        `${psDE ? 'Zielzusammenfassung' : 'destination rollup'} ${$('ps-rollup-dst').checked ? (psDE ? 'ein' : 'on') : (psDE ? 'aus' : 'off')}`,
+        `${psDE ? 'Schwelle' : 'threshold'} ${$('ps-rollup-threshold').value} ${psDE ? 'bei' : 'at'} /${$('ps-rollup-mask').value}`,
+        `${psDE ? 'Baseline' : 'baseline'} ${comparison}`,
+        `DNS ${$('ps-resolve-dns').checked ? (psDE ? 'ein' : 'on') : (psDE ? 'aus' : 'off')}`,
+        `${psDE ? 'Präfix' : 'prefix'} ${prefix}`,
+        `${psDE ? 'Ticket' : 'ticket'} ${ticket}`,
+        `${psDE ? 'WAN-Modus' : 'WAN mode'} ${$('ps-wan-mode').value}`,
+        `${psDE ? 'Abschließendes Deny' : 'fallthrough deny'} ${$('ps-emit-deny').checked ? (psDE ? 'ein' : 'on') : (psDE ? 'aus' : 'off')}`,
+    ];
+    $('ps-options-summary').textContent = parts.join(' · ');
 }
 
 /* ---------------- progress display ----------------
@@ -145,6 +311,7 @@ function renderProgress(prog) {
     if (p.total > 0) text += ` (${p.step}/${p.total})`;
     const t = $('ps-progress-text');
     if (t.textContent !== text) t.textContent = text; // aria-live fires on real changes only
+    setPhase(p.message || psT('Analyzing traffic'));
     renderProgressMeta(prog);
 }
 
@@ -178,12 +345,26 @@ function hideProgress() {
 
 function clearResults() {
     $('ps-results').hidden = true;
+    psState.resultID = '';
+    psState.resultSummary = null;
+    psState.resultPanels = [];
+    psState.panelCache.clear();
+    psState.activePanel = '';
 }
 
 async function analyze() {
-    if (!psState.policyLoaded) { alert('Load a policy first'); return; }
+    if (!psState.policyLoaded) {
+        showFeedback(psDE ? 'Laden Sie zuerst eine Richtlinie.' : 'Load a policy first.', 'error');
+        setPhase(psT('Select target'));
+        return;
+    }
     let range;
-    try { range = selectedRange(); } catch (err) { alert(err.message); return; }
+    try { range = selectedRange(); } catch (err) {
+        showFeedback(err.message, 'error');
+        setPhase(psT('Review options'));
+        return;
+    }
+    updateOptionsSummary();
 
     if (psState.abortCtrl) psState.abortCtrl.abort();
     const ctrl = new AbortController();
@@ -216,7 +397,7 @@ async function analyze() {
     btn.disabled = true;
     const prog = {
         startedAt: Date.now(), stageStart: Date.now(), spin: 0,
-        state: { message: 'Starting analysis', detail: '', step: 0, total: 0, sub: 0, sub_total: 0 },
+        state: { message: psT('Starting analysis'), detail: '', step: 0, total: 0, sub: 0, sub_total: 0 },
     };
     const logEl = $('ps-progress-log');
     logEl.innerHTML = '';
@@ -261,12 +442,15 @@ async function analyze() {
         if (prog.state.message) logStage(prog, prog.state.message);
         const doneLine = document.createElement('div');
         doneLine.className = 'ps-progress-done';
-        doneLine.textContent = `Analysis complete in ${((Date.now() - prog.startedAt) / 1000).toFixed(1)}s`;
+        doneLine.textContent = psDE ? `Analyse in ${((Date.now() - prog.startedAt) / 1000).toFixed(1)} s abgeschlossen` : `Analysis complete in ${((Date.now() - prog.startedAt) / 1000).toFixed(1)}s`;
         logEl.appendChild(doneLine);
         renderResults(data);
+        setPhase(psT('Review results'));
+        showFeedback(psDE ? 'Analyse abgeschlossen. Prüfen Sie den beobachteten Datenverkehr und die erzeugten Strategien.' : 'Analysis complete. Review the observed traffic and generated strategies.', 'success');
     } catch (err) {
         if (err.name === 'AbortError') return;
-        alert('Analysis failed: ' + err.message);
+        setPhase(psT('Analysis failed'));
+        showFeedback((psDE ? 'Analyse fehlgeschlagen: ' : 'Analysis failed: ') + err.message, 'error');
     } finally {
         clearInterval(poll);
         if (anim) clearInterval(anim);
@@ -282,23 +466,105 @@ async function analyze() {
     }
 }
 
+function setPanelState(message, retry = false) {
+    $('ps-panel-state-text').textContent = message;
+    $('ps-panel-retry').hidden = !retry;
+    $('ps-panel-state').hidden = !message;
+}
+
 function renderResults(data) {
-    // warnings
+    psState.resultID = data.result_id;
+    psState.resultSummary = data;
+    psState.resultPanels = Array.isArray(data.panels) ? data.panels : [];
+    psState.panelCache.clear();
     const warn = data.warnings || [];
     $('ps-warnings-card').hidden = warn.length === 0;
     $('ps-warnings').innerHTML = warn.map(w => `<li>${esc(w)}</li>`).join('');
+    $('ps-summary-stats').innerHTML = [
+        [psT('Sources'), data.src_count], [psT('Targets'), data.dst_count], [psT('Services'), data.svc_count],
+        [psT('Warnings'), data.warning_count], [psT('Missing objects'), data.unresolved_count], [psT('Artifacts'), data.artifact_count]
+    ].map(([key, value]) => `<div class="ps-stat"><div class="ps-stat-val">${esc(value)}</div><div class="ps-stat-key">${esc(key)}</div></div>`).join('');
+    renderResultTabs();
+    $('ps-results').hidden = false;
+    const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    $('ps-results').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    if (psState.resultPanels.length) activateResultPanel(psState.resultPanels[0].key);
+    else setPanelState(psDE ? 'Es wurden keine detaillierten Ergebnisbereiche erzeugt.' : 'No detailed result panels were generated.');
+}
 
-    // stats
+function renderResultTabs() {
+    const tabs = $('ps-result-tabs');
+    tabs.replaceChildren();
+    psState.resultPanels.forEach((panel, index) => {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'btn btn-sm';
+        tab.id = `ps-result-tab-${panel.key}`;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', 'false');
+        tab.setAttribute('aria-controls', panel.kind === 'traffic' ? 'ps-traffic-panel' : 'ps-strategy-panel');
+        tab.tabIndex = index === 0 ? 0 : -1;
+        tab.dataset.panelKey = panel.key;
+        tab.textContent = `${panel.label} (${panel.count})${panel.recommended ? ' · ' + psT('Recommended') : ''}`;
+        tab.addEventListener('click', () => activateResultPanel(panel.key));
+        tabs.appendChild(tab);
+    });
+}
+
+async function activateResultPanel(key, force = false) {
+    const meta = psState.resultPanels.find(panel => panel.key === key);
+    if (!meta || !psState.resultID) return;
+    psState.activePanel = key;
+    $('ps-result-tabs').querySelectorAll('[role="tab"]').forEach(tab => {
+        const selected = tab.dataset.panelKey === key;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+    });
+    $('ps-traffic-panel').hidden = true;
+    $('ps-strategy-panel').hidden = true;
+    $('ps-export-config').hidden = meta.kind !== 'strategy';
+    if (psState.panelCache.has(key) && !force) {
+        renderResultPanel(psState.panelCache.get(key));
+        return;
+    }
+    setPanelState(psDE ? `${meta.label} wird geladen…` : `Loading ${meta.label}…`);
+    try {
+        const response = await fetchJSON(`/fgt-polsplit/results/${encodeURIComponent(psState.resultID)}/panels/${encodeURIComponent(key)}`);
+        if (psState.activePanel !== key) return;
+        psState.panelCache.set(key, response);
+        renderResultPanel(response);
+    } catch (error) {
+        if (psState.activePanel !== key) return;
+        setPanelState(psDE ? `${meta.label} konnte nicht geladen werden: ${error.message}` : `Failed to load ${meta.label}: ${error.message}`, true);
+    }
+}
+
+function renderResultPanel(response) {
+    setPanelState('');
+    if (response.kind === 'traffic') {
+        renderTrafficPanel(response.data || {});
+        $('ps-traffic-panel').setAttribute('aria-labelledby', `ps-result-tab-${response.key}`);
+        $('ps-traffic-panel').hidden = false;
+        return;
+    }
+    if (response.kind === 'strategy') {
+        renderStrategy(response.data || null);
+        $('ps-strategy-panel').setAttribute('aria-labelledby', `ps-result-tab-${response.key}`);
+        $('ps-strategy-panel').hidden = false;
+        return;
+    }
+    setPanelState(psDE ? 'Dieser Ergebnisbereich ist leer.' : 'This result panel is empty.');
+}
+
+function renderTrafficPanel(data) {
+    const summary = psState.resultSummary || {};
     const tuples = data.tuples || [];
-    const srcs = data.src_count !== undefined ? data.src_count : new Set(tuples.map(t => t.srcip)).size;
-    const dsts = data.dst_count !== undefined ? data.dst_count : new Set(tuples.map(t => t.dstip)).size;
-    const svcs = data.svc_count !== undefined ? data.svc_count : new Set(tuples.map(t => t.proto + '/' + t.port)).size;
     $('ps-stats').innerHTML = [
-        ['Log messages', data.total_messages],
-        ['Traffic tuples', data.tuple_count],
-        ['Distinct sources', srcs],
-        ['Distinct destinations', dsts],
-        ['Distinct services', svcs],
+        [psT('Log messages'), summary.total_messages],
+        [psT('Traffic tuples'), summary.tuple_count],
+        [psT('Distinct sources'), summary.src_count],
+        [psT('Distinct destinations'), summary.dst_count],
+        [psT('Distinct services'), summary.svc_count],
     ].map(([k, v]) => `<div class="ps-stat"><div class="ps-stat-val">${esc(v)}</div><div class="ps-stat-key">${esc(k)}</div></div>`).join('');
 
     // tuple table
@@ -307,10 +573,10 @@ function renderResults(data) {
         <td>${esc(t.srcip)}</td><td>${esc(t.dstip)}</td>
         <td>${esc(t.proto)}</td><td>${t.port || '—'}</td>
         <td>${esc(t.service || '—')}</td><td class="ps-num">${esc(t.hits)}</td>
-        <td>${esc(fmtTime(t.last_seen))}</td>
+        <td><time datetime="${esc(t.last_seen)}">${esc(fmtTime(t.last_seen))}</time></td>
         <td>${t.flow === 'new' ? '<span class="ps-badge-new">NEW</span>' : ''}</td></tr>`).join('');
-    $('ps-tuples-note').textContent = data.tuple_count > tuples.length
-        ? `Showing top ${tuples.length} of ${data.tuple_count} tuples by hits.` : '';
+    $('ps-tuples-note').textContent = summary.tuple_count > tuples.length
+        ? (psDE ? `Die ${tuples.length} häufigsten von ${summary.tuple_count} Tupeln werden nach Treffern angezeigt.` : `Showing top ${tuples.length} of ${summary.tuple_count} tuples by hits.`) : '';
 
     // baseline-only (stale) flows
     const stale = data.stale_tuples || [];
@@ -319,7 +585,7 @@ function renderResults(data) {
     $('ps-stale-table').querySelector('tbody').innerHTML = stale.map(t => `<tr>
         <td>${esc(t.srcip)}</td><td>${esc(t.dstip)}</td>
         <td>${esc(t.proto)}</td><td>${t.port || '—'}</td>
-        <td class="ps-num">${esc(t.hits)}</td><td>${esc(fmtTime(t.last_seen))}</td></tr>`).join('');
+        <td class="ps-num">${esc(t.hits)}</td><td><time datetime="${esc(t.last_seen)}">${esc(fmtTime(t.last_seen))}</time></td></tr>`).join('');
 
     // FQDN suggestions
     const dns = data.dns_suggestions || [];
@@ -358,9 +624,6 @@ function renderResults(data) {
     $('ps-utm-table').querySelector('tbody').innerHTML = utm.map(u => `<tr>
         <td>${esc(u.ip)}</td><td class="ps-num">${esc(u.hits)}</td></tr>`).join('');
 
-    renderStrategies(data.strategies || []);
-    $('ps-results').hidden = false;
-    $('ps-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // copyText copies to the clipboard, falling back to a hidden textarea when the
@@ -401,38 +664,28 @@ function svcList(svcs) {
     return svcs.map(s => esc(s.log_name || s.key)).join(', ');
 }
 
-function renderStrategies(strategies) {
-    const tabs = $('ps-strategy-tabs');
+function renderStrategy(strategy) {
     const panels = $('ps-strategy-panels');
-    tabs.innerHTML = '';
-    panels.innerHTML = '';
-    strategies.forEach((s, i) => {
-        const tab = document.createElement('button');
-        tab.className = 'btn btn-sm ps-tab' + (i === 0 ? ' active' : '');
-        tab.innerHTML = esc(s.label)
-            + ` <span class="ps-count">${(s.policies || []).length}</span>`
-            + (s.recommended ? ' <span class="ps-badge">RECOMMENDED</span>' : '');
-        tab.addEventListener('click', () => {
-            tabs.querySelectorAll('.ps-tab').forEach(t => t.classList.remove('active'));
-            panels.querySelectorAll('.ps-panel').forEach(p => p.hidden = true);
-            tab.classList.add('active');
-            $('ps-panel-' + i).hidden = false;
-        });
-        tabs.appendChild(tab);
-
-        const panel = document.createElement('div');
-        panel.className = 'ps-panel';
-        panel.id = 'ps-panel-' + i;
-        panel.hidden = i !== 0;
-        panel.innerHTML = strategyPanel(s, i);
-        panels.appendChild(panel);
-    });
+    panels.replaceChildren();
+    if (!strategy) {
+        const empty = document.createElement('p');
+        empty.className = 'ps-muted';
+        empty.textContent = psT('No strategy data is available.');
+        panels.appendChild(empty);
+        return;
+    }
+    const heading = document.createElement('h3');
+    heading.textContent = `${strategy.label}${strategy.recommended ? ' · ' + psT('Recommended') : ''}`;
+    const panel = document.createElement('div');
+    panel.className = 'ps-panel';
+    panel.innerHTML = strategyPanel(strategy, 0);
+    panels.append(heading, panel);
     panels.querySelectorAll('.ps-copy').forEach(btn => {
         btn.addEventListener('click', () => {
-            const pre = document.getElementById(btn.dataset.target);
+            const pre = $(btn.dataset.target);
             copyText(pre.textContent).then(ok => {
-                btn.textContent = ok ? 'Copied!' : 'Copy failed — select & copy manually';
-                setTimeout(() => { btn.textContent = 'Copy Config'; }, 2000);
+                btn.textContent = ok ? psT('Copied!') : psT('Copy failed — select & copy manually');
+                setTimeout(() => { btn.textContent = psT('Copy Config'); }, 2000);
             });
         });
     });
@@ -441,10 +694,10 @@ function renderStrategies(strategies) {
 function strategyPanel(s, i) {
     const pols = s.policies || [];
     if (pols.length === 0) {
-        return '<p class="ps-muted">No traffic observed — nothing to split.</p>';
+        return `<p class="ps-muted">${psT('No traffic observed — nothing to split.')}</p>`;
     }
     let html = `<div class="ps-table-wrap"><table class="ps-table">
-        <thead><tr><th>ID</th><th>Name</th><th>Sources</th><th>Destinations</th><th>Services</th><th>Hits</th></tr></thead><tbody>`;
+        <thead><tr><th>ID</th><th>Name</th><th>${psT('Sources')}</th><th>${psT('Destinations')}</th><th>${psT('Services')}</th><th>${psT('Hits')}</th></tr></thead><tbody>`;
     html += pols.map(p => `<tr>
         <td>${esc(p.id)}</td><td>${esc(p.name)}${(p.tags || []).map(t => ` <span class="ps-tag">${esc(t)}</span>`).join('')}</td>
         <td>${entityList(p.src)}</td><td>${entityList(p.dst)}</td>
@@ -452,21 +705,44 @@ function strategyPanel(s, i) {
     html += '</tbody></table></div>';
 
     const objs = s.new_objects || [];
-    html += `<h3>Missing objects to create <span class="ps-count">${objs.length}</span></h3>`;
+    html += `<h3>${psDE ? 'Zu erstellende fehlende Objekte' : 'Missing objects to create'} <span class="ps-count">${objs.length}</span></h3>`;
     if (objs.length === 0) {
-        html += '<p class="ps-muted">All referenced objects already exist in the current config.</p>';
+        html += `<p class="ps-muted">${psDE ? 'Alle referenzierten Objekte sind bereits in der aktuellen Konfiguration vorhanden.' : 'All referenced objects already exist in the current config.'}</p>`;
     } else {
         html += `<div class="ps-table-wrap"><table class="ps-table">
-            <thead><tr><th>Type</th><th>Name</th><th>Definition</th></tr></thead><tbody>`;
+            <thead><tr><th>${psDE ? 'Typ' : 'Type'}</th><th>Name</th><th>Definition</th></tr></thead><tbody>`;
         html += objs.map(o => `<tr><td>${esc(o.kind)}</td><td>${esc(o.name)}</td><td>${esc(o.value)}</td></tr>`).join('');
         html += '</tbody></table></div>';
     }
 
-    html += `<h3>FortiGate configuration</h3>
-        <p class="ps-muted">New policy IDs assume the latest backup reflects the live device. Verify the splits pass traffic before the final block disables the original policy.</p>
-        <button class="btn btn-sm ps-copy" data-target="ps-config-${i}">Copy Config</button>
+    html += `<h3>${psDE ? 'FortiGate-Konfiguration' : 'FortiGate configuration'}</h3>
+        <p class="ps-muted">${psDE ? 'Neue Richtlinien-IDs setzen voraus, dass das neueste Backup dem aktiven Gerät entspricht. Prüfen Sie den Datenverkehr der Aufteilungen, bevor der letzte Block die ursprüngliche Richtlinie deaktiviert.' : 'New policy IDs assume the latest backup reflects the live device. Verify the splits pass traffic before the final block disables the original policy.'}</p>
+        <button class="btn btn-sm ps-copy" data-target="ps-config-${i}">${psT('Copy Config')}</button>
         <pre class="ps-config" id="ps-config-${i}">${esc(s.config)}</pre>`;
     return html;
+}
+
+function downloadResult(type) {
+    if (!psState.resultID) {
+        showFeedback(psDE ? 'Führen Sie vor dem Export eine Analyse aus.' : 'Run an analysis before exporting results.', 'error');
+        return;
+    }
+    let url = `/fgt-polsplit/results/${encodeURIComponent(psState.resultID)}/export/${encodeURIComponent(type)}`;
+    if (type === 'config') {
+        const panel = psState.resultPanels.find(item => item.key === psState.activePanel);
+        if (!panel || panel.kind !== 'strategy') {
+            showFeedback(psDE ? 'Wählen Sie vor dem Export der Konfiguration eine Strategie aus.' : 'Select a strategy before exporting configuration.', 'error');
+            return;
+        }
+        url += `?strategy=${encodeURIComponent(panel.key)}`;
+    }
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    showFeedback(psDE ? 'Export-Download gestartet.' : 'Export download started.', 'success');
 }
 
 /* ---------------- wiring ---------------- */
@@ -474,7 +750,7 @@ function strategyPanel(s, i) {
 document.addEventListener('DOMContentLoaded', () => {
     // Firewall dropdown becomes a searchable combobox (shared /static/searchable.js).
     if (typeof initSearchableSelect === 'function') {
-        initSearchableSelect($('ps-firewall'), { placeholder: 'Select Firewall' });
+        initSearchableSelect($('ps-firewall'), { placeholder: psT('Select Firewall') });
     }
     $('ps-load-btn').addEventListener('click', loadPolicy);
     $('ps-analyze-btn').addEventListener('click', analyze);
@@ -486,6 +762,9 @@ document.addEventListener('DOMContentLoaded', () => {
         $('ps-policy-card').hidden = true;
         $('ps-options-card').hidden = true;
         $('ps-results').hidden = true;
+        updateTargetContext();
+        setPhase(psT('Select target'));
+        showFeedback('', 'info');
     };
     $('ps-firewall').addEventListener('change', invalidatePolicy);
     $('ps-policy-id').addEventListener('input', invalidatePolicy);
@@ -496,6 +775,31 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('active');
             psState.rangeSec = parseInt(btn.dataset.sec, 10);
             $('ps-custom-range').hidden = psState.rangeSec !== 0;
+            updateOptionsSummary();
         });
     });
+    $('ps-options-card').addEventListener('input', updateOptionsSummary);
+    $('ps-options-card').addEventListener('change', updateOptionsSummary);
+    $('ps-result-tabs').addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = Array.from($('ps-result-tabs').querySelectorAll('[role="tab"]'));
+        const current = tabs.indexOf(document.activeElement);
+        if (current < 0 || tabs.length === 0) return;
+        let next = current;
+        if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+        if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+        if (event.key === 'Home') next = 0;
+        if (event.key === 'End') next = tabs.length - 1;
+        event.preventDefault();
+        tabs[next].focus();
+        activateResultPanel(tabs[next].dataset.panelKey);
+    });
+    $('ps-panel-retry').addEventListener('click', () => activateResultPanel(psState.activePanel, true));
+    psRoot.querySelectorAll('[data-export-type]').forEach(button => {
+        button.addEventListener('click', () => downloadResult(button.dataset.exportType));
+    });
+    updateTargetContext();
+    updateOptionsSummary();
 });
+
+})();

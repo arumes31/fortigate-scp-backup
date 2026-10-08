@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // magic marks a ciphertext blob: 6-byte header followed by nonce + ciphertext.
@@ -27,6 +28,7 @@ const stringPrefix = "enc:"
 type Cipher struct {
 	gcm     cipher.AEAD
 	enabled bool
+	strict  atomic.Bool
 }
 
 // New builds a Cipher. A nil/short key disables encryption (pass-through).
@@ -51,8 +53,32 @@ func New(key []byte) (*Cipher, error) {
 // Enabled reports whether encryption is active.
 func (c *Cipher) Enabled() bool { return c.enabled }
 
+// RequireEncrypted rejects legacy plaintext during decryption. Call it only
+// after startup migrations have encrypted and verified all existing data.
+func (c *Cipher) RequireEncrypted() { c.strict.Store(true) }
+
 // HasHeader reports whether data was written by Encrypt (i.e. is ciphertext).
 func HasHeader(data []byte) bool { return bytes.HasPrefix(data, magic) }
+
+// ValidateHeader verifies that data has a structurally complete encrypted
+// envelope without decrypting its payload.
+func (c *Cipher) ValidateHeader(data []byte) error {
+	if !HasHeader(data) {
+		return errors.New("crypto: encrypted header is missing")
+	}
+	if !c.enabled {
+		return errors.New("crypto: encrypted data found but no key configured")
+	}
+	minimumSize := len(magic) + c.gcm.NonceSize() + c.gcm.Overhead()
+	if len(data) < minimumSize {
+		return errors.New("crypto: encrypted envelope is too short")
+	}
+	return nil
+}
+
+// IsEncryptedString reports whether a database secret uses the encrypted
+// envelope format.
+func IsEncryptedString(value string) bool { return strings.HasPrefix(value, stringPrefix) }
 
 // Encrypt returns ciphertext (magic|nonce|sealed) when enabled, otherwise the
 // plaintext unchanged so callers need no branching.
@@ -74,16 +100,19 @@ func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
 // (legacy plaintext). Encrypted data requires an enabled cipher.
 func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 	if !HasHeader(data) {
+		if c.strict.Load() {
+			return nil, errors.New("crypto: plaintext data rejected after encryption migration")
+		}
 		return data, nil
 	}
 	if !c.enabled {
 		return nil, errors.New("crypto: encrypted data found but no key configured")
 	}
+	if err := c.ValidateHeader(data); err != nil {
+		return nil, err
+	}
 	body := data[len(magic):]
 	ns := c.gcm.NonceSize()
-	if len(body) < ns {
-		return nil, errors.New("crypto: ciphertext too short")
-	}
 	nonce, ct := body[:ns], body[ns:]
 	return c.gcm.Open(nil, nonce, ct, nil)
 }
@@ -105,6 +134,9 @@ func (c *Cipher) EncryptString(s string) (string, error) {
 // treated as legacy plaintext and returned unchanged.
 func (c *Cipher) DecryptString(s string) (string, error) {
 	if !strings.HasPrefix(s, stringPrefix) {
+		if c.strict.Load() {
+			return "", errors.New("crypto: plaintext secret rejected after encryption migration")
+		}
 		return s, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, stringPrefix))

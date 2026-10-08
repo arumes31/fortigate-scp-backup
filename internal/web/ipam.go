@@ -29,6 +29,7 @@ type ipamEntry struct {
 	Prefix string `json:"prefix"` // canonical CIDR, e.g. "10.20.0.0/24"
 	FwID   int    `json:"fw_id"`
 	FQDN   string `json:"fqdn"`
+	VDOM   string `json:"vdom"`
 	Source string `json:"source"` // interface | secondary | route | dhcp | address
 	Name   string `json:"name"`   // interface/object name or detail
 }
@@ -52,9 +53,10 @@ const (
 	// with a different (older) schema is never served — the page would choke
 	// on it (the unversioned pairwise format reached hundreds of MB). Bump on
 	// any incompatible change to ipamSnapshot/ipamOverlap.
-	// v3: overlaps are stored in full (client caps the render); v2 blobs were
-	// truncated to 500 rows, which client-side search must not silently miss.
-	ipamSnapshotSchema = 3
+	// v4: entries retain their owning VDOM. v3 overlaps are stored in full
+	// (client caps the render); v2 blobs were truncated to 500 rows, which
+	// client-side search must not silently miss.
+	ipamSnapshotSchema = 4
 )
 
 // ipamSnapshot is the stored fleet aggregation. Entries and overlaps are
@@ -174,20 +176,20 @@ func prefixFromRouteDst(dst string) netip.Prefix {
 // ipamEntriesFor extracts one firewall's IPAM entries from its parsed config.
 func ipamEntriesFor(res *auditResult, fwID int, fqdn string) []ipamEntry {
 	var out []ipamEntry
-	add := func(p netip.Prefix, source, name string) {
+	add := func(p netip.Prefix, vdom, source, name string) {
 		if !p.IsValid() {
 			return
 		}
-		out = append(out, ipamEntry{Prefix: p.String(), FwID: fwID, FQDN: fqdn, Source: source, Name: name})
+		out = append(out, ipamEntry{Prefix: p.String(), FwID: fwID, FQDN: fqdn, VDOM: vdom, Source: source, Name: name})
 	}
 	for _, it := range res.Interfaces {
 		if it.IP != "" && it.IP != "0.0.0.0" {
-			add(prefixFromIPMask(it.IP, it.Mask), "interface", it.Name)
+			add(prefixFromIPMask(it.IP, it.Mask), it.VDOM, "interface", it.Name)
 		}
 		for _, sec := range it.SecondaryIPs {
 			f := strings.Fields(sec)
 			if len(f) == 2 {
-				add(prefixFromIPMask(f[0], f[1]), "secondary", it.Name)
+				add(prefixFromIPMask(f[0], f[1]), it.VDOM, "secondary", it.Name)
 			}
 		}
 	}
@@ -195,17 +197,17 @@ func ipamEntriesFor(res *auditResult, fwID int, fqdn string) []ipamEntry {
 		if r.Dst == "" || strings.HasPrefix(r.Dst, "0.0.0.0") {
 			continue // default routes carry no subnet information
 		}
-		add(prefixFromRouteDst(r.Dst), "route", "route "+r.ID+" via "+r.Device)
+		add(prefixFromRouteDst(r.Dst), r.VDOM, "route", "route "+r.ID+" via "+r.Device)
 	}
 	for _, d := range res.DhcpServers {
 		// A DHCP scope's network is its gateway+netmask; ranges are shown as
 		// the detail text.
 		if d.Gateway != "" && d.Netmask != "" {
-			add(prefixFromIPMask(d.Gateway, d.Netmask), "dhcp", d.Interface+" ("+strings.Join(d.Ranges, ", ")+")")
+			add(prefixFromIPMask(d.Gateway, d.Netmask), d.VDOM, "dhcp", d.Interface+" ("+strings.Join(d.Ranges, ", ")+")")
 		}
 	}
 	for _, ao := range res.AddressObjs {
-		add(prefixFromIPMask(ao.IP, ao.Mask), "address", ao.Name)
+		add(prefixFromIPMask(ao.IP, ao.Mask), ao.VDOM, "address", ao.Name)
 	}
 	return out
 }

@@ -2,7 +2,9 @@ package web
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNvdCpeRange(t *testing.T) {
@@ -25,12 +27,16 @@ func TestNvdCpeRange(t *testing.T) {
 			ok:   true,
 		},
 		{
-			name: "missing start is rejected",
+			name: "end-only range derives its train from the end",
 			m:    nvdCpeMatch{VersionEndExcluding: "7.4.3"},
+			want: cveRange{major: 7, minor: 4, fixedPatch: 3},
+			ok:   true,
 		},
 		{
-			name: "missing end is rejected",
+			name: "missing fixed version marks the train never fixed",
 			m:    nvdCpeMatch{VersionStartIncluding: "7.4.0"},
+			want: cveRange{major: 7, minor: 4, fixedPatch: neverFixed},
+			ok:   true,
 		},
 		{
 			name: "cross-train bounds are rejected rather than guessed",
@@ -108,6 +114,46 @@ func TestNvdEntryToDef(t *testing.T) {
 	}
 }
 
+func TestNvdEntryToDefCollapsesRangesByTrain(t *testing.T) {
+	const sample = `{
+		"vulnerabilities": [{
+			"cve": {
+				"id": "CVE-2099-9998",
+				"descriptions": [{"lang": "en", "value": "range edge cases"}],
+				"configurations": [{"nodes": [{"cpeMatch": [
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "7.4.0"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "6.0.0"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "7.4.3"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "7.4.5"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionEndExcluding": "6.0.2"},
+					{"vulnerable": true, "criteria": "cpe:2.3:o:fortinet:fortios:*:*:*:*:*:*:*:*", "versionStartIncluding": "7.2.0"}
+				]}]}]
+			}
+		}]
+	}`
+	var parsed nvdResponse
+	if err := json.Unmarshal([]byte(sample), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	def, ok := nvdEntryToDef(parsed.Vulnerabilities[0])
+	if !ok {
+		t.Fatal("entry with valid end-only and never-fixed ranges was discarded")
+	}
+	want := []cveRange{
+		{major: 7, minor: 4, fixedPatch: 5},
+		{major: 6, minor: 0, fixedPatch: 2},
+		{major: 7, minor: 2, fixedPatch: neverFixed},
+	}
+	if len(def.ranges) != len(want) {
+		t.Fatalf("ranges = %+v, want %+v", def.ranges, want)
+	}
+	for i := range want {
+		if def.ranges[i] != want[i] {
+			t.Errorf("range %d = %+v, want %+v", i, def.ranges[i], want[i])
+		}
+	}
+}
+
 func TestEncodeDecodeRanges(t *testing.T) {
 	in := []cveRange{{major: 7, minor: 4, fixedPatch: 3}, {major: 7, minor: 0, fixedPatch: neverFixed}}
 	out := decodeRanges(encodeRanges(in))
@@ -122,13 +168,29 @@ func TestEncodeDecodeRanges(t *testing.T) {
 }
 
 func TestCVEFingerprint(t *testing.T) {
-	a := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
-	b := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
-	c := []cveDef{{id: "CVE-2024-1", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 4}}}}
+	a := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
+	b := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
+	c := []cveDef{{id: "CVE-2024-1", summaryEN: "original summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 4}}}}
+	d := []cveDef{{id: "CVE-2024-1", summaryEN: "updated summary", severity: "critical", remediation: "upgrade", ranges: []cveRange{{7, 4, 3}}}}
 	if cveFingerprint(a) != cveFingerprint(b) {
 		t.Error("identical defs should fingerprint the same")
 	}
 	if cveFingerprint(a) == cveFingerprint(c) {
 		t.Error("different ranges should change the fingerprint")
+	}
+	if cveFingerprint(a) == cveFingerprint(d) {
+		t.Error("different displayed summaries should change the fingerprint")
+	}
+}
+
+func TestTruncateCVESummaryPreservesUTF8RuneBoundaries(t *testing.T) {
+	t.Parallel()
+	input := strings.Repeat("界", 241)
+	got := truncateCVESummary(input)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated summary is invalid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 241 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated summary has %d runes and value %q", utf8.RuneCountInString(got), got)
 	}
 }

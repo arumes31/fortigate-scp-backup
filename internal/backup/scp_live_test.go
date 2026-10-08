@@ -1,3 +1,5 @@
+//go:build integration
+
 package backup
 
 import (
@@ -7,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // TestLiveBackupTransfer pulls the config from a real FortiGate over SCP using
@@ -24,6 +28,11 @@ func TestLiveBackupTransfer(t *testing.T) {
 	}
 	port, _ := strconv.Atoi(p[1])
 	s := &Service{logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	hostKeyCallback, err := knownhosts.New(os.Getenv("SSH_KNOWN_HOSTS_FILE"))
+	if err != nil {
+		t.Fatalf("load SSH_KNOWN_HOSTS_FILE: %v", err)
+	}
+	s.hostKeyCallback = hostKeyCallback
 	local := filepath.Join(t.TempDir(), "sys_config")
 
 	if err := s.transfer(p[0], p[2], p[3], port, p[4], local, 60); err != nil {

@@ -184,13 +184,20 @@ func (e *Extension) switchCapableIDs() (map[int]bool, error) {
 // package's results_json probe (switchCapableIDs) has been verified against.
 // When bumping auditSchemaVersion in internal/web/audit_cache.go, confirm the
 // "switches" key still decodes here and raise this constant.
-const auditCacheMaxKnownSchema = 7
+const auditCacheMaxKnownSchema = 8
 
 // deviceRetention bounds how long a device row survives without being seen
 // again. Retaining rows across refreshes (instead of wiping them) preserves
 // first-seen/last-seen history and keeps devices visible through Graylog
 // gaps; the stale fade in the UI marks the ones not seen recently.
 const deviceRetention = 30 * 24 * time.Hour
+
+const storageTimeLayout = "2006-01-02 15:04:05"
+
+func retentionTimestamps(now time.Time, retention time.Duration) (timestamp, cutoff string) {
+	now = now.UTC()
+	return now.Format(storageTimeLayout), now.Add(-retention).Format(storageTimeLayout)
+}
 
 // refreshFirewall fetches the device inventory for one firewall from Graylog
 // and upserts its stored rows: known devices keep their first_seen, unseen
@@ -207,7 +214,7 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	if err != nil {
 		return 0, err
 	}
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 
 	tx, err := e.db.Begin()
 	if err != nil {
@@ -243,7 +250,6 @@ func (e *Extension) refreshFirewall(fwID int, fqdn, rangeSec string) (int, error
 	}
 	// Prune devices unseen past the retention window (updated_at is our own
 	// lexicographically sortable format).
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
 	if _, err := tx.Exec("DELETE FROM devices WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return 0, err
 	}
@@ -390,7 +396,11 @@ func (e *Extension) storeStp(fwID int, stp []StpPort, now string) error {
 	// updated_at is bumped above for every port in this fetch; the timestamp
 	// format is lexicographically sortable, so a string comparison prunes the
 	// ports that have been absent past the retention window.
-	cutoff := time.Now().Add(-stpRetention).Format("2006-01-02 15:04:05")
+	cutoffBase, parseErr := time.ParseInLocation(storageTimeLayout, now, time.UTC)
+	if parseErr != nil {
+		cutoffBase = time.Now().UTC()
+	}
+	_, cutoff := retentionTimestamps(cutoffBase, stpRetention)
 	if _, err := tx.Exec("DELETE FROM stp_ports WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -456,7 +466,7 @@ func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard str
 	// contract and every Graylog-sourced row); updated_at keeps the
 	// space-separated local layout the retention prune's lexicographic
 	// comparison against other rows relies on.
-	nowUpdatedAt := now.Format("2006-01-02 15:04:05")
+	nowUpdatedAt := now.UTC().Format(storageTimeLayout)
 	lastChange := now.UTC().Format(time.RFC3339)
 	if scanErr == nil && role == curRole && state == curState && guard == curGuard {
 		lastChange = curLastChange
@@ -565,7 +575,7 @@ type BlockedPort struct {
 	FwID   int
 	Switch string
 	Port   string
-	Reason string // guard kind, else STP state, else role
+	Reason string // guard kind, else blocking STP state, else blocked role
 	Since  string
 }
 
@@ -625,7 +635,7 @@ func ListBlockedPorts(dataDir string) ([]BlockedPort, error) {
 		switch {
 		case c.guard != "":
 			c.Reason = c.guard
-		case c.state != "":
+		case strings.EqualFold(c.state, "discarding") || strings.EqualFold(c.state, "blocking"):
 			c.Reason = c.state
 		default:
 			c.Reason = c.role

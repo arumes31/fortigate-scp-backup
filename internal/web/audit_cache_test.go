@@ -191,6 +191,17 @@ func TestAuditCacheRoundtrip(t *testing.T) {
 	if !hit || cached.BackupFilename != res.BackupFilename || len(cached.Findings) != len(res.Findings) {
 		t.Fatalf("cache miss after compute: hit=%t", hit)
 	}
+	// A parse-schema bump must recompute instead of mixing cached objects that
+	// predate additive fields such as IPAM VDOM ownership.
+	cached.SchemaVersion = auditSchemaVersion - 1
+	storeAudit(db, 1, cached)
+	refreshed, ok := srv.auditResultFor(db, 1)
+	if !ok || refreshed == nil {
+		t.Fatal("old audit schema was not recomputed")
+	}
+	if refreshed.SchemaVersion != auditSchemaVersion {
+		t.Fatalf("recomputed audit schema = %d, want %d", refreshed.SchemaVersion, auditSchemaVersion)
+	}
 
 	// A newer backup file invalidates the cached entry.
 	fwDir := filepath.Join(srv.cfg.BackupDir, "1")
@@ -398,8 +409,27 @@ func TestTopologyShareLifecycle(t *testing.T) {
 	// Public page renders.
 	rr = httptest.NewRecorder()
 	srv.handleTopologyShared(rr, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", share.Token))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), share.Token) {
+	sharedBody := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(sharedBody, share.Token) {
 		t.Fatalf("shared page: code=%d", rr.Code)
+	}
+	for _, want := range []string{
+		`data-topology-mode="shared"`, `READ-ONLY`, `Expires`,
+		`datetime="`, `Network structure only`, `/static/topology.css`, `/static/topology-page.js`,
+	} {
+		if !strings.Contains(sharedBody, want) {
+			t.Errorf("shared topology page missing metadata %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Primary navigation", "Change password", `id="topologyShareDialog"`, `id="topoDebugDialog"`, " data-live-status"} {
+		if strings.Contains(sharedBody, forbidden) {
+			t.Errorf("shared topology page exposes authenticated chrome %q", forbidden)
+		}
+	}
+	for _, forbidden := range []string{" onclick=", " onchange=", " oninput=", " onkeydown=", " style="} {
+		if strings.Contains(sharedBody, forbidden) {
+			t.Errorf("shared topology page contains inline presentation/behavior %q", forbidden)
+		}
 	}
 
 	// Bad token 404s.
@@ -467,6 +497,11 @@ func TestTopologyShareDeviceInclusion(t *testing.T) {
 	if !on.IncludeDevices {
 		t.Error("share created with include_devices=1 must be flagged")
 	}
+	page := httptest.NewRecorder()
+	srv.handleTopologyShared(page, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", on.Token))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Live client devices included") {
+		t.Fatalf("device-inclusive public page missing scope metadata: code=%d", page.Code)
+	}
 	rr = devicesResp(on.Token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("on devices: want 200, got %d", rr.Code)
@@ -482,6 +517,25 @@ func TestTopologyShareDeviceInclusion(t *testing.T) {
 	// Bad token still 404s on the devices endpoint.
 	if rr := devicesResp("deadbeef"); rr.Code != http.StatusNotFound {
 		t.Fatalf("bad token devices: want 404, got %d", rr.Code)
+	}
+}
+
+func TestSharedTopologyUnlimitedLinkMetadata(t *testing.T) {
+	srv := testServerData(t)
+	form := url.Values{"fw_id": {"1"}, "expiry_hours": {"0"}}
+	req := httptest.NewRequest(http.MethodPost, "/topology/share", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	created := httptest.NewRecorder()
+	srv.handleTopologyShareCreate(created, req)
+	var share topologyShare
+	if err := json.Unmarshal(created.Body.Bytes(), &share); err != nil {
+		t.Fatal(err)
+	}
+
+	page := httptest.NewRecorder()
+	srv.handleTopologyShared(page, withURLParam(httptest.NewRequest(http.MethodGet, "/topology/shared/x", nil), "token", share.Token))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Does not expire") {
+		t.Fatalf("unlimited public page missing explicit expiry metadata: code=%d body=%s", page.Code, page.Body.String())
 	}
 }
 
@@ -515,6 +569,22 @@ func TestTopologyPageRenders(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, "topology.js") {
 		t.Error("topology page missing expected content")
+	}
+	for _, want := range []string{
+		`<link rel="stylesheet" href="/static/topology.css">`,
+		`<script src="/static/topology-page.js"></script>`,
+		`id="topologyPage"`, `id="topologyViewControls"`, `id="topologyDataControls"`,
+		`id="topologyLegend"`, `id="topologyShareDialog"`, `id="topoDebugDialog"`,
+		`data-topology-filter="devices"`, `data-topology-action="maximize"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("topology page missing accessible control %q", want)
+		}
+	}
+	for _, forbidden := range []string{" onclick=", " onchange=", " oninput=", " onkeydown=", " style="} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("topology page still contains inline presentation/behavior %q", forbidden)
+		}
 	}
 }
 
@@ -599,8 +669,12 @@ func TestAuditShellRendersFirewalls(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, "/audit/results/") {
+	if !strings.Contains(body, "fw1.example.com") || !strings.Contains(body, `/static/audit.js`) {
 		t.Error("audit shell missing firewall row or async loader")
+	}
+	auditScript, err := staticFS.ReadFile("static/audit.js")
+	if err != nil || !strings.Contains(string(auditScript), "/audit/results/") {
+		t.Error("external audit loader missing results endpoint")
 	}
 	// The shell must not contain computed findings (they load async).
 	if strings.Contains(body, "admin-no-2fa") {

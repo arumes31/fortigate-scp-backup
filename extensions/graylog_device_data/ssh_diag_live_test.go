@@ -1,3 +1,5 @@
+//go:build integration
+
 package graylogdevicedata
 
 import (
@@ -12,7 +14,21 @@ import (
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
+
+func liveHostKeyManager(t *testing.T) *sshhostkey.Manager {
+	t.Helper()
+	path := os.Getenv("SSH_KNOWN_HOSTS_FILE")
+	if path == "" {
+		path = filepath.Join(t.TempDir(), "ssh_known_hosts")
+	}
+	manager, err := sshhostkey.New(path)
+	if err != nil {
+		t.Fatalf("initialize SSH_KNOWN_HOSTS_FILE: %v", err)
+	}
+	return manager
+}
 
 // TestLiveDiag exercises the real production path (dial → shell → parse) against
 // an actual FortiGate. Skipped unless FGT_DIAG_LIVE="host|port|user|pass" is set.
@@ -30,7 +46,7 @@ func TestLiveDiag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invalid port %q: %v", p[1], err)
 	}
-	client, err := dialSSHDiag(p[0], p[2], p[3], port, 90*time.Second)
+	client, err := dialSSHDiag(p[0], p[2], p[3], port, 90*time.Second, liveHostKeyManager(t).Callback())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -103,6 +119,7 @@ func TestLiveDiagStore(t *testing.T) {
 	}
 	cfg := &config.Config{FgtDiagSSHEnabled: true, FgtDiagSSHTimeoutSec: 180}
 	e := &Extension{db: db, logger: slog.New(slog.NewTextHandler(os.Stderr, nil)), cfg: cfg,
+		hostKeyCallback: liveHostKeyManager(t).Callback(),
 		firewallCreds: func(_ context.Context, _ int) (string, string, string, int, error) {
 			return p[0], p[2], p[3], port, nil
 		}}

@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,31 +26,51 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 	"github.com/arumes31/fortigate-scp-backup/internal/web"
 
 	fgtadmvpnconf "github.com/arumes31/fortigate-scp-backup/extensions/fgt_adm_vpn_conf"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confconv"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
+	fgtconftail "github.com/arumes31/fortigate-scp-backup/extensions/fgt_conftail"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_polsplit"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
 
+// main initializes FortiSafe's dependencies in order and starts its background
+// services and HTTP server.
 func main() {
 	bootstrap := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load(bootstrap)
+	if err := cfg.ValidateRuntime(); err != nil {
+		bootstrap.Error("invalid runtime configuration", "err", err)
+		os.Exit(1)
+	}
+	hostKeys, err := sshhostkey.New(cfg.SSHKnownHostsFile)
+	if err != nil {
+		bootstrap.Error("failed to initialize SSH host-key trust", "err", err)
+		os.Exit(1)
+	}
+	hostKeys.SetAutoAcceptChanges(cfg.SSHAutoAcceptChangedKeys)
+	hostKeyCallback := hostKeys.Callback()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
+	startupStarted := time.Now()
 	logger.Info("starting FortiSafe",
 		"totp_enabled", cfg.TOTPEnabled,
 		"radius_enabled", cfg.RadiusEnabled,
 		"ext_adm_vpn_conf", cfg.ExtAdmVpnConf,
 		"scp_timeout", cfg.SCPTimeout,
-		"port", cfg.Port)
+		"ssh_auto_accept_changed_keys", cfg.SSHAutoAcceptChangedKeys,
+		"port", cfg.Port,
+		"startup_progress_interval", startupHeartbeatInterval)
 
-	ctx := context.Background()
+	ctx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	// Bound all startup database work (connect+retry, schema init, migrations,
 	// schedule load) so a slow or unreachable database cannot block boot forever.
@@ -62,35 +83,50 @@ func main() {
 		logger.Error("failed to initialize cipher", "err", err)
 		os.Exit(1)
 	}
-	if cipher.Enabled() {
-		logger.Info("encryption at rest enabled (credentials + backup files)")
-	}
+	logger.Info("encryption at rest enabled (credentials + backup files)")
 
 	// Shared PostgreSQL store + schema init/migrations.
-	store, err := database.NewStore(startupCtx, cfg, cipher, logger)
+	store, err := runStartupPhase(logger, "database_connection", startupHeartbeatInterval, func() (*database.Store, error) {
+		return database.NewStore(startupCtx, cfg, cipher, logger)
+	})
 	if err != nil {
-		logger.Error("failed to connect to database", "err", err)
 		os.Exit(1)
 	}
 	defer store.Close()
-	if err := store.InitSchema(startupCtx, cfg.TOTPEnabled, cfg.TOTPSecret); err != nil {
-		logger.Error("failed to initialize database schema", "err", err)
+	if err := runStartupAction(logger, "database_schema", func() error {
+		return store.InitSchema(startupCtx, cfg.TOTPEnabled, cfg.TOTPSecret, cfg.BootstrapAdminPassword)
+	}); err != nil {
 		os.Exit(1)
 	}
-	if err := store.Migrate(startupCtx); err != nil {
-		logger.Error("failed to run database migrations", "err", err)
+	if err := runStartupAction(logger, "database_migrations", func() error {
+		return store.Migrate(startupCtx)
+	}); err != nil {
+		os.Exit(1)
+	}
+	credentialMigrations, err := runStartupPhase(logger, "credential_encryption", startupHeartbeatInterval, func() (int, error) {
+		return store.MigrateFirewallEncryption(startupCtx)
+	})
+	if err != nil {
 		os.Exit(1)
 	}
 	if cfg.ActivityLogRetentionDays > 0 {
 		go pruneActivityLogs(store, cfg.ActivityLogRetentionDays, logger)
 	}
 
-	// Backup storage directory. 0o750 keeps the FortiGate configs (potentially
-	// plaintext when encryption at rest is disabled) off world-readable paths.
-	if err := os.MkdirAll(cfg.BackupDir, 0o750); err != nil {
-		logger.Error("failed to create backup directory", "dir", cfg.BackupDir, "err", err)
+	// Backup storage directory. 0o750 keeps encrypted FortiGate configs and
+	// migration work files off world-readable paths.
+	backupMigrations, err := runStartupPhase(logger, "backup_encryption", startupHeartbeatInterval, func() (int, error) {
+		if err := os.MkdirAll(cfg.BackupDir, 0o750); err != nil {
+			return 0, err
+		}
+		return backup.MigrateEncryptionAtRest(cfg.BackupDir, cipher)
+	})
+	if err != nil {
 		os.Exit(1)
 	}
+	cipher.RequireEncrypted()
+	logger.Info("encryption migration verified",
+		"credentials_migrated", credentialMigrations, "backups_migrated", backupMigrations)
 
 	// Core services.
 	mail := mailer.New(cfg, logger)
@@ -98,13 +134,15 @@ func main() {
 	sess := session.New(cfg.SessionKey, cfg.CookieSecure, cfg.TrustProxyHeaders)
 	sched := scheduler.New(logger, cfg.TZ)
 	backupSvc := backup.New(store, mail, cfg, cipher, logger)
+	backupSvc.SetHostKeyCallback(hostKeyCallback)
 
 	// Rebuild recurring backup jobs from the firewalls table (replaces the
 	// APScheduler job store). Stagger startup by 10s per firewall. A cron
 	// expression, when present, takes precedence over the interval.
-	schedules, err := store.ListSchedules(startupCtx)
+	schedules, err := runStartupPhase(logger, "schedule_restore", startupHeartbeatInterval, func() ([]models.FirewallSchedule, error) {
+		return store.ListSchedules(startupCtx)
+	})
 	if err != nil {
-		logger.Error("failed to load firewall schedules", "err", err)
 		os.Exit(1)
 	}
 	for i, sc := range schedules {
@@ -129,11 +167,13 @@ func main() {
 	logger.Info("scheduled backup jobs", "count", len(sched.IDs()))
 
 	// Web server.
-	srv, err := web.New(cfg, store, sched, backupSvc, sess, authn, cipher, logger)
+	srv, err := runStartupPhase(logger, "web_server", startupHeartbeatInterval, func() (*web.Server, error) {
+		return web.New(cfg, store, sched, backupSvc, sess, authn, cipher, logger)
+	})
 	if err != nil {
-		logger.Error("failed to build web server", "err", err)
 		os.Exit(1)
 	}
+	srv.SetHostKeyManager(hostKeys)
 	// Live status updates: the engine notifies the web SSE hub on every change.
 	backupSvc.SetStatusHook(srv.BroadcastStatus)
 	router := srv.Routes()
@@ -145,37 +185,55 @@ func main() {
 	registry.Register(fgt_confgen.New(cfg, logger))
 	registry.Register(fgt_polsplit.New(cfg, logger))
 	registry.Register(fgt_confconv.New(cfg, logger))
-	if err := registry.MountEnabled(router, extension.Deps{
-		DB:            store.Pool(),
-		LogActivity:   store.LogActivity,
-		LoginRequired: sess.LoginRequired,
-		CurrentUser:   func(r *http.Request) string { return sess.User(r).Username },
-		BroadcastOp:   srv.BroadcastOp,
-		Logger:        logger,
-		TZ:            cfg.TZ,
-		DataDir:       cfg.DataDir,
-		FirewallCreds: func(ctx context.Context, id int) (string, string, string, int, error) {
-			fw, err := store.GetFirewall(ctx, id)
-			if err != nil {
-				return "", "", "", 0, err
-			}
-			return fw.FQDN, fw.Username, fw.Password, fw.SSHPort, nil
-		},
+	registry.Register(fgtconftail.New(cfg, logger))
+	if err := runStartupAction(logger, "extensions", func() error {
+		return registry.MountEnabled(router, extension.Deps{
+			Context:        ctx,
+			DB:             store.Pool(),
+			LogActivity:    store.LogActivity,
+			LoginRequired:  sess.LoginRequired,
+			CurrentUser:    func(r *http.Request) string { return sess.User(r).Username },
+			PageBase:       srv.PageBase,
+			BroadcastOp:    srv.BroadcastOp,
+			Schedule:       sched.Schedule,
+			ScheduleCron:   sched.ScheduleCron,
+			RegisterHealth: srv.RegisterHealth,
+			Logger:         logger,
+			TZ:             cfg.TZ,
+			DataDir:        cfg.DataDir,
+			FirewallCreds: func(ctx context.Context, id int) (string, string, string, int, error) {
+				fw, err := store.GetFirewall(ctx, id)
+				if err != nil {
+					return "", "", "", 0, err
+				}
+				return fw.FQDN, fw.Username, fw.Password, fw.SSHPort, nil
+			},
+			HostKeyCallback: hostKeyCallback,
+			Cipher:          cipher,
+		})
 	}); err != nil {
-		logger.Error("failed to mount extensions", "err", err)
 		os.Exit(1)
 	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,
-		ReadHeaderTimeout: 30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
+	listener, err := bindHTTPAndCompleteStartup(logger, httpSrv.Addr, startupStarted)
+	if err != nil {
+		logger.Error("http server error", "err", err)
+		os.Exit(1)
 	}
 
 	// Graceful shutdown.
 	go func() {
 		logger.Info("listening", "addr", httpSrv.Addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("http server error", "err", err)
 			os.Exit(1)
 		}
@@ -185,6 +243,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	logger.Info("shutting down")
+	cancelApp()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -192,6 +251,17 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	sched.Stop()
 	logger.Info("shutdown complete")
+}
+
+// bindHTTPAndCompleteStartup binds the HTTP socket before reporting startup
+// completion, preventing a bind failure from being advertised as readiness.
+func bindHTTPAndCompleteStartup(logger *slog.Logger, addr string, startupStarted time.Time) (net.Listener, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("startup completed", "duration", time.Since(startupStarted).Round(time.Millisecond))
+	return listener, nil
 }
 
 // pruneActivityLogs periodically deletes activity rows older than the retention

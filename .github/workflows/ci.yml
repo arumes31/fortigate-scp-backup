@@ -2,9 +2,22 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_quality_failure:
+        description: Exercise the publication guard by forcing CI to fail
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      force_quality_failure:
+        description: Exercise the publication guard by forcing CI to fail
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -14,10 +27,12 @@ jobs:
     name: Build · Vet · Test · Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -39,20 +54,88 @@ jobs:
         run: go test -race ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          version: v2.13.2
+
+      - name: Forced publication-guard rehearsal
+        if: inputs.force_quality_failure
+        run: |
+          echo "Intentional quality failure: downstream image jobs must remain blocked."
+          exit 1
 
   govulncheck:
     name: Vulnerability scan (govulncheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Run govulncheck
         run: govulncheck ./...
+
+  container:
+    name: Container vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build image from this revision
+        run: docker build --tag fortisafe-scan:${{ github.sha }} .
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fortisafe-scan:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          vuln-type: os,library
+
+  desktop-ux:
+    name: Desktop UX · Chromium · axe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui-tests/package-lock.json
+
+      - name: Install locked browser-test dependencies
+        run: npm --prefix ui-tests ci --ignore-scripts
+
+      - name: Install pinned Chromium
+        run: npm --prefix ui-tests exec -- playwright install --with-deps chromium
+
+      - name: Run desktop browser and accessibility gates
+        run: npm --prefix ui-tests run test:desktop
+
+      - name: Upload synthetic browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: synthetic-desktop-ux-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ui-tests/test-results/
+            ui-tests/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

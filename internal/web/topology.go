@@ -145,29 +145,36 @@ type topologyShare struct {
 	IncludeDevices bool   `json:"include_devices"`      // expose the live device inventory
 }
 
-// resolveShare validates a token and returns the firewall it grants access to
-// and whether the share includes the live device inventory. Expired tokens are
-// treated as absent (and cleaned up).
-func resolveShare(db *sql.DB, token string) (fwID int, includeDevices bool, ok bool) {
+// resolveShareDetails validates a token and returns its public-view metadata.
+// Expired or malformed grants are treated as absent and cleaned up.
+func resolveShareDetails(db *sql.DB, token string) (topologyShare, bool) {
 	if db == nil || token == "" || len(token) > 128 {
-		return 0, false, false
+		return topologyShare{}, false
 	}
-	var expiresAt string
+	share := topologyShare{Token: token}
 	var incDev int
-	err := db.QueryRow("SELECT fw_id, COALESCE(expires_at, ''), COALESCE(include_devices, 0) FROM topology_shares WHERE token = ?", token).
-		Scan(&fwID, &expiresAt, &incDev)
+	err := db.QueryRow("SELECT fw_id, created_at, COALESCE(expires_at, ''), COALESCE(include_devices, 0) FROM topology_shares WHERE token = ?", token).
+		Scan(&share.FwID, &share.CreatedAt, &share.ExpiresAt, &incDev)
 	if err != nil {
-		return 0, false, false
+		return topologyShare{}, false
 	}
-	if expiresAt != "" {
+	share.IncludeDevices = incDev == 1
+	if share.ExpiresAt != "" {
 		// Timestamps are stored as local wall-clock strings: parse them in the
 		// same location, otherwise the expiry shifts by the UTC offset.
-		if exp, perr := time.ParseInLocation(insightsTimeLayout, expiresAt, time.Local); perr != nil || time.Now().After(exp) {
+		if exp, perr := time.ParseInLocation(insightsTimeLayout, share.ExpiresAt, time.Local); perr != nil || time.Now().After(exp) {
 			_, _ = db.Exec("DELETE FROM topology_shares WHERE token = ?", token)
-			return 0, false, false
+			return topologyShare{}, false
 		}
 	}
-	return fwID, incDev == 1, true
+	return share, true
+}
+
+// resolveShare keeps the endpoint-facing tuple small while page rendering uses
+// resolveShareDetails for expiry and data-scope disclosure.
+func resolveShare(db *sql.DB, token string) (fwID int, includeDevices bool, ok bool) {
+	share, ok := resolveShareDetails(db, token)
+	return share.FwID, share.IncludeDevices, ok
 }
 
 // handleTopologyShareCreate creates a share token for a firewall (POST,
@@ -293,18 +300,27 @@ type topologySharedPage struct {
 	Token          string
 	Lang           string
 	IncludeDevices bool // gates the client-side device fetch + device filter
+	ExpiresAt      time.Time
+	NeverExpires   bool
 }
 
 // handleTopologyShared renders the public read-only topology page.
 func (s *Server) handleTopologyShared(w http.ResponseWriter, r *http.Request) {
 	db, _ := s.insightsDB()
 	token := chi.URLParam(r, "token")
-	_, includeDevices, ok := resolveShare(db, token)
+	share, ok := resolveShareDetails(db, token)
 	if !ok {
 		s.handleNotFound(w, r)
 		return
 	}
-	s.render(w, "topology_shared.html", topologySharedPage{Token: token, Lang: langFromRequest(r), IncludeDevices: includeDevices})
+	var expiresAt time.Time
+	if share.ExpiresAt != "" {
+		expiresAt, _ = time.ParseInLocation(insightsTimeLayout, share.ExpiresAt, time.Local)
+	}
+	s.render(w, "topology_shared.html", topologySharedPage{
+		Token: share.Token, Lang: langFromRequest(r), IncludeDevices: share.IncludeDevices,
+		ExpiresAt: expiresAt, NeverExpires: share.ExpiresAt == "",
+	})
 }
 
 // handleTopologySharedDevices serves the live device inventory + overlays for a

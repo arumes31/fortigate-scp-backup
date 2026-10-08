@@ -5,9 +5,12 @@
 package fgtadmvpnconf
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
+	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
 // Extension implements extension.Extension.
@@ -27,12 +31,17 @@ type Extension struct {
 	cfg    *config.Config
 	logger *slog.Logger
 
-	db   *sql.DB
-	tmpl *template.Template
-	tz   *time.Location
+	db           *sql.DB
+	page         *webui.Renderer
+	editTemplate *template.Template
+	tz           *time.Location
 
 	logActivity func(username, action, details string)
 	currentUser func(*http.Request) string
+	pageBase    extension.PageBaseProvider
+	// buildConfigZipFn is a narrow test seam for per-entry bulk failure handling.
+	// Production uses buildConfigZip when this is nil.
+	buildConfigZipFn func(*VpnConfig) (*bytes.Buffer, error)
 
 	// lookupHost resolves a hostname for the DNS record check; tests replace it
 	// with a stub so no real DNS traffic happens.
@@ -59,8 +68,12 @@ func (e *Extension) Enabled() bool { return e.cfg.ExtAdmVpnConf }
 // Mount opens the private database, runs migrations, parses templates, registers
 // routes and starts the Graylog background worker.
 func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
+	if d.PageBase == nil {
+		return errors.New("fgt_adm_vpn_conf: shared page context is required")
+	}
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
+	e.pageBase = d.PageBase
 	e.tz = d.TZ
 	if e.tz == nil {
 		e.tz = time.UTC
@@ -100,12 +113,20 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		// simple GET navigation/prefetch/<img>.
 		pr.Post("/delete/{id}", e.delete)
 		pr.Get("/generate_single/{id}", e.generateSingle)
+		pr.Post("/bulk/generate", e.bulkGenerate)
+		pr.Post("/bulk/export", e.bulkExport)
 		pr.Get("/export", e.exportCSV)
 		pr.Get("/export_bookmarks", e.exportBookmarks)
 	})
 
 	// Public status feed (no auth) consumed by external monitoring.
 	r.Get("/graylog_dsv", e.graylogDSV)
+
+	staticSub, err := fs.Sub(templatesFS, "static")
+	if err != nil {
+		return err
+	}
+	r.Handle("/static/*", http.StripPrefix(e.Prefix()+"/static/", http.FileServer(http.FS(staticSub))))
 
 	go e.graylogWorker()
 	go e.dnsWorker()

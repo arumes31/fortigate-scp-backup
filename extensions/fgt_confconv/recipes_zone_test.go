@@ -132,3 +132,25 @@ func TestZoneRecipe_NoWarningForUntouchedReferences(t *testing.T) {
 		t.Errorf("zone membership must not warn about untouched references, got %v", warnings)
 	}
 }
+
+func TestZoneRecipe_WarnsWhenInboundPolicyMovesAwayFromVIPInterface(t *testing.T) {
+	cfg := freshZoneConfig()
+	cfg.WatchedLines = []WatchedLine{
+		{Section: "firewall vip", Edit: "VIP-PORT1", Line: `set extintf "port1"`},
+	}
+
+	_, warnings, err := (zoneRecipe{}).Run(cfg, mustJSON(t, ZoneOptions{
+		Interfaces: []string{"port1", "port2"},
+		ZoneName:   "zone-lan",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Section == "firewall vip" && warning.Line == `set extintf "port1"` &&
+			strings.Contains(warning.Detail, "VIP-PORT1") && strings.Contains(warning.Detail, "zone-lan") {
+			return
+		}
+	}
+	t.Fatalf("expected targeted VIP/inbound-policy warning, got %v", warnings)
+}

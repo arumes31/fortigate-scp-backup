@@ -1,11 +1,54 @@
 /* Configuration Conversions front-end: load the parsed config summary for a
  * firewall, let the operator pick recipes + options, run the chained
  * pipeline, and render the resulting CLI sections + warnings. */
+(function () {
 'use strict';
 
-const ccState = { summary: null, vlanMoveRowCount: 0, combined: '', fortilinkPorts: [] };
+const ccRoot = document.getElementById('confconv-page');
+if (!ccRoot) return;
+const ccDE = document.documentElement.lang === 'de';
+const ccMessages = {
+    'Interface(s) → FortiLink': 'Schnittstelle(n) → FortiLink',
+    'WAN interface(s) → SD-WAN': 'WAN-Schnittstelle(n) → SD-WAN',
+    'Interface-based → zone-based policies': 'Schnittstellenbasierte → zonenbasierte Richtlinien',
+    'SD-WAN static routes → SD-WAN rules': 'Statische SD-WAN-Routen → SD-WAN-Regeln',
+    'No interfaces found in this backup.': 'In diesem Backup wurden keine Schnittstellen gefunden.',
+    'No ports selected yet.': 'Noch keine Ports ausgewählt.',
+    'No physical ports found — load a firewall first.': 'Keine physischen Ports gefunden — laden Sie zuerst eine Firewall.',
+    'Select interface': 'Schnittstelle auswählen',
+    'Remove': 'Entfernen',
+    'No interface in this backup has VLANs stacked on it.': 'Keine Schnittstelle in diesem Backup enthält gestapelte VLANs.',
+    'Select a recipe to build the preview.': 'Wählen Sie ein Rezept aus, um die Vorschau zu erstellen.',
+    'Generating preview…': 'Vorschau wird erzeugt…',
+    'Conversion preview generated. Review every warning and CLI section before use.': 'Konvertierungsvorschau erzeugt. Prüfen Sie vor der Verwendung jede Warnung und jeden CLI-Abschnitt.',
+    'No warnings were reported.': 'Es wurden keine Warnungen gemeldet.',
+    'No CLI sections were generated.': 'Es wurden keine CLI-Abschnitte erzeugt.',
+    'Copy section': 'Abschnitt kopieren',
+    'CLI section copied.': 'CLI-Abschnitt kopiert.',
+    'Copy failed. Select the CLI text and copy it manually.': 'Kopieren fehlgeschlagen. Markieren und kopieren Sie den CLI-Text manuell.',
+    'No generated CLI is available to download.': 'Es ist keine erzeugte CLI zum Herunterladen verfügbar.',
+    'CLI download prepared.': 'CLI-Download vorbereitet.',
+    'Select Firewall': 'Firewall auswählen',
+    'All CLI copied.': 'Gesamte CLI kopiert.',
+};
+function ccT(english) { return ccDE ? (ccMessages[english] || english) : english; }
 
-function $(id) { return document.getElementById(id); }
+const ccState = {
+    summary: null,
+    vlanMoveRowCount: 0,
+    combined: '',
+    fortilinkPorts: [],
+    portDialogReturnFocus: null,
+};
+
+const recipeOrder = [
+    { key: 'iface-to-fortilink', enable: 'cc-fl-enable', label: 'Interface(s) → FortiLink' },
+    { key: 'wan-to-sdwan', enable: 'cc-sw-enable', label: 'WAN interface(s) → SD-WAN' },
+    { key: 'iface-to-zone', enable: 'cc-zn-enable', label: 'Interface-based → zone-based policies' },
+    { key: 'sdwan-routes-to-rules', enable: 'cc-sr-enable', label: 'SD-WAN static routes → SD-WAN rules' },
+];
+
+function $(id) { return ccRoot.querySelector('#' + CSS.escape(id)); }
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -45,7 +88,11 @@ async function loadSummary() {
         const data = await fetchJSON(`/fgt-confconv/config_summary?fw_id=${encodeURIComponent(fwID)}`);
         ccState.summary = data;
         $('cc-backup-info').hidden = false;
-        $('cc-backup-info').textContent = `Backup from ${data.backupTime} — FortiOS ${data.version}`;
+        const backupInfo = $('cc-backup-info');
+        const backupTime = document.createElement('time');
+        backupTime.dateTime = data.backupTime;
+        backupTime.textContent = data.backupTime;
+        backupInfo.replaceChildren(document.createTextNode(ccDE ? 'Backup vom ' : 'Backup from '), backupTime, document.createTextNode(` — FortiOS ${data.version}`));
         applySDWANGate(data.versionOK, data.version);
         renderChecklist('cc-sw-members', 'sw-mem');
         renderChecklist('cc-zn-members', 'zn-mem');
@@ -53,7 +100,7 @@ async function loadSummary() {
         refreshVLANMoveOptions();
     } catch (err) {
         $('cc-backup-info').hidden = false;
-        $('cc-backup-info').textContent = 'Failed to load config: ' + err.message;
+        $('cc-backup-info').textContent = (ccDE ? 'Konfiguration konnte nicht geladen werden: ' : 'Failed to load config: ') + err.message;
     }
     updateGenerateEnabled();
 }
@@ -64,13 +111,14 @@ function resetOptionsUI() {
     ccState.vlanMoveRowCount = 0;
     ccState.fortilinkPorts = [];
     renderFortilinkPorts();
+    renderPipelinePreview();
 }
 
 function renderChecklist(containerId, prefix) {
     const container = $(containerId);
     const ifaces = sortedInterfaces();
     if (!ifaces.length) {
-        container.innerHTML = '<p class="cc-muted">No interfaces found in this backup.</p>';
+        container.innerHTML = `<p class="cc-muted">${ccT('No interfaces found in this backup.')}</p>`;
         return;
     }
     container.innerHTML = ifaces.map(iface => {
@@ -99,56 +147,64 @@ function renderFortilinkPorts() {
     const box = $('cc-fl-members-chips');
     if (!box) return;
     if (!ccState.fortilinkPorts.length) {
-        box.innerHTML = '<span class="cc-muted">No ports selected yet.</span>';
+        box.innerHTML = `<span class="cc-muted">${ccT('No ports selected yet.')}</span>`;
         return;
     }
     box.innerHTML = ccState.fortilinkPorts.map(p =>
-        `<span class="chip cc-port-chip" data-port="${esc(p)}">${esc(p)} <span class="cc-chip-x" aria-hidden="true">×</span></span>`
+        `<button type="button" class="chip cc-port-chip" data-port="${esc(p)}" aria-label="Remove ${esc(p)} from FortiLink selection">${esc(p)} <span class="cc-chip-x" aria-hidden="true">×</span></button>`
     ).join('');
     box.querySelectorAll('.cc-port-chip').forEach(chip => {
         chip.addEventListener('click', () => {
             ccState.fortilinkPorts = ccState.fortilinkPorts.filter(x => x !== chip.dataset.port);
             renderFortilinkPorts();
             updateGenerateEnabled();
+            renderPipelinePreview();
         });
     });
 }
 
-function openPortModal() {
+function openPortDialog() {
     const list = $('cc-fl-port-list');
     const cands = physicalPortCandidates();
     if (!cands.length) {
-        list.innerHTML = '<p class="cc-muted">No physical ports found — load a firewall first.</p>';
+        list.innerHTML = `<p class="cc-muted">${ccT('No physical ports found — load a firewall first.')}</p>`;
     } else {
         const selected = new Set(ccState.fortilinkPorts);
         list.innerHTML = cands.map(i => {
-            const id = `cc-port-opt-${i.name}`;
             const roleTag = i.role ? ` <span class="cc-muted">(${esc(i.role)})</span>` : '';
-            return `<label class="cc-check-item" for="${esc(id)}">
-                <input type="checkbox" value="${esc(i.name)}" id="${esc(id)}"${selected.has(i.name) ? ' checked' : ''}>${esc(i.name)}${roleTag}
+            return `<label class="cc-check-item">
+                <input type="checkbox" value="${esc(i.name)}"${selected.has(i.name) ? ' checked' : ''}>${esc(i.name)}${roleTag}
             </label>`;
         }).join('');
     }
     $('cc-port-search').value = '';
     filterPortList();
-    $('cc-port-modal').classList.add('open');
+    ccState.portDialogReturnFocus = document.activeElement;
+    $('cc-port-dialog').showModal();
     $('cc-port-search').focus();
 }
 
-function closePortModal() { $('cc-port-modal').classList.remove('open'); }
+function closePortDialog() {
+    const dialog = $('cc-port-dialog');
+    if (dialog.open) dialog.close('cancel');
+}
 
-function commitPortModal() {
+function commitPortDialog() {
     ccState.fortilinkPorts = checkedValues('cc-fl-port-list');
     renderFortilinkPorts();
-    closePortModal();
+    $('cc-port-dialog').close('apply');
     updateGenerateEnabled();
+    renderPipelinePreview();
 }
 
 function filterPortList() {
     const q = ($('cc-port-search').value || '').toLowerCase();
+    let visible = 0;
     $('cc-fl-port-list').querySelectorAll('.cc-check-item').forEach(item => {
-        item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
+        item.hidden = !item.textContent.toLowerCase().includes(q);
+        if (!item.hidden) visible++;
     });
+    $('cc-port-empty').hidden = visible !== 0 || !physicalPortCandidates().length;
 }
 
 /* ---------------- VLAN moves (FortiLink recipe) ---------------- */
@@ -156,7 +212,7 @@ function filterPortList() {
 function vlanMoveIfaceOptions(selected) {
     const opts = sortedInterfaces().map(i =>
         `<option value="${esc(i.name)}"${i.name === selected ? ' selected' : ''}>${esc(i.name)}</option>`).join('');
-    return `<option value="">Select interface</option>${opts}`;
+    return `<option value="">${ccT('Select interface')}</option>${opts}`;
 }
 
 function addVLANMoveRow() {
@@ -167,21 +223,25 @@ function addVLANMoveRow() {
     row.innerHTML = `
         <select class="form-control cc-vlanmove-iface">${vlanMoveIfaceOptions('')}</select>
         <input type="number" class="form-control cc-vlanmove-vlanid" placeholder="VLAN ID" min="1" max="4094">
-        <button type="button" class="btn btn-sm cc-vlanmove-remove">Remove</button>
+        <button type="button" class="btn btn-sm cc-vlanmove-remove">${ccT('Remove')}</button>
     `;
-    row.querySelector('.cc-vlanmove-remove').addEventListener('click', () => row.remove());
+    row.querySelector('.cc-vlanmove-remove').addEventListener('click', () => {
+        row.remove();
+        renderPipelinePreview();
+    });
     $('cc-fl-vlanmoves').appendChild(row);
+    renderPipelinePreview();
 }
 
 function refreshVLANMoveOptions() {
-    document.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-iface').forEach(sel => {
+    ccRoot.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-iface').forEach(sel => {
         const current = sel.value;
         sel.innerHTML = vlanMoveIfaceOptions(current);
     });
 }
 
 function collectVLANMoves() {
-    return Array.from(document.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-row')).map(row => ({
+    return Array.from(ccRoot.querySelectorAll('#cc-fl-vlanmoves .cc-vlanmove-row')).map(row => ({
         interface: row.querySelector('.cc-vlanmove-iface').value,
         vlan_id: parseInt(row.querySelector('.cc-vlanmove-vlanid').value, 10) || 0,
     })).filter(m => m.interface && m.vlan_id);
@@ -198,7 +258,7 @@ function renderVLANParents() {
     });
     const parents = Object.keys(counts).sort((a, b) => a.localeCompare(b));
     if (!parents.length) {
-        container.innerHTML = '<p class="cc-muted">No interface in this backup has VLANs stacked on it.</p>';
+        container.innerHTML = `<p class="cc-muted">${ccT('No interface in this backup has VLANs stacked on it.')}</p>`;
         return;
     }
     container.innerHTML = parents.map(p => {
@@ -221,6 +281,45 @@ function updateGenerateEnabled() {
     $('cc-generate-btn').disabled = !(anyEnabled && fwPicked);
 }
 
+function selectionSummary(key) {
+    switch (key) {
+    case 'iface-to-fortilink': {
+        const vlanCount = collectVLANMoves().length + checkedValues('cc-fl-bulkvlan').length;
+        const ports = ccState.fortilinkPorts.length;
+        return `${ports} member port${ports === 1 ? '' : 's'}; ${vlanCount} VLAN move${vlanCount === 1 ? '' : 's'}`;
+    }
+    case 'wan-to-sdwan': {
+        const members = checkedValues('cc-sw-members').length;
+        const zone = $('cc-sw-zone').value.trim() || 'default zone name';
+        return `${members} WAN member${members === 1 ? '' : 's'}; ${zone}`;
+    }
+    case 'iface-to-zone': {
+        const members = checkedValues('cc-zn-members').length;
+        const zone = $('cc-zn-zone').value.trim() || 'new zone';
+        return `${members} interface${members === 1 ? '' : 's'}; ${zone}`;
+    }
+    case 'sdwan-routes-to-rules':
+        return $('cc-sr-strategy').selectedOptions[0]?.textContent || 'manual strategy';
+    default:
+        return '';
+    }
+}
+
+function renderPipelinePreview() {
+    const selected = recipeOrder.filter(recipe => $(recipe.enable).checked);
+    const preview = $('cc-pipeline-preview');
+    if (!selected.length) {
+        preview.innerHTML = `<li class="cc-muted">${ccT('Select a recipe to build the preview.')}</li>`;
+        return;
+    }
+    preview.innerHTML = selected.map(recipe => `
+        <li data-recipe-key="${recipe.key}">
+            <strong>${esc(ccT(recipe.label))}</strong>
+            <span class="cc-muted">${esc(selectionSummary(recipe.key))}</span>
+        </li>
+    `).join('');
+}
+
 /* Below FortiOS 7.4 only the SD-WAN recipes are unavailable (they emit 7.4+
  * `config system sdwan` syntax); FortiLink and zone conversions still run. */
 function applySDWANGate(ok, version) {
@@ -239,12 +338,14 @@ function applySDWANGate(ok, version) {
             `FortiOS ${version}: SD-WAN recipes need 7.4+ and are disabled here — FortiLink and zone recipes are available.`;
     }
     updateGenerateEnabled();
+    renderPipelinePreview();
 }
 
 function wireRecipeToggle(enableId, optionsId) {
     $(enableId).addEventListener('change', () => {
         $(optionsId).hidden = !$(enableId).checked;
         updateGenerateEnabled();
+        renderPipelinePreview();
     });
 }
 
@@ -301,7 +402,10 @@ async function generate() {
     const recipes = buildSelections();
     if (!fwID || !recipes.length) return;
     const btn = $('cc-generate-btn');
+    const feedback = $('cc-action-feedback');
     btn.disabled = true;
+    feedback.dataset.state = 'loading';
+    feedback.textContent = ccT('Generating preview…');
     try {
         const result = await fetchJSON('/fgt-confconv/convert', {
             method: 'POST',
@@ -309,8 +413,11 @@ async function generate() {
             body: JSON.stringify({ fw_id: parseInt(fwID, 10), recipes }),
         });
         renderResults(result);
+        feedback.dataset.state = 'success';
+        feedback.textContent = ccT('Conversion preview generated. Review every warning and CLI section before use.');
     } catch (err) {
-        alert('Conversion failed: ' + err.message);
+        feedback.dataset.state = 'error';
+        feedback.textContent = (ccDE ? 'Konvertierung fehlgeschlagen: ' : 'Conversion failed: ') + err.message;
     } finally {
         updateGenerateEnabled();
     }
@@ -318,40 +425,105 @@ async function generate() {
 
 function renderResults(result) {
     $('cc-results').hidden = false;
+    const changes = result.changes || [];
+    const warnings = result.warnings || [];
+    const sections = result.sections || [];
+    const changeCount = Number.isInteger(result.changeCount) ? result.changeCount : changes.length;
+    $('cc-result-summary').textContent = ccDE
+        ? `${changeCount} modellierte Änderung${changeCount === 1 ? '' : 'en'} · ${warnings.length} Warnung${warnings.length === 1 ? '' : 'en'} · ${sections.length} CLI-Abschnitt${sections.length === 1 ? '' : 'e'}`
+        : `${changeCount} modeled change${changeCount === 1 ? '' : 's'} · ${warnings.length} warning${warnings.length === 1 ? '' : 's'} · ${sections.length} CLI section${sections.length === 1 ? '' : 's'}`;
+    $('cc-impact-count').textContent = String(changeCount);
+    $('cc-warning-count').textContent = String(warnings.length);
+    $('cc-cli-count').textContent = String(sections.length);
+
+    const impactRows = $('cc-impact-rows');
+    const noChanges = $('cc-no-changes');
+    const impactTable = $('cc-impact-table-wrap');
+    noChanges.hidden = changes.length !== 0;
+    impactTable.hidden = changes.length === 0;
+    impactRows.innerHTML = changes.map(change => `
+        <tr>
+            <td>${esc(change.kind)}</td>
+            <td><strong>${esc(change.name)}</strong></td>
+            <td><span class="cc-impact-action" data-action="${esc(change.action)}">${esc(change.action)}</span></td>
+            <td>${esc(change.summary)}</td>
+        </tr>
+    `).join('');
+    const truncated = $('cc-impact-truncated');
+    truncated.hidden = !result.changesTruncated;
+    truncated.textContent = result.changesTruncated
+        ? (ccDE ? `Die ersten ${changes.length} von ${changeCount} modellierten Änderungen werden in deterministischer Reihenfolge angezeigt.` : `Showing the first ${changes.length} of ${changeCount} modeled changes in deterministic order.`)
+        : '';
+
     const warningsEl = $('cc-warnings');
-    if (result.warnings && result.warnings.length) {
-        warningsEl.hidden = false;
-        warningsEl.innerHTML = '<h3>Needs manual review</h3><ul class="cc-warning-list">' +
-            result.warnings.map(w =>
+    if (warnings.length) {
+        warningsEl.innerHTML = '<ul class="cc-warning-list">' +
+            warnings.map(w =>
                 `<li><strong>${esc(w.recipe)}:</strong> ${esc(w.detail)}${w.line ? ` <code>${esc(w.line)}</code>` : ''}</li>`
             ).join('') + '</ul>';
     } else {
-        warningsEl.hidden = true;
-        warningsEl.innerHTML = '';
+        warningsEl.innerHTML = `<p class="cc-empty">${ccT('No warnings were reported.')}</p>`;
     }
 
     const sectionsEl = $('cc-sections');
-    sectionsEl.innerHTML = (result.sections || []).map((s, i) => `
+    sectionsEl.innerHTML = sections.map((s, i) => `
         <h3>${esc(s.label)}</h3>
-        <button type="button" class="btn btn-sm cc-copy" data-target="cc-section-${i}">Copy</button>
+        <button type="button" class="btn btn-sm cc-copy" data-target="cc-section-${i}">${ccT('Copy section')}</button>
         <pre class="cc-config" id="cc-section-${i}">${esc(s.lines.join('\n'))}</pre>
-    `).join('');
+    `).join('') || `<p class="cc-empty">${ccT('No CLI sections were generated.')}</p>`;
 
     sectionsEl.querySelectorAll('.cc-copy').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const pre = $(btn.dataset.target);
-            if (navigator.clipboard) navigator.clipboard.writeText(pre.textContent);
+            await copyResultText(pre.textContent, ccT('CLI section copied.'));
         });
     });
 
     ccState.combined = result.combined || '';
+    $('cc-result-tab-impact').click();
+    $('cc-results').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+}
+
+async function copyResultText(value, successMessage) {
+    const feedback = $('cc-copy-feedback');
+    try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard is unavailable');
+        await navigator.clipboard.writeText(value);
+        feedback.dataset.state = 'success';
+        feedback.textContent = successMessage;
+    } catch {
+        feedback.dataset.state = 'error';
+        feedback.textContent = ccT('Copy failed. Select the CLI text and copy it manually.');
+    }
+}
+
+function downloadCLI() {
+    const feedback = $('cc-copy-feedback');
+    if (!ccState.combined) {
+        feedback.dataset.state = 'error';
+        feedback.textContent = ccT('No generated CLI is available to download.');
+        return;
+    }
+    const fwID = parseInt($('cc-firewall').value, 10);
+    const suffix = Number.isInteger(fwID) && fwID > 0 ? String(fwID) : 'result';
+    const blob = new Blob([ccState.combined], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `confconv-firewall-${suffix}.conf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    feedback.dataset.state = 'success';
+    feedback.textContent = ccT('CLI download prepared.');
 }
 
 /* ---------------- wiring ---------------- */
 
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof initSearchableSelect === 'function') {
-        initSearchableSelect($('cc-firewall'), { placeholder: 'Select Firewall' });
+        initSearchableSelect($('cc-firewall'), { placeholder: ccT('Select Firewall') });
     }
     $('cc-firewall').addEventListener('change', loadSummary);
 
@@ -362,16 +534,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     $('cc-fl-add-vlanmove').addEventListener('click', addVLANMoveRow);
 
-    $('cc-fl-add-port').addEventListener('click', openPortModal);
-    $('cc-port-modal-close').addEventListener('click', closePortModal);
-    $('cc-port-modal-done').addEventListener('click', commitPortModal);
+    $('cc-fl-add-port').addEventListener('click', openPortDialog);
+    $('cc-port-dialog-cancel').addEventListener('click', closePortDialog);
+    $('cc-port-dialog-apply').addEventListener('click', commitPortDialog);
     $('cc-port-search').addEventListener('input', filterPortList);
-    $('cc-port-modal').addEventListener('click', e => { if (e.target === $('cc-port-modal')) closePortModal(); });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closePortModal(); });
+    $('cc-port-dialog').addEventListener('close', () => {
+        const returnFocus = ccState.portDialogReturnFocus;
+        ccState.portDialogReturnFocus = null;
+        if (returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus();
+    });
+    $('cc-port-dialog').addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        closePortDialog();
+    });
     renderFortilinkPorts();
+    renderPipelinePreview();
+
+    ccRoot.addEventListener('input', event => {
+        if (event.target.closest('.cc-options')) renderPipelinePreview();
+    });
+    ccRoot.addEventListener('change', event => {
+        if (event.target.closest('.cc-options')) renderPipelinePreview();
+    });
 
     $('cc-generate-btn').addEventListener('click', generate);
-    $('cc-copy-all').addEventListener('click', () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(ccState.combined || '');
-    });
+    $('cc-copy-all').addEventListener('click', () => copyResultText(ccState.combined || '', ccT('All CLI copied.')));
+    $('cc-download-cli').addEventListener('click', downloadCLI);
 });
+
+})();

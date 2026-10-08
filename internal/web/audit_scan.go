@@ -94,6 +94,26 @@ func pathMatches(blockPath, path string) bool {
 	return blockPath == path || strings.HasSuffix(blockPath, " > "+path)
 }
 
+// vdomForBlock returns the VDOM wrapper owning a parsed edit block. Sections
+// outside an explicit `config vdom` wrapper belong to the default root VDOM;
+// callers may override this with a direct `set vdom` value where FortiOS
+// stores the ownership on the object itself (notably system interfaces).
+func vdomForBlock(b cfgBlock) string {
+	const marker = "config vdom > edit "
+	idx := strings.Index(b.Path, marker)
+	if idx < 0 {
+		return "root"
+	}
+	vdom := b.Path[idx+len(marker):]
+	if end := strings.Index(vdom, " > "); end >= 0 {
+		vdom = vdom[:end]
+	}
+	if vdom == "" {
+		return "root"
+	}
+	return vdom
+}
+
 // block returns the first block whose path matches the section (VDOM
 // wrapping ignored; edit names compare case-sensitively as stored).
 func (d *cfgDoc) block(path string) (cfgBlock, bool) {

@@ -1,12 +1,32 @@
 package fgt_confgen
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
+
+type policyValidationError struct {
+	Code    string
+	Message string
+}
+
+func (e *policyValidationError) Error() string { return e.Message }
+
+func newPolicyValidationError(code, message string) error {
+	return &policyValidationError{Code: code, Message: message}
+}
+
+func policyValidationCode(err error) string {
+	var validationErr *policyValidationError
+	if errors.As(err, &validationErr) {
+		return validationErr.Code
+	}
+	return "policy_invalid"
+}
 
 var (
 	icmpTypeRegex = regexp.MustCompile(`^[0-9]+$`)
@@ -99,6 +119,15 @@ func hasAnyEntry(lists ...[]string) bool {
 	return false
 }
 
+func hasAnyService(services []Service) bool {
+	for _, service := range services {
+		if strings.TrimSpace(service.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func isNumericID(s string) bool {
 	if s == "" {
 		return false
@@ -137,7 +166,7 @@ func validatePolicy(p Policy, services []Service) error {
 	}
 	for _, f := range fields {
 		if hasControlOrQuote(f) {
-			return fmt.Errorf("invalid characters in field value")
+			return newPolicyValidationError("invalid_characters", "A policy field contains unsupported characters.")
 		}
 	}
 
@@ -149,49 +178,61 @@ func validatePolicy(p Policy, services []Service) error {
 	for _, list := range lists {
 		for _, item := range list {
 			if hasControlOrQuote(item) {
-				return fmt.Errorf("invalid characters in list item: %q", item)
+				return newPolicyValidationError("invalid_list_item", "A policy list item contains unsupported characters.")
 			}
 		}
 	}
 
 	action := strings.ToLower(p.Action)
 	if action != "accept" && action != "deny" {
-		return fmt.Errorf("invalid action: %q", p.Action)
+		return newPolicyValidationError("invalid_action", "Action must be accept or deny.")
 	}
 
 	insMode := strings.ToLower(p.InspectionMode)
 	if insMode != "flow" && insMode != "proxy" {
-		return fmt.Errorf("invalid inspection mode: %q", p.InspectionMode)
+		return newPolicyValidationError("invalid_inspection_mode", "Inspection mode must be flow or proxy.")
 	}
 
 	logTraffic := strings.ToLower(p.LogTraffic)
 	if logTraffic != "all" && logTraffic != "utm" && logTraffic != "disable" {
-		return fmt.Errorf("invalid logtraffic: %q", p.LogTraffic)
+		return newPolicyValidationError("invalid_logtraffic", "Traffic logging has an unsupported value.")
 	}
 
 	logTrafficStart := strings.ToLower(p.LogTrafficStart)
 	if logTrafficStart != "enable" && logTrafficStart != "disable" {
-		return fmt.Errorf("invalid logtraffic-start: %q", p.LogTrafficStart)
+		return newPolicyValidationError("invalid_logtraffic_start", "Session-start logging has an unsupported value.")
 	}
 
 	autoAsic := strings.ToLower(p.AutoAsicOffload)
 	if autoAsic != "enable" && autoAsic != "disable" {
-		return fmt.Errorf("invalid auto-asic-offload: %q", p.AutoAsicOffload)
+		return newPolicyValidationError("invalid_auto_asic_offload", "ASIC offload has an unsupported value.")
 	}
 
 	nat := strings.ToLower(p.Nat)
 	if nat != "enable" && nat != "disable" {
-		return fmt.Errorf("invalid nat: %q", p.Nat)
+		return newPolicyValidationError("invalid_nat", "NAT has an unsupported value.")
+	}
+	if strings.TrimSpace(p.PolicyName) == "" {
+		return newPolicyValidationError("policy_name_required", "Policy name is required.")
+	}
+	if !hasAnyEntry(p.SrcInterfaces) {
+		return newPolicyValidationError("source_interface_required", "At least one source interface is required.")
+	}
+	if !hasAnyEntry(p.DstInterfaces) {
+		return newPolicyValidationError("destination_interface_required", "At least one destination interface is required.")
+	}
+	if !hasAnyService(p.Services) && !hasAnyEntry(p.DstInternetServices) {
+		return newPolicyValidationError("service_required", "At least one service or destination internet service is required.")
 	}
 
 	// Address mode and Internet-Service (ISDB) mode are mutually exclusive per
 	// side on FortiOS: `set internet-service[-src] enable` conflicts with
 	// srcaddr/dstaddr on the same side.
 	if hasAnyEntry(p.SrcAddresses, p.SrcAddressGroups, p.SrcVIPs) && hasAnyEntry(p.SrcInternetServices) {
-		return fmt.Errorf("source addresses and source internet services are mutually exclusive")
+		return newPolicyValidationError("source_mode_conflict", "Source addresses and source internet services are mutually exclusive.")
 	}
 	if hasAnyEntry(p.DstAddresses, p.DstAddressGroups, p.DstVIPs) && hasAnyEntry(p.DstInternetServices) {
-		return fmt.Errorf("destination addresses and destination internet services are mutually exclusive")
+		return newPolicyValidationError("destination_mode_conflict", "Destination addresses and destination internet services are mutually exclusive.")
 	}
 
 	// Track the service object names as they will be emitted (custom services
@@ -201,7 +242,7 @@ func validatePolicy(p Policy, services []Service) error {
 	seenNames := map[string]bool{}
 	for i, svc := range services {
 		if hasControlOrQuote(svc.Name) || hasControlOrQuote(svc.Type) || hasControlOrQuote(svc.Protocol) || hasControlOrQuote(svc.Port) {
-			return fmt.Errorf("invalid characters in service %q", svc.Name)
+			return newPolicyValidationError("invalid_service_characters", "A service contains unsupported characters.")
 		}
 
 		if strings.TrimSpace(svc.Name) == "" {
@@ -222,7 +263,7 @@ func validatePolicy(p Policy, services []Service) error {
 		// (service group) or "custom"; "predefined" is kept for
 		// compatibility with stored templates.
 		if svc.Type != "custom" && svc.Type != "predefined" && svc.Type != "template" && svc.Type != "group" {
-			return fmt.Errorf("invalid service type: %q", svc.Type)
+			return newPolicyValidationError("invalid_service_type", "A service has an unsupported type.")
 		}
 
 		emitted := svc.Name
@@ -230,7 +271,7 @@ func validatePolicy(p Policy, services []Service) error {
 			emitted = "custom_" + svc.Name
 		}
 		if key := strings.ToLower(emitted); seenNames[key] {
-			return fmt.Errorf("duplicate service name %q", emitted)
+			return newPolicyValidationError("duplicate_service", "Service names must be unique within a policy.")
 		} else {
 			seenNames[key] = true
 		}
@@ -238,21 +279,21 @@ func validatePolicy(p Policy, services []Service) error {
 		if svc.Type == "custom" {
 			protocol := strings.ToUpper(svc.Protocol)
 			if protocol != "TCP" && protocol != "UDP" && protocol != "SCTP" && protocol != "ICMP" {
-				return fmt.Errorf("unsupported protocol: %s", svc.Protocol)
+				return newPolicyValidationError("unsupported_service_protocol", "A custom service has an unsupported protocol.")
 			}
 
 			if protocol == "ICMP" {
 				if !icmpTypeRegex.MatchString(svc.Port) {
-					return fmt.Errorf("invalid ICMP type: %q", svc.Port)
+					return newPolicyValidationError("invalid_icmp_type", "ICMP type must contain decimal digits only.")
 				}
 				var val int
 				if _, err := fmt.Sscanf(svc.Port, "%d", &val); err != nil || val < 0 || val > 255 {
-					return fmt.Errorf("ICMP type out of range (0-255): %q", svc.Port)
+					return newPolicyValidationError("icmp_type_out_of_range", "ICMP type must be between 0 and 255.")
 				}
 			} else {
 				canon, err := validatePortRange(svc.Port)
 				if err != nil {
-					return fmt.Errorf("invalid port range for service %q: %w", svc.Name, err)
+					return newPolicyValidationError("invalid_service_port", "A custom service port must be between 1 and 65535 and use valid ranges.")
 				}
 				// Emit the canonical space-joined FortiOS list instead of the
 				// raw comma-separated input.

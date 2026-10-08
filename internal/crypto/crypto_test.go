@@ -117,3 +117,51 @@ func TestBadKeyLength(t *testing.T) {
 		t.Fatal("expected error for non-32-byte key")
 	}
 }
+
+func TestStrictModeRejectsPlaintext(t *testing.T) {
+	c, err := New(newKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.RequireEncrypted()
+	if _, err := c.Decrypt([]byte("legacy")); err == nil {
+		t.Fatal("expected strict file decryption to reject plaintext")
+	}
+	if _, err := c.DecryptString("legacy"); err == nil {
+		t.Fatal("expected strict secret decryption to reject plaintext")
+	}
+}
+
+func TestValidateHeader(t *testing.T) {
+	c, err := New(newKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := c.Encrypt([]byte("config system global"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimal, err := c.Encrypt(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr bool
+	}{
+		{name: "valid envelope", data: encrypted},
+		{name: "plaintext", data: []byte("config system global"), wantErr: true},
+		{name: "truncated after magic", data: append([]byte(nil), encrypted[:6]...), wantErr: true},
+		{name: "truncated authentication tag", data: append([]byte(nil), minimal[:len(minimal)-1]...), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := c.ValidateHeader(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateHeader() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}

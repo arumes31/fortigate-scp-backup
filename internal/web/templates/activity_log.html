@@ -1,23 +1,46 @@
 {{define "content"}}
-<h1 class="page-title"><span class="accent-bar"></span>Activity Log</h1>
+<h1 class="page-title"><span class="accent-bar"></span>{{L .Base.Lang "Activity Log"}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <div class="card pad-0">
     <div class="card-header">
-        <h2 class="mt-0 mb-0">Recent Activity</h2>
-        <input type="search" id="logFilter" placeholder="Filter…">
+        <h2 class="mt-0 mb-0">{{L .Base.Lang "Recent Activity"}}</h2>
+        <span class="muted">{{if .Error}}{{L .Base.Lang "Results unavailable"}}{{else}}{{.Total}} {{L .Base.Lang "matching"}}{{end}}</span>
     </div>
-    {{if .Logs}}
+    <form method="get" action="/activity_log" class="filter-form activity-filter" role="search">
+        <label>{{L .Base.Lang "Search"}}
+            <input type="search" name="q" value="{{.Filters.Query}}" maxlength="256" placeholder="{{L .Base.Lang "User, action, or details"}}">
+        </label>
+        <label>{{L .Base.Lang "User"}}
+            <input type="search" name="user" value="{{.Filters.User}}" maxlength="128" autocomplete="off">
+        </label>
+        <label>{{L .Base.Lang "Action"}}
+            <input type="search" name="action" value="{{.Filters.Action}}" maxlength="128" autocomplete="off">
+        </label>
+        <label>{{L .Base.Lang "From"}}
+            <input type="date" name="from" value="{{.Filters.From}}">
+        </label>
+        <label>{{L .Base.Lang "To"}}
+            <input type="date" name="to" value="{{.Filters.To}}">
+        </label>
+        <div class="filter-actions">
+            <button class="btn btn-sm" type="submit">{{L .Base.Lang "Apply filters"}}</button>
+            {{if .HasFilters}}<a class="btn btn-sm" href="/activity_log">{{L .Base.Lang "Clear"}}</a>{{end}}
+        </div>
+    </form>
+    {{if .Error}}
+    <div class="empty">{{L .Base.Lang "Correct the filters or retry the request."}}</div>
+    {{else if .Logs}}
     <div class="table-wrap">
         <table class="data" id="logTable">
             <thead>
-                <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Details</th></tr>
+                <tr><th>{{L $.Base.Lang "Timestamp"}}</th><th>{{L $.Base.Lang "User"}}</th><th>{{L $.Base.Lang "Action"}}</th><th>{{L $.Base.Lang "Details"}}</th></tr>
             </thead>
             <tbody>
             {{range .Logs}}
                 <tr>
-                    <td class="muted">{{fmtTime .Timestamp}}</td>
+                    <td class="muted"><time datetime="{{fmtMachineTime .Timestamp}}">{{fmtTime .Timestamp}}</time></td>
                     <td>{{.Username}}</td>
                     <td>
                         {{if contains .Action "Failed"}}<span class="pill pill-failed">{{.Action}}</span>
@@ -32,30 +55,13 @@
     </div>
     {{if gt .TotalPages 1}}
     <div class="pager">
-        {{if gt .Page 1}}<a class="btn btn-sm" href="/activity_log?page={{sub .Page 1}}">‹ Prev</a>{{end}}
-        <span class="muted">Page {{.Page}} of {{.TotalPages}}</span>
-        {{if lt .Page .TotalPages}}<a class="btn btn-sm" href="/activity_log?page={{add .Page 1}}">Next ›</a>{{end}}
+        {{if .PrevURL}}<a class="btn btn-sm" rel="prev" href="{{.PrevURL}}">‹ {{L .Base.Lang "Previous"}}</a>{{end}}
+        <span class="muted">{{L .Base.Lang "Page"}} {{.Page}} {{L .Base.Lang "of"}} {{.TotalPages}}</span>
+        {{if .NextURL}}<a class="btn btn-sm" rel="next" href="{{.NextURL}}">{{L .Base.Lang "Next"}} ›</a>{{end}}
     </div>
     {{end}}
     {{else}}
-    <div class="empty">No activity recorded yet.</div>
+    <div class="empty">{{if .HasFilters}}{{L .Base.Lang "No activity matches these filters."}}{{else}}{{L .Base.Lang "No activity recorded yet."}}{{end}}</div>
     {{end}}
 </div>
-{{end}}
-
-{{define "scripts"}}
-<script>
-    (function () {
-        var filter = document.getElementById('logFilter');
-        var table = document.getElementById('logTable');
-        if (!filter || !table) { return; }
-        filter.addEventListener('input', function () {
-            var q = filter.value.toLowerCase();
-            var rows = table.tBodies[0].rows;
-            for (var i = 0; i < rows.length; i++) {
-                rows[i].style.display = rows[i].textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
-            }
-        });
-    })();
-</script>
 {{end}}

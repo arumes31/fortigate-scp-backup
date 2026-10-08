@@ -8,10 +8,13 @@ import (
 // loginLimiter is a simple in-memory brute-force guard keyed by client/username.
 // After max consecutive failures a key is blocked for the lockout window.
 type loginLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]*loginAttempt
-	max      int
-	lockout  time.Duration
+	mu        sync.Mutex
+	attempts  map[string]*loginAttempt
+	max       int
+	lockout   time.Duration
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 type loginAttempt struct {
@@ -27,7 +30,11 @@ func newLoginLimiter(max int, lockout time.Duration) *loginLimiter {
 	if lockout <= 0 {
 		lockout = 15 * time.Minute
 	}
-	l := &loginLimiter{attempts: make(map[string]*loginAttempt), max: max, lockout: lockout}
+	l := &loginLimiter{
+		attempts: make(map[string]*loginAttempt), max: max, lockout: lockout,
+		done: make(chan struct{}),
+	}
+	l.wg.Add(1)
 	go l.gc()
 	return l
 }
@@ -71,15 +78,27 @@ func (l *loginLimiter) reset(key string) {
 }
 
 func (l *loginLimiter) gc() {
+	defer l.wg.Done()
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
-	for range t.C {
-		l.mu.Lock()
-		for k, a := range l.attempts {
-			if time.Since(a.lastSeen) > l.lockout+time.Hour {
-				delete(l.attempts, k)
+	for {
+		select {
+		case <-l.done:
+			return
+		case <-t.C:
+			l.mu.Lock()
+			for k, a := range l.attempts {
+				if time.Since(a.lastSeen) > l.lockout+time.Hour {
+					delete(l.attempts, k)
+				}
 			}
+			l.mu.Unlock()
 		}
-		l.mu.Unlock()
 	}
+}
+
+// Close stops the background garbage collector. It is safe to call repeatedly.
+func (l *loginLimiter) Close() {
+	l.closeOnce.Do(func() { close(l.done) })
+	l.wg.Wait()
 }

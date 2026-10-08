@@ -1,7 +1,12 @@
 package web
 
 import (
+	"encoding/json"
+	"log/slog"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
 
 func TestPrefixFromIPMask(t *testing.T) {
@@ -144,6 +149,141 @@ func TestParseConfigDataIPAMSources(t *testing.T) {
 	// The default route (route 1 has no dst) must not appear.
 	if len(bySrc["route"]) != 1 {
 		t.Errorf("routes = %v, want exactly one", bySrc["route"])
+	}
+}
+
+const ipamMultiVDOMFixture = `config vdom
+    edit "root"
+        config system interface
+            edit "lan-root"
+                set ip 10.90.0.1 255.255.255.0
+            next
+        end
+        config router static
+            edit 1
+                set dst 10.91.0.0 255.255.255.0
+                set device "lan-root"
+            next
+        end
+        config system dhcp server
+            edit 1
+                set interface "lan-root"
+                set default-gateway 10.92.0.1
+                set netmask 255.255.255.0
+            next
+        end
+        config firewall address
+            edit "net-root"
+                set subnet 10.93.0.0 255.255.255.0
+            next
+        end
+    next
+    edit "tenant-a"
+        config system interface
+            edit "lan-tenant"
+                set ip 10.90.0.1 255.255.255.0
+            next
+        end
+        config router static
+            edit 1
+                set dst 10.91.0.0 255.255.255.0
+                set device "lan-tenant"
+            next
+        end
+        config system dhcp server
+            edit 1
+                set interface "lan-tenant"
+                set default-gateway 10.92.0.1
+                set netmask 255.255.255.0
+            next
+        end
+        config firewall address
+            edit "net-tenant"
+                set subnet 10.93.0.0 255.255.255.0
+            next
+        end
+    next
+end
+config global
+    config system interface
+        edit "global-port"
+            set vdom "tenant-a"
+            set ip 10.94.0.1 255.255.255.0
+        next
+    end
+end`
+
+func TestParseConfigDataIPAMPreservesVDOM(t *testing.T) {
+	t.Parallel()
+	pc := parseConfigData(parseCfg(ipamMultiVDOMFixture))
+	if len(pc.Interfaces) != 3 || len(pc.Routes) != 2 || len(pc.DhcpServers) != 2 || len(pc.AddressObjs) != 2 {
+		t.Fatalf("parsed IPAM source counts = interfaces %d routes %d DHCP %d addresses %d", len(pc.Interfaces), len(pc.Routes), len(pc.DhcpServers), len(pc.AddressObjs))
+	}
+	for _, test := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"root interface", pc.Interfaces[0].VDOM, "root"},
+		{"tenant interface", pc.Interfaces[1].VDOM, "tenant-a"},
+		{"global interface direct setting", pc.Interfaces[2].VDOM, "tenant-a"},
+		{"root route", pc.Routes[0].VDOM, "root"},
+		{"tenant route", pc.Routes[1].VDOM, "tenant-a"},
+		{"root DHCP", pc.DhcpServers[0].VDOM, "root"},
+		{"tenant DHCP", pc.DhcpServers[1].VDOM, "tenant-a"},
+		{"root address", pc.AddressObjs[0].VDOM, "root"},
+		{"tenant address", pc.AddressObjs[1].VDOM, "tenant-a"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.got != test.want {
+				t.Fatalf("VDOM = %q, want %q", test.got, test.want)
+			}
+		})
+	}
+	entries := ipamEntriesFor(&auditResult{Interfaces: pc.Interfaces, Routes: pc.Routes, DhcpServers: pc.DhcpServers, AddressObjs: pc.AddressObjs}, 7, "edge.example.test")
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		seen[entry.Source+"|"+entry.Prefix+"|"+entry.VDOM] = true
+	}
+	for _, key := range []string{
+		"interface|10.90.0.0/24|root", "interface|10.90.0.0/24|tenant-a",
+		"route|10.91.0.0/24|root", "route|10.91.0.0/24|tenant-a",
+		"dhcp|10.92.0.0/24|root", "dhcp|10.92.0.0/24|tenant-a",
+		"address|10.93.0.0/24|root", "address|10.93.0.0/24|tenant-a",
+	} {
+		if !seen[key] {
+			t.Errorf("missing IPAM entry %q: %+v", key, entries)
+		}
+	}
+}
+
+func TestIPAMRejectsSnapshotFromSchemaBeforeVDOM(t *testing.T) {
+	t.Parallel()
+	s := &Server{cfg: &config.Config{DataDir: t.TempDir()}, logger: slog.New(slog.DiscardHandler)}
+	db, err := s.insightsDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO ipam_cache (id, computed_at, results_json, snap_schema) VALUES (1, '2026-09-02T08:00:00Z', '{"entries":[{"prefix":"10.0.0.0/24"}]}', ?)`, ipamSnapshotSchema-1); err != nil {
+		t.Fatal(err)
+	}
+	s.ipamProgress.begin(1)
+	defer s.ipamProgress.end()
+	recorder := httptest.NewRecorder()
+	s.handleIPAMData(recorder, httptest.NewRequest("GET", "/ipam/data", nil))
+	var response ipamDataOut
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Snapshot) != 0 {
+		t.Fatalf("old-schema snapshot was served: %s", response.Snapshot)
+	}
+}
+
+func TestIPAMVDOMSchemaVersions(t *testing.T) {
+	if auditSchemaVersion < 8 || ipamSnapshotSchema < 4 {
+		t.Fatalf("VDOM contract requires audit schema >= 8 and IPAM schema >= 4; got %d/%d", auditSchemaVersion, ipamSnapshotSchema)
 	}
 }
 

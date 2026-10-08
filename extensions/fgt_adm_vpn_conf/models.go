@@ -358,6 +358,31 @@ func (e *Extension) allConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("")
 }
 
+func (e *Extension) configsByIDs(ids []int64) ([]*VpnConfig, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		args[index] = id
+	}
+	rows, err := e.db.Query("SELECT "+selectCols+" FROM vpn_config WHERE id IN ("+placeholders+") ORDER BY id", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	configs := make([]*VpnConfig, 0, len(ids))
+	for rows.Next() {
+		config, err := scanConfig(rows)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	return configs, rows.Err()
+}
+
 func (e *Extension) enabledConfigs() ([]*VpnConfig, error) {
 	return e.queryConfigs("WHERE graylog_enabled = 1")
 }
@@ -372,7 +397,7 @@ func boolToInt(b bool) int {
 // insertConfig inserts a new row. last_graylog_status/last_graylog_check take
 // their column defaults (unknown / NULL), matching the Python insert path.
 func (e *Extension) insertConfig(c *VpnConfig) error {
-	_, err := e.db.Exec(`INSERT INTO vpn_config
+	result, err := e.db.Exec(`INSERT INTO vpn_config
 		(kundenname, standort, remoteip_full, remoteip_full_1st, ike2_username,
 		 wan_interface, lan_interface, dns_name, firewallname, cid,
 		 ipsec_psk_ro, ipsec_psk_hci, radiusmgt, dns_name_full,
@@ -382,6 +407,10 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.Cid,
 		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames)
+	if err != nil {
+		return err
+	}
+	c.ID, err = result.LastInsertId()
 	return err
 }
 
@@ -467,14 +496,34 @@ func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status st
 	return err
 }
 
-// updateDNSStatus persists a DNS check result from the background sweep.
-// resolved is the comma-joined address list the name currently resolves to
-// ("" when it does not resolve), kept for the table tooltip and dashboard.
-func (e *Extension) updateDNSStatus(id int64, checkedAt time.Time, status, resolved string) error {
-	_, err := e.db.Exec(
-		"UPDATE vpn_config SET last_dns_check = ?, last_dns_status = ?, last_dns_resolved = ? WHERE id = ?",
-		formatDBTime(checkedAt), status, resolved, id)
-	return err
+// updateDNSStatus persists a DNS check result from the background sweep only
+// while the endpoint still matches the values that were checked. resolved is
+// the comma-joined address list the name currently resolves to ("" when it
+// does not resolve), kept for the table tooltip and dashboard.
+func (e *Extension) updateDNSStatus(
+	id int64,
+	expectedDNSName, expectedRemoteIP string,
+	checkedAt time.Time,
+	status, resolved string,
+) error {
+	result, err := e.db.Exec(
+		`UPDATE vpn_config
+		 SET last_dns_check = ?, last_dns_status = ?, last_dns_resolved = ?
+		 WHERE id = ? AND dns_name_full = ? AND remoteip_full = ?`,
+		formatDBTime(checkedAt), status, resolved, id, expectedDNSName, expectedRemoteIP,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		// The endpoint changed while DNS was being resolved; discard the stale result.
+		return nil
+	}
+	return nil
 }
 
 // ---- password generator (parity with Python get_random_password) ------------
