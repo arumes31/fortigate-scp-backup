@@ -17,6 +17,8 @@
             'Removal commands ready': 'Entfernungsbefehle sind bereit',
             'due': 'fällig',
             'next': 'nächste Prüfung',
+            'Show Graylog query': 'Graylog-Abfrage anzeigen',
+            'Hide Graylog query': 'Graylog-Abfrage ausblenden',
         };
         function t(english) { return de ? (messages[english] || english) : english; }
         var presetKey = 'fortisafe.adm-vpn.columns.v1';
@@ -65,6 +67,15 @@
         });
         root.querySelectorAll('[data-vpn-select]').forEach(function (button) {
             button.addEventListener('click', function () { selectRow(button.dataset.vpnSelect, true); });
+        });
+        root.querySelectorAll('[data-graylog-query-toggle]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                var query = document.getElementById(button.getAttribute('aria-controls'));
+                if (!query) { return; }
+                query.hidden = !query.hidden;
+                button.setAttribute('aria-expanded', String(!query.hidden));
+                button.textContent = t(query.hidden ? 'Show Graylog query' : 'Hide Graylog query');
+            });
         });
 
         function announce(target, kind, message) {

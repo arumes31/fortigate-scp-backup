@@ -58,6 +58,11 @@
 .adm-evidence-grid dd, .adm-config-facts dd { margin: 0; }
 .adm-config-facts { margin-top: 12px; }
 .adm-break { overflow-wrap: anywhere; }
+.adm-query-toggle { margin-top: 14px; }
+.adm-graylog-query { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.adm-graylog-query p { margin: 0 0 10px; }
+.adm-graylog-query p:last-child { margin-bottom: 0; }
+.adm-graylog-query pre { padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border); }
 .adm-detail-actions { margin-top: 16px; }
 
 @media (min-width: 1680px) {
