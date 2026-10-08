@@ -40,6 +40,7 @@ services:
       # --- Encryption at Rest ---
       - "ENCRYPTION_KEY_FILE=/run/secrets/encryption_key"
       - "SSH_KNOWN_HOSTS_FILE=/app/data/ssh_known_hosts"
+      - "SSH_AUTO_ACCEPT_CHANGED_KEYS=${SSH_AUTO_ACCEPT_CHANGED_KEYS:-true}"
 
       # --- SCP & Backup Engine Defaults ---
       - "DEFAULT_SCP_USER=fortisafe"
