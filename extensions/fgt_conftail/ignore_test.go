@@ -17,7 +17,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
 
-func TestGlobalAttributeIgnoreSuppressesFutureMatchesWithoutDeletingHistory(t *testing.T) {
+func TestGlobalAttributeIgnorePermanentlyDeletesHistoryAndSuppressesFutureMatches(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
@@ -46,7 +46,7 @@ func TestGlobalAttributeIgnoreSuppressesFutureMatchesWithoutDeletingHistory(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Ignored != 1 || result.Inserted != 0 || countRows(t, store, "events") != 1 || countRows(t, store, "ignored_events") != 1 {
+	if result.Ignored != 1 || result.Inserted != 0 || countRows(t, store, "events") != 0 || countRows(t, store, "ignored_events") != 2 {
 		t.Fatalf("ignored poll result = %+v, events=%d ignored_events=%d", result, countRows(t, store, "events"), countRows(t, store, "ignored_events"))
 	}
 
@@ -75,6 +75,10 @@ func TestGlobalAttributeIgnoreSuppressesFutureMatchesWithoutDeletingHistory(t *t
 	}
 	if got := countRows(t, store, "global_ignore_rules"); got != 0 {
 		t.Fatalf("rules after delete = %d", got)
+	}
+	replayed, err = store.applyPoll(ctx, pollBatch{EndedAt: base.Add(10 * time.Minute), Events: []Event{first, repeated}}, 30*time.Minute, maxTicketDescriptionBytes)
+	if err != nil || replayed.Duplicates != 2 || replayed.Inserted != 0 {
+		t.Fatalf("deleted history re-entered after deleting rule: result=%+v err=%v", replayed, err)
 	}
 	if _, err := store.prune(ctx, base.Add(40*24*time.Hour), 30); err != nil {
 		t.Fatal(err)
@@ -203,4 +207,92 @@ func storedEventID(t *testing.T, store *store, graylogID string) int64 {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestGlobalIgnoreUpgradeAndReenablePermanentlyPurgeStoredMatches(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	noise := testEvent(1, "fw-a", "alice", "old-noise", base)
+	noise.ConfigAttribute, noise.Path = "noise", "system.noise"
+	noise.SemanticHash = semanticHash(noise)
+	keep := testEvent(1, "fw-a", "alice", "keep", base.Add(time.Minute))
+	onlyNoise := noise
+	onlyNoise.GraylogID, onlyNoise.User = "only-noise", "bob"
+	onlyNoise.SemanticHash = semanticHash(onlyNoise)
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour), Events: []Event{noise, keep, onlyNoise}}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	// Model a v4 database: overlapping enabled rules and a disabled rule have
+	// not removed any stored events yet.
+	for _, query := range []string{
+		`INSERT INTO global_ignore_rules(kind,config_attribute,created_by,created_at_ns) VALUES('attribute','noise','operator',1)`,
+		`INSERT INTO global_ignore_rules(kind,action,config_path,created_by,created_at_ns) VALUES('operation','Edit','system.noise','operator',1)`,
+		`UPDATE schema_meta SET version = 4`,
+	} {
+		if _, err := s.db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`INSERT INTO global_ignore_rules(kind,config_attribute,enabled,created_by,created_at_ns) VALUES('attribute',?,0,'operator',1)`, keep.ConfigAttribute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.initSchema(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, s, "events") != 1 || countRows(t, s, "chains") != 1 || countRows(t, s, "ignored_events") != 2 || countRows(t, s, "outbox") != 1 {
+		t.Fatal("upgrade did not purge exactly the enabled matches and empty sessions")
+	}
+	// Running initialization again must leave retained events intact.
+	if err := s.initSchema(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	chain, _, err := s.dashboardChainPage(ctx, chainIDForUser(t, s, "alice"), 1)
+	if err != nil || chain.EventCount != 1 || !chain.FirstEventAt.Equal(keep.EventAt) || !chain.LastEventAt.Equal(keep.EventAt) {
+		t.Fatalf("incorrect migrated aggregates: %+v, %v", chain, err)
+	}
+	if err := s.setGlobalIgnoreRuleEnabled(ctx, 3, true); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, s, "events") != 0 || countRows(t, s, "chains") != 0 || countRows(t, s, "outbox") != 0 {
+		t.Fatal("reenabling rule did not purge history")
+	}
+	for _, id := range []int64{1, 2, 3} {
+		if err := s.deleteGlobalIgnoreRule(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(2 * time.Hour), Events: []Event{noise, keep, onlyNoise}}, 30*time.Minute, maxTicketDescriptionBytes)
+	if err != nil || result.Inserted != 0 || result.Duplicates != 3 {
+		t.Fatalf("upgrade tombstones lost: %+v, %v", result, err)
+	}
+}
+
+func TestGlobalIgnorePurgeFailureRollsBackRuleAndHistory(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	event := testEvent(1, "fw-a", "alice", "rollback", base)
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Minute), Events: []Event{event}}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_ignore_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	eventID := storedEventID(t, s, event.GraylogID)
+	if _, _, err := s.createGlobalIgnoreRule(ctx, eventID, ignoreRuleKindAttribute, "operator", base.Add(2*time.Minute)); err == nil {
+		t.Fatal("expected deletion failure")
+	}
+	if countRows(t, s, "events") != 1 || countRows(t, s, "global_ignore_rules") != 0 || countRows(t, s, "ignored_events") != 0 {
+		t.Fatal("failed deletion left partial state")
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER reject_ignore_delete`); err != nil {
+		t.Fatal(err)
+	}
+	rule, _, err := s.createGlobalIgnoreRule(ctx, eventID, ignoreRuleKindAttribute, "operator", base.Add(2*time.Minute))
+	if err != nil || rule.SourceChainID != "" || countRows(t, s, "events") != 0 {
+		t.Fatalf("retry after rollback failed or points at deleted session: %+v, %v", rule, err)
+	}
 }

@@ -90,7 +90,7 @@
             </summary>
             <div class="ct-coverage-body">
                 {{if .IgnoreNotice}}<p class="ct-notice" role="status">{{.IgnoreNotice}}</p>{{end}}
-                <p class="ct-help">{{L .Base.Lang "Enabled rules hide matching messages from session history and suppress future matches across every firewall. Stored records and existing tickets are retained."}}</p>
+                <p class="ct-help">{{L .Base.Lang "Enabled rules permanently delete matching stored messages and suppress future matches across every firewall. Deleting or disabling a rule does not restore removed messages. Existing external tickets are unchanged."}}</p>
                 {{if .IgnoreRules}}
                 <div class="ct-table-wrap" role="region" aria-label="{{L .Base.Lang "Global ignore rules"}}" tabindex="0">
                     <table class="data">

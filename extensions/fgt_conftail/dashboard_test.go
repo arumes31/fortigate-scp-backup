@@ -1130,7 +1130,7 @@ func TestDashboardRequestAcceptsFirewallOnlyBrowserForm(t *testing.T) {
 	}
 }
 
-func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
+func TestDashboardGlobalIgnoresPurgeHistoryBeforePagination(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{ignoreRuleKindAttribute, ignoreRuleKindOperation} {
 		t.Run(kind, func(t *testing.T) {
@@ -1156,6 +1156,7 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 			if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour), Events: events}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
 				t.Fatal(err)
 			}
+			emptyChainID := chainIDForUser(t, s, "bob")
 			rule, _, err := s.createGlobalIgnoreRule(ctx, storedEventID(t, s, "ignored-0"), kind, "operator", base.Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
@@ -1178,8 +1179,8 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 			}
 			_, chainPage := testDashboardRenderers(t)
 			extension := &Extension{store: s, chainPage: chainPage, pageBase: testDashboardPageBase("operator")}
-			response := serveDashboardChain(t, extension, chainIDForUser(t, s, "bob"))
-			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "All messages in this session are hidden by global ignore rules.") {
+			response := serveDashboardChain(t, extension, emptyChainID)
+			if response.Code != http.StatusNotFound {
 				t.Fatalf("fully ignored session response = %d", response.Code)
 			}
 			if len(chain.VDOMs) != 1 || chain.VDOMs[0] != "root" {
@@ -1200,8 +1201,8 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 					t.Fatal("ignored messages still match filters")
 				}
 			}
-			if countRows(t, s, "events") != len(events) {
-				t.Fatal("stored history was deleted")
+			if countRows(t, s, "events") != 1 || countRows(t, s, "chains") != 1 || countRows(t, s, "outbox") != 1 {
+				t.Fatal("ignored history or empty session delivery was not deleted")
 			}
 			if !strings.Contains(chain.TicketPreview.Description, "noise") {
 				t.Fatal("frozen delivery snapshot changed")
@@ -1210,8 +1211,8 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 				t.Fatal(err)
 			}
 			data, err = s.queryDashboard(ctx, filters)
-			if err != nil || data.HistoryTotal != 2 {
-				t.Fatalf("disabled rule still hides history: total=%d err=%v", data.HistoryTotal, err)
+			if err != nil || data.HistoryTotal != 1 {
+				t.Fatalf("disabled rule restored deleted history: total=%d err=%v", data.HistoryTotal, err)
 			}
 			if err := s.setGlobalIgnoreRuleEnabled(ctx, rule.ID, true); err != nil {
 				t.Fatal(err)
@@ -1220,8 +1221,8 @@ func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
 				t.Fatal(err)
 			}
 			chain, pages, err = s.dashboardChainPage(ctx, chainID, 1)
-			if err != nil || chain.EventCount != dashboardEventPageSize+2 || pages != 2 {
-				t.Fatalf("deleted rule still hides history: count=%d pages=%d err=%v", chain.EventCount, pages, err)
+			if err != nil || chain.EventCount != 1 || pages != 1 {
+				t.Fatalf("deleted rule restored history: count=%d pages=%d err=%v", chain.EventCount, pages, err)
 			}
 		})
 	}
@@ -1249,8 +1250,8 @@ func TestDashboardVisibleEventBoundsAndDateFilters(t *testing.T) {
 	_, chainPage := testDashboardRenderers(t)
 	extension := &Extension{store: s, chainPage: chainPage, pageBase: testDashboardPageBase("operator")}
 	response := serveDashboardChain(t, extension, chainIDForUser(t, s, "alice"))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), last.EventAt.Add(30*time.Minute).Format(time.RFC3339)) {
-		t.Fatal("active session deadline no longer follows stored activity")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), visible.EventAt.Add(30*time.Minute).Format(time.RFC3339)) {
+		t.Fatal("active session deadline no longer follows retained activity")
 	}
 	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour)}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
 		t.Fatal(err)
@@ -1268,8 +1269,8 @@ func TestDashboardVisibleEventBoundsAndDateFilters(t *testing.T) {
 	}
 	exported, count, err := loadSessionExportMetadata(ctx, tx, chain.ID)
 	_ = tx.Rollback()
-	if err != nil || count != 3 || !exported.FirstEventAt.Equal(first.EventAt) || !exported.LastEventAt.Equal(last.EventAt) {
-		t.Fatalf("export lost stored bounds: %+v, count=%d, err=%v", exported, count, err)
+	if err != nil || count != 1 || !exported.FirstEventAt.Equal(visible.EventAt) || !exported.LastEventAt.Equal(visible.EventAt) {
+		t.Fatalf("export includes deleted events: %+v, count=%d, err=%v", exported, count, err)
 	}
 	for _, tc := range []struct {
 		name     string

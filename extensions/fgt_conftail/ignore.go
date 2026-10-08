@@ -183,6 +183,16 @@ func (s *store) createGlobalIgnoreRule(ctx context.Context, eventID int64, kind,
 		rule.Enabled = true
 	}
 	rule.SourceChainID = chainID
+	if err := purgeGloballyIgnoredEvents(ctx, tx, rule.ID, now); err != nil {
+		return globalIgnoreRule{}, false, err
+	}
+	var sourceExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM chains WHERE id = ?)`, chainID).Scan(&sourceExists); err != nil {
+		return globalIgnoreRule{}, false, fmt.Errorf("check conftail ignore source session: %w", err)
+	}
+	if !sourceExists {
+		rule.SourceChainID = ""
+	}
 	if err := tx.Commit(); err != nil {
 		return globalIgnoreRule{}, false, fmt.Errorf("commit conftail global ignore rule: %w", err)
 	}
@@ -193,7 +203,12 @@ func (s *store) setGlobalIgnoreRuleEnabled(ctx context.Context, ruleID int64, en
 	if ruleID <= 0 {
 		return errors.New("invalid conftail global ignore rule id")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE global_ignore_rules SET enabled = ? WHERE id = ?`, boolInt(enabled), ruleID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin conftail global ignore toggle: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE global_ignore_rules SET enabled = ? WHERE id = ?`, boolInt(enabled), ruleID)
 	if err != nil {
 		return fmt.Errorf("toggle conftail global ignore rule: %w", err)
 	}
@@ -203,6 +218,49 @@ func (s *store) setGlobalIgnoreRuleEnabled(ctx context.Context, ruleID int64, en
 	}
 	if changed == 0 {
 		return errGlobalIgnoreRuleNotFound
+	}
+	if enabled {
+		if err := purgeGloballyIgnoredEvents(ctx, tx, ruleID, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Apply ignores once, on rule changes or upgrade, instead of repeatedly filtering
+// the entire history on dashboard reads. Tombstones prevent collector replay
+// after a rule is removed; they contain identities, not message contents.
+func purgeGloballyIgnoredEvents(ctx context.Context, tx *sql.Tx, ruleID int64, now time.Time) error {
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`CREATE TEMP TABLE conftail_ignore_purge AS
+			SELECT e.id, e.chain_id, MIN(r.id) AS rule_id
+			FROM events e JOIN global_ignore_rules r ON r.enabled = 1 AND (
+				(r.kind = 'attribute' AND r.config_attribute = e.config_attribute) OR
+				(r.kind = 'operation' AND r.action = e.action AND r.config_path = e.config_path))
+			WHERE (? = 0 OR r.id = ?) GROUP BY e.id`, []any{ruleID, ruleID}},
+		{`CREATE INDEX conftail_ignore_purge_chain ON conftail_ignore_purge(chain_id)`, nil},
+		{`INSERT OR IGNORE INTO ignored_events(semantic_hash, graylog_id, rule_id, event_at_ns, ignored_at_ns)
+			SELECT e.semantic_hash, e.graylog_id, p.rule_id, e.event_at_ns, ?
+			FROM conftail_ignore_purge p JOIN events e ON e.id = p.id`, []any{unixNanos(now)}},
+		{`DELETE FROM events WHERE id IN (SELECT id FROM conftail_ignore_purge)`, nil},
+		// Empty sessions and their queued deliveries disappear together. Mixed
+		// sessions retain their frozen delivery snapshot for retry idempotency.
+		{`DELETE FROM chains WHERE id IN (SELECT chain_id FROM conftail_ignore_purge)
+			AND NOT EXISTS (SELECT 1 FROM events e WHERE e.chain_id = chains.id)`, nil},
+		{`UPDATE chains SET
+			first_event_at_ns = (SELECT MIN(e.event_at_ns) FROM events e WHERE e.chain_id = chains.id),
+			last_event_at_ns = (SELECT MAX(e.event_at_ns) FROM events e WHERE e.chain_id = chains.id),
+			event_count = (SELECT COUNT(*) FROM events e WHERE e.chain_id = chains.id)
+			WHERE id IN (SELECT chain_id FROM conftail_ignore_purge)`, nil},
+		{`DROP TABLE conftail_ignore_purge`, nil},
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
+			return fmt.Errorf("purge globally ignored conftail events: %w", err)
+		}
 	}
 	return nil
 }
@@ -278,7 +336,7 @@ func (e *Extension) createGlobalIgnoreRule(w http.ResponseWriter, r *http.Reques
 		e.logActivity(actor, "ConfTail Global Ignore Created",
 			fmt.Sprintf("rule_id=%d kind=%s created=%t", rule.ID, rule.Kind, created))
 	}
-	location := "/fgt-conftail/"
+	location := "/fgt-conftail/?ignore=created"
 	if rule.SourceChainID != "" {
 		location = "/fgt-conftail/chain/" + url.PathEscape(rule.SourceChainID) + "?ignore=created"
 	}

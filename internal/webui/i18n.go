@@ -605,9 +605,10 @@ var germanPageText = map[string]string{
 	"Timeline view":                "Verlaufsansicht",
 	"change(s) on this page":       "Änderung(en) auf dieser Seite",
 	"Complete timeline pagination": "Seitennavigation des vollständigen Verlaufs",
-	"This hides matching messages from session history across every firewall and suppresses future matches. Stored records and existing tickets are retained.":       "Dies blendet passende Meldungen im Sitzungsverlauf aller Firewalls aus und unterdrückt zukünftige Treffer. Gespeicherte Datensätze und bestehende Tickets bleiben erhalten.",
-	"Enabled rules hide matching messages from session history and suppress future matches across every firewall. Stored records and existing tickets are retained.": "Aktive Regeln blenden passende Meldungen im Sitzungsverlauf aus und unterdrücken zukünftige Treffer auf allen Firewalls. Gespeicherte Datensätze und bestehende Tickets bleiben erhalten.",
-	"All messages in this session are hidden by global ignore rules.":                                                                                                "Alle Meldungen dieser Sitzung werden durch globale Ignorierregeln ausgeblendet.",
+	"This permanently deletes matching stored messages across every firewall and suppresses future matches. Removed messages cannot be restored by deleting the rule. Existing external tickets are unchanged.":             "Dies löscht passende gespeicherte Meldungen auf allen Firewalls dauerhaft und unterdrückt zukünftige Treffer. Das Löschen der Regel stellt entfernte Meldungen nicht wieder her. Bestehende externe Tickets bleiben unverändert.",
+	"Enabled rules permanently delete matching stored messages and suppress future matches across every firewall. Deleting or disabling a rule does not restore removed messages. Existing external tickets are unchanged.": "Aktive Regeln löschen passende gespeicherte Meldungen dauerhaft und unterdrücken zukünftige Treffer auf allen Firewalls. Das Löschen oder Deaktivieren einer Regel stellt entfernte Meldungen nicht wieder her. Bestehende externe Tickets bleiben unverändert.",
+	"No messages remain in this session.": "In dieser Sitzung sind keine Meldungen mehr vorhanden.",
+
 	"Ignore messages matching:": "Passende Meldungen ignorieren:",
 	"Exact attribute change":    "Exakte Attributänderung",
 	"Operation and path":        "Operation und Pfad",
