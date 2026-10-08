@@ -69,7 +69,7 @@ graph TD
 - ⏰ **Automated Scheduling**: Cron or interval-based backups, with staggered runs on startup to avoid traffic spikes. Trigger any backup on demand and test connectivity from the UI.
 - 🔐 **Hardened Security**:
   - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup and firewall SSH password, including startup migration of legacy plaintext data.
-  - **Persistent SSH identities**: Unknown FortiGate keys are learned on first use and stored in an application-managed OpenSSH `known_hosts` file. Changed keys stay blocked until their detected fingerprint is explicitly accepted in the firewall UI.
+  - **Persistent SSH identities**: Unknown FortiGate keys are learned on first use and stored in an application-managed OpenSSH `known_hosts` file. Changed keys are automatically accepted, persisted, and logged by default, allowing HA failover and failback without manual approval. Set `SSH_AUTO_ACCEPT_CHANGED_KEYS=false` to require explicit acceptance in the firewall UI. Automatic acceptance also trusts unexpected replacement keys and does not protect against server impersonation through a changed key.
   - **Local passwords hashed with bcrypt**, plus a forced password change on first login.
   - **Session guard**: Signed sessions, idle timeouts, and X-Forwarded-For pinning.
   - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
@@ -343,7 +343,8 @@ FortiSafe is configured entirely via environment variables.
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `ENCRYPTION_KEY` / `ENCRYPTION_KEY_FILE` | *(Required)* | Exactly 32 bytes encoded as hex/base64. Startup migrates legacy plaintext; a wrong key makes encrypted credentials and backups unreadable. Keep a protected offline recovery copy. |
-| `SSH_KNOWN_HOSTS_FILE` | `DATA_DIR/ssh_known_hosts` | Writable, application-managed OpenSSH host-key store. Unknown hosts are learned on first use; changed keys require explicit acceptance in the firewall UI. |
+| `SSH_KNOWN_HOSTS_FILE` | `DATA_DIR/ssh_known_hosts` | Writable, application-managed OpenSSH host-key store. Unknown hosts are learned on first use; replacement handling follows `SSH_AUTO_ACCEPT_CHANGED_KEYS`. |
+| `SSH_AUTO_ACCEPT_CHANGED_KEYS` | `true` | Automatically accept, persist, and log changed host keys for all firewall SCP and SSH connections, including HA failover/failback. Set `false` to require manual approval. Explicitly revoked keys and persistence failures remain blocked. |
 | `DEFAULT_SCP_USER` | `fortisafe` | Default dedicated SSH username when none is specified. |
 | `DEFAULT_SCP_PASSWORD` | *(Unset)* | Default SSH password when none is specified. |
 | `FORTIGATE_CONFIG_PATH` | `sys_config` | Remote file path to download (typically `sys_config`). |
@@ -377,6 +378,8 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
 
 By default, after 30 minutes without another change for that administrator and firewall, FortiSafe sends one immutable, redacted summary to a dedicated Hookwise endpoint. The payload includes the structured ConfTail metadata plus Hookwise-compatible `source` and `message` fields, so ConnectWise can render the redacted session header and ordered change timeline directly instead of showing `Unknown Source` or `No message`. This is a create-only handoff: Hookwise must return HTTP `202 Accepted` with JSON containing `"status":"queued"` and a non-empty `"request_id"`. FortiSafe records that request ID but never closes, updates, comments on, or requests callback/status information for the downstream ticket. The authenticated operations page at `/fgt-conftail` can also clear all unaccepted Hookwise deliveries while retaining their configuration-change history.
+
+Enabled global ignore rules also hide matching messages from existing session history. Displayed change counts, event searches, VDOMs, and pagination exclude those messages; sessions with no visible messages disappear from the overview. Disabling or deleting a rule reveals previously stored matches again. Stored records, complete exports, and frozen Hookwise delivery snapshots remain unchanged; events suppressed during collection are not recovered.
 
 The application log records each ConfTail Graylog query start/completion and each authenticated dashboard/session query with its time range, source or result counts, and request ID where applicable. Configured Graylog queries are identified by a SHA-256 fingerprint and byte length; query text, tokens, source aliases, filter values, and response payloads are not logged.
 

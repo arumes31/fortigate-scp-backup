@@ -54,6 +54,7 @@ func main() {
 		bootstrap.Error("failed to initialize SSH host-key trust", "err", err)
 		os.Exit(1)
 	}
+	hostKeys.SetAutoAcceptChanges(cfg.SSHAutoAcceptChangedKeys)
 	hostKeyCallback := hostKeys.Callback()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
@@ -64,6 +65,7 @@ func main() {
 		"radius_enabled", cfg.RadiusEnabled,
 		"ext_adm_vpn_conf", cfg.ExtAdmVpnConf,
 		"scp_timeout", cfg.SCPTimeout,
+		"ssh_auto_accept_changed_keys", cfg.SSHAutoAcceptChangedKeys,
 		"port", cfg.Port,
 		"startup_progress_interval", startupHeartbeatInterval)
 
