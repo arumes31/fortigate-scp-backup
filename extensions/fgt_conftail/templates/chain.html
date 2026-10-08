@@ -90,7 +90,9 @@
                 <a class="btn btn-sm" href="{{.TransactionURL}}"{{if eq .View "transaction"}} aria-current="page"{{end}}>{{L .Base.Lang "By transaction"}}</a>
                 <a class="btn btn-sm" href="{{.ObjectURL}}"{{if eq .View "object"}} aria-current="page"{{end}}>{{L .Base.Lang "By object"}}</a>
             </nav>
-            {{if eq .View "chronological"}}
+            {{if not .Chain.Events}}
+            <p class="empty">{{L .Base.Lang "All messages in this session are hidden by global ignore rules."}}</p>
+            {{else if eq .View "chronological"}}
             <ol class="ct-timeline ct-complete-timeline">
                 {{range .Chain.Events}}{{template "dashboardEvent" .}}{{end}}
             </ol>
@@ -116,10 +118,10 @@
             <form method="post" action="/fgt-conftail/ignore-rules">
                 {{template "csrf" .Base.CSRFToken}}
                 <h2 id="ct-ignore-title">{{L .Base.Lang "Confirm global ignore"}}</h2>
-                <p>{{L .Base.Lang "This affects every firewall and all future sessions. Existing events remain in history."}}</p>
+                <p>{{L .Base.Lang "This hides matching messages from session history across every firewall and suppresses future matches. Stored records and existing tickets are retained."}}</p>
                 <input type="hidden" name="event_id" id="ct-ignore-event-id">
                 <fieldset>
-                    <legend>{{L .Base.Lang "Ignore future events matching:"}}</legend>
+                    <legend>{{L .Base.Lang "Ignore messages matching:"}}</legend>
                     <label id="ct-ignore-attribute-option"><input type="radio" name="kind" value="attribute"> <span>{{L .Base.Lang "Exact attribute change"}}</span><code data-ct-ignore-attribute></code></label>
                     <label id="ct-ignore-operation-option"><input type="radio" name="kind" value="operation"> <span>{{L .Base.Lang "Operation and path"}}</span><code data-ct-ignore-operation></code></label>
                 </fieldset>
@@ -138,7 +140,7 @@
 
 {{define "dashboardEvent"}}
 <li class="ct-virtual-item" id="ct-event-{{.ID}}" data-canonical-position="{{.Sequence}}">
-    <div class="ct-event-head"><span class="ct-event-position">{{L .Lang "Change"}} {{.Sequence}}</span>{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">{{L .Lang "late"}}</span>{{end}}{{if .GlobalIgnoreID}}<span class="pill ct-state-accepted">global {{.GlobalIgnoreKind}} {{L .Lang "ignore active"}}</span>{{end}}</div>
+    <div class="ct-event-head"><span class="ct-event-position">{{L .Lang "Change"}} {{.Sequence}}</span>{{template "dashboardTime" .EventAt}}<span class="pill">{{.Action}}</span>{{if .VDOM}}<span>VDOM: <span class="no-caps">{{.VDOM}}</span></span>{{end}}{{if .TransactionID}}<span>TX: <span class="no-caps">{{.TransactionID}}</span></span>{{end}}{{if .Late}}<span class="pill ct-state-retry">{{L .Lang "late"}}</span>{{end}}</div>
     <div class="ct-event-body no-caps">
         {{if .Source}}<span><b>{{L .Lang "source:"}}</b> {{.Source}}</span>{{end}}
         {{if .DeviceName}}<span><b>{{L .Lang "device:"}}</b> {{.DeviceName}}</span>{{end}}
