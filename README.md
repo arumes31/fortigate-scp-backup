@@ -309,6 +309,8 @@ FortiSafe is configured entirely via environment variables.
 | `DATA_DIR` | `/app/data` | Storage directory for SQLite extension data. |
 | `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune the audited activity trail older than N days (0 = keep forever). |
 
+Startup checks backup encryption with four bounded workers. Already-encrypted files require only a 34-byte envelope read; legacy plaintext files are still fully read and encrypted before the server starts. Truncated envelopes fail startup, and full authenticated decryption is performed whenever a backup is read. Startup logs report the duration of the `backup_encryption` phase.
+
 ### PostgreSQL Configuration (Main Database Store)
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |

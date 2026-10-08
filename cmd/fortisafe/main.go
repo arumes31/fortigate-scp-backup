@@ -72,8 +72,8 @@ func main() {
 	ctx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()
 
-	// Bound all startup database work (connect+retry, schema init, migrations,
-	// schedule load) so a slow or unreachable database cannot block boot forever.
+	// Bound startup database work and backup migration (connect+retry, schema
+	// init, migrations, schedule load) so failures cannot block boot forever.
 	// The window comfortably exceeds the default connect retry/backoff budget.
 	startupCtx, startupCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer startupCancel()
@@ -119,7 +119,7 @@ func main() {
 		if err := os.MkdirAll(cfg.BackupDir, 0o750); err != nil {
 			return 0, err
 		}
-		return backup.MigrateEncryptionAtRest(cfg.BackupDir, cipher)
+		return backup.MigrateEncryptionAtRest(startupCtx, cfg.BackupDir, cipher)
 	})
 	if err != nil {
 		os.Exit(1)
