@@ -67,6 +67,7 @@ func (e *Extension) serverError(w http.ResponseWriter, err error) {
 type indexData struct {
 	Base                   webui.BaseData
 	Configs                []configRow
+	GraylogTimeframe       string
 	AvailableIPsCount      int
 	AvailableIPsPercentage string
 }
@@ -127,6 +128,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	data := indexData{
 		Base:                   e.pageBase(r, "FGT ADM VPN Config", "admvpn"),
 		Configs:                rows,
+		GraylogTimeframe:       e.graylogTimeframe(),
 		AvailableIPsCount:      count,
 		AvailableIPsPercentage: fmt.Sprintf("%.2f", pct),
 	}

@@ -634,6 +634,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 			"Ike2Username": "vpn-adm-synthetic-vienna", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
 			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(time.Minute).Format(time.RFC3339),
 			"ClusterHostnames": "edge-a, edge-b", "DnsNameFull": "edge.example.test", "LastDnsStatus": "ok",
+			"GraylogQueries":  []string{`source:"edge-a"`, `source:"edge-b"`},
 			"LastDnsResolved": "10.105.1.7", "HealthState": "healthy", "HealthLabel": "Checks pass",
 			"HealthSummary": "Graylog online · DNS verified", "GraylogEvidence": "Graylog online", "DnsEvidence": "DNS verified",
 			"LastCheckDisplay": "2026-09-02 10:29 UTC", "LastCheckISO": uxFixtureNow.Add(-time.Minute).Format(time.RFC3339),
@@ -652,7 +653,8 @@ func uxADMVPNFixture(scenario uxScenario) any {
 		}
 		configs = append(configs, first, map[string]any{
 			"ID": 8, "Firewallname": "branch-with-an-intentionally-long-hostname.europe.example.test", "CompanyName": "102",
-			"Kundenname": "Long-name fixture", "Standort": "Salzburg", "RemoteipFull": "10.105.1.8", "RemoteipFull1st": "10.150.11.8",
+			"GraylogQueries": []string{`source:"branch-with-an-intentionally-long-hostname.europe.example.test"`},
+			"Kundenname":     "Long-name fixture", "Standort": "Salzburg", "RemoteipFull": "10.105.1.8", "RemoteipFull1st": "10.150.11.8",
 			"Ike2Username": "vpn-adm-long-name-salzburg", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
 			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(2 * time.Minute).Format(time.RFC3339),
 			"DnsNameFull": "branch-with-an-intentionally-long-hostname.europe.example.test", "LastDnsStatus": "mismatch",
@@ -666,7 +668,8 @@ func uxADMVPNFixture(scenario uxScenario) any {
 			for id := 9; id <= 107; id++ {
 				configs = append(configs, map[string]any{
 					"ID": id, "Firewallname": fmt.Sprintf("bulk-%03d.example.test", id), "CompanyName": strconv.Itoa(1000 + id),
-					"Kundenname": "Bulk fixture", "Standort": "Vienna", "RemoteipFull": fmt.Sprintf("10.105.1.%d", (id%240)+10),
+					"GraylogQueries": []string{fmt.Sprintf(`source:"bulk-%03d.example.test"`, id)},
+					"Kundenname":     "Bulk fixture", "Standort": "Vienna", "RemoteipFull": fmt.Sprintf("10.105.1.%d", (id%240)+10),
 					"RemoteipFull1st": fmt.Sprintf("10.150.11.%d", (id%240)+10), "Ike2Username": fmt.Sprintf("vpn-adm-bulk-%03d", id),
 					"WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES", "GraylogEnabled": true,
 					"LastGraylogStatus": "online", "LastDnsStatus": "ok", "DnsNameFull": fmt.Sprintf("bulk-%03d.example.test", id),
@@ -679,6 +682,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 	}
 	return map[string]any{
 		"Base": uxBase("FGT ADM VPN Config", "admvpn"), "Configs": configs,
+		"GraylogTimeframe":  "300",
 		"AvailableIPsCount": 42, "AvailableIPsPercentage": "84.0",
 	}
 }

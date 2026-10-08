@@ -20,24 +20,37 @@ func escapeGraylogValue(value string) string {
 	return value
 }
 
+func graylogSourceQuery(hostname string) string {
+	return fmt.Sprintf(`source:"%s"`, escapeGraylogValue(hostname))
+}
+
+func graylogSources(c *VpnConfig) []string {
+	if c.ClusterHostnames != "" {
+		return splitHostnames(c.ClusterHostnames)
+	}
+	return []string{c.Firewallname}
+}
+
+func (e *Extension) graylogTimeframe() string {
+	if e.cfg.GraylogSearchTimeframe == "" {
+		return "86400"
+	}
+	return e.cfg.GraylogSearchTimeframe
+}
+
 // getGraylogStatus queries Graylog for recent logs from a single source host.
 // Returns "config_missing" if Graylog isn't configured, "online" if any logs
 // were found in the timeframe, "offline" if none, or "error" on any failure.
 func (e *Extension) getGraylogStatus(hostname string) string {
 	graylogURL := strings.TrimRight(e.cfg.GraylogURL, "/")
 	graylogToken := e.cfg.GraylogToken
-	timeframe := e.cfg.GraylogSearchTimeframe
-	if timeframe == "" {
-		timeframe = "86400"
-	}
-
 	if graylogURL == "" || graylogToken == "" {
 		return "config_missing"
 	}
 
 	params := url.Values{}
-	params.Set("query", fmt.Sprintf(`source:"%s"`, escapeGraylogValue(hostname)))
-	params.Set("range", timeframe)
+	params.Set("query", graylogSourceQuery(hostname))
+	params.Set("range", e.graylogTimeframe())
 	params.Set("limit", "1")
 	apiURL := graylogURL + "/api/search/universal/relative?" + params.Encode()
 
@@ -64,12 +77,15 @@ func (e *Extension) getGraylogStatus(hostname string) string {
 		return "error"
 	}
 	var data struct {
-		TotalResults float64 `json:"total_results"`
+		TotalResults *int64 `json:"total_results"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return "error"
 	}
-	if data.TotalResults > 0 {
+	if data.TotalResults == nil || *data.TotalResults < 0 {
+		return "error"
+	}
+	if *data.TotalResults > 0 {
 		return "online"
 	}
 	return "offline"
@@ -80,7 +96,7 @@ func (e *Extension) getGraylogStatus(hostname string) string {
 // firewallname.
 func (e *Extension) computeStatus(c *VpnConfig) string {
 	if c.ClusterHostnames != "" {
-		hostnames := splitHostnames(c.ClusterHostnames)
+		hostnames := graylogSources(c)
 		if len(hostnames) == 0 {
 			// cluster_hostnames set but parses to nothing -> misconfig, treat as
 			// error rather than defaulting to online.

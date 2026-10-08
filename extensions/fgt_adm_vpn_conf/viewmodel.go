@@ -29,6 +29,7 @@ type configRow struct {
 	HealthLabel        string
 	HealthSummary      string
 	GraylogEvidence    string
+	GraylogQueries     []string
 	DnsEvidence        string
 	LastCheckDisplay   string
 	LastCheckISO       string
@@ -43,6 +44,10 @@ func makeConfigRow(c *VpnConfig, location *time.Location) configRow {
 	lastCheck := latestConfigCheck(c.LastGraylogCheck, c.LastDnsCheck)
 	lastDisplay, lastISO := formatConfigCheck(lastCheck, location)
 	graylogEvidence, graylogState := graylogHealthEvidence(c)
+	var graylogQueries []string
+	for _, source := range graylogSources(c) {
+		graylogQueries = append(graylogQueries, graylogSourceQuery(source))
+	}
 	dnsEvidence, dnsState := dnsHealthEvidence(c.LastDnsStatus)
 	healthState, healthLabel := combinedConfigHealth(graylogState, dnsState)
 	nextCheckISO := ""
@@ -64,6 +69,7 @@ func makeConfigRow(c *VpnConfig, location *time.Location) configRow {
 		HealthState: healthState, HealthLabel: healthLabel,
 		HealthSummary:   graylogEvidence + " · " + dnsEvidence,
 		GraylogEvidence: graylogEvidence, DnsEvidence: dnsEvidence,
+		GraylogQueries:   graylogQueries,
 		LastCheckDisplay: lastDisplay, LastCheckISO: lastISO,
 	}
 }
