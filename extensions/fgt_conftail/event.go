@@ -34,7 +34,6 @@ type firewallRef struct {
 	ID      int
 	Name    string
 	Company string
-	CID     string
 	Aliases []string
 }
 

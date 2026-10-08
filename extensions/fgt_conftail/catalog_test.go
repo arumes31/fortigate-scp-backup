@@ -76,8 +76,7 @@ func TestBuildSourceCatalog_NormalizesHAAndIgnoresUnregisteredRows(t *testing.T)
 			DNSName:          "cluster-fw",
 			DNSNameFull:      " CLUSTER-FW.EXAMPLE.COM ",
 			ClusterHostnames: " Node-A , node-b, NODE-A ",
-			Company:          "Example Customer GmbH",
-			CID:              "CW-4711",
+			Company:          "Acme-Europe",
 		},
 		{
 			FirewallName:     "rogue-firewall",
@@ -107,7 +106,7 @@ func TestBuildSourceCatalog_NormalizesHAAndIgnoresUnregisteredRows(t *testing.T)
 		if !ok || resolved.ID != 7 {
 			t.Fatalf("resolve(%q) = (%+v, %t), want registered firewall 7", source, resolved, ok)
 		}
-		if resolved.Company != "Example Customer GmbH" || resolved.CID != "CW-4711" {
+		if resolved.Company != "Acme-Europe" {
 			t.Fatalf("resolve(%q) metadata = %+v", source, resolved)
 		}
 	}
@@ -412,8 +411,31 @@ type admTestRow struct {
 	DNSNameFull      string
 	ClusterHostnames string
 	Company          string
-	CID              string
 	GraylogDisabled  bool
+}
+
+func TestBuildSourceCatalog_CompanyFieldNotYetMigrated(t *testing.T) {
+	dataDir := t.TempDir()
+	createADMDatabase(t, dataDir, []admTestRow{{FirewallName: "edge.example.test"}})
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, admVPNDatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("ALTER TABLE vpn_config DROP COLUMN connectwise_company_name"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := buildSourceCatalog(context.Background(), []firewallRef{{ID: 7, Name: "edge.example.test"}}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, ok := catalog.resolve("edge.example.test")
+	if !ok || resolved.ID != 7 || resolved.Company != "" {
+		t.Fatalf("unmigrated company field disrupted source coverage: %+v, found=%t", resolved, ok)
+	}
 }
 
 func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
@@ -429,8 +451,7 @@ func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 		dns_name TEXT,
 		dns_name_full TEXT,
 		cluster_hostnames TEXT,
-		kundenname TEXT,
-		cid TEXT,
+		connectwise_company_name TEXT,
 		graylog_enabled BOOLEAN DEFAULT 1
 	)`); err != nil {
 		_ = db.Close()
@@ -439,14 +460,13 @@ func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 	for _, row := range rows {
 		if _, err := db.Exec(
 			`INSERT INTO vpn_config
-			 (firewallname, dns_name, dns_name_full, cluster_hostnames, kundenname, cid, graylog_enabled)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			 (firewallname, dns_name, dns_name_full, cluster_hostnames, connectwise_company_name, graylog_enabled)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
 			row.FirewallName,
 			row.DNSName,
 			row.DNSNameFull,
 			row.ClusterHostnames,
 			row.Company,
-			row.CID,
 			!row.GraylogDisabled,
 		); err != nil {
 			_ = db.Close()

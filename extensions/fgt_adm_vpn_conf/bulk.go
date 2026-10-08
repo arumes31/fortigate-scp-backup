@@ -22,7 +22,7 @@ var configCSVHeader = []string{
 	"Kundenname", "Standort", "REMOTEIP-FULL", "REMOTEIP-FULL-1st",
 	"ike2_username", "WAN-Interface", "LAN-Interface", "DNS-Name",
 	"IPSEC-PSK-RO", "IPSEC-PSK-HCI", "RADIUSMGT", "DNS-Name-Full",
-	"Firewallname", "CID", "graylog_enabled", "cluster_hostnames",
+	"Firewallname", "Connectwise Company Name", "graylog_enabled", "cluster_hostnames",
 }
 
 type bulkSelectionError string
@@ -246,7 +246,7 @@ func writeConfigsCSV(writer io.Writer, configs []*VpnConfig) error {
 			config.Kundenname, config.Standort, config.RemoteipFull, config.RemoteipFull1st,
 			config.Ike2Username, config.WanInterface, config.LanInterface, config.DnsName,
 			config.IpsecPskRo, config.IpsecPskHci, config.Radiusmgt, config.DnsNameFull,
-			config.Firewallname, config.Cid, graylogEnabled, config.ClusterHostnames,
+			config.Firewallname, config.companyIdentifier(), graylogEnabled, config.ClusterHostnames,
 		}); err != nil {
 			return err
 		}

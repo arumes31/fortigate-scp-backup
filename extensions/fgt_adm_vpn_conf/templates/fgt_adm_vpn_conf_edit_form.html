@@ -14,8 +14,9 @@
             <input id="edit-firewallname" type="text" name="firewallname" value="{{.Firewallname}}">
         </div>
         <div class="field">
-            <label for="edit-cid">CID</label>
-            <input id="edit-cid" type="text" name="cid" value="{{.Cid}}" inputmode="numeric" pattern="[0-9]+" title="{{L .Lang "CID must be a number"}}" required>
+            <label for="edit-company">{{L .Lang "Connectwise Company Name"}}</label>
+            <input id="edit-company" type="text" name="connectwise_company_name" value="{{.CompanyName}}" maxlength="100" required aria-describedby="edit-company-hint">
+            <small id="edit-company-hint" class="field-hint">{{L .Lang "Use the ConnectWise company identifier for Hookwise ticket matching."}}</small>
         </div>
         <div class="field">
             <label for="edit-remoteip-full">{{L .Lang "Remote IPv4 address"}}</label>

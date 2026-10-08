@@ -84,7 +84,7 @@ type editFormData struct {
 	WanInterface     string
 	LanInterface     string
 	Firewallname     string
-	Cid              string
+	CompanyName      string
 	Radiusmgt        string
 	GraylogEnabled   bool
 	ClusterHostnames string
@@ -94,7 +94,7 @@ func browserSafeEditFormData(c *VpnConfig) editFormData {
 	return editFormData{
 		ID: c.ID, Kundenname: c.Kundenname, Standort: c.Standort,
 		RemoteipFull: c.RemoteipFull, WanInterface: c.WanInterface,
-		LanInterface: c.LanInterface, Firewallname: c.Firewallname, Cid: c.Cid,
+		LanInterface: c.LanInterface, Firewallname: c.Firewallname, CompanyName: c.companyIdentifier(),
 		Radiusmgt: c.Radiusmgt, GraylogEnabled: c.GraylogEnabled,
 		ClusterHostnames: c.ClusterHostnames,
 	}
@@ -170,13 +170,9 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 		firewallname = kundenname + "-" + standort
 	}
 
-	cid := strings.TrimSpace(formGet(r, "cid", ""))
-	if cid == "" {
-		http.Error(w, "Error: CID is required.", http.StatusBadRequest)
-		return
-	}
-	if !isDigits(cid) {
-		http.Error(w, "Error: CID must be a number.", http.StatusBadRequest)
+	companyName := strings.TrimSpace(formGet(r, "connectwise_company_name", ""))
+	if err := validateCompanyIdentifier(companyName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -190,7 +186,7 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 		LanInterface:     formGet(r, "lan_interface", "loopback"),
 		DnsName:          dnsName,
 		Firewallname:     firewallname,
-		Cid:              cid,
+		CompanyName:      companyName,
 		IpsecPskRo:       formGet(r, "ipsec_psk_ro", "psauto"),
 		IpsecPskHci:      formGet(r, "ipsec_psk_hci", "psauto"),
 		Radiusmgt:        formGet(r, "radiusmgt", "YES"),
@@ -326,16 +322,12 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 		c.Firewallname = c.Kundenname + "-" + c.Standort
 	}
 
-	cid := strings.TrimSpace(formGet(r, "cid", ""))
-	if cid == "" {
-		http.Error(w, "Error: CID is required.", http.StatusBadRequest)
+	companyName := strings.TrimSpace(formGet(r, "connectwise_company_name", ""))
+	if err := validateCompanyIdentifier(companyName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !isDigits(cid) {
-		http.Error(w, "Error: CID must be a number.", http.StatusBadRequest)
-		return
-	}
-	c.Cid = cid
+	c.CompanyName = companyName
 
 	c.DnsName = "fgt-" + c.Kundenname + "-" + c.Standort
 	c.DnsNameFull = c.DnsName + ".adm.eworx.at"
@@ -359,13 +351,13 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 const maxEditFormBytes = 1 << 20
 
 var admVPNEditFieldNames = []string{
-	"kundenname", "standort", "firewallname", "cid", "remoteip_full",
+	"kundenname", "standort", "firewallname", "connectwise_company_name", "remoteip_full",
 	"wan_interface", "lan_interface", "ipsec_psk_ro", "ipsec_psk_hci",
 	"radiusmgt", "cluster_hostnames", "graylog_enabled",
 }
 
 var admVPNAddFieldNames = []string{
-	"kundenname", "standort", "firewallname", "cid", "remoteip_full",
+	"kundenname", "standort", "firewallname", "connectwise_company_name", "remoteip_full",
 	"wan_interface", "lan_interface", "ipsec_psk_ro", "ipsec_psk_hci",
 	"radiusmgt", "dns_name_full", "graylog_enabled", "cluster_hostnames",
 }
@@ -411,7 +403,7 @@ func changedEditFieldNames(before, after *VpnConfig) []string {
 	compare("kundenname", before.Kundenname != after.Kundenname)
 	compare("standort", before.Standort != after.Standort)
 	compare("firewallname", before.Firewallname != after.Firewallname)
-	compare("cid", before.Cid != after.Cid)
+	compare("connectwise_company_name", before.CompanyName != after.CompanyName)
 	compare("remoteip_full", before.RemoteipFull != after.RemoteipFull)
 	compare("wan_interface", before.WanInterface != after.WanInterface)
 	compare("lan_interface", before.LanInterface != after.LanInterface)
@@ -623,6 +615,7 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 	expectedCols := []string{
 		"kundenname", "standort", "remoteip-full", "remoteip-full-1st",
 		"ipsec-psk-ro", "ipsec-psk-hci", "radiusmgt", "wan-interface", "lan-interface", "firewallname",
+		"connectwise company name",
 	}
 	var missing []string
 	for _, col := range expectedCols {
@@ -700,13 +693,9 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 			clusterHostnames = cell(row, "cluster_hostnames")
 		}
 
-		cid := cell(row, "cid")
-		if cid == "" {
-			errorsList = append(errorsList, fmt.Sprintf("Row %d: CID is required.", rowNo))
-			continue
-		}
-		if !isDigits(cid) {
-			errorsList = append(errorsList, fmt.Sprintf("Row %d: CID must be a number.", rowNo))
+		companyName := cell(row, "connectwise company name")
+		if err := validateCompanyIdentifier(companyName); err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("Row %d: %s", rowNo, err))
 			continue
 		}
 
@@ -731,7 +720,7 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 			LanInterface:     lan,
 			DnsName:          dnsName,
 			Firewallname:     firewallname,
-			Cid:              cid,
+			CompanyName:      companyName,
 			IpsecPskRo:       ipsecRo,
 			IpsecPskHci:      ipsecHci,
 			Radiusmgt:        radiusmgt,

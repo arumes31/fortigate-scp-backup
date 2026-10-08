@@ -17,8 +17,9 @@
                             <input id="add-firewallname" type="text" name="firewallname" required>
                         </div>
                         <div class="field">
-                            <label for="add-cid">CID</label>
-                            <input id="add-cid" type="text" name="cid" inputmode="numeric" pattern="[0-9]+" title="{{L .Base.Lang "CID must be a number"}}" required>
+                            <label for="add-company">{{L .Base.Lang "Connectwise Company Name"}}</label>
+                            <input id="add-company" type="text" name="connectwise_company_name" maxlength="100" required aria-describedby="add-company-hint">
+                            <small id="add-company-hint" class="field-hint">{{L .Base.Lang "Use the ConnectWise company identifier for Hookwise ticket matching."}}</small>
                         </div>
                         <div class="field">
                             <label for="add-kundenname">{{L .Base.Lang "Customer name"}}</label>
@@ -84,7 +85,7 @@
                         </select>
                     </label>
                     <label class="adm-search-control" for="vpnSearch">{{L .Base.Lang "Search entries"}}
-                        <input type="search" id="vpnSearch" aria-label="{{L .Base.Lang "Search VPN entries"}}" placeholder="{{L .Base.Lang "Firewall, customer, site, CID…"}}" autocomplete="off">
+                        <input type="search" id="vpnSearch" aria-label="{{L .Base.Lang "Search VPN entries"}}" placeholder="{{L .Base.Lang "Firewall, customer, site, company…"}}" autocomplete="off">
                     </label>
                     <span class="muted adm-search-count" id="vpnSearchCount" aria-live="polite"></span>
                 </div>
@@ -114,7 +115,7 @@
                             {{range .Configs}}
                             <tr tabindex="0" data-vpn-row="{{.ID}}" aria-selected="false" aria-controls="vpn-detail-{{.ID}}">
                                 <td data-column="selection"><input type="checkbox" name="id" value="{{.ID}}" form="admBulkForm" data-vpn-checkbox aria-label="{{L $.Base.Lang "Select"}} {{.Firewallname}}"></td>
-                                <td data-column="identity"><strong class="adm-identity">{{.Firewallname}}</strong><span class="sub">{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</span></td>
+                                <td data-column="identity"><strong class="adm-identity">{{.Firewallname}}</strong><span class="sub">{{.Kundenname}} · {{.Standort}}{{if .CompanyName}} · {{L $.Base.Lang "Connectwise Company Name"}}: {{.CompanyName}}{{end}}</span></td>
                                 <td data-column="enabled">{{if .GraylogEnabled}}<span class="pill pill-success">{{L $.Base.Lang "Enabled"}}</span>{{else}}<span class="pill pill-muted">{{L $.Base.Lang "Disabled"}}</span>{{end}}</td>
                                 <td data-column="health"><span class="pill adm-health adm-health--{{.HealthState}}">{{L $.Base.Lang .HealthLabel}}</span><span class="sub">{{.HealthSummary}}</span></td>
                                 <td data-column="last-check">{{if .LastCheckISO}}<time datetime="{{.LastCheckISO}}">{{.LastCheckDisplay}}</time>{{else}}<span class="muted">{{L $.Base.Lang "Not checked"}}</span>{{end}}{{if and .GraylogEnabled .NextCheckISO}}<span class="sub next-graylog-check" data-next="{{.NextCheckISO}}">&hellip;</span>{{end}}</td>
@@ -134,7 +135,7 @@
                 <div id="vpnDetailEmpty" class="adm-detail-empty"><span class="eyebrow">{{L .Base.Lang "Entry details"}}</span><h2 id="vpnDetailTitle">{{L .Base.Lang "Select an entry"}}</h2><p class="muted">{{L .Base.Lang "Choose a fleet row to inspect its factual configuration and check evidence."}}</p></div>
                 {{range .Configs}}
                 <section class="adm-detail-panel" id="vpn-detail-{{.ID}}" data-vpn-detail="{{.ID}}" tabindex="-1" hidden>
-                    <header class="adm-detail-header"><div><span class="eyebrow">{{L $.Base.Lang "Entry details"}}</span><h2>{{.Firewallname}}</h2><p>{{.Kundenname}} · {{.Standort}} · CID {{.Cid}}</p></div><span class="pill adm-health adm-health--{{.HealthState}}">{{L $.Base.Lang .HealthLabel}}</span></header>
+                    <header class="adm-detail-header"><div><span class="eyebrow">{{L $.Base.Lang "Entry details"}}</span><h2>{{.Firewallname}}</h2><p>{{.Kundenname}} · {{.Standort}}{{if .CompanyName}} · {{L $.Base.Lang "Connectwise Company Name"}}: {{.CompanyName}}{{end}}</p></div><span class="pill adm-health adm-health--{{.HealthState}}">{{L $.Base.Lang .HealthLabel}}</span></header>
                     <p class="adm-factual-note"><strong>{{L $.Base.Lang "Configuration checks only."}}</strong> {{L $.Base.Lang "Tunnel availability is not measured by this view."}}</p>
                     <div class="adm-evidence-grid">
                         <section><h3>{{L $.Base.Lang "Graylog evidence"}}</h3><strong>{{.GraylogEvidence}}</strong><dl><dt>{{L $.Base.Lang "Raw status"}}</dt><dd>{{.LastGraylogStatus}}</dd><dt>{{L $.Base.Lang "Last check"}}</dt><dd>{{if .LastGraylogISO}}<time datetime="{{.LastGraylogISO}}">{{.LastGraylogDisplay}}</time>{{else}}{{L $.Base.Lang "Not checked"}}{{end}}</dd><dt>{{L $.Base.Lang "Monitoring"}}</dt><dd>{{if .GraylogEnabled}}{{L $.Base.Lang "Enabled"}}{{else}}{{L $.Base.Lang "Disabled"}}{{end}}</dd></dl></section>

@@ -431,7 +431,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 		data := map[string]any{
 			"Lang": uxLanguageFromRequest(r),
 			"ID":   7, "Firewallname": "edge.example.test", "Kundenname": "Synthetic customer", "Standort": "Vienna",
-			"Cid": "101", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
+			"CompanyName": "Acme-Europe", "RemoteipFull": "10.105.1.7", "WanInterface": "wan1", "LanInterface": "loopback",
 			"IpsecPskRo": "SENTINEL-STORED-RO-PSK-5e19", "IpsecPskHci": "SENTINEL-STORED-HCI-PSK-83d1",
 			"Radiusmgt": "YES", "GraylogEnabled": true,
 		}
@@ -486,7 +486,7 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	})
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/export", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		_, _ = io.WriteString(w, "firewallname,cid\nedge.example.test,101\n")
+		_, _ = io.WriteString(w, "firewallname,Connectwise Company Name\nedge.example.test,101\n")
 	})
 	mux.HandleFunc("GET /fgt-adm-vpn-conf/export_bookmarks", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -629,7 +629,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 	configs := []any{}
 	if scenario != uxScenarioEmpty {
 		first := map[string]any{
-			"ID": 7, "Firewallname": "edge.example.test", "Cid": "101", "Kundenname": "Synthetic customer",
+			"ID": 7, "Firewallname": "edge.example.test", "CompanyName": "101", "Kundenname": "Synthetic customer",
 			"Standort": "Vienna", "RemoteipFull": "10.105.1.7", "RemoteipFull1st": "10.150.11.7",
 			"Ike2Username": "vpn-adm-synthetic-vienna", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
 			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(time.Minute).Format(time.RFC3339),
@@ -651,7 +651,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 			first["DnsEvidence"] = "DNS mismatch"
 		}
 		configs = append(configs, first, map[string]any{
-			"ID": 8, "Firewallname": "branch-with-an-intentionally-long-hostname.europe.example.test", "Cid": "102",
+			"ID": 8, "Firewallname": "branch-with-an-intentionally-long-hostname.europe.example.test", "CompanyName": "102",
 			"Kundenname": "Long-name fixture", "Standort": "Salzburg", "RemoteipFull": "10.105.1.8", "RemoteipFull1st": "10.150.11.8",
 			"Ike2Username": "vpn-adm-long-name-salzburg", "WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES",
 			"GraylogEnabled": true, "LastGraylogStatus": "online", "NextCheckISO": uxFixtureNow.Add(2 * time.Minute).Format(time.RFC3339),
@@ -665,7 +665,7 @@ func uxADMVPNFixture(scenario uxScenario) any {
 		if scenario == uxScenarioLoading {
 			for id := 9; id <= 107; id++ {
 				configs = append(configs, map[string]any{
-					"ID": id, "Firewallname": fmt.Sprintf("bulk-%03d.example.test", id), "Cid": strconv.Itoa(1000 + id),
+					"ID": id, "Firewallname": fmt.Sprintf("bulk-%03d.example.test", id), "CompanyName": strconv.Itoa(1000 + id),
 					"Kundenname": "Bulk fixture", "Standort": "Vienna", "RemoteipFull": fmt.Sprintf("10.105.1.%d", (id%240)+10),
 					"RemoteipFull1st": fmt.Sprintf("10.150.11.%d", (id%240)+10), "Ike2Username": fmt.Sprintf("vpn-adm-bulk-%03d", id),
 					"WanInterface": "wan1", "LanInterface": "loopback", "Radiusmgt": "YES", "GraylogEnabled": true,

@@ -119,21 +119,21 @@ func containsStr(ss []string, v string) bool {
 	return false
 }
 
-// hookwisePayload is the JSON body sent to HookWise (field order matches Python).
+// hookwisePayload is the JSON body sent to Hookwise.
 type hookwisePayload struct {
-	Status   string `json:"status"`
-	Monitor  string `json:"monitor"`
-	Device   string `json:"device"`
-	Cid      string `json:"cid"`
-	RemoteIP string `json:"remote_ip"`
-	Message  string `json:"message"`
+	Status      string `json:"status"`
+	Monitor     string `json:"monitor"`
+	Device      string `json:"device"`
+	CompanyName string `json:"company"`
+	RemoteIP    string `json:"remote_ip"`
+	Message     string `json:"message"`
 }
 
 // sendHookwiseEvent sends an up/down event for a device to HookWise. It returns
 // true when the event was delivered or intentionally skipped (HookWise not
-// configured, missing/disabled CID), and false only when a delivery attempt was
-// made and failed, so the caller can retry on the next sweep rather than losing
-// the alert.
+// configured, missing company identifier), and false only when a delivery attempt
+// was made and failed, so the caller can retry on the next sweep rather than
+// losing the alert.
 func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) bool {
 	hookwiseURL := strings.TrimRight(e.cfg.HookwiseURL, "/")
 	hookwiseToken := e.cfg.HookwiseToken
@@ -141,12 +141,9 @@ func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) bool {
 		return true
 	}
 
-	if strings.TrimSpace(c.Cid) == "" {
-		e.logger.Error("cannot send HookWise event: missing CID", "firewall", c.Firewallname)
-		return true
-	}
-	if strings.TrimSpace(c.Cid) == hookwiseDisabledCID {
-		e.logger.Info("HookWise alerts disabled", "firewall", c.Firewallname, "cid", hookwiseDisabledCID)
+	company := c.companyIdentifier()
+	if company == "" {
+		e.logger.Info("HookWise alerts disabled: no ConnectWise company configured", "firewall", c.Firewallname)
 		return true
 	}
 
@@ -155,12 +152,12 @@ func (e *Extension) sendHookwiseEvent(c *VpnConfig, status string) bool {
 		eventStatus = "UP"
 	}
 	payload := hookwisePayload{
-		Status:   eventStatus,
-		Monitor:  c.Firewallname,
-		Device:   c.Firewallname,
-		Cid:      c.Cid,
-		RemoteIP: c.RemoteipFull,
-		Message:  fmt.Sprintf("FGT ADM VPN %s is %s", c.Firewallname, eventStatus),
+		Status:      eventStatus,
+		Monitor:     c.Firewallname,
+		Device:      c.Firewallname,
+		CompanyName: company,
+		RemoteIP:    c.RemoteipFull,
+		Message:     fmt.Sprintf("FGT ADM VPN %s is %s", c.Firewallname, eventStatus),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

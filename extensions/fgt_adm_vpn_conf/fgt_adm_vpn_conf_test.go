@@ -346,7 +346,7 @@ func TestListGraylogIssuesFiltersByAge(t *testing.T) {
 			since = c.since
 		}
 		if _, err := db.Exec(
-			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, connectwise_company_name,
 			 graylog_enabled, last_graylog_status, graylog_unhealthy_since)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			"cust", "site", fmt.Sprintf("10.105.1.%d", i+1), c.fw, "123",
@@ -390,7 +390,7 @@ func TestEditSubmit_MultipartFormData(t *testing.T) {
 	if _, err := db.Exec(createTableSQL); err != nil {
 		t.Fatal(err)
 	}
-	res, err := db.Exec(`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid)
+	res, err := db.Exec(`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, connectwise_company_name)
 		VALUES ('old-kunde', 'old-ort', '10.105.1.110', 'FGT40F_OLD-KUNDE-OLD-ORT', '11111')`)
 	if err != nil {
 		t.Fatal(err)
@@ -403,16 +403,16 @@ func TestEditSubmit_MultipartFormData(t *testing.T) {
 	e := &Extension{db: db, logger: slog.New(slog.DiscardHandler), logActivity: func(string, string, string) {}}
 
 	fields := map[string]string{
-		"kundenname":    "panhoelzl",
-		"standort":      "ried",
-		"firewallname":  "FGT40F_PANHOELZL-RIED",
-		"cid":           "25580",
-		"remoteip_full": "10.105.1.110",
-		"wan_interface": "wan",
-		"lan_interface": "loopback",
-		"ipsec_psk_ro":  "psauto",
-		"ipsec_psk_hci": "psauto",
-		"radiusmgt":     "YES",
+		"kundenname":               "panhoelzl",
+		"standort":                 "ried",
+		"firewallname":             "FGT40F_PANHOELZL-RIED",
+		"connectwise_company_name": "25580",
+		"remoteip_full":            "10.105.1.110",
+		"wan_interface":            "wan",
+		"lan_interface":            "loopback",
+		"ipsec_psk_ro":             "psauto",
+		"ipsec_psk_hci":            "psauto",
+		"radiusmgt":                "YES",
 	}
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -458,7 +458,7 @@ func TestEditFormDoesNotExposeStoredPSKs(t *testing.T) {
 	const roSecret = "SENTINEL-RO-SECRET-7f28"
 	const hciSecret = "SENTINEL-HCI-SECRET-91ac"
 	result, err := db.Exec(`INSERT INTO vpn_config
-		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro, ipsec_psk_hci)
+		(kundenname, standort, remoteip_full, firewallname, connectwise_company_name, ipsec_psk_ro, ipsec_psk_hci)
 		VALUES ('customer', 'site', '10.105.1.120', 'edge.example.test', '101', ?, ?)`, roSecret, hciSecret)
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +512,7 @@ func TestEditSubmitBlankPSKsPreservesStoredSecretsAndLogsOnlyChangedFieldNames(t
 	const hciSecret = "SENTINEL-HCI-SECRET-8c22"
 	const replacement = "REPLACEMENT-RO-SECRET-e301"
 	result, err := db.Exec(`INSERT INTO vpn_config
-		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro, ipsec_psk_hci,
+		(kundenname, standort, remoteip_full, firewallname, connectwise_company_name, ipsec_psk_ro, ipsec_psk_hci,
 		 wan_interface, lan_interface, radiusmgt)
 		VALUES ('customer', 'site', '10.105.1.121', 'edge.example.test', '101', ?, ?, 'wan1', 'loopback', 'YES')`, roSecret, hciSecret)
 	if err != nil {
@@ -530,7 +530,7 @@ func TestEditSubmitBlankPSKsPreservesStoredSecretsAndLogsOnlyChangedFieldNames(t
 	}
 	baseFields := map[string]string{
 		"kundenname": "customer", "standort": "site", "firewallname": "edge.example.test",
-		"cid": "101", "remoteip_full": "10.105.1.121", "wan_interface": "wan1",
+		"connectwise_company_name": "101", "remoteip_full": "10.105.1.121", "wan_interface": "wan1",
 		"lan_interface": "loopback", "radiusmgt": "YES", "ipsec_psk_ro": "", "ipsec_psk_hci": "",
 	}
 	postEditForm(t, e, id, baseFields, http.StatusSeeOther)
@@ -583,7 +583,7 @@ func TestEditSubmitMalformedMultipartFailsClosed(t *testing.T) {
 	}
 	const secret = "SENTINEL-UNCHANGED-SECRET-40aa"
 	result, err := db.Exec(`INSERT INTO vpn_config
-		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro)
+		(kundenname, standort, remoteip_full, firewallname, connectwise_company_name, ipsec_psk_ro)
 		VALUES ('customer', 'site', '10.105.1.122', 'edge.example.test', '101', ?)`, secret)
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +633,7 @@ func TestEditSubmitRejectsAmbiguousOrOversizedPSKFields(t *testing.T) {
 	}
 	const storedSecret = "SENTINEL-STORED-SECRET-115a"
 	result, err := db.Exec(`INSERT INTO vpn_config
-		(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro)
+		(kundenname, standort, remoteip_full, firewallname, connectwise_company_name, ipsec_psk_ro)
 		VALUES ('customer', 'site', '10.105.1.123', 'edge.example.test', '101', ?)`, storedSecret)
 	if err != nil {
 		t.Fatal(err)
@@ -649,7 +649,7 @@ func TestEditSubmitRejectsAmbiguousOrOversizedPSKFields(t *testing.T) {
 	}
 	baseFields := map[string]string{
 		"kundenname": "customer", "standort": "site", "firewallname": "edge.example.test",
-		"cid": "101", "remoteip_full": "10.105.1.123", "wan_interface": "wan1",
+		"connectwise_company_name": "101", "remoteip_full": "10.105.1.123", "wan_interface": "wan1",
 		"lan_interface": "loopback", "radiusmgt": "YES", "ipsec_psk_hci": "",
 	}
 
@@ -720,7 +720,7 @@ func TestAddActivityIdentifiesEntryAndFieldsWithoutSecrets(t *testing.T) {
 	}
 	values := url.Values{
 		"kundenname": {"customer"}, "standort": {"site"}, "firewallname": {"edge.example.test"},
-		"cid": {"101"}, "wan_interface": {"wan1"}, "lan_interface": {"loopback"},
+		"connectwise_company_name": {"101"}, "wan_interface": {"wan1"}, "lan_interface": {"loopback"},
 		"ipsec_psk_ro": {roSecret}, "ipsec_psk_hci": {hciSecret}, "radiusmgt": {"YES"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/add", strings.NewReader(values.Encode()))
@@ -765,7 +765,7 @@ func postEditForm(t *testing.T, e *Extension, id int64, fields map[string]string
 }
 
 // TestMigrations verifies a legacy database (missing the newer columns) is
-// migrated in place and the cid backfill runs (#91).
+// migrated in place without inventing a company identifier.
 func TestMigrations(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := openDB(dbPath)
@@ -774,7 +774,7 @@ func TestMigrations(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Old-shape table: no cid / graylog_enabled / cluster_hostnames /
+	// Old-shape table: no connectwise_company_name / graylog_enabled / cluster_hostnames /
 	// last_graylog_status / last_graylog_check.
 	_, err = db.Exec(`CREATE TABLE vpn_config (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -794,17 +794,17 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Newer columns must now be selectable.
-	for _, col := range []string{"cid", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since", "last_dns_status", "last_dns_check", "last_dns_resolved"} {
+	for _, col := range []string{"connectwise_company_name", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since", "last_dns_status", "last_dns_check", "last_dns_resolved"} {
 		if !columnExists(db, col) {
 			t.Errorf("column %q missing after migration", col)
 		}
 	}
-	// cid must be backfilled from firewallname.
-	var cid string
-	if err := db.QueryRow(`SELECT cid FROM vpn_config WHERE firewallname='acme-hq'`).Scan(&cid); err != nil {
+	// A missing company must remain unconfigured until an operator supplies it.
+	var companyName string
+	if err := db.QueryRow(`SELECT connectwise_company_name FROM vpn_config WHERE firewallname='acme-hq'`).Scan(&companyName); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(cid) == "" {
-		t.Fatal("cid should have been backfilled")
+	if companyName != "" {
+		t.Fatal("migration must not invent a company identifier")
 	}
 }

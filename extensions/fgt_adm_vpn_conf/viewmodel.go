@@ -13,7 +13,7 @@ type configRow struct {
 	LanInterface       string
 	DnsNameFull        string
 	Firewallname       string
-	Cid                string
+	CompanyName        string
 	Radiusmgt          string
 	GraylogEnabled     bool
 	ClusterHostnames   string
@@ -55,7 +55,7 @@ func makeConfigRow(c *VpnConfig, location *time.Location) configRow {
 		ID: c.ID, Kundenname: c.Kundenname, Standort: c.Standort,
 		RemoteipFull: c.RemoteipFull, RemoteipFull1st: c.RemoteipFull1st,
 		Ike2Username: c.Ike2Username, WanInterface: c.WanInterface, LanInterface: c.LanInterface,
-		DnsNameFull: c.DnsNameFull, Firewallname: c.Firewallname, Cid: c.Cid,
+		DnsNameFull: c.DnsNameFull, Firewallname: c.Firewallname, CompanyName: c.companyIdentifier(),
 		Radiusmgt: c.Radiusmgt, GraylogEnabled: c.GraylogEnabled,
 		ClusterHostnames: c.ClusterHostnames, LastGraylogStatus: c.LastGraylogStatus,
 		LastGraylogDisplay: graylogDisplay, LastGraylogISO: graylogISO, NextCheckISO: nextCheckISO,

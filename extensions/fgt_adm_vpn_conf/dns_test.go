@@ -103,7 +103,7 @@ func TestUpdateDNSStatusDiscardsStaleEndpointResult(t *testing.T) {
 	}
 
 	result, err := db.Exec(
-		`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+		`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, connectwise_company_name,
 		 dns_name_full, last_dns_status, last_dns_resolved)
 		 VALUES ('cust', 'site', '10.105.1.1', 'fw-a', '123', 'old.adm.example', 'unknown', '')`,
 	)
@@ -204,7 +204,7 @@ func TestDNSSweep(t *testing.T) {
 			checked = formatDBTime(now.Add(-r.checkedAgo))
 		}
 		if _, err := db.Exec(
-			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, connectwise_company_name,
 			 dns_name_full, last_dns_status, last_dns_check)
 			 VALUES ('cust', 'site', ?, ?, '123', ?, ?, ?)`,
 			// ok-stale expects mismatch: its record points at 10.105.1.99, not this IP.
@@ -261,7 +261,7 @@ func TestListDNSIssues(t *testing.T) {
 	}
 	for i, c := range cases {
 		if _, err := db.Exec(
-			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, cid,
+			`INSERT INTO vpn_config (kundenname, standort, remoteip_full, firewallname, connectwise_company_name,
 			 dns_name_full, last_dns_status, last_dns_resolved, last_dns_check)
 			 VALUES ('cust', '', ?, ?, '123', ?, ?, ?, ?)`,
 			fmt.Sprintf("10.105.1.%d", 10+i), c.fw, c.fw+".adm.example", c.status, c.resolved,

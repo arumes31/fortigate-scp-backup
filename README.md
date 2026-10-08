@@ -475,6 +475,8 @@ An optional module (`EXT_ADM_VPN_CONF=true`) for managing customer-specific VPN 
 * **Graylog integration** — checks the Graylog API to assert status. A firewall is `online` when logs are found within `GRAYLOG_SEARCH_TIMEFRAME` (default 24 h).
 * **HookWise alerting** — sends HTTP webhooks on transition states (`online` ↔ `offline`).
 
+**Connectwise Company Name** is required when adding, editing, or importing an entry. Enter the ConnectWise company **identifier** used by Hookwise (for example, `Acme-Europe`); letters, spaces, and punctuation are supported. The webhook sends this value as `company`: configure Hookwise's JSONPath mapping as `"customer_id": "$.company"`. CSV files use the required `Connectwise Company Name` header. CID form fields, CSV headers, and webhook fields are no longer supported. On upgrade, the database column is renamed and saved identifiers are preserved; missing mappings and the old `000000` disabled marker remain blank until an operator supplies a company. Such incomplete entries do not send Hookwise alerts. Graylog is checked by default for new entries; editing an existing entry preserves its saved monitoring setting.
+
 ### FortiGate Configuration Change Tail (ConfTail)
 
 An optional module (`EXT_FGT_CONFTAIL=true`) that turns FortiGate configuration logs into reviewable, create-only Hookwise tickets.

@@ -157,7 +157,7 @@ func newBulkTestExtension(t *testing.T, count int) (*Extension, []int64) {
 	ids := make([]int64, 0, count)
 	for index := 1; index <= count; index++ {
 		result, err := db.Exec(`INSERT INTO vpn_config
-			(kundenname, standort, remoteip_full, firewallname, cid, ipsec_psk_ro, ipsec_psk_hci)
+			(kundenname, standort, remoteip_full, firewallname, connectwise_company_name, ipsec_psk_ro, ipsec_psk_hci)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			fmt.Sprintf("customer-%d", index), "site", fmt.Sprintf("10.105.1.%d", index),
 			fmt.Sprintf("edge-%d.example.test", index), fmt.Sprint(100+index),
