@@ -238,50 +238,57 @@ func (e *Extension) graylogSweep() error {
 	delay := time.Duration(graylogCheckCycleSeconds / float64(len(configs)) * float64(time.Second))
 
 	for _, c := range configs {
-		newStatus := e.computeStatus(c)
-
-		// Record when this device was checked (UTC).
-		now := time.Now().UTC()
-
-		// Send an up/down event ONLY on a real state transition (#74). The
-		// previous status is read from the persisted LastGraylogStatus, so
-		// transition detection is correct across application restarts and we do
-		// not re-alert for a device whose state is unchanged. Only online/offline
-		// map to UP/DOWN; error/config_missing states are never sent. We also only
-		// fire when the PREVIOUS state was itself alertable (online/offline), so a
-		// recovery out of error/config_missing/unknown does not raise a spurious
-		// up/down alert for a state change we never reported the other side of.
-		persistStatus := newStatus
-		prevAlertable := c.LastGraylogStatus == "online" || c.LastGraylogStatus == "offline"
-		if (newStatus == "online" || newStatus == "offline") && prevAlertable && newStatus != c.LastGraylogStatus {
-			e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
-			if !e.sendHookwiseEvent(c, newStatus) {
-				// Delivery failed: keep the old status so the next sweep re-detects
-				// the transition and retries the alert instead of losing it.
-				e.logger.Warn("HookWise delivery failed; will retry next sweep", "firewall", c.Firewallname, "status", newStatus)
-				persistStatus = c.LastGraylogStatus
-			}
-		}
-
-		// Track when the current unhealthy streak began so the dashboard can
-		// surface only devices that have been failing longer than the alert
-		// threshold. The streak spans any unhealthy state (offline/error/
-		// config_missing); recovering to online clears it.
-		var unhealthySince *time.Time
-		if graylogStatusUnhealthy(persistStatus) {
-			if c.LastGraylogUnhealthySince != nil {
-				unhealthySince = c.LastGraylogUnhealthySince // streak continues
-			} else {
-				since := now
-				unhealthySince = &since // streak begins now
-			}
-		}
-
-		if err := e.updateGraylogStatus(c.ID, now, persistStatus, unhealthySince); err != nil {
+		if err := e.checkGraylogConfig(c); err != nil {
 			return err
 		}
 
 		time.Sleep(delay)
+	}
+	return nil
+}
+
+func (e *Extension) checkGraylogConfig(c *VpnConfig) error {
+	newStatus := e.computeStatus(c)
+
+	// Record when this device was checked (UTC).
+	now := time.Now().UTC()
+
+	// Queue real UP/DOWN transitions, or retry a previously failed delivery.
+	// A newer observation supersedes a pending notification. Unknown/error
+	// observations pause delivery until a reliable UP/DOWN state is available.
+	pending := c.PendingHookwiseStatus
+	alertable := newStatus == "online" || newStatus == "offline"
+	prevAlertable := c.LastGraylogStatus == "online" || c.LastGraylogStatus == "offline"
+	if alertable && prevAlertable && newStatus != c.LastGraylogStatus {
+		e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
+		pending = newStatus
+	} else if alertable && pending != "" {
+		pending = newStatus
+	}
+
+	// Track when the current unhealthy streak began so the dashboard can
+	// surface only devices that have been failing longer than the alert
+	// threshold. The streak spans any unhealthy state (offline/error/
+	// config_missing); recovering to online clears it.
+	var unhealthySince *time.Time
+	if graylogStatusUnhealthy(newStatus) {
+		if c.LastGraylogUnhealthySince != nil {
+			unhealthySince = c.LastGraylogUnhealthySince // streak continues
+		} else {
+			since := now
+			unhealthySince = &since // streak begins now
+		}
+	}
+
+	if err := e.updateGraylogStatus(c.ID, now, newStatus, unhealthySince, pending); err != nil {
+		return err
+	}
+	if alertable && pending != "" {
+		if !e.sendHookwiseEvent(c, pending) {
+			e.logger.Warn("HookWise delivery failed; will retry next sweep", "firewall", c.Firewallname, "status", pending)
+			return nil
+		}
+		return e.clearPendingHookwiseStatus(c.ID, pending)
 	}
 	return nil
 }
