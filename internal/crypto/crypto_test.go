@@ -3,7 +3,10 @@ package crypto
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
+	"io"
 	"testing"
+	"testing/iotest"
 )
 
 func newKey(t *testing.T) []byte {
@@ -163,5 +166,40 @@ func TestValidateHeader(t *testing.T) {
 				t.Fatalf("ValidateHeader() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestInspectHeaderIsBoundedAndPreservesValidation(t *testing.T) {
+	c, err := New(newKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := c.Encrypt(bytes.Repeat([]byte("x"), 1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerSize := len(magic) + c.gcm.NonceSize() + c.gcm.Overhead()
+	for _, data := range [][]byte{nil, []byte("short"), bytes.Repeat([]byte("config"), 100), encrypted, encrypted[:len(magic)], encrypted[:headerSize-1], encrypted[:headerSize]} {
+		r := bytes.NewReader(data)
+		isEncrypted, err := c.InspectHeader(r)
+		wantEncrypted := HasHeader(data)
+		wantErr := wantEncrypted && c.ValidateHeader(data) != nil
+		if isEncrypted != wantEncrypted || (err != nil) != wantErr {
+			t.Fatalf("%d-byte input: encrypted=%t err=%v, want encrypted=%t error=%t", len(data), isEncrypted, err, wantEncrypted, wantErr)
+		}
+		if read := len(data) - r.Len(); read > headerSize {
+			t.Fatalf("header inspection read %d bytes, limit %d", read, headerSize)
+		}
+	}
+	if ok, err := c.InspectHeader(iotest.OneByteReader(bytes.NewReader(encrypted))); !ok || err != nil {
+		t.Fatalf("short reads rejected: encrypted=%t, err=%v", ok, err)
+	}
+	disabled, _ := New(nil)
+	if _, err := disabled.InspectHeader(bytes.NewReader(encrypted)); err == nil {
+		t.Fatal("encrypted header accepted without a key")
+	}
+	readErr := errors.New("read failed")
+	if _, err := c.InspectHeader(io.MultiReader(bytes.NewReader(magic), iotest.ErrReader(readErr))); !errors.Is(err, readErr) {
+		t.Fatalf("read error lost: %v", err)
 	}
 }

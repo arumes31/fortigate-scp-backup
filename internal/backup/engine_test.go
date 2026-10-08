@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -132,7 +133,7 @@ func TestMigrateEncryptionAtRest(t *testing.T) {
 	if err := os.WriteFile(plainPath, []byte("legacy config"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	migrated, err := MigrateEncryptionAtRest(dir, s.cipher)
+	migrated, err := MigrateEncryptionAtRest(context.Background(), dir, s.cipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestMigrateEncryptionAtRest(t *testing.T) {
 	if !crypto.HasHeader(raw) {
 		t.Fatal("migrated backup is not encrypted")
 	}
-	if second, err := MigrateEncryptionAtRest(dir, s.cipher); err != nil || second != 0 {
+	if second, err := MigrateEncryptionAtRest(context.Background(), dir, s.cipher); err != nil || second != 0 {
 		t.Fatalf("idempotent migration = (%d, %v), want (0, nil)", second, err)
 	}
 }
@@ -155,7 +156,7 @@ func TestMigrateEncryptionAtRestTreatsMissingRootAsEmpty(t *testing.T) {
 	t.Parallel()
 	s := testService(t, bytes.Repeat([]byte{0x31}, 32))
 	missingRoot := filepath.Join(t.TempDir(), "not-created")
-	migrated, err := MigrateEncryptionAtRest(missingRoot, s.cipher)
+	migrated, err := MigrateEncryptionAtRest(context.Background(), missingRoot, s.cipher)
 	if err != nil || migrated != 0 {
 		t.Fatalf("missing-root migration = (%d, %v), want (0, nil)", migrated, err)
 	}
@@ -171,7 +172,7 @@ func TestMigrateEncryptionAtRestRejectsTruncatedEncryptedHeader(t *testing.T) {
 	if err := os.WriteFile(path, []byte("FSENC1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MigrateEncryptionAtRest(dir, s.cipher); err == nil {
+	if _, err := MigrateEncryptionAtRest(context.Background(), dir, s.cipher); err == nil {
 		t.Fatal("truncated encrypted header was accepted")
 	}
 }

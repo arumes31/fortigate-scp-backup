@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 )
@@ -74,6 +75,27 @@ func (c *Cipher) ValidateHeader(data []byte) error {
 		return errors.New("crypto: encrypted envelope is too short")
 	}
 	return nil
+}
+
+// InspectHeader reads only the minimum encrypted-envelope prefix from r.
+// It reports false for legacy plaintext and otherwise performs ValidateHeader's
+// structural checks. It consumes the prefix; it does not authenticate the payload.
+// Call Decrypt when reading the complete backup to authenticate its contents.
+func (c *Cipher) InspectHeader(r io.Reader) (bool, error) {
+	size := len(magic)
+	if c.enabled {
+		size += c.gcm.NonceSize() + c.gcm.Overhead()
+	}
+	header := make([]byte, size)
+	n, err := io.ReadFull(r, header)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, fmt.Errorf("crypto: read encrypted header: %w", err)
+	}
+	header = header[:n]
+	if !HasHeader(header) {
+		return false, nil
+	}
+	return true, c.ValidateHeader(header)
 }
 
 // IsEncryptedString reports whether a database secret uses the encrypted
