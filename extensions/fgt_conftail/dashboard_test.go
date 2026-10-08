@@ -182,15 +182,6 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	chainID := chainIDForUser(t, s, "alice")
-	if _, _, err := s.createGlobalIgnoreRule(
-		context.Background(),
-		storedEventID(t, s, "message-000"),
-		ignoreRuleKindAttribute,
-		"reviewer",
-		base.Add(40*time.Minute),
-	); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.markDeliveryFailure(
 		context.Background(),
 		chainID,
@@ -260,7 +251,7 @@ func TestDashboardChainPageProvidesCompletePaginatedTimeline(t *testing.T) {
 	}
 	for _, want := range []string{
 		`class="ct-attribute-diff"`, "<del>before</del>", "<ins>after</ins>",
-		`global attribute ignore active`, `data-ct-ignore-open`, `id="ct-ignore-dialog"`, `Confirm global ignore`,
+		`data-ct-ignore-open`, `id="ct-ignore-dialog"`, `Confirm global ignore`,
 		"Session facts", "Hookwise delivery", "Duration", "Chronological", "By transaction", "By object",
 		"Hookwise ticket preview", "Affected objects:", "Change excerpts (oldest first):",
 		`href="/fgt-conftail/chain/` + chainID + `?view=transaction"`,
@@ -1119,6 +1110,123 @@ func TestDashboardRequestRequiresPOSTForSensitiveFilters(t *testing.T) {
 	}
 }
 
+func TestDashboardRequestAcceptsFirewallOnlyBrowserForm(t *testing.T) {
+	t.Parallel()
+	values := url.Values{
+		"csrf_token": {"synthetic-csrf-token"},
+		"firewall":   {"7"}, "state": {"all"},
+		"q": {""}, "user": {""}, "source": {""}, "device": {""},
+		"serial": {""}, "action": {""}, "transaction": {""}, "log_id": {""},
+		"from": {""}, "to": {""},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	filters, err := parseDashboardRequest(httptest.NewRecorder(), request)
+	if err != nil {
+		t.Fatalf("firewall-only browser form rejected: %v", err)
+	}
+	if want := (dashboardFilters{FirewallID: 7, State: dashboardStateAll, Page: 1}); filters != want {
+		t.Fatalf("filters = %+v, want %+v", filters, want)
+	}
+}
+
+func TestDashboardGlobalIgnoresFilterHistoryBeforePagination(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{ignoreRuleKindAttribute, ignoreRuleKindOperation} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+			s := newTestStore(t, base)
+			var events []Event
+			for i := 0; i < dashboardEventPageSize+1; i++ {
+				event := testEvent(7, "fw-a", "alice", fmt.Sprintf("ignored-%d", i), base.Add(time.Duration(i)*time.Second))
+				event.ConfigAttribute, event.Path, event.VDOM = "noise[old->new]", "system.noise", "ignored-vdom"
+				event.Message, event.Source = "hidden-noise", "ignored-source"
+				event.SemanticHash = semanticHash(event)
+				events = append(events, event)
+			}
+			visible := testEvent(7, "fw-a", "alice", "visible", base.Add(2*time.Minute))
+			visible.ConfigAttribute, visible.Path, visible.VDOM = "setting[old->new]", "system.setting", "root"
+			visible.SemanticHash = semanticHash(visible)
+			events = append(events, visible)
+			onlyIgnored := events[0]
+			onlyIgnored.FirewallID, onlyIgnored.User, onlyIgnored.GraylogID = 8, "bob", "ignored-only"
+			onlyIgnored.SemanticHash = semanticHash(onlyIgnored)
+			events = append(events, onlyIgnored)
+			if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour), Events: events}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+				t.Fatal(err)
+			}
+			rule, _, err := s.createGlobalIgnoreRule(ctx, storedEventID(t, s, "ignored-0"), kind, "operator", base.Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			filters := dashboardFilters{State: dashboardStateAll, Page: 1}
+			data, err := s.queryDashboard(ctx, filters)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data.HistoryTotal != 1 || len(data.History) != 1 || data.History[0].EventCount != 1 {
+				t.Fatalf("history includes ignored messages or empty sessions: %+v", data.History)
+			}
+			chainID := chainIDForUser(t, s, "alice")
+			chain, pages, err := s.dashboardChainPage(ctx, chainID, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pages != 1 || chain.EventCount != 1 || len(chain.Events) != 1 || chain.Events[0].ID != storedEventID(t, s, "visible") || chain.Events[0].Sequence != 1 {
+				t.Fatalf("filtered timeline = %d events / %d pages / count %d", len(chain.Events), pages, chain.EventCount)
+			}
+			_, chainPage := testDashboardRenderers(t)
+			extension := &Extension{store: s, chainPage: chainPage, pageBase: testDashboardPageBase("operator")}
+			response := serveDashboardChain(t, extension, chainIDForUser(t, s, "bob"))
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "All messages in this session are hidden by global ignore rules.") {
+				t.Fatalf("fully ignored session response = %d", response.Code)
+			}
+			if len(chain.VDOMs) != 1 || chain.VDOMs[0] != "root" {
+				t.Fatalf("VDOMs = %v", chain.VDOMs)
+			}
+			if _, _, err := s.dashboardChainPage(ctx, chainID, 2); !errors.Is(err, errDashboardPageRange) {
+				t.Fatalf("page 2 error = %v", err)
+			}
+			for _, filtered := range []dashboardFilters{
+				{State: dashboardStateAll, Page: 1, Search: "hidden-noise"},
+				{State: dashboardStateAll, Page: 1, Source: "ignored-source"},
+			} {
+				result, err := s.queryDashboard(ctx, filtered)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.HistoryTotal != 0 {
+					t.Fatal("ignored messages still match filters")
+				}
+			}
+			if countRows(t, s, "events") != len(events) {
+				t.Fatal("stored history was deleted")
+			}
+			if !strings.Contains(chain.TicketPreview.Description, "noise") {
+				t.Fatal("frozen delivery snapshot changed")
+			}
+			if err := s.setGlobalIgnoreRuleEnabled(ctx, rule.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			data, err = s.queryDashboard(ctx, filters)
+			if err != nil || data.HistoryTotal != 2 {
+				t.Fatalf("disabled rule still hides history: total=%d err=%v", data.HistoryTotal, err)
+			}
+			if err := s.setGlobalIgnoreRuleEnabled(ctx, rule.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.deleteGlobalIgnoreRule(ctx, rule.ID); err != nil {
+				t.Fatal(err)
+			}
+			chain, pages, err = s.dashboardChainPage(ctx, chainID, 1)
+			if err != nil || chain.EventCount != dashboardEventPageSize+2 || pages != 2 {
+				t.Fatalf("deleted rule still hides history: count=%d pages=%d err=%v", chain.EventCount, pages, err)
+			}
+		})
+	}
+}
+
 func TestDashboardRequestRejectsOversizedAndAmbiguousForms(t *testing.T) {
 	t.Parallel()
 
@@ -1134,6 +1242,20 @@ func TestDashboardRequestRejectsOversizedAndAmbiguousForms(t *testing.T) {
 	duplicate.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if _, err := parseDashboardRequest(httptest.NewRecorder(), duplicate); err == nil {
 		t.Fatal("duplicate dashboard filter was accepted")
+	}
+	for _, body := range []string{
+		"firewall=7&csrf_token=first&csrf_token=second",
+		"firewall=7&csrf_token=synthetic&unknown=value",
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if _, err := parseDashboardRequest(httptest.NewRecorder(), request); err == nil {
+			t.Fatal("ambiguous or unknown form field was accepted")
+		}
+	}
+	get := httptest.NewRequest(http.MethodGet, "/fgt-conftail/?firewall=7&csrf_token=synthetic", nil)
+	if _, err := parseDashboardRequest(httptest.NewRecorder(), get); err == nil {
+		t.Fatal("CSRF token in a GET query was accepted")
 	}
 }
 
@@ -1355,7 +1477,7 @@ func TestDashboardHandlerRendersEscapedReadOnlyPage(t *testing.T) {
 		pageBase:    testDashboardPageBase(`<img src=x onerror=alert(1)>`),
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader("user=script"))
+	request := httptest.NewRequest(http.MethodPost, "/fgt-conftail/", strings.NewReader("user=script&csrf_token=synthetic-csrf-token"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	extension.dashboard(response, request)
