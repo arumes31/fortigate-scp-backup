@@ -43,6 +43,8 @@ type VpnConfig struct {
 	ClusterHostnames  string
 	LastGraylogStatus string
 	LastGraylogCheck  *time.Time
+	// PendingHookwiseStatus is retried independently of the observed health.
+	PendingHookwiseStatus string
 	// LastGraylogUnhealthySince marks when the current unhealthy streak began
 	// (nil while healthy). Used to surface only devices failing long enough to
 	// match the alert threshold. See graylogStatusUnhealthy.
@@ -86,6 +88,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS vpn_config (
 	last_graylog_status VARCHAR(20) DEFAULT 'unknown',
 	last_graylog_check DATETIME,
 	graylog_unhealthy_since DATETIME,
+	pending_hookwise_status VARCHAR(20) NOT NULL DEFAULT '',
 	last_dns_status VARCHAR(20) DEFAULT 'unknown',
 	last_dns_check DATETIME,
 	last_dns_resolved VARCHAR(255)
@@ -103,6 +106,7 @@ var migrations = []struct {
 	{"connectwise_company_name", "ALTER TABLE vpn_config ADD COLUMN connectwise_company_name VARCHAR(100) NOT NULL DEFAULT ''"},
 	{"last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"},
 	{"graylog_unhealthy_since", "ALTER TABLE vpn_config ADD COLUMN graylog_unhealthy_since DATETIME"},
+	{"pending_hookwise_status", "ALTER TABLE vpn_config ADD COLUMN pending_hookwise_status VARCHAR(20) NOT NULL DEFAULT ''"},
 	{"last_dns_status", "ALTER TABLE vpn_config ADD COLUMN last_dns_status VARCHAR(20) DEFAULT 'unknown'"},
 	{"last_dns_check", "ALTER TABLE vpn_config ADD COLUMN last_dns_check DATETIME"},
 	{"last_dns_resolved", "ALTER TABLE vpn_config ADD COLUMN last_dns_resolved VARCHAR(255)"},
@@ -197,7 +201,7 @@ const selectCols = `id,
 	COALESCE(connectwise_company_name,''), COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,''),
 	COALESCE(radiusmgt,''), COALESCE(dns_name_full,''), COALESCE(graylog_enabled,1),
 	COALESCE(cluster_hostnames,''), COALESCE(last_graylog_status,'unknown'),
-	last_graylog_check, graylog_unhealthy_since,
+	last_graylog_check, graylog_unhealthy_since, COALESCE(pending_hookwise_status,''),
 	COALESCE(last_dns_status,'unknown'), COALESCE(last_dns_resolved,''), last_dns_check`
 
 type rowScanner interface {
@@ -214,6 +218,7 @@ func scanConfig(s rowScanner) (*VpnConfig, error) {
 		&c.Ike2Username, &c.WanInterface, &c.LanInterface, &c.DnsName, &c.Firewallname,
 		&c.CompanyName, &c.IpsecPskRo, &c.IpsecPskHci, &c.Radiusmgt, &c.DnsNameFull,
 		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck, &unhealthySince,
+		&c.PendingHookwiseStatus,
 		&c.LastDnsStatus, &c.LastDnsResolved, &dnsCheck,
 	)
 	if err != nil {
@@ -494,15 +499,23 @@ func (e *Extension) findIDByRemoteip(ip string) (int64, bool, error) {
 
 // updateGraylogStatus persists a worker check result. unhealthySince is the
 // start of the current unhealthy streak (nil while healthy), stored as NULL so
-// the dashboard can filter on how long a device has been failing.
-func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string, unhealthySince *time.Time) error {
+// the dashboard can filter on how long a device has been failing. The pending
+// notification is saved atomically with the observation, before delivery.
+func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string, unhealthySince *time.Time, pending string) error {
 	var since any
 	if unhealthySince != nil {
 		since = formatDBTime(*unhealthySince)
 	}
 	_, err := e.db.Exec(
-		"UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ?, graylog_unhealthy_since = ? WHERE id = ?",
-		formatDBTime(checkedAt), status, since, id)
+		`UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ?,
+		 graylog_unhealthy_since = ?, pending_hookwise_status = ? WHERE id = ?`,
+		formatDBTime(checkedAt), status, since, pending, id)
+	return err
+}
+
+func (e *Extension) clearPendingHookwiseStatus(id int64, status string) error {
+	_, err := e.db.Exec(`UPDATE vpn_config SET pending_hookwise_status = ''
+		WHERE id = ? AND pending_hookwise_status = ?`, id, status)
 	return err
 }
 
