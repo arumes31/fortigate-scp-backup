@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -39,10 +40,11 @@ type pendingKey struct {
 // Manager owns one OpenSSH known_hosts file and serializes verification with
 // updates so concurrent first connections cannot enroll different keys.
 type Manager struct {
-	mu       sync.Mutex
-	path     string
-	callback ssh.HostKeyCallback
-	pending  map[string]pendingKey
+	mu                sync.Mutex
+	path              string
+	callback          ssh.HostKeyCallback
+	pending           map[string]pendingKey
+	autoAcceptChanges bool
 }
 
 // New opens or creates an application-managed OpenSSH known_hosts file.
@@ -72,6 +74,14 @@ func New(path string) (*Manager, error) {
 // Callback returns the shared callback used by SCP and live SSH clients.
 func (m *Manager) Callback() ssh.HostKeyCallback { return m.check }
 
+// SetAutoAcceptChanges allows changed host keys to be persisted and trusted
+// without operator approval. Revoked keys and storage errors still fail.
+func (m *Manager) SetAutoAcceptChanges(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.autoAcceptChanges = enabled
+}
+
 // Pending returns a rejected replacement key for a configured host, if any.
 func (m *Manager) Pending(host string, port int) (PendingKey, bool) {
 	m.mu.Lock()
@@ -91,6 +101,10 @@ func (m *Manager) Accept(host string, port int) (PendingKey, error) {
 	if !ok {
 		return PendingKey{}, ErrNoPendingKey
 	}
+	return m.acceptLocked(normalized, pending)
+}
+
+func (m *Manager) acceptLocked(normalized string, pending pendingKey) (PendingKey, error) {
 	remote := stringAddr(pending.remoteAddress)
 	err := m.callback(pending.address, remote, pending.key)
 	if err == nil {
@@ -155,6 +169,19 @@ func (m *Manager) check(hostname string, remote net.Addr, key ssh.PublicKey) err
 		address:       hostname,
 		remoteAddress: remote.String(),
 		key:           key,
+	}
+	if m.autoAcceptChanges {
+		if _, err := m.acceptLocked(normalized, m.pending[normalized]); err != nil {
+			return fmt.Errorf("automatically accept ssh host key for %s: %w", normalized, err)
+		}
+		previous := make([]string, 0, len(keyErr.Want))
+		for _, known := range keyErr.Want {
+			previous = append(previous, ssh.FingerprintSHA256(known.Key))
+		}
+		slog.Info("SSH host key automatically replaced",
+			"host", normalized, "algorithm", key.Type(),
+			"previous_fingerprints", previous, "fingerprint", fingerprint)
+		return nil
 	}
 	return fmt.Errorf("ssh host key changed for %s; detected %s; accept the new key in the firewall list: %w",
 		normalized, fingerprint, err)
