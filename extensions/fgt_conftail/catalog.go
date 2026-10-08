@@ -56,7 +56,6 @@ type admAliasRow struct {
 	dnsNameFull      string
 	clusterHostnames string
 	company          string
-	cid              string
 	graylogEnabled   bool
 }
 
@@ -230,21 +229,12 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 
 func (b *catalogBuilder) mergeConnectWiseMapping(index int, row admAliasRow) {
 	company := strings.TrimSpace(sanitizeExternalString(row.company, maxIdentityRunes))
-	cid := strings.TrimSpace(sanitizeExternalString(row.cid, maxIdentityRunes))
 	current := &b.firewalls[index].ref
 	if current.Company == "" {
 		current.Company = company
 	} else if company != "" && company != current.Company {
 		b.addFirewallWarning(index, fmt.Sprintf(
 			"registered firewall %d has conflicting ADM VPN company mappings",
-			current.ID,
-		))
-	}
-	if current.CID == "" {
-		current.CID = cid
-	} else if cid != "" && cid != current.CID {
-		b.addFirewallWarning(index, fmt.Sprintf(
-			"registered firewall %d has conflicting ADM VPN CID mappings",
 			current.ID,
 		))
 	}
@@ -482,11 +472,10 @@ func (c sourceCatalog) fingerprint() string {
 	values := make([]string, 0, len(c.byID)+len(c.aliases))
 	for id, firewall := range c.byID {
 		values = append(values, fmt.Sprintf(
-			"%d\x00%s\x00%s\x00%s",
+			"%d\x00%s\x00%s",
 			id,
 			firewall.Name,
 			firewall.Company,
-			firewall.CID,
 		))
 	}
 	sort.Strings(values)
@@ -528,10 +517,22 @@ func readADMAliasRows(
 		}
 	}()
 
+	// ADM VPN may be disabled during an upgrade, leaving this optional field
+	// unmigrated. Source coverage must still honor its saved monitoring settings.
+	var hasCompany bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pragma_table_info('vpn_config') WHERE name = 'connectwise_company_name'
+	)`).Scan(&hasCompany); err != nil {
+		return nil, false, fmt.Errorf("inspect adm vpn company schema: %w", err)
+	}
+	companyExpression := "''"
+	if hasCompany {
+		companyExpression = "COALESCE(connectwise_company_name, '')"
+	}
 	rows, err := db.QueryContext(ctx, `SELECT COALESCE(firewallname, ''),
 		COALESCE(dns_name, ''), COALESCE(dns_name_full, ''),
-		COALESCE(cluster_hostnames, ''), COALESCE(kundenname, ''),
-		COALESCE(cid, ''), COALESCE(graylog_enabled, 0)
+		COALESCE(cluster_hostnames, ''), `+companyExpression+`,
+		COALESCE(graylog_enabled, 0)
 		FROM vpn_config`)
 	if err != nil {
 		return nil, false, fmt.Errorf("query adm vpn aliases: %w", err)
@@ -551,7 +552,6 @@ func readADMAliasRows(
 			&row.dnsNameFull,
 			&row.clusterHostnames,
 			&row.company,
-			&row.cid,
 			&row.graylogEnabled,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan adm vpn alias row: %w", err)

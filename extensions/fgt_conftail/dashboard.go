@@ -39,34 +39,51 @@ const (
 	dashboardChainViewObject        = "object"
 	maxSearchRunes                  = 256
 	maxSearchTerms                  = 10
-	dashboardWhereSQL               = `c.state = ?
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events es
+	// Apply enabled ignore rules at read time so stored evidence and frozen
+	// delivery payloads remain intact. Filter before counting or paginating.
+	dashboardEventsCTE = `WITH dashboard_events AS NOT MATERIALIZED (
+		SELECT e.* FROM events e WHERE NOT EXISTS (
+			SELECT 1 FROM global_ignore_rules r WHERE r.enabled = 1 AND (
+				(r.kind = 'attribute' AND r.config_attribute != '' AND r.config_attribute = e.config_attribute)
+				OR (r.kind = 'operation' AND r.action != '' AND r.config_path != ''
+					AND r.action = e.action AND r.config_path = e.config_path)
+			)
+		)
+	) `
+	dashboardWhereSQL = `c.state = ?
+		AND EXISTS (SELECT 1 FROM dashboard_events ev WHERE ev.chain_id = c.id)
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events es
 			JOIN event_search ON event_search.rowid = es.id
 			WHERE es.chain_id = c.id AND event_search MATCH ?))
 		AND (? = 0 OR c.firewall_id = ?)
 		AND (? = 0 OR LOWER(c.user) LIKE LOWER(?) ESCAPE '\')
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND LOWER(ef.source) LIKE LOWER(?) ESCAPE '\'))
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND LOWER(ef.device_name) LIKE LOWER(?) ESCAPE '\'))
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND LOWER(ef.device_id) LIKE LOWER(?) ESCAPE '\'))
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND LOWER(ef.action) LIKE LOWER(?) ESCAPE '\'))
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND ef.transaction_id = ?))
-		AND (? = 0 OR EXISTS (SELECT 1 FROM events ef WHERE ef.chain_id = c.id
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ef WHERE ef.chain_id = c.id
 			AND ef.log_id = ?))
-		AND (? = 0 OR c.last_event_at_ns >= ?)
-		AND (? = 0 OR c.first_event_at_ns <= ?)
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ev WHERE ev.chain_id = c.id AND ev.event_at_ns >= ?))
+		AND (? = 0 OR EXISTS (SELECT 1 FROM dashboard_events ev WHERE ev.chain_id = c.id AND ev.event_at_ns <= ?))
 		AND (? = 0 OR o.state = ?)`
-	dashboardChainSelectSQL = `SELECT
-		c.id, c.firewall_id, c.firewall_name, c.user, c.first_event_at_ns,
-		c.last_event_at_ns, c.event_count, c.state, c.late, c.unattributed,
+	dashboardChainSelectPrefixSQL = `SELECT
+		c.id, c.firewall_id, c.firewall_name, c.user, `
+	dashboardChainSelectSuffixSQL = `, c.state, c.late, c.unattributed,
 		c.sealed_at_ns, COALESCE(o.state, ''), COALESCE(o.attempt_count, 0),
 		COALESCE(o.next_attempt_at_ns, 0), COALESCE(o.last_error, ''),
-		COALESCE(o.request_id, ''), COALESCE(o.accepted_at_ns, 0)
+		COALESCE(o.request_id, ''), COALESCE(o.accepted_at_ns, 0), c.last_event_at_ns
 		FROM chains c LEFT JOIN outbox o ON o.chain_id = c.id`
+	dashboardChainSelectSQL        = dashboardChainSelectPrefixSQL + `c.first_event_at_ns, c.last_event_at_ns, c.event_count` + dashboardChainSelectSuffixSQL
+	dashboardVisibleChainSelectSQL = dashboardEventsCTE + dashboardChainSelectPrefixSQL +
+		`COALESCE((SELECT MIN(ev.event_at_ns) FROM dashboard_events ev WHERE ev.chain_id = c.id), 0),
+		COALESCE((SELECT MAX(ev.event_at_ns) FROM dashboard_events ev WHERE ev.chain_id = c.id), 0) AS visible_last_event_at_ns,
+		(SELECT COUNT(*) FROM dashboard_events ev WHERE ev.chain_id = c.id)` + dashboardChainSelectSuffixSQL
 )
 
 //go:embed templates/*.html static/*
@@ -120,8 +137,6 @@ type dashboardEvent struct {
 	LogDescription   string
 	Message          string
 	Late             bool
-	GlobalIgnoreID   int64
-	GlobalIgnoreKind string
 }
 
 type dashboardChain struct {
@@ -148,6 +163,8 @@ type dashboardChain struct {
 	VDOMsOmitted     int
 	QuietEligibleAt  time.Time
 	TicketPreview    dashboardTicketPreview
+	// Sealing follows stored activity, even when ignore rules hide later events.
+	lastStoredEventAt time.Time
 }
 
 type dashboardTicketPreview struct {
@@ -360,7 +377,9 @@ func parseDashboardFilters(values url.Values) (dashboardFilters, error) {
 }
 
 var dashboardFilterKeys = map[string]bool{
-	"firewall": true, "q": true, "user": true, "source": true,
+	// CSRFProtected verifies this field before the dashboard handler runs.
+	"csrf_token": true,
+	"firewall":   true, "q": true, "user": true, "source": true,
 	"device": true, "serial": true, "action": true, "transaction": true,
 	"log_id": true, "state": true, "from": true, "to": true, "page": true,
 }
@@ -606,7 +625,7 @@ func (s *store) countDashboardChains(
 	args []any,
 ) (int, error) {
 	var count int
-	query := `SELECT COUNT(*) FROM chains c
+	query := dashboardEventsCTE + `SELECT COUNT(*) FROM chains c
 		LEFT JOIN outbox o ON o.chain_id = c.id WHERE ` + dashboardWhereSQL
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count conftail dashboard chains: %w", err)
@@ -620,8 +639,8 @@ func (s *store) dashboardChains(
 	limit int,
 	offset int,
 ) ([]dashboardChain, error) {
-	query := dashboardChainSelectSQL + ` WHERE ` + dashboardWhereSQL + `
-		ORDER BY c.last_event_at_ns DESC, c.id LIMIT ? OFFSET ?`
+	query := dashboardVisibleChainSelectSQL + ` WHERE ` + dashboardWhereSQL + `
+		ORDER BY visible_last_event_at_ns DESC, c.id LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -659,7 +678,7 @@ type dashboardScanner interface {
 
 func scanDashboardChain(scanner dashboardScanner) (dashboardChain, error) {
 	var chain dashboardChain
-	var first, last, sealed, nextAttempt, accepted int64
+	var first, last, sealed, nextAttempt, accepted, lastStored int64
 	var late, unattributed int
 	if err := scanner.Scan(
 		&chain.ID,
@@ -679,11 +698,13 @@ func scanDashboardChain(scanner dashboardScanner) (dashboardChain, error) {
 		&chain.LastError,
 		&chain.RequestID,
 		&accepted,
+		&lastStored,
 	); err != nil {
 		return dashboardChain{}, err
 	}
 	chain.FirstEventAt = timeFromNanos(first)
 	chain.LastEventAt = timeFromNanos(last)
+	chain.lastStoredEventAt = timeFromNanos(lastStored)
 	chain.SealedAt = timeFromNanos(sealed)
 	chain.NextAttemptAt = timeFromNanos(nextAttempt)
 	chain.AcceptedAt = timeFromNanos(accepted)
@@ -724,7 +745,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 }
 
 func (s *store) dashboardVDOMs(ctx context.Context, chainID string) ([]string, int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT vdom, COUNT(*) OVER () FROM events
+	rows, err := s.db.QueryContext(ctx, dashboardEventsCTE+`SELECT vdom, COUNT(*) OVER () FROM dashboard_events
 		WHERE chain_id = ? AND vdom != '' GROUP BY vdom ORDER BY vdom LIMIT ?`,
 		chainID, dashboardVDOMLimit+1)
 	if err != nil {
@@ -766,7 +787,7 @@ func (s *store) dashboardChainPage(
 	}
 	chain, err := scanDashboardChain(s.db.QueryRowContext(
 		ctx,
-		dashboardChainSelectSQL+` WHERE c.id = ?`,
+		dashboardVisibleChainSelectSQL+` WHERE c.id = ?`,
 		chainID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -775,15 +796,7 @@ func (s *store) dashboardChainPage(
 	if err != nil {
 		return dashboardChain{}, 0, fmt.Errorf("read conftail dashboard chain: %w", err)
 	}
-	var eventCount int
-	if err := s.db.QueryRowContext(
-		ctx,
-		`SELECT COUNT(*) FROM events WHERE chain_id = ?`,
-		chainID,
-	).Scan(&eventCount); err != nil {
-		return dashboardChain{}, 0, fmt.Errorf("count conftail dashboard chain events: %w", err)
-	}
-	totalPages := max(1, (eventCount+dashboardEventPageSize-1)/dashboardEventPageSize)
+	totalPages := max(1, (chain.EventCount+dashboardEventPageSize-1)/dashboardEventPageSize)
 	if page > totalPages {
 		return dashboardChain{}, totalPages, errDashboardPageRange
 	}
@@ -837,11 +850,11 @@ func (s *store) dashboardEventPage(
 	chainID string,
 	page int,
 ) ([]dashboardEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT
+	rows, err := s.db.QueryContext(ctx, dashboardEventsCTE+`SELECT
 		id, event_at_ns, source, device_name, device_id, vdom, user_attribution,
 		ui, action, transaction_id, config_path, config_object, config_attribute,
 		log_id, log_description, message, late
-		FROM events WHERE chain_id = ?
+		FROM dashboard_events WHERE chain_id = ?
 		ORDER BY event_at_ns, id LIMIT ? OFFSET ?`,
 		chainID,
 		dashboardEventPageSize,
@@ -902,7 +915,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		e.logger.Warn("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
 	}
 	for index := range data.Active {
-		data.Active[index].QuietEligibleAt = data.Active[index].LastEventAt.Add(e.dashboardIdleDuration())
+		data.Active[index].QuietEligibleAt = data.Active[index].lastStoredEventAt.Add(e.dashboardIdleDuration())
 	}
 	ignoreRules, err := e.store.listGlobalIgnoreRules(r.Context())
 	if err != nil {
@@ -1057,26 +1070,13 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if chain.State == chainStateActive {
-		chain.QuietEligibleAt = chain.LastEventAt.Add(e.dashboardIdleDuration())
-	}
-	ignoreRules, err := e.store.listGlobalIgnoreRules(r.Context())
-	if err != nil {
-		if e.logger != nil {
-			e.logger.Error("conftail: session global ignore query failed", "code", codeSessionQueryFailed, "err", sanitizeDeliveryError(err))
-		}
-		http.Error(w, "Unable to load global ignore rules", http.StatusInternalServerError)
-		return
+		chain.QuietEligibleAt = chain.lastStoredEventAt.Add(e.dashboardIdleDuration())
 	}
 	base := e.pageBase(r, "Configuration Change Session", "conftail")
 	chain.Lang = base.Lang
 	for eventIndex := range chain.Events {
 		event := &chain.Events[eventIndex]
 		event.Lang = base.Lang
-		candidate := Event{Action: event.Action, Path: event.Path, ConfigAttribute: event.ConfigAttribute}
-		if rule, ok := matchingGlobalIgnoreRule(ignoreRules, candidate); ok {
-			event.GlobalIgnoreID = rule.ID
-			event.GlobalIgnoreKind = rule.Kind
-		}
 	}
 	username := ""
 	if e.currentUser != nil {
@@ -1131,11 +1131,11 @@ func (e *Extension) dashboardChain(w http.ResponseWriter, r *http.Request) {
 func dashboardIgnoreNotice(value string) string {
 	switch value {
 	case "created":
-		return "Global ignore rule created. Future matching events will not enter sessions or tickets."
+		return "Global ignore rule created. Matching messages are hidden from history; future matches will not enter sessions or tickets."
 	case "updated":
 		return "Global ignore rule status updated."
 	case "deleted":
-		return "Global ignore rule deleted. Previously ignored events remain suppressed."
+		return "Global ignore rule deleted. Previously ignored stored events are visible again unless another enabled rule matches."
 	default:
 		return ""
 	}

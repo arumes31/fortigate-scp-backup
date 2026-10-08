@@ -25,6 +25,13 @@ test('ADM VPN uses the shared shell and keyboard-safe add, edit, and removal flo
   await expect(addPanel).toHaveAttribute('open', '');
   await expect(addPanel.getByLabel('Firewall name')).toBeVisible();
   await expect(addPanel.getByLabel('Customer name')).toBeVisible();
+  const addCompany = addPanel.getByLabel('Connectwise Company Name');
+  await expect(addCompany).toBeVisible();
+  await expect(addCompany).toHaveAttribute('required');
+  expect(await addCompany.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(false);
+  await addCompany.fill('Acme-Europe');
+  expect(await addCompany.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(true);
+  await expect(addPanel.getByLabel('Graylog Enabled')).toBeChecked();
   await expectAccessible(page, 'add form');
   await expect(page.locator('#removeConfirmBtn')).toBeDisabled();
 
@@ -36,6 +43,15 @@ test('ADM VPN uses the shared shell and keyboard-safe add, edit, and removal flo
   const editDialog = page.getByRole('dialog', { name: 'Edit configuration' });
   await expect(editDialog).toBeVisible();
   await expect(editDialog.getByLabel('Firewall name')).toHaveValue('edge.example.test');
+  const editCompany = editDialog.getByLabel('Connectwise Company Name');
+  await expect(editCompany).toHaveValue('Acme-Europe');
+  await editCompany.fill('Acme & Partners');
+  expect(await editCompany.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(true);
+  await editCompany.fill('');
+  expect(await editCompany.evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(false);
+  await editCompany.fill('Acme-Europe');
+  expect(await editDialog.locator('form').evaluate((form: HTMLFormElement) => form.checkValidity())).toBe(true);
+  await expect(editDialog.getByLabel('Graylog Enabled')).toBeChecked();
   await expectAccessible(page, 'edit dialog');
   await page.keyboard.press('Escape');
   await expect(editDialog).toBeHidden();

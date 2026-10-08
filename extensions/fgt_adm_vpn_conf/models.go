@@ -3,11 +3,14 @@ package fgtadmvpnconf
 import (
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	// Pure-Go SQLite driver, registered under the name "sqlite".
 	_ "modernc.org/sqlite"
@@ -17,10 +20,6 @@ const (
 	// graylogCheckCycleSeconds is how long after a device's last check the worker
 	// is expected to check it again (one ~15-minute sweep).
 	graylogCheckCycleSeconds = 900
-
-	// hookwiseDisabledCID is the sentinel CID that disables HookWise up/down
-	// alerts for a device while still tracking its Graylog status normally.
-	hookwiseDisabledCID = "000000"
 )
 
 // VpnConfig mirrors a row of the vpn_config table.
@@ -35,7 +34,7 @@ type VpnConfig struct {
 	LanInterface      string
 	DnsName           string
 	Firewallname      string
-	Cid               string
+	CompanyName       string // ConnectWise company identifier used for Hookwise matching.
 	IpsecPskRo        string
 	IpsecPskHci       string
 	Radiusmgt         string
@@ -77,7 +76,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS vpn_config (
 	lan_interface VARCHAR(100),
 	dns_name VARCHAR(100),
 	firewallname VARCHAR(100) UNIQUE,
-	cid VARCHAR(100) NOT NULL,
+	connectwise_company_name VARCHAR(100) NOT NULL,
 	ipsec_psk_ro VARCHAR(100),
 	ipsec_psk_hci VARCHAR(100),
 	radiusmgt VARCHAR(10),
@@ -101,7 +100,7 @@ var migrations = []struct {
 	{"graylog_enabled", "ALTER TABLE vpn_config ADD COLUMN graylog_enabled BOOLEAN DEFAULT 1"},
 	{"cluster_hostnames", "ALTER TABLE vpn_config ADD COLUMN cluster_hostnames VARCHAR(255)"},
 	{"last_graylog_status", "ALTER TABLE vpn_config ADD COLUMN last_graylog_status VARCHAR(20) DEFAULT 'unknown'"},
-	{"cid", "ALTER TABLE vpn_config ADD COLUMN cid VARCHAR(100)"},
+	{"connectwise_company_name", "ALTER TABLE vpn_config ADD COLUMN connectwise_company_name VARCHAR(100) NOT NULL DEFAULT ''"},
 	{"last_graylog_check", "ALTER TABLE vpn_config ADD COLUMN last_graylog_check DATETIME"},
 	{"graylog_unhealthy_since", "ALTER TABLE vpn_config ADD COLUMN graylog_unhealthy_since DATETIME"},
 	{"last_dns_status", "ALTER TABLE vpn_config ADD COLUMN last_dns_status VARCHAR(20) DEFAULT 'unknown'"},
@@ -145,8 +144,25 @@ func columnExists(db *sql.DB, col string) bool {
 	return true
 }
 
-// runMigrations applies the idempotent schema migrations and backfills cid.
+// runMigrations applies the idempotent schema migrations, preserving saved company mappings.
 func (e *Extension) runMigrations() error {
+	if !columnExists(e.db, "connectwise_company_name") && columnExists(e.db, "cid") {
+		tx, err := e.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec("ALTER TABLE vpn_config RENAME COLUMN cid TO connectwise_company_name"); err != nil {
+			return fmt.Errorf("migrate ConnectWise company field: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE vpn_config SET connectwise_company_name = ''
+			WHERE connectwise_company_name IS NULL OR connectwise_company_name = '000000'`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	for _, m := range migrations {
 		if columnExists(e.db, m.col) {
 			continue
@@ -161,13 +177,7 @@ func (e *Extension) runMigrations() error {
 		}
 		e.logAction("Database Migration", "Added "+m.col+" column to vpn_config table")
 	}
-	// Backfill missing cid (NOT NULL now) with the HookWise "disabled" sentinel
-	// rather than inventing one from firewallname/UNKNOWN: a fabricated cid would
-	// make sendHookwiseEvent fire real alerts with a wrong CID. The sentinel keeps
-	// alerts off until an operator sets a genuine cid.
-	_, err := e.db.Exec(
-		"UPDATE vpn_config SET cid = ? WHERE cid IS NULL OR cid = ''", hookwiseDisabledCID)
-	return err
+	return nil
 }
 
 // ensureMigrations runs the migrations at most once per process.
@@ -184,7 +194,7 @@ const selectCols = `id,
 	COALESCE(kundenname,''), COALESCE(standort,''), COALESCE(remoteip_full,''),
 	COALESCE(remoteip_full_1st,''), COALESCE(ike2_username,''), COALESCE(wan_interface,''),
 	COALESCE(lan_interface,''), COALESCE(dns_name,''), COALESCE(firewallname,''),
-	COALESCE(cid,''), COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,''),
+	COALESCE(connectwise_company_name,''), COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,''),
 	COALESCE(radiusmgt,''), COALESCE(dns_name_full,''), COALESCE(graylog_enabled,1),
 	COALESCE(cluster_hostnames,''), COALESCE(last_graylog_status,'unknown'),
 	last_graylog_check, graylog_unhealthy_since,
@@ -202,7 +212,7 @@ func scanConfig(s rowScanner) (*VpnConfig, error) {
 	err := s.Scan(
 		&c.ID, &c.Kundenname, &c.Standort, &c.RemoteipFull, &c.RemoteipFull1st,
 		&c.Ike2Username, &c.WanInterface, &c.LanInterface, &c.DnsName, &c.Firewallname,
-		&c.Cid, &c.IpsecPskRo, &c.IpsecPskHci, &c.Radiusmgt, &c.DnsNameFull,
+		&c.CompanyName, &c.IpsecPskRo, &c.IpsecPskHci, &c.Radiusmgt, &c.DnsNameFull,
 		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck, &unhealthySince,
 		&c.LastDnsStatus, &c.LastDnsResolved, &dnsCheck,
 	)
@@ -399,12 +409,12 @@ func boolToInt(b bool) int {
 func (e *Extension) insertConfig(c *VpnConfig) error {
 	result, err := e.db.Exec(`INSERT INTO vpn_config
 		(kundenname, standort, remoteip_full, remoteip_full_1st, ike2_username,
-		 wan_interface, lan_interface, dns_name, firewallname, cid,
+		 wan_interface, lan_interface, dns_name, firewallname, connectwise_company_name,
 		 ipsec_psk_ro, ipsec_psk_hci, radiusmgt, dns_name_full,
 		 graylog_enabled, cluster_hostnames)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
-		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.Cid,
+		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.CompanyName,
 		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames)
 	if err != nil {
@@ -418,12 +428,12 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 func (e *Extension) updateConfigFull(c *VpnConfig) error {
 	_, err := e.db.Exec(`UPDATE vpn_config SET
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
-		wan_interface=?, lan_interface=?, dns_name=?, firewallname=?, cid=?,
+		wan_interface=?, lan_interface=?, dns_name=?, firewallname=?, connectwise_company_name=?,
 		ipsec_psk_ro=?, ipsec_psk_hci=?, radiusmgt=?, dns_name_full=?,
 		graylog_enabled=?, cluster_hostnames=?
 		WHERE id=?`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
-		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.Cid,
+		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.CompanyName,
 		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.ID)
 	return err
@@ -435,11 +445,11 @@ func (e *Extension) updateConfigImport(id int64, c *VpnConfig) error {
 	_, err := e.db.Exec(`UPDATE vpn_config SET
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
 		wan_interface=?, lan_interface=?, dns_name=?, ipsec_psk_ro=?, ipsec_psk_hci=?,
-		radiusmgt=?, dns_name_full=?, graylog_enabled=?, cluster_hostnames=?, cid=?
+		radiusmgt=?, dns_name_full=?, graylog_enabled=?, cluster_hostnames=?, connectwise_company_name=?
 		WHERE id=?`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
 		c.WanInterface, c.LanInterface, c.DnsName, c.IpsecPskRo, c.IpsecPskHci,
-		c.Radiusmgt, c.DnsNameFull, boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.Cid, id)
+		c.Radiusmgt, c.DnsNameFull, boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.CompanyName, id)
 	return err
 }
 
@@ -573,17 +583,24 @@ func getRandomPassword(length, upper, lower, numeric, special int) string {
 	return string(pw)
 }
 
-// isDigits reports whether s is a non-empty run of ASCII digits (str.isdigit).
-func isDigits(s string) bool {
-	if s == "" {
-		return false
+// companyIdentifier is the text identifier consumed by Hookwise company matching.
+func (c *VpnConfig) companyIdentifier() string {
+	return strings.TrimSpace(c.CompanyName)
+}
+
+func validateCompanyIdentifier(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("connectwise company name is required")
 	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > 100 {
+		return errors.New("connectwise company name must be valid text of at most 100 characters")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return errors.New("connectwise company name must not contain control characters")
 		}
 	}
-	return true
+	return nil
 }
 
 // splitHostnames splits a comma-separated cluster list, trimming and dropping
