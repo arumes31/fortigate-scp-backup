@@ -208,8 +208,8 @@ func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *te
 			queueResponse.Header().Get("X-Test-Authenticated"),
 		)
 	}
-	if len(jobs) != 4 {
-		t.Fatalf("scheduled jobs = %d, want poll, delivery, ADM catalog refresh, and maintenance", len(jobs))
+	if len(jobs) != 5 {
+		t.Fatalf("scheduled jobs = %d, want poll, delivery, ADM catalog refresh, maintenance, and indexes", len(jobs))
 	}
 	for _, name := range []string{
 		"conftail.graylog", "conftail.catalog", "conftail.store", "conftail.hookwise",
@@ -230,6 +230,9 @@ func TestExtensionMountRegistersAuthenticatedDashboardIgnoreActionsAndJobs(t *te
 	if jobs[3].id != conftailMaintenanceJobID || jobs[3].interval != 24*time.Hour || jobs[3].fn == nil {
 		t.Fatalf("maintenance job = %+v", jobs[3])
 	}
+	if jobs[4].id != conftailIndexJobID || jobs[4].interval != time.Minute || jobs[4].fn == nil {
+		t.Fatalf("index maintenance job = %+v", jobs[4])
+	}
 }
 
 func TestExtensionMountSkipsCatalogRefreshWhenADMVPNIsDisabled(t *testing.T) {
@@ -249,8 +252,8 @@ func TestExtensionMountSkipsCatalogRefreshWhenADMVPNIsDisabled(t *testing.T) {
 	if err := e.Mount(chi.NewRouter(), deps); err != nil {
 		t.Fatalf("Mount() error = %v", err)
 	}
-	if len(jobIDs) != 3 || jobIDs[0] != conftailPollJobID || jobIDs[1] != conftailDeliveryJobID || jobIDs[2] != conftailMaintenanceJobID {
-		t.Fatalf("scheduled jobs = %v, want poll, delivery, and maintenance", jobIDs)
+	if len(jobIDs) != 4 || jobIDs[0] != conftailPollJobID || jobIDs[1] != conftailDeliveryJobID || jobIDs[2] != conftailMaintenanceJobID || jobIDs[3] != conftailIndexJobID {
+		t.Fatalf("scheduled jobs = %v, want poll, delivery, maintenance, and indexes", jobIDs)
 	}
 }
 

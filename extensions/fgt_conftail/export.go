@@ -228,7 +228,7 @@ func (e *Extension) buildSessionExport(
 	if err := ctx.Err(); err != nil {
 		return nil, sessionExportStats{}, err
 	}
-	tx, err := e.store.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := e.store.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, sessionExportStats{}, fmt.Errorf("begin conftail export snapshot: %w", err)
 	}

@@ -27,6 +27,7 @@ const (
 	conftailDeliveryJobID      = "fgt_conftail.delivery"
 	conftailCatalogJobID       = "fgt_conftail.catalog"
 	conftailMaintenanceJobID   = "fgt_conftail.maintenance"
+	conftailIndexJobID         = "fgt_conftail.indexes"
 	conftailDatabaseName       = "fgt-conftail.db"
 	conftailPollFirstDelay     = 10 * time.Second
 	conftailSendFirstDelay     = 20 * time.Second
@@ -69,6 +70,7 @@ type Extension struct {
 	catalogRefreshMu     sync.Mutex
 	pollMu               sync.Mutex
 	deliveryMu           sync.Mutex
+	indexMaintenanceMu   sync.Mutex
 	operationMu          sync.RWMutex
 	tz                   *time.Location
 }
@@ -229,6 +231,7 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 		deps.RegisterHealth("conftail.store", e.storeHealth)
 		deps.RegisterHealth("conftail.hookwise", e.hookwiseHealth)
 	}
+	deps.Schedule(conftailIndexJobID, time.Minute, time.Minute, e.runIndexMaintenance)
 	return nil
 }
 
@@ -261,7 +264,7 @@ func (e *Extension) catalogHealth(context.Context) string {
 }
 
 func (e *Extension) storeHealth(ctx context.Context) string {
-	if e.store == nil || e.store.db == nil || e.store.db.PingContext(ctx) != nil {
+	if e.store == nil || e.store.readDB == nil || e.store.readDB.PingContext(ctx) != nil {
 		return "failed"
 	}
 	return "healthy"
@@ -414,6 +417,25 @@ func (e *Extension) runDeliveries() {
 	}
 }
 
+func (e *Extension) runIndexMaintenance() {
+	if e.store == nil || !e.operationMu.TryRLock() {
+		return // Pending observations remain queued during database maintenance.
+	}
+	defer e.operationMu.RUnlock()
+	if !e.indexMaintenanceMu.TryLock() {
+		return
+	}
+	defer e.indexMaintenanceMu.Unlock()
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Wait for the writer and finish independently of page request deadlines.
+	if err := e.store.flushDashboardIndexUse(ctx); err != nil && e.logger != nil {
+		e.logger.Warn("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
+	}
+}
+
 func (e *Extension) runMaintenance() {
 	if e.store == nil || !e.operationMu.TryLock() {
 		e.logger.Debug("conftail database maintenance skipped while work is active", "code", codeMaintenanceSkipped)
@@ -431,6 +453,10 @@ func (e *Extension) runMaintenance() {
 		tz = time.UTC
 	}
 	now := time.Now().In(tz)
+	if err := e.store.flushDashboardIndexUse(ctx); err != nil {
+		e.logger.Error("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
+		return
+	}
 	stats, err := e.store.maintenanceStats(ctx)
 	if err != nil {
 		e.logger.Error("conftail database maintenance stats failed", "code", codeMaintenanceFailed, "err", err)

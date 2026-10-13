@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -43,31 +44,58 @@ func (stats databaseMaintenanceStats) reclaimRatio() float64 {
 	return float64(stats.FreelistCount) / float64(stats.PageCount)
 }
 
-func (s *store) observeDashboardQuery(ctx context.Context, filters dashboardFilters, now time.Time) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("conftail dashboard index store is unavailable")
+// Coalesce usage by allowlisted index, never by user-entered filter values.
+// The scheduler drains this bounded queue independently of HTTP cancellation.
+func (s *store) queueDashboardIndexUse(filters dashboardFilters, now time.Time) {
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	if s.pendingIndexUse == nil {
+		s.pendingIndexUse = make(map[string]time.Time)
 	}
-	required := make([]managedIndexCandidate, 0, len(managedIndexCandidates))
 	for _, candidate := range managedIndexCandidates {
-		if candidate.isRequired(filters) {
-			required = append(required, candidate)
+		if candidate.isRequired(filters) && now.After(s.pendingIndexUse[candidate.name]) {
+			s.pendingIndexUse[candidate.name] = now
 		}
 	}
-	if len(required) == 0 {
+}
+
+func (s *store) flushDashboardIndexUse(ctx context.Context) error {
+	s.indexMu.Lock()
+	pending := maps.Clone(s.pendingIndexUse)
+	s.indexMu.Unlock()
+	if len(pending) == 0 {
 		return nil
 	}
+	if err := s.applyDashboardIndexUse(ctx, pending); err != nil {
+		return err // Retain every observation for the next scheduled attempt.
+	}
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	for name, observed := range pending {
+		if !s.pendingIndexUse[name].After(observed) {
+			delete(s.pendingIndexUse, name)
+		}
+	}
+	return nil
+}
+
+func (s *store) applyDashboardIndexUse(ctx context.Context, pending map[string]time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin managed index observation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, candidate := range required {
+	for _, candidate := range managedIndexCandidates {
+		now, required := pending[candidate.name]
+		if !required {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, candidate.createSQL); err != nil {
 			return fmt.Errorf("create managed index %s: %w", candidate.name, err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO managed_indexes(name, created_at_ns, last_needed_at_ns)
 			VALUES (?, ?, ?)
-			ON CONFLICT(name) DO UPDATE SET last_needed_at_ns = excluded.last_needed_at_ns`,
+			ON CONFLICT(name) DO UPDATE SET last_needed_at_ns = MAX(managed_indexes.last_needed_at_ns, excluded.last_needed_at_ns)`,
 			candidate.name, unixNanos(now), unixNanos(now)); err != nil {
 			return fmt.Errorf("record managed index %s: %w", candidate.name, err)
 		}

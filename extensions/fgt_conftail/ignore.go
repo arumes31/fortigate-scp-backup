@@ -100,7 +100,7 @@ func listEnabledGlobalIgnoreRulesTx(ctx context.Context, tx *sql.Tx) ([]globalIg
 }
 
 func (s *store) listGlobalIgnoreRules(ctx context.Context) ([]globalIgnoreRule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+globalIgnoreRuleColumns+` FROM global_ignore_rules ORDER BY enabled DESC, created_at_ns DESC, id DESC`)
+	rows, err := s.readDB.QueryContext(ctx, `SELECT `+globalIgnoreRuleColumns+` FROM global_ignore_rules ORDER BY enabled DESC, created_at_ns DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list conftail global ignore rules: %w", err)
 	}

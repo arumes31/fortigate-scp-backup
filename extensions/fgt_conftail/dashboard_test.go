@@ -22,6 +22,65 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
+func TestDashboardRespondsDuringPollWrite(t *testing.T) {
+	s, chainID := seededExportStore(t)
+	indexPage, chainPage := testDashboardRenderers(t)
+	extension := &Extension{store: s, indexPage: indexPage, chainPage: chainPage,
+		pageBase: testDashboardPageBase("reviewer")}
+	started := time.Now().UTC()
+	if err := s.markPollStarted(t.Context(), started); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the same connection and write lock used while applying a poll batch.
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(t.Context(), `UPDATE chains SET user = 'uncommitted-operator' WHERE id = ?`, chainID); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Get("/", extension.dashboard)
+	router.Get("/status", extension.dashboardStatus)
+	router.Get("/chains/{chainID}", extension.dashboardChain)
+	for _, path := range []string{"/", "/?firewall=1", "/status", "/chains/" + chainID} {
+		t.Run(path, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil))
+			if response.Code != http.StatusOK || ctx.Err() != nil {
+				t.Fatalf("request blocked by poll write: status=%d err=%v body=%s", response.Code, ctx.Err(), response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "uncommitted-operator") {
+				t.Fatal("dashboard exposed uncommitted poll data")
+			}
+			if path == "/status" && !strings.Contains(response.Body.String(), `"running":true`) {
+				t.Fatalf("poll status not visible during write: %s", response.Body.String())
+			}
+		})
+	}
+	t.Run("export", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		response := serveSessionExport(t, extension, chainID, sessionExportJSON, ctx)
+		if response.Code != http.StatusOK || ctx.Err() != nil {
+			t.Fatalf("export blocked by poll write: status=%d err=%v", response.Code, ctx.Err())
+		}
+		if strings.Contains(response.Body.String(), "uncommitted-operator") {
+			t.Fatal("export exposed uncommitted poll data")
+		}
+	})
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	chain, _, err := s.dashboardChainPage(t.Context(), chainID, 1)
+	if err != nil || chain.User != "uncommitted-operator" {
+		t.Fatalf("committed poll changes not visible: user=%q err=%v", chain.User, err)
+	}
+}
+
 func TestDashboardPagesUseIndependentSharedShellRenderers(t *testing.T) {
 	t.Parallel()
 
@@ -453,7 +512,7 @@ func TestDashboardChainViewAndTicketURLValidation(t *testing.T) {
 func TestDashboardChainErrorsDoNotRequireLogger(t *testing.T) {
 	t.Run("query failure", func(t *testing.T) {
 		s := newTestStore(t, time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
-		if err := s.db.Close(); err != nil {
+		if err := s.close(); err != nil {
 			t.Fatal(err)
 		}
 		_, chainPage := testDashboardRenderers(t)

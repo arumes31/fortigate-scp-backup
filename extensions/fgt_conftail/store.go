@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,7 +32,12 @@ const (
 )
 
 type store struct {
-	db *sql.DB
+	// Keep writes serialized; WAL readers must not wait for this connection.
+	db     *sql.DB
+	readDB *sql.DB
+
+	indexMu         sync.Mutex
+	pendingIndexUse map[string]time.Time
 }
 
 type PollState struct {
@@ -307,6 +313,17 @@ func openStore(ctx context.Context, path string, activation time.Time) (*store, 
 	if err := s.initSchema(ctx, activation.UTC()); err != nil {
 		return closeOnError(err)
 	}
+	readDB, err := sql.Open("sqlite", dsn+"&mode=ro&_pragma="+url.QueryEscape("query_only(1)"))
+	if err != nil {
+		return closeOnError(fmt.Errorf("open conftail reader database: %w", err))
+	}
+	readDB.SetMaxOpenConns(4)
+	readDB.SetMaxIdleConns(4)
+	if err := readDB.PingContext(ctx); err != nil {
+		_ = readDB.Close()
+		return closeOnError(fmt.Errorf("initialize conftail reader database: %w", err))
+	}
+	s.readDB = readDB
 	return s, nil
 }
 
@@ -332,7 +349,7 @@ func conftailSQLiteDSN(path string) (string, error) {
 }
 
 func (s *store) close() error {
-	return s.db.Close()
+	return errors.Join(s.readDB.Close(), s.db.Close())
 }
 
 func (s *store) initSchema(ctx context.Context, activation time.Time) error {
@@ -438,7 +455,7 @@ func migrateOutboxClearedState(ctx context.Context, tx *sql.Tx) error {
 func (s *store) pollState(ctx context.Context) (PollState, error) {
 	var activation, watermark, started, success, failure, duration, lastIngested int64
 	var state PollState
-	err := s.db.QueryRowContext(ctx, `SELECT
+	err := s.readDB.QueryRowContext(ctx, `SELECT
 		activation_at_ns, watermark_ns, last_started_at_ns, last_success_at_ns,
 		last_failure_at_ns, last_duration_ns, last_pages, last_fetched,
 		last_inserted, last_error,

@@ -543,7 +543,7 @@ func (s *store) queryDashboard(
 
 func (s *store) dashboardCounts(ctx context.Context) (dashboardCounts, error) {
 	var counts dashboardCounts
-	err := s.db.QueryRowContext(ctx, `SELECT
+	err := s.readDB.QueryRowContext(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN c.state = 'active' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN c.state = 'sealed' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN o.state = 'pending' THEN 1 ELSE 0 END), 0),
@@ -611,7 +611,7 @@ func (s *store) countDashboardChains(
 	var count int
 	query := `SELECT COUNT(*) FROM chains c
 		LEFT JOIN outbox o ON o.chain_id = c.id WHERE ` + dashboardWhereSQL
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := s.readDB.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count conftail dashboard chains: %w", err)
 	}
 	return count, nil
@@ -626,7 +626,7 @@ func (s *store) dashboardChains(
 	query := dashboardChainSelectSQL + ` WHERE ` + dashboardWhereSQL + `
 		ORDER BY c.last_event_at_ns DESC, c.id LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), limit, offset)
-	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list conftail dashboard chains: %w", err)
 	}
@@ -727,7 +727,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 }
 
 func (s *store) dashboardVDOMs(ctx context.Context, chainID string) ([]string, int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT vdom, COUNT(*) OVER () FROM events
+	rows, err := s.readDB.QueryContext(ctx, `SELECT vdom, COUNT(*) OVER () FROM events
 		WHERE chain_id = ? AND vdom != '' GROUP BY vdom ORDER BY vdom LIMIT ?`,
 		chainID, dashboardVDOMLimit+1)
 	if err != nil {
@@ -767,7 +767,7 @@ func (s *store) dashboardChainPage(
 	if page < 1 || page > dashboardMaxPage {
 		return dashboardChain{}, 0, errDashboardPageRange
 	}
-	chain, err := scanDashboardChain(s.db.QueryRowContext(
+	chain, err := scanDashboardChain(s.readDB.QueryRowContext(
 		ctx,
 		dashboardChainSelectSQL+` WHERE c.id = ?`,
 		chainID,
@@ -802,7 +802,7 @@ func (s *store) dashboardChainPage(
 
 func (s *store) dashboardTicketPreview(ctx context.Context, chainID string) (dashboardTicketPreview, error) {
 	var payload []byte
-	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM outbox WHERE chain_id = ?`, chainID).Scan(&payload)
+	err := s.readDB.QueryRowContext(ctx, `SELECT payload_json FROM outbox WHERE chain_id = ?`, chainID).Scan(&payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dashboardTicketPreview{}, nil
 	}
@@ -832,7 +832,7 @@ func (s *store) dashboardEventPage(
 	chainID string,
 	page int,
 ) ([]dashboardEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT
+	rows, err := s.readDB.QueryContext(ctx, `SELECT
 		id, event_at_ns, source, device_name, device_id, vdom, user_attribution,
 		ui, action, transaction_id, config_path, config_object, config_attribute,
 		log_id, log_description, message, late
@@ -893,9 +893,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to load configuration change dashboard", http.StatusInternalServerError)
 		return
 	}
-	if err := e.store.observeDashboardQuery(r.Context(), filters, time.Now().UTC()); err != nil && e.logger != nil {
-		e.logger.Warn("conftail managed index observation failed", "code", codeIndexMaintenanceFailed, "err", err)
-	}
+	e.store.queueDashboardIndexUse(filters, time.Now().UTC())
 	for index := range data.Active {
 		data.Active[index].QuietEligibleAt = data.Active[index].LastEventAt.Add(e.dashboardIdleDuration())
 	}

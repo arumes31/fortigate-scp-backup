@@ -3,6 +3,7 @@ package fgtconftail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -12,6 +13,72 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func TestQueuedIndexMaintenanceWaitsAndRetainsNewObservations(t *testing.T) {
+	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, now)
+	filters := dashboardFilters{FirewallID: 7}
+	s.queueDashboardIndexUse(filters, now)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := s.flushDashboardIndexUse(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled flush = %v", err)
+	}
+
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(t.Context(), `UPDATE poll_state SET last_pages = 1`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	e := &Extension{store: s, ctx: ctx}
+	waitCount := s.db.Stats().WaitCount
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.runIndexMaintenance()
+	}()
+	t.Cleanup(func() { stop(); <-done })
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for s.db.Stats().WaitCount == waitCount {
+		select {
+		case <-done:
+			t.Fatal("maintenance returned instead of waiting for the writer")
+		case <-ctx.Done():
+			t.Fatal("maintenance never queued for the writer")
+		case <-ticker.C:
+		}
+	}
+	// A page read and a newer index observation must not wait for maintenance.
+	readCtx, cancelRead := context.WithTimeout(t.Context(), time.Second)
+	defer cancelRead()
+	if got := e.storeHealth(readCtx); got != "healthy" {
+		t.Fatalf("store health during maintenance = %s", got)
+	}
+	later := now.Add(time.Minute)
+	s.queueDashboardIndexUse(filters, later)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("maintenance did not finish after writer committed")
+	}
+	var lastNeeded int64
+	if err := s.readDB.QueryRow(`SELECT last_needed_at_ns FROM managed_indexes`).Scan(&lastNeeded); err != nil || lastNeeded != unixNanos(now) {
+		t.Fatalf("queued maintenance did not complete: timestamp=%d err=%v", lastNeeded, err)
+	}
+	e.runIndexMaintenance()
+	if err := s.readDB.QueryRow(`SELECT last_needed_at_ns FROM managed_indexes`).Scan(&lastNeeded); err != nil || lastNeeded != unixNanos(later) {
+		t.Fatalf("newer observation lost during flush: timestamp=%d err=%v", lastNeeded, err)
+	}
+}
+
 func TestObserveDashboardQueryCreatesOnlyAllowlistedIndexes(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
@@ -20,7 +87,8 @@ func TestObserveDashboardQueryCreatesOnlyAllowlistedIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	filters := dashboardFilters{FirewallID: 7, State: dashboardStateAll, Page: 1}
-	if err := s.observeDashboardQuery(context.Background(), filters, now); err != nil {
+	s.queueDashboardIndexUse(filters, now)
+	if err := s.flushDashboardIndexUse(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +114,8 @@ func TestRetireManagedIndexesRemovesOnlyOwnedIndexesAfterThirtyDays(t *testing.T
 	t.Parallel()
 	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
 	s := newTestStore(t, now)
-	if err := s.observeDashboardQuery(context.Background(), dashboardFilters{FirewallID: 7}, now); err != nil {
+	s.queueDashboardIndexUse(dashboardFilters{FirewallID: 7}, now)
+	if err := s.flushDashboardIndexUse(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`CREATE INDEX ct_auto_foreign_keep ON chains(user)`); err != nil {
@@ -104,7 +173,8 @@ func TestManagedFirewallIndexChangesQueryPlan(t *testing.T) {
 	if strings.Contains(before, "ct_auto_") {
 		t.Fatalf("baseline query plan unexpectedly uses managed index: %q", before)
 	}
-	if err := s.observeDashboardQuery(context.Background(), dashboardFilters{FirewallID: 7}, now); err != nil {
+	s.queueDashboardIndexUse(dashboardFilters{FirewallID: 7}, now)
+	if err := s.flushDashboardIndexUse(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	after := queryPlan()
@@ -153,6 +223,38 @@ func TestIncrementalVacuumUsesIncrementalAutoVacuumMode(t *testing.T) {
 	}
 	if err := s.incrementalVacuum(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMaintenanceCompletesWithOpenReaderSnapshot(t *testing.T) {
+	s := newTestStore(t, time.Now().UTC())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	snapshot, err := s.readDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Rollback() }()
+	var pages int
+	if err := snapshot.QueryRowContext(ctx, `SELECT last_pages FROM poll_state`).Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE poll_state SET last_pages = 42`); err != nil {
+		t.Fatal(err)
+	}
+	s.queueDashboardIndexUse(dashboardFilters{FirewallID: 7}, time.Now().UTC())
+	if err := s.flushDashboardIndexUse(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.fullVacuum(ctx); err != nil {
+		t.Fatalf("maintenance blocked by reader: %v", err)
+	}
+	if err := snapshot.QueryRowContext(ctx, `SELECT last_pages FROM poll_state`).Scan(&pages); err != nil || pages != 0 {
+		t.Fatalf("reader snapshot changed during maintenance: pages=%d err=%v", pages, err)
+	}
+	state, err := s.pollState(ctx)
+	if err != nil || state.LastPages != 42 {
+		t.Fatalf("new reader after maintenance: pages=%d err=%v", state.LastPages, err)
 	}
 }
 

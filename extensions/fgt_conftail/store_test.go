@@ -1190,6 +1190,20 @@ func TestStorePragmasSurviveConnectionTurnoverAndCascade(t *testing.T) {
 	}
 }
 
+func TestStoreReadersRemainReadOnlyAfterConnectionReplacement(t *testing.T) {
+	s := newTestStore(t, time.Now().UTC())
+	s.readDB.SetMaxIdleConns(0)
+	for range 2 {
+		if _, err := s.readDB.ExecContext(t.Context(), `UPDATE poll_state SET last_pages = 99`); err == nil {
+			t.Fatal("reader connection accepted a write")
+		}
+		state, err := s.pollState(t.Context())
+		if err != nil || state.LastPages != 0 {
+			t.Fatalf("reader connection replacement: pages=%d err=%v", state.LastPages, err)
+		}
+	}
+}
+
 func newTestStore(t *testing.T, activation time.Time) *store {
 	t.Helper()
 	s, err := openStore(context.Background(), filepath.Join(t.TempDir(), "conftail.db"), activation)
