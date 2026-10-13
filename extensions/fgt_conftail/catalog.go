@@ -40,9 +40,10 @@ type sourceCatalog struct {
 }
 
 type catalogFirewall struct {
-	ref      firewallRef
-	warnings map[string]struct{}
-	enabled  bool
+	ref             firewallRef
+	warnings        map[string]struct{}
+	enabled         bool
+	companyConflict bool
 }
 
 type aliasCandidate struct {
@@ -228,11 +229,16 @@ func (b *catalogBuilder) addADMAliases(rows []admAliasRow) {
 }
 
 func (b *catalogBuilder) mergeConnectWiseMapping(index int, row admAliasRow) {
+	if b.firewalls[index].companyConflict {
+		return
+	}
 	company := strings.TrimSpace(sanitizeExternalString(row.company, maxIdentityRunes))
 	current := &b.firewalls[index].ref
 	if current.Company == "" {
 		current.Company = company
 	} else if company != "" && company != current.Company {
+		current.Company = ""
+		b.firewalls[index].companyConflict = true
 		b.addFirewallWarning(index, fmt.Sprintf(
 			"registered firewall %d has conflicting ADM VPN company mappings",
 			current.ID,

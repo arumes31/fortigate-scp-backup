@@ -27,7 +27,7 @@ const (
 	deliveryStateAccepted     = "accepted"
 	deliveryStateCleared      = "cleared"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 5
+	conftailSchemaVersion     = 6
 )
 
 type store struct {
@@ -55,6 +55,7 @@ type pollBatch struct {
 	Pages       int
 	Fetched     int
 	Events      []Event
+	Companies   map[int]string
 }
 
 type pollResult struct {
@@ -95,6 +96,10 @@ const (
 )
 
 var conftailSchema = []string{
+	`CREATE TABLE IF NOT EXISTS firewall_companies (
+		firewall_id INTEGER PRIMARY KEY,
+		company TEXT NOT NULL
+	)`,
 	`CREATE TABLE IF NOT EXISTS schema_meta (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		version INTEGER NOT NULL
@@ -381,8 +386,14 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		if err := purgeGloballyIgnoredEvents(ctx, tx, 0, time.Now().UTC()); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 5 WHERE id = 1`); err != nil {
 			return fmt.Errorf("upgrade conftail ignore history: %w", err)
+		}
+		version = 5
+	}
+	if version == 5 {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail company routing: %w", err)
 		}
 		version = conftailSchemaVersion
 	}
@@ -538,6 +549,21 @@ func (s *store) applyPoll(
 	}
 	defer func() { _ = tx.Rollback() }()
 	result := pollResult{}
+	// Replace the current catalog snapshot before any path can seal a chain.
+	// Removed or cleared mappings must not route new tickets to an old company.
+	if batch.Companies != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM firewall_companies`); err != nil {
+			return pollResult{}, fmt.Errorf("clear conftail company catalog: %w", err)
+		}
+		for id, company := range batch.Companies {
+			if company == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO firewall_companies (firewall_id, company) VALUES (?, ?)`, id, company); err != nil {
+				return pollResult{}, fmt.Errorf("store conftail company catalog: %w", err)
+			}
+		}
+	}
 	ignoreRules, err := listEnabledGlobalIgnoreRulesTx(ctx, tx)
 	if err != nil {
 		return pollResult{}, err
@@ -1491,6 +1517,10 @@ func freezeOutbox(
 	payload, err := buildTicketPayload(chain, events, maxDescriptionBytes)
 	if err != nil {
 		return fmt.Errorf("build conftail ticket payload: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT company FROM firewall_companies WHERE firewall_id = ?`,
+		chain.FirewallID).Scan(&payload.Company); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("resolve conftail ticket company: %w", err)
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
