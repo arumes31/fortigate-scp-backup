@@ -11,6 +11,94 @@ import (
 	"time"
 )
 
+func TestCompanyRoutingSnapshotAndFrozenPayloads(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	var firstPayload []byte
+	for i, companies := range []map[int]string{
+		{1: "Acme-Europe", 2: "Other-Company"},
+		{1: "New-Company"},
+		{1: ""},
+		{2: "Other-Company"},
+	} {
+		user := fmt.Sprintf("operator-%d", i)
+		eventAt := base.Add(time.Duration(i) * time.Hour)
+		if _, err := s.applyPoll(ctx, pollBatch{
+			EndedAt: eventAt.Add(30 * time.Minute), Companies: companies,
+			Events: []Event{testEvent(1, "fw-a", user, user, eventAt)},
+		}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+			t.Fatal(err)
+		}
+		var encoded []byte
+		if err := s.db.QueryRow(`SELECT payload_json FROM outbox JOIN chains ON chains.id = outbox.chain_id WHERE user = ?`, user).Scan(&encoded); err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(encoded, &payload); err != nil {
+			t.Fatal(err)
+		}
+		company, present := payload["company"]
+		want := companies[1]
+		if (want != "" && company != want) || (want == "" && present) {
+			t.Fatalf("company = %v (present=%t), want %q", company, present, want)
+		}
+		if i == 0 {
+			firstPayload = encoded
+		}
+		var frozen []byte
+		if err := s.db.QueryRow(`SELECT payload_json FROM outbox JOIN chains ON chains.id = outbox.chain_id WHERE user = 'operator-0'`).Scan(&frozen); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(frozen, firstPayload) {
+			t.Fatal("catalog change rewrote an already queued payload")
+		}
+	}
+	// A failed snapshot replacement must roll back the preceding DELETE too.
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_company BEFORE INSERT ON firewall_companies
+		BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(5 * time.Hour), Companies: map[int]string{1: "Failed"}},
+		30*time.Minute, maxTicketDescriptionBytes); err == nil {
+		t.Fatal("expected snapshot replacement to fail")
+	}
+	var company string
+	if err := s.db.QueryRow(`SELECT company FROM firewall_companies WHERE firewall_id = 2`).Scan(&company); err != nil || company != "Other-Company" {
+		t.Fatalf("failed poll changed prior catalog: %q, %v", company, err)
+	}
+}
+
+func TestCompanyRoutingMigrationPreservesQueuedPayload(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if _, err := s.applyPoll(ctx, pollBatch{
+		EndedAt: base.Add(time.Hour), Events: []Event{testEvent(1, "fw-a", "operator", "old-event", base)},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	before := onlyPayload(t, s)
+	if _, err := s.db.Exec(`DROP TABLE firewall_companies; UPDATE schema_meta SET version = 5 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.initSchema(ctx, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !bytes.Equal(before, onlyPayload(t, s)) {
+		t.Fatal("migration rewrote queued delivery")
+	}
+	var version, count int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta`).Scan(&version); err != nil || version != conftailSchemaVersion {
+		t.Fatalf("schema version = %d, err=%v", version, err)
+	}
+	if err := s.db.QueryRow(`SELECT count(*) FROM firewall_companies`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("migration fabricated company mappings: count=%d, err=%v", count, err)
+	}
+}
+
 func TestStoreAndOutboxNeverPersistRawSecrets(t *testing.T) {
 	t.Parallel()
 	const rawSecret = "do-not-persist-this-value"

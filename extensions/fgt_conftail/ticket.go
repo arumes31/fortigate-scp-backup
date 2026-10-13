@@ -18,6 +18,7 @@ type ticketFirewall struct {
 type ticketPayload struct {
 	Status       string         `json:"status"`
 	Source       string         `json:"source"`
+	Company      string         `json:"company,omitempty"`
 	Message      string         `json:"message"`
 	ChainID      string         `json:"chain_id"`
 	Summary      string         `json:"summary"`

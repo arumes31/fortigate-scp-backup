@@ -180,6 +180,10 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
 	}
 
+	companies := make(map[int]string, len(catalog.byID))
+	for id, firewall := range catalog.byID {
+		companies[id] = firewall.Company
+	}
 	result, err := w.store.applyPoll(ctx, pollBatch{
 		StartedAt:   startedAt,
 		EndedAt:     pollEnd,
@@ -187,6 +191,7 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 		Pages:       stats.Pages,
 		Fetched:     stats.Fetched,
 		Events:      events,
+		Companies:   companies,
 	}, w.idle, w.maxDescriptionBytes)
 	if err != nil {
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)

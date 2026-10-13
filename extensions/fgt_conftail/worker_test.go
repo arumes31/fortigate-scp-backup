@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,45 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPollWorkerFreezesADMCompanyInTicket(t *testing.T) {
+	ctx := context.Background()
+	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, activation)
+	dataDir := t.TempDir()
+	createADMDatabase(t, dataDir, []admTestRow{{
+		FirewallName: "cluster-fw", DNSNameFull: "cluster.example.test",
+		ClusterHostnames: "node-a,node-b", Company: "Acme-Europe",
+	}})
+	worker := pollWorker{
+		store: s,
+		loadCatalog: func(ctx context.Context) (sourceCatalog, error) {
+			return buildSourceCatalog(ctx, []firewallRef{{ID: 7, Name: "cluster.example.test"}}, dataDir)
+		},
+		graylog: &scriptedGraylogFetcher{fn: func(call int, _ []string) ([]RawEvent, FetchStats, error) {
+			if call > 0 {
+				return nil, FetchStats{}, nil
+			}
+			return []RawEvent{rawConfigEvent("company-event", "node-a", "operator", "tx-1", activation.Add(time.Minute))}, FetchStats{Pages: 1, Rows: 1}, nil
+		}},
+		query: "type:event", overlap: time.Hour, idle: 30 * time.Minute,
+		maxDescriptionBytes: maxTicketDescriptionBytes,
+		missingUserWindow:   5 * time.Minute,
+	}
+	// Seal on a later, empty poll: company routing cannot depend on new events.
+	for _, offset := range []time.Duration{5 * time.Minute, 40 * time.Minute} {
+		if _, err := worker.poll(ctx, activation.Add(offset)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(onlyPayload(t, s), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["company"] != "Acme-Europe" {
+		t.Fatalf("ticket company = %v, want ADM company identifier", payload["company"])
+	}
+}
 
 type graylogFetchCall struct {
 	query   string

@@ -438,6 +438,28 @@ func TestBuildSourceCatalog_CompanyFieldNotYetMigrated(t *testing.T) {
 	}
 }
 
+func TestConflictingADMCompaniesDoNotChooseFirstCompany(t *testing.T) {
+	dataDir := t.TempDir()
+	createADMDatabase(t, dataDir, []admTestRow{
+		{FirewallName: "node-a", DNSNameFull: "cluster.example.test", Company: "Company-A"},
+		{FirewallName: "node-b", DNSNameFull: "cluster.example.test", Company: "Company-B"},
+		{FirewallName: "node-c", DNSNameFull: "cluster.example.test", Company: "Company-A"},
+	})
+	catalog, err := buildSourceCatalog(context.Background(), []firewallRef{{ID: 7, Name: "cluster.example.test"}}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"node-a", "node-b", "node-c"} {
+		firewall, ok := catalog.resolve(source)
+		if !ok || firewall.Company != "" {
+			t.Fatalf("ambiguous company selected for %s: %+v", source, firewall)
+		}
+	}
+	if len(catalog.coverage()[0].Warnings) == 0 {
+		t.Fatal("missing company conflict warning")
+	}
+}
+
 func createADMDatabase(t *testing.T, dataDir string, rows []admTestRow) {
 	t.Helper()
 
