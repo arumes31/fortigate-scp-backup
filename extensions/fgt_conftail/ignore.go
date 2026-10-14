@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	ignoreRuleKindAttribute = "attribute"
-	ignoreRuleKindOperation = "operation"
+	ignoreRuleKindAttribute     = "attribute"
+	ignoreRuleKindOperation     = "operation"
+	ignoreRuleKindAdministrator = "administrator"
 )
 
 var (
@@ -31,6 +32,7 @@ type globalIgnoreRule struct {
 	Action          string
 	Path            string
 	ConfigAttribute string
+	Administrator   string
 	Enabled         bool
 	CreatedBy       string
 	CreatedAt       time.Time
@@ -38,6 +40,9 @@ type globalIgnoreRule struct {
 }
 
 func (rule globalIgnoreRule) DisplayValue() string {
+	if rule.Kind == ignoreRuleKindAdministrator {
+		return rule.Administrator
+	}
 	if rule.Kind == ignoreRuleKindOperation {
 		return strings.TrimSpace(rule.Action + " " + rule.Path)
 	}
@@ -46,6 +51,8 @@ func (rule globalIgnoreRule) DisplayValue() string {
 
 func (rule globalIgnoreRule) matches(event Event) bool {
 	switch rule.Kind {
+	case ignoreRuleKindAdministrator:
+		return rule.Administrator != "" && rule.Administrator == event.User
 	case ignoreRuleKindAttribute:
 		return rule.ConfigAttribute != "" && rule.ConfigAttribute == event.ConfigAttribute
 	case ignoreRuleKindOperation:
@@ -68,7 +75,7 @@ func scanGlobalIgnoreRule(scanner interface{ Scan(...any) error }) (globalIgnore
 	var rule globalIgnoreRule
 	var enabled int
 	var createdAt int64
-	err := scanner.Scan(&rule.ID, &rule.Kind, &rule.Action, &rule.Path, &rule.ConfigAttribute, &enabled, &rule.CreatedBy, &createdAt)
+	err := scanner.Scan(&rule.ID, &rule.Kind, &rule.Action, &rule.Path, &rule.ConfigAttribute, &rule.Administrator, &enabled, &rule.CreatedBy, &createdAt)
 	if err != nil {
 		return globalIgnoreRule{}, err
 	}
@@ -77,7 +84,7 @@ func scanGlobalIgnoreRule(scanner interface{ Scan(...any) error }) (globalIgnore
 	return rule, nil
 }
 
-const globalIgnoreRuleColumns = `id, kind, action, config_path, config_attribute, enabled, created_by, created_at_ns`
+const globalIgnoreRuleColumns = `id, kind, action, config_path, config_attribute, administrator, enabled, created_by, created_at_ns`
 
 func listEnabledGlobalIgnoreRulesTx(ctx context.Context, tx *sql.Tx) ([]globalIgnoreRule, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+globalIgnoreRuleColumns+` FROM global_ignore_rules WHERE enabled = 1 ORDER BY id`)
@@ -120,7 +127,7 @@ func (s *store) listGlobalIgnoreRules(ctx context.Context) ([]globalIgnoreRule, 
 }
 
 func (s *store) createGlobalIgnoreRule(ctx context.Context, eventID int64, kind, actor string, now time.Time) (globalIgnoreRule, bool, error) {
-	if eventID <= 0 || (kind != ignoreRuleKindAttribute && kind != ignoreRuleKindOperation) {
+	if eventID <= 0 || (kind != ignoreRuleKindAttribute && kind != ignoreRuleKindOperation && kind != ignoreRuleKindAdministrator) {
 		return globalIgnoreRule{}, false, errors.New("invalid conftail global ignore request")
 	}
 	if !unixNanoRepresentable(now) {
@@ -135,34 +142,42 @@ func (s *store) createGlobalIgnoreRule(ctx context.Context, eventID int64, kind,
 		return globalIgnoreRule{}, false, fmt.Errorf("begin conftail global ignore transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var chainID, action, path, attribute string
-	err = tx.QueryRowContext(ctx, `SELECT chain_id, action, config_path, config_attribute FROM events WHERE id = ?`, eventID).
-		Scan(&chainID, &action, &path, &attribute)
+	var chainID, action, path, attribute, administrator, attribution string
+	err = tx.QueryRowContext(ctx, `SELECT chain_id, action, config_path, config_attribute, user, user_attribution FROM events WHERE id = ?`, eventID).
+		Scan(&chainID, &action, &path, &attribute, &administrator, &attribution)
 	if errors.Is(err, sql.ErrNoRows) {
 		return globalIgnoreRule{}, false, errGlobalIgnoreEventNotFound
 	}
 	if err != nil {
 		return globalIgnoreRule{}, false, fmt.Errorf("read conftail ignore source event: %w", err)
 	}
-	if kind == ignoreRuleKindAttribute {
+	switch kind {
+	case ignoreRuleKindAdministrator:
+		if administrator == "" || administrator == unattributedUser || attribution == attributionUnattributed {
+			return globalIgnoreRule{}, false, errors.New("conftail event has no administrator ignore candidate")
+		}
+		action, path, attribute = "", "", ""
+	case ignoreRuleKindAttribute:
+		administrator = ""
 		action, path = "", ""
 		if attribute == "" {
 			return globalIgnoreRule{}, false, errors.New("conftail event has no attribute ignore candidate")
 		}
-	} else {
+	default:
+		administrator = ""
 		attribute = ""
 		if action == "" || path == "" {
 			return globalIgnoreRule{}, false, errors.New("conftail event has no operation ignore candidate")
 		}
 	}
 	query := `SELECT ` + globalIgnoreRuleColumns + ` FROM global_ignore_rules
-		WHERE kind = ? AND action = ? AND config_path = ? AND config_attribute = ?`
-	rule, err := scanGlobalIgnoreRule(tx.QueryRowContext(ctx, query, kind, action, path, attribute))
+		WHERE kind = ? AND action = ? AND config_path = ? AND config_attribute = ? AND administrator = ?`
+	rule, err := scanGlobalIgnoreRule(tx.QueryRowContext(ctx, query, kind, action, path, attribute, administrator))
 	created := false
 	if errors.Is(err, sql.ErrNoRows) {
 		result, insertErr := tx.ExecContext(ctx, `INSERT INTO global_ignore_rules
-			(kind, action, config_path, config_attribute, enabled, created_by, created_at_ns)
-			VALUES (?, ?, ?, ?, 1, ?, ?)`, kind, action, path, attribute, actor, unixNanos(now))
+			(kind, action, config_path, config_attribute, administrator, enabled, created_by, created_at_ns)
+			VALUES (?, ?, ?, ?, ?, 1, ?, ?)`, kind, action, path, attribute, administrator, actor, unixNanos(now))
 		if insertErr != nil {
 			return globalIgnoreRule{}, false, fmt.Errorf("create conftail global ignore rule: %w", insertErr)
 		}
@@ -239,7 +254,8 @@ func purgeGloballyIgnoredEvents(ctx context.Context, tx *sql.Tx, ruleID int64, n
 			SELECT e.id, e.chain_id, MIN(r.id) AS rule_id
 			FROM events e JOIN global_ignore_rules r ON r.enabled = 1 AND (
 				(r.kind = 'attribute' AND r.config_attribute = e.config_attribute) OR
-				(r.kind = 'operation' AND r.action = e.action AND r.config_path = e.config_path))
+				(r.kind = 'operation' AND r.action = e.action AND r.config_path = e.config_path) OR
+				(r.kind = 'administrator' AND r.administrator = e.user))
 			WHERE (? = 0 OR r.id = ?) GROUP BY e.id`, []any{ruleID, ruleID}},
 		{`CREATE INDEX conftail_ignore_purge_chain ON conftail_ignore_purge(chain_id)`, nil},
 		{`INSERT OR IGNORE INTO ignored_events(semantic_hash, graylog_id, rule_id, event_at_ns, ignored_at_ns)
