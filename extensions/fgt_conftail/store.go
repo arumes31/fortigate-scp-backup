@@ -28,7 +28,7 @@ const (
 	deliveryStateAccepted     = "accepted"
 	deliveryStateCleared      = "cleared"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 6
+	conftailSchemaVersion     = 7
 )
 
 type store struct {
@@ -86,6 +86,30 @@ type chainRecord struct {
 }
 
 const (
+	globalIgnoreTableSchema = `CREATE TABLE IF NOT EXISTS global_ignore_rules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL CHECK (kind IN ('attribute','operation','administrator')),
+		action TEXT NOT NULL DEFAULT '',
+		config_path TEXT NOT NULL DEFAULT '',
+		config_attribute TEXT NOT NULL DEFAULT '',
+		administrator TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+		created_by TEXT NOT NULL,
+		created_at_ns INTEGER NOT NULL,
+		CHECK (
+			(kind = 'attribute' AND action = '' AND config_path = '' AND config_attribute != '' AND administrator = '') OR
+			(kind = 'operation' AND action != '' AND config_path != '' AND config_attribute = '' AND administrator = '') OR
+			(kind = 'administrator' AND action = '' AND config_path = '' AND config_attribute = '' AND administrator != '')
+		),
+		UNIQUE(kind, action, config_path, config_attribute, administrator)
+	)`
+	ignoredEventsTableSchema = `CREATE TABLE IF NOT EXISTS ignored_events (
+		semantic_hash TEXT PRIMARY KEY,
+		graylog_id TEXT NOT NULL DEFAULT '',
+		rule_id INTEGER REFERENCES global_ignore_rules(id) ON DELETE SET NULL,
+		event_at_ns INTEGER NOT NULL,
+		ignored_at_ns INTEGER NOT NULL
+	)`
 	outboxTableSchema = `CREATE TABLE IF NOT EXISTS outbox (
 		chain_id TEXT PRIMARY KEY REFERENCES chains(id) ON DELETE CASCADE,
 		payload_json BLOB NOT NULL,
@@ -213,30 +237,10 @@ var conftailSchema = []string{
 	END`,
 	outboxTableSchema,
 	outboxDueIndexSchema,
-	`CREATE TABLE IF NOT EXISTS global_ignore_rules (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		kind TEXT NOT NULL CHECK (kind IN ('attribute','operation')),
-		action TEXT NOT NULL DEFAULT '',
-		config_path TEXT NOT NULL DEFAULT '',
-		config_attribute TEXT NOT NULL DEFAULT '',
-		enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-		created_by TEXT NOT NULL,
-		created_at_ns INTEGER NOT NULL,
-		CHECK (
-			(kind = 'attribute' AND action = '' AND config_path = '' AND config_attribute != '') OR
-			(kind = 'operation' AND action != '' AND config_path != '' AND config_attribute = '')
-		),
-		UNIQUE(kind, action, config_path, config_attribute)
-	)`,
+	globalIgnoreTableSchema,
 	`CREATE INDEX IF NOT EXISTS global_ignore_rules_enabled
 		ON global_ignore_rules(enabled, kind)`,
-	`CREATE TABLE IF NOT EXISTS ignored_events (
-		semantic_hash TEXT PRIMARY KEY,
-		graylog_id TEXT NOT NULL DEFAULT '',
-		rule_id INTEGER REFERENCES global_ignore_rules(id) ON DELETE SET NULL,
-		event_at_ns INTEGER NOT NULL,
-		ignored_at_ns INTEGER NOT NULL
-	)`,
+	ignoredEventsTableSchema,
 	`CREATE UNIQUE INDEX IF NOT EXISTS ignored_events_graylog_identity
 		ON ignored_events(graylog_id) WHERE graylog_id != ''`,
 	`CREATE TABLE IF NOT EXISTS poll_state (
@@ -375,6 +379,13 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta WHERE id = 1`).Scan(&version); err != nil {
 		return fmt.Errorf("read conftail schema version: %w", err)
 	}
+	// Older history migrations use the current ignore matcher, so upgrade its
+	// tables first while retaining their IDs and tombstone foreign keys.
+	if version >= 1 && version <= 6 {
+		if err := migrateAdministratorIgnores(ctx, tx); err != nil {
+			return err
+		}
+	}
 	if version == 1 {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO event_search(event_search) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild conftail event search index: %w", err)
@@ -409,8 +420,14 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		version = 5
 	}
 	if version == 5 {
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 6 WHERE id = 1`); err != nil {
 			return fmt.Errorf("upgrade conftail company routing: %w", err)
+		}
+		version = 6
+	}
+	if version == 6 {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail administrator ignores: %w", err)
 		}
 		version = conftailSchemaVersion
 	}
@@ -426,6 +443,29 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit conftail schema: %w", err)
+	}
+	return nil
+}
+
+func migrateAdministratorIgnores(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE ignored_events RENAME TO ignored_events_v6`,
+		`ALTER TABLE global_ignore_rules RENAME TO global_ignore_rules_v6`,
+		globalIgnoreTableSchema,
+		ignoredEventsTableSchema,
+		`INSERT INTO global_ignore_rules(id, kind, action, config_path, config_attribute, enabled, created_by, created_at_ns)
+			SELECT id, kind, action, config_path, config_attribute, enabled, created_by, created_at_ns FROM global_ignore_rules_v6`,
+		`UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'global_ignore_rules_v6'), 0))
+			WHERE name = 'global_ignore_rules'`,
+		`INSERT INTO ignored_events SELECT * FROM ignored_events_v6`,
+		`DROP TABLE ignored_events_v6`,
+		`DROP TABLE global_ignore_rules_v6`,
+		`CREATE INDEX global_ignore_rules_enabled ON global_ignore_rules(enabled, kind)`,
+		`CREATE UNIQUE INDEX ignored_events_graylog_identity ON ignored_events(graylog_id) WHERE graylog_id != ''`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate conftail administrator ignores: %w", err)
+		}
 	}
 	return nil
 }
@@ -593,6 +633,7 @@ func (s *store) applyPoll(
 			ctx,
 			tx,
 			events[i],
+			ignoreRules,
 			batch.EndedAt.UTC(),
 			idle,
 			maxDescriptionBytes,
@@ -785,6 +826,7 @@ func reconcileActiveEventAttribution(
 	ctx context.Context,
 	tx *sql.Tx,
 	event Event,
+	ignoreRules []globalIgnoreRule,
 	sealedAt time.Time,
 	idle time.Duration,
 	maxDescriptionBytes int,
@@ -870,6 +912,12 @@ func reconcileActiveEventAttribution(
 		return false, 0, err
 	}
 	if exists {
+		return true, splitSealed, nil
+	}
+	if rule, ignored := matchingGlobalIgnoreRule(ignoreRules, event); ignored {
+		if _, err := recordIgnoredEvent(ctx, tx, rule.ID, event, sealedAt); err != nil {
+			return false, 0, err
+		}
 		return true, splitSealed, nil
 	}
 	sealed, err := placeEvent(ctx, tx, event, sealedAt, idle, maxDescriptionBytes)

@@ -3,10 +3,12 @@ package fgtconftail
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +18,144 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
+
+func TestAdministratorIgnorePurgesAcrossFirewallsAndMatchesExactly(t *testing.T) {
+	base := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	ctx := t.Context()
+	ignored := testEvent(1, "fw-a", "HA_service", "admin-a", base.Add(time.Minute))
+	otherFirewall := testEvent(2, "fw-b", "HA_service", "admin-b", base.Add(time.Minute))
+	otherCase := testEvent(1, "fw-a", "ha_service", "admin-case", base.Add(time.Minute))
+	prefix := testEvent(1, "fw-a", "HA_service_extra", "admin-prefix", base.Add(time.Minute))
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(time.Hour), Events: []Event{ignored, otherFirewall, otherCase, prefix}}, time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	rule, created, err := s.createGlobalIgnoreRule(ctx, storedEventID(t, s, ignored.GraylogID), ignoreRuleKindAdministrator, "operator", base.Add(time.Hour))
+	if err != nil || !created || rule.DisplayValue() != "HA_service" || rule.SourceChainID != "" {
+		t.Fatalf("administrator rule = %+v created=%t err=%v", rule, created, err)
+	}
+	if countRows(t, s, "events") != 2 || countRows(t, s, "outbox") != 2 || countRows(t, s, "ignored_events") != 2 {
+		t.Fatal("administrator purge overmatched or left ignored sessions/deliveries")
+	}
+	future := testEvent(3, "fw-c", "HA_service", "admin-future", base.Add(2*time.Hour))
+	result, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(3 * time.Hour), Events: []Event{future}}, time.Minute, maxTicketDescriptionBytes)
+	if err != nil || result.Ignored != 1 || result.Inserted != 0 {
+		t.Fatalf("future administrator ignore = %+v err=%v", result, err)
+	}
+	if err := s.setGlobalIgnoreRuleEnabled(ctx, rule.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	future = testEvent(3, "fw-c", "HA_service", "admin-disabled", base.Add(4*time.Hour))
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: base.Add(5 * time.Hour), Events: []Event{future}}, time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, s, "events") != 3 {
+		t.Fatal("disabled rule suppressed new event")
+	}
+	if err := s.setGlobalIgnoreRuleEnabled(ctx, rule.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, s, "events") != 2 {
+		t.Fatal("reenabling administrator rule did not purge history")
+	}
+	if err := s.deleteGlobalIgnoreRule(ctx, rule.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err = s.applyPoll(ctx, pollBatch{EndedAt: base.Add(6 * time.Hour), Events: []Event{ignored, future}}, time.Minute, maxTicketDescriptionBytes)
+	if err != nil || result.Duplicates != 2 || result.Inserted != 0 {
+		t.Fatalf("deleted rule resurrected ignored events: %+v err=%v", result, err)
+	}
+}
+
+func TestAdministratorIgnoreAppliesAfterAttributionRecovery(t *testing.T) {
+	base := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	seed := testEvent(1, "fw-a", "HA_service", "seed", base.Add(time.Minute))
+	missing := testEvent(2, "fw-b", unattributedUser, "recover", base.Add(time.Minute))
+	missing.UserAttribution = attributionUnattributed
+	missing.UserWasMissing = true
+	missing.SemanticHash = semanticHash(missing)
+	if _, err := s.applyPoll(t.Context(), pollBatch{EndedAt: base.Add(2 * time.Minute), Events: []Event{seed, missing}}, time.Hour, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.createGlobalIgnoreRule(t.Context(), storedEventID(t, s, missing.GraylogID), ignoreRuleKindAdministrator, "operator", base.Add(2*time.Minute)); err == nil {
+		t.Fatal("unknown administrator accepted as ignore candidate")
+	}
+	if _, _, err := s.createGlobalIgnoreRule(t.Context(), storedEventID(t, s, seed.GraylogID), ignoreRuleKindAdministrator, "operator", base.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	missing.User, missing.UserAttribution = "HA_service", attributionRecovered
+	missing.SemanticHash = semanticHash(missing)
+	if _, err := s.applyPoll(t.Context(), pollBatch{EndedAt: base.Add(3 * time.Minute), Events: []Event{missing}}, time.Hour, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if countRows(t, s, "events") != 0 || countRows(t, s, "chains") != 0 || countRows(t, s, "ignored_events") != 2 {
+		t.Fatal("recovered administrator bypassed ignore rule")
+	}
+}
+
+func TestAdministratorIgnoreMigrationPreservesRulesAndTombstones(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(strconv.FormatBool(empty), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "legacy.db")
+			dsn, err := conftailSQLiteDSN(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			for _, statement := range []string{
+				`CREATE TABLE schema_meta(id INTEGER PRIMARY KEY, version INTEGER); INSERT INTO schema_meta VALUES(1,6)`,
+				`CREATE TABLE global_ignore_rules(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('attribute','operation')), action TEXT NOT NULL DEFAULT '', config_path TEXT NOT NULL DEFAULT '', config_attribute TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, created_by TEXT NOT NULL, created_at_ns INTEGER NOT NULL)`,
+				ignoredEventsTableSchema,
+				`INSERT INTO global_ignore_rules VALUES(1,'attribute','','','test',1,'operator',1),(2,'operation','Edit','system.dns','',0,'operator',2),(99,'attribute','','','removed',1,'operator',3)`,
+				`INSERT INTO ignored_events VALUES('hash-a','id-a',1,1,2),('hash-b','id-b',99,1,2)`,
+				`DELETE FROM global_ignore_rules WHERE id = 99`,
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if empty {
+				if _, err := db.Exec(`DELETE FROM global_ignore_rules`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err := openStore(t.Context(), path, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.close()
+			var seq, links int
+			if err := s.db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name='global_ignore_rules'`).Scan(&seq); err != nil || seq != 99 {
+				t.Fatalf("sequence=%d err=%v", seq, err)
+			}
+			if countRows(t, s, "ignored_events") != 2 {
+				t.Fatal("tombstones lost")
+			}
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM ignored_events WHERE rule_id = 1`).Scan(&links); err != nil || (!empty && links != 1) || (empty && links != 0) {
+				t.Fatalf("rule links=%d err=%v", links, err)
+			}
+			rows, err := s.db.Query(`PRAGMA foreign_key_check`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			if rows.Next() {
+				t.Fatal("foreign key violation after migration")
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestGlobalAttributeIgnorePermanentlyDeletesHistoryAndSuppressesFutureMatches(t *testing.T) {
 	t.Parallel()

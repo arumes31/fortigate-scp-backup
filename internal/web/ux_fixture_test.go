@@ -772,7 +772,7 @@ func uxConfTailChainFixture(scenario uxScenario, view string, page int) any {
 	firstPage := []any{
 		map[string]any{
 			"ID": 41, "Sequence": 1, "EventAt": uxFixtureNow.Add(-4 * time.Minute), "Source": "FGT-SITE-A", "VDOM": "root",
-			"UserAttribution": "exact", "Action": "Edit", "TransactionID": "82378752",
+			"UserAttribution": "exact", "Administrator": "HA_service", "Action": "Edit", "TransactionID": "82378752",
 			"Path": "system.central-management", "Object": "-",
 			"ConfigAttribute": `type[fortimanager->fortimanager]fmg["manager.example.test"->"manager.example.test"]serial-number["FMGVMTEST00000001"->"FMGVMTEST00000001"]`,
 			"LogID":           "0100044546", "LogDescription": "Attribute configured",
