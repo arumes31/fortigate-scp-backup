@@ -36,11 +36,13 @@ func New(cfg *config.Config, logger *slog.Logger) *Authenticator {
 	return &Authenticator{cfg: cfg, logger: logger}
 }
 
-// VerifyRadius returns true when the RADIUS server accepts the credentials.
-// When RADIUS is disabled it always returns false (matching the Python guard).
-func (a *Authenticator) VerifyRadius(username, password string) bool {
+// VerifyRadius reports whether the RADIUS server accepts the credentials and
+// returns the group values (Filter-Id and Class attributes) carried by the
+// Access-Accept, which the caller maps to an application role. When RADIUS is
+// disabled it always returns false (matching the Python guard).
+func (a *Authenticator) VerifyRadius(username, password string) ([]string, bool) {
 	if !a.cfg.RadiusEnabled {
-		return false
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), radiusTimeout)
 	defer cancel()
@@ -48,24 +50,38 @@ func (a *Authenticator) VerifyRadius(username, password string) bool {
 	packet := radius.New(radius.CodeAccessRequest, []byte(a.cfg.RadiusSecret))
 	if err := rfc2865.UserName_SetString(packet, username); err != nil {
 		a.logger.Error("radius: set username", "err", err)
-		return false
+		return nil, false
 	}
 	if err := rfc2865.UserPassword_SetString(packet, password); err != nil {
 		a.logger.Error("radius: set password", "err", err)
-		return false
+		return nil, false
 	}
 
 	addr := net.JoinHostPort(a.cfg.RadiusServer, strconv.Itoa(a.cfg.RadiusPort))
 	response, err := radius.Exchange(ctx, packet, addr)
 	if err != nil {
 		a.logger.Error("radius: exchange failed", "user", username, "server", addr, "err", err)
-		return false
+		return nil, false
 	}
 	if response.Code == radius.CodeAccessAccept {
-		return true
+		return radiusGroups(response), true
 	}
 	a.logger.Debug("radius: rejected", "user", username, "code", response.Code)
-	return false
+	return nil, false
+}
+
+// radiusGroups collects the Filter-Id and Class values of an Access-Accept.
+// NPS commonly returns Class as "<group>" or with a vendor prefix, so values
+// are kept verbatim and matched exactly by the caller.
+func radiusGroups(p *radius.Packet) []string {
+	var groups []string
+	if values, err := rfc2865.FilterID_GetStrings(p); err == nil {
+		groups = append(groups, values...)
+	}
+	if values, err := rfc2865.Class_GetStrings(p); err == nil {
+		groups = append(groups, values...)
+	}
+	return groups
 }
 
 const totpPeriod = 30

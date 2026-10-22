@@ -43,6 +43,7 @@ type fakeStore struct {
 	loginUser   *models.User
 	loginPass   string
 	consumeTOTP func(context.Context, int, int64) (bool, error)
+	epochs      map[string]int64
 }
 
 func (fakeStore) Ping(context.Context) error { return nil }
@@ -64,6 +65,19 @@ func (s fakeStore) GetUserForLogin(_ context.Context, u string) (*models.User, e
 	return nil, nil
 }
 func (fakeStore) UpsertRadiusUser(context.Context, string) error { return nil }
+
+// SessionEpoch returns the configured session generation (0 by default).
+func (s fakeStore) SessionEpoch(_ context.Context, username string) (int64, error) {
+	return s.epochs[username], nil
+}
+
+// RevokeSessions bumps the session generation when the test supplied a map.
+func (s fakeStore) RevokeSessions(_ context.Context, username string) error {
+	if s.epochs != nil {
+		s.epochs[username]++
+	}
+	return nil
+}
 
 // ConsumeTOTP delegates to a test hook or accepts the step by default.
 func (s fakeStore) ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error) {
@@ -132,17 +146,18 @@ func (fakeStore) SaveAuditFindings(context.Context, int, []models.AuditFinding) 
 type fakeAuth struct {
 	totp        bool
 	radius      bool
+	groups      []string
 	totpCalls   *int
 	radiusCalls *int
 }
 
 // VerifyRadius returns the configured RADIUS result and records verifier calls
 // when a test supplies a counter.
-func (a fakeAuth) VerifyRadius(string, string) bool {
+func (a fakeAuth) VerifyRadius(string, string) ([]string, bool) {
 	if a.radiusCalls != nil {
 		*a.radiusCalls++
 	}
-	return a.radius
+	return a.groups, a.radius
 }
 
 // VerifyTOTP returns the configured TOTP result and records verifier calls when

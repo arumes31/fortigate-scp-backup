@@ -24,6 +24,10 @@ type configFile struct {
 // Only the randomly generated PSK/RADIUS secrets differ per run; all fixed text,
 // blank lines, umlauts and COPYBREAK separators are identical.
 func (e *Extension) buildConfigZip(c *VpnConfig) (*bytes.Buffer, error) {
+	// Refuse to render legacy rows whose values could inject CLI commands.
+	if err := validateVpnConfigFields(c); err != nil {
+		return nil, err
+	}
 	// Passwords are generated in the same order as the Python code.
 	pskRo := c.IpsecPskRo
 	pskHci := c.IpsecPskHci
