@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
@@ -32,6 +33,7 @@ type Extension struct {
 	logger *slog.Logger
 
 	db           *sql.DB
+	cipher       *crypto.Cipher
 	page         *webui.Renderer
 	editTemplate *template.Template
 	tz           *time.Location
@@ -74,6 +76,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	e.logActivity = d.LogActivity
 	e.currentUser = d.CurrentUser
 	e.pageBase = d.PageBase
+	e.cipher = d.Cipher
 	e.tz = d.TZ
 	if e.tz == nil {
 		e.tz = time.UTC
@@ -93,6 +96,9 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		return err
 	}
 	if err := e.ensureMigrations(); err != nil {
+		return err
+	}
+	if err := e.encryptLegacySecrets(); err != nil {
 		return err
 	}
 	if err := e.parseTemplates(); err != nil {
