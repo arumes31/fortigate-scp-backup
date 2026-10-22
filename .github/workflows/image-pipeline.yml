@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload synthetic staging evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: synthetic-staging-smoke-${{ github.sha }}-${{ github.run_attempt }}
           path: |
@@ -264,7 +264,7 @@ jobs:
       # Upload before mutating aliases so an artifact-service failure cannot
       # turn a completed latest update into an otherwise failed workflow run.
       - name: Upload immutable publication record
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-digest-${{ github.sha }}-${{ github.run_attempt }}
           path: image-metadata.json
