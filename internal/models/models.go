@@ -9,6 +9,9 @@ const (
 	RoleAdmin = "admin"
 	// RoleOperator identifies an authenticated operational account.
 	RoleOperator = "operator"
+	// RoleViewer is a session-only, read-only role assigned to RADIUS users
+	// outside RADIUS_OPERATOR_GROUP when that mapping is configured.
+	RoleViewer = "viewer"
 )
 
 // Firewall mirrors a row of the `firewalls` table.
