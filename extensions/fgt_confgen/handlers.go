@@ -2,13 +2,14 @@ package fgt_confgen
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -833,7 +834,7 @@ func (e *Extension) shortenURL(w http.ResponseWriter, r *http.Request) {
 	if err == sql.ErrNoRows {
 		inserted := false
 		for attempts := 0; attempts < 5; attempts++ {
-			shortCode = randHex(6)
+			shortCode = randHex(shortCodeLength)
 			insErr := e.shortenURLInDB(body.URL, owner, shortCode)
 			if insErr == nil {
 				inserted = true
@@ -1097,11 +1098,15 @@ func (e *Extension) generatePolicy(w http.ResponseWriter, r *http.Request) {
 	writeConfGenJSON(w, http.StatusOK, generateResponse{Outputs: outputs, Validation: validation})
 }
 
+// shortCodeLength is the number of hex characters in a new short code
+// (64 bits from crypto/rand), so codes cannot be enumerated.
+const shortCodeLength = 16
+
+// randHex returns n random lowercase hex characters from crypto/rand.
 func randHex(n int) string {
-	const hexChars = "0123456789abcdef"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = hexChars[rand.Intn(len(hexChars))]
+	b := make([]byte, (n+1)/2)
+	if _, err := cryptorand.Read(b); err != nil {
+		panic("fgt_confgen: crypto/rand unavailable: " + err.Error())
 	}
-	return string(b)
+	return hex.EncodeToString(b)[:n]
 }
