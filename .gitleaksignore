@@ -1,0 +1,10 @@
+
+
+# Reviewed historical test fixtures, public reference vectors and content hashes.
+# Exact commit/path/rule/line fingerprints only; new occurrences still fail.
+12906608a80da99bb917275a46cb56b44bd71d02:.github/workflows/image-pipeline.yml:generic-api-key:156
+b66e01b4a7cb9fb6323dfcba1b10e39f171e6f7f:extensions/fgt_adm_vpn_conf/fgt_adm_vpn_conf_test.go:generic-api-key:377
+b66e01b4a7cb9fb6323dfcba1b10e39f171e6f7f:extensions/fgt_adm_vpn_conf/fgt_adm_vpn_conf_test.go:generic-api-key:378
+b66e01b4a7cb9fb6323dfcba1b10e39f171e6f7f:extensions/fgt_adm_vpn_conf/fgt_adm_vpn_conf_test.go:generic-api-key:430
+b66e01b4a7cb9fb6323dfcba1b10e39f171e6f7f:extensions/fgt_adm_vpn_conf/fgt_adm_vpn_conf_test.go:generic-api-key:431
+11cdbd53bc790988b02ba23c5824cf48a797cbd1:ui-tests/tests/topology.spec.ts:generic-api-key:18

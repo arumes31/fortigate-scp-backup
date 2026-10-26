@@ -384,10 +384,27 @@ func (s *Store) ChangePassword(ctx context.Context, username, oldPassword, newPa
 		return false, err
 	}
 	if _, err := s.pool.Exec(ctx,
-		`UPDATE users SET password = $1, first_login = 0 WHERE username = $2`, hash, username); err != nil {
+		`UPDATE users SET password = $1, first_login = 0, session_epoch = session_epoch + 1 WHERE username = $2`, hash, username); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// SessionEpoch returns the user's current session generation. Session cookies
+// issued under an older generation are rejected, so bumping it revokes them.
+func (s *Store) SessionEpoch(ctx context.Context, username string) (int64, error) {
+	var epoch int64
+	err := s.pool.QueryRow(ctx, `SELECT session_epoch FROM users WHERE username = $1`, username).Scan(&epoch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return epoch, err
+}
+
+// RevokeSessions invalidates every outstanding session of a user.
+func (s *Store) RevokeSessions(ctx context.Context, username string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET session_epoch = session_epoch + 1 WHERE username = $1`, username)
+	return err
 }
 
 // AuthenticateLocal verifies local credentials. On success it returns the user

@@ -103,10 +103,11 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		pr.Get("/export_template/{templateName}", e.exportTemplate)
 		pr.Post("/shorten_url", e.shortenURL)
 		pr.Post("/log", e.logFrontend)
+		// Short URL redirect. It only resolves to the (login-protected) editor,
+		// so it sits behind authentication to keep template names from being
+		// enumerated by unauthenticated clients.
+		pr.Get("/s/{shortCode}", e.redirectShortURL)
 	})
-
-	// Public short URL redirect
-	r.Get("/s/{shortCode}", e.redirectShortURL)
 
 	// Serve static files
 	staticSub, err := fs.Sub(extensionFS, "static")

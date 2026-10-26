@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
+	"github.com/arumes31/fortigate-scp-backup/internal/session"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
@@ -193,7 +195,7 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 			s.render(w, "login.html", s.totpLoginView(r, username, ""))
 			return
 		}
-		s.completeLogin(w, r, username, false, user, rlKey, ipKey)
+		s.completeLogin(w, r, username, false, localRole(user), user, rlKey)
 		return
 	}
 	// A local username must not be shadowed by an identically named RADIUS
@@ -204,14 +206,20 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.auth.VerifyRadius(username, password) {
+	if groups, ok := s.auth.VerifyRadius(username, password); ok {
+		role, allowed := s.radiusRole(groups)
+		if !allowed {
+			s.recordLoginFailure(username, rlKey, ipKey, "RADIUS Access-Accept lacks the required group")
+			s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+			return
+		}
 		if err := s.store.UpsertRadiusUser(ctx, username); err != nil {
 			s.logger.Error("failed to upsert radius user", "user", username, "err", err)
 		}
 		if u, uerr := s.store.GetUserForLogin(ctx, username); uerr == nil {
 			user = u
 		}
-		s.completeLogin(w, r, username, true, user, rlKey, ipKey)
+		s.completeLogin(w, r, username, true, role, user, rlKey)
 		return
 	}
 
@@ -263,7 +271,30 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
 		return
 	}
-	s.completeLogin(w, r, username, false, user, rlKey, ipKey)
+	s.completeLogin(w, r, username, false, localRole(user), user, rlKey)
+}
+
+// localRole returns the stored role of a verified local account.
+func localRole(user *models.User) string {
+	if user == nil || user.Role == "" {
+		return models.RoleOperator
+	}
+	return user.Role
+}
+
+// radiusRole maps the group values of a RADIUS Access-Accept (Filter-Id and
+// Class) to an application role. With RADIUS_REQUIRED_GROUP set, an accept
+// without that group is refused. With RADIUS_OPERATOR_GROUP set, only members
+// of that group become operators and everyone else is a read-only viewer;
+// without it every accepted RADIUS user keeps the legacy operator role.
+func (s *Server) radiusRole(groups []string) (string, bool) {
+	if s.cfg.RadiusRequiredGroup != "" && !slices.Contains(groups, s.cfg.RadiusRequiredGroup) {
+		return "", false
+	}
+	if s.cfg.RadiusOperatorGroup == "" || slices.Contains(groups, s.cfg.RadiusOperatorGroup) {
+		return models.RoleOperator, true
+	}
+	return models.RoleViewer, true
 }
 
 // validTOTPCode reports whether code has the six ASCII digits expected by the
@@ -288,16 +319,19 @@ func (s *Server) recordLoginFailure(username, rlKey, ipKey, details string) {
 	s.store.LogActivity(username, "Login Failed", details)
 }
 
-// completeLogin resets failure counters, persists the authenticated session,
-// and redirects first-time local users to change their password.
-func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, user *models.User, rlKey, ipKey string) {
+// completeLogin resets the per-account failure counter, persists the
+// authenticated session, and confines first-time local users to the
+// password-change page. The per-IP aggregate bucket is deliberately not reset,
+// so one valid login cannot be used to keep spraying other accounts; it decays
+// on its own once the lockout window passes without failures.
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string, user *models.User, rlKey string) {
 	s.limiter.reset(rlKey)
-	s.ipLimiter.reset(ipKey)
-	role := models.RoleOperator
-	if user != nil {
-		role = user.Role
+	mustChange := user != nil && user.FirstLogin == 1 && !isRadius
+	var opts []session.LoginOption
+	if mustChange {
+		opts = append(opts, session.RequirePasswordChange())
 	}
-	if err := s.sess.Login(w, r, username, isRadius, role); err != nil {
+	if err := s.sess.Login(w, r, username, isRadius, role, opts...); err != nil {
 		// The session was not established, so do not report/redirect as success.
 		s.logger.Error("failed to establish session", "user", username, "err", err)
 		s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))
@@ -305,18 +339,21 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username 
 	}
 	s.store.LogActivity(username, "Login Success", "User logged in")
 
-	if user != nil && user.FirstLogin == 1 && !isRadius {
+	if mustChange {
 		http.Redirect(w, r, "/change_password", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
-// handleLogout clears the session and returns to the login screen.
+// handleLogout revokes the user's sessions server-side, clears the cookie and
+// returns to the login screen.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	username := s.sess.User(r).Username
 	if username == "" {
 		username = "unknown"
+	} else if err := s.store.RevokeSessions(r.Context(), username); err != nil {
+		s.logger.Error("failed to revoke sessions", "user", username, "err", err)
 	}
 	if err := s.sess.Logout(w, r); err != nil {
 		s.logger.Error("failed to clear session", "err", err)
@@ -728,6 +765,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok {
 		s.store.LogActivity(d.Username, "Change Password", "Password changed successfully")
+		// The store revoked every session of this user; keep only this one.
+		if err := s.sess.PasswordChanged(w, r); err != nil {
+			s.logger.Error("failed to refresh session after password change", "user", d.Username, "err", err)
+		}
 		http.Redirect(w, r, "/change_password?updated=1", http.StatusSeeOther)
 		return
 	}

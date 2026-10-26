@@ -2,6 +2,21 @@ import { expect, test } from './quality-fixture';
 
 const attributeMatch = 'type[fortimanager->fortimanager]fmg["manager.example.test"->"manager.example.test"]serial-number["FMGVMTEST00000001"->"FMGVMTEST00000001"]';
 
+test('ConfTail offers exact administrator ignore using the stored event identity', async ({ page }) => {
+  await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
+  await page.locator('#ct-event-41').getByRole('button', { name: 'Ignore globally…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm global ignore' });
+  await expect(dialog.getByText('HA_service', { exact: true })).toBeVisible();
+  await dialog.getByRole('radio', { name: /Exact administrator/ }).check();
+  const submission = page.waitForRequest(request => request.url().endsWith('/fgt-conftail/ignore-rules') && request.method() === 'POST');
+  await dialog.getByRole('button', { name: 'Confirm global ignore' }).click();
+  const body = new URLSearchParams((await submission).postData() || '');
+  expect(body.get('kind')).toBe('administrator');
+  expect(body.get('event_id')).toBe('41');
+  expect(body.has('administrator')).toBe(false);
+  await expect(page).toHaveURL(/ignore=created/);
+});
+
 test('ConfTail creates and manages an exact global ignore rule', async ({ page }) => {
   await page.goto('/fgt-conftail/chain/fixture-chain', { waitUntil: 'networkidle' });
 

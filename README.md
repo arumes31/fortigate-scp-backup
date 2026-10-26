@@ -288,10 +288,31 @@ You are required to change the password on first login. Enable `TOTP_ENABLED` an
 The built-in local account has the `admin` role, while RADIUS accounts are
 assigned the `operator` role. Both roles have the same authenticated application
 permissions: operators can add and delete firewall connection definitions and
-accept replacement SSH host keys. The role remains available for identity and
-auditing, but it is not an authorization boundary. TOTP time steps are consumed
-atomically in PostgreSQL, so a code cannot be replayed after an application
-restart or against another replica sharing the database.
+accept replacement SSH host keys. TOTP time steps are consumed atomically in
+PostgreSQL, so a code cannot be replayed after an application restart or against
+another replica sharing the database.
+
+RADIUS logins can be restricted by the group values the RADIUS server returns
+in the Access-Accept (`Filter-Id` or `Class` attribute, matched exactly):
+
+* `RADIUS_REQUIRED_GROUP` rejects every Access-Accept that does not carry the
+  group, so a broad NPS policy (for example "all domain users") no longer grants
+  access by itself.
+* `RADIUS_OPERATOR_GROUP` grants the full `operator` role only to members of the
+  group. Every other accepted RADIUS user signs in as a read-only `viewer`, who
+  can browse dashboards and reports but cannot change data, approve SSH host
+  keys, create share links, or download configuration backups, diffs, VPN
+  exports and generated bundles (HTTP 403).
+
+Without either variable, every identity the RADIUS server accepts keeps the
+previous behaviour (full `operator` rights) and a startup warning is logged.
+RADIUS users do not get the local TOTP step; enforce MFA on the RADIUS side.
+
+Sessions are bound to a per-user generation stored in PostgreSQL. Signing out
+or changing the password revokes every outstanding session of that user, so a
+copied session cookie stops working immediately. A freshly bootstrapped
+`admin` can only reach the password-change page until the bootstrap password
+has been replaced.
 
 ---
 
@@ -340,6 +361,9 @@ Startup checks backup encryption with four bounded workers. Already-encrypted fi
 | `COOKIE_SECURE` | `true` | Set the `Secure` flag on session cookies. Keep this enabled behind HTTPS termination; set `false` only for explicit plaintext local development. |
 | `ENABLE_HSTS` | `false` | Emit `Strict-Transport-Security` headers (requires HTTPS). |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP. The bundled loopback-only Compose deployments set this to `true` and require a trusted proxy that overwrites forwarded headers. |
+| `TRUSTED_PROXIES` | loopback + RFC 1918 + `fc00::/7` | Comma-separated CIDRs/IPs of the reverse proxies whose `X-Forwarded-For` is honoured when `TRUST_PROXY_HEADERS=true`. Requests from any other peer use the connection address. Narrow this to your proxy's address (for example the Docker bridge gateway) when other hosts on a private network can reach the app port. |
+| `RADIUS_REQUIRED_GROUP` | *(Unset)* | Reject RADIUS Access-Accepts that do not carry this `Filter-Id`/`Class` value. |
+| `RADIUS_OPERATOR_GROUP` | *(Unset)* | Only RADIUS users carrying this `Filter-Id`/`Class` value get the `operator` role; all others become read-only `viewer`s. Unset keeps every RADIUS user an operator. |
 
 ### Backup Engine & SCP Defaults
 | Variable | Default Value | Description |
@@ -374,8 +398,13 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
 | `HOOKWISE_TOKEN` | *(Unset)* | Bearer authentication token for HookWise webhook. |
+| `ADM_VPN_DSV_TOKEN` / `ADM_VPN_DSV_TOKEN_FILE` | *(Unset)* | When set, `/fgt-adm-vpn-conf/graylog_dsv` requires this token as `Authorization: Bearer <token>` or `?token=<token>`. |
+| `ADM_VPN_DSV_ALLOWED_CIDRS` | *(Unset)* | Comma-separated CIDRs/IPs allowed to read the DSV feed (client IP resolved like the login limiter). |
+| `ALLOW_INSECURE_HTTP_INTEGRATIONS` | `false` | `GRAYLOG_URL`, `HOOKWISE_URL` and `FGT_CONFTAIL_HOOKWISE_URL` must use `https://`; set `true` to permit plain `http://` (API tokens are then sent in cleartext). |
 
 ### Extension: FortiGate Configuration Change Tail (ConfTail)
+
+To ignore an administrator globally, open a complete session timeline, choose **Ignore globally…** on one of that administrator's events, select **Exact administrator (case-sensitive)**, and confirm. The stored administrator name is matched exactly across all firewalls, including future events whose administrator is recovered later. Unattributed events cannot create an administrator rule. Like other global ignores, this permanently removes matching local history and suppresses future matches; deleting or disabling the rule does not restore removed messages. Existing external tickets are unchanged.
 
 When `EXT_FGT_CONFTAIL=true`, FortiSafe polls the existing Graylog connection for FortiGate configuration-change events from registered firewalls and normalizes configured HA node aliases to their logical firewall. Sessions are independent for each exact administrator and firewall. An event without a user is correlated to an unambiguous event from the same firewall and transaction within five minutes; otherwise it is retained in a separate `[unattributed]` session rather than discarded.
 
@@ -473,7 +502,9 @@ An optional module (`EXT_ADM_VPN_CONF=true`) for managing customer-specific VPN 
 * **Independent storage** — keeps entries in its own SQLite database (`fgt-adm-vpn-conf-db.db`) under the data directory, without bloating PostgreSQL.
 * **Config generation** — produces ready-to-apply FortiGate configuration bundles (ZIP) per customer/site, including IPsec phase1/phase2, loopback interface, firewall services/policies, static routes, RADIUS users/groups, and admin profiles.
 * **Guided teardown** — deleting an entry opens a modal listing the exact FortiGate CLI needed to remove everything that entry created, gated behind a confirmation checkbox so the device is cleaned up before the entry is deleted.
-* **Public status DSV endpoint** — `/fgt-adm-vpn-conf/graylog_dsv` serves raw, unauthenticated status data (`Firewallname;Remote_IP;Status`) for external metrics collectors.
+* **Status DSV endpoint** — `/fgt-adm-vpn-conf/graylog_dsv` serves raw status data (`Firewallname;Remote_IP;Status`) for external metrics collectors. It is unauthenticated unless `ADM_VPN_DSV_TOKEN` and/or `ADM_VPN_DSV_ALLOWED_CIDRS` are set (recommended; a startup warning is logged otherwise).
+* **Input validation** — customer, site, firewall, cluster-host and interface names are limited to letters, digits, `.`, `_` and `-`, and PSKs to printable ASCII without spaces, quotes or backslashes, so no field can inject extra FortiOS CLI commands into a generated bundle. Existing entries that violate these rules must be edited before their bundle or removal commands can be generated.
+* **Encrypted PSKs** — manually entered IPsec PSKs are encrypted with `ENCRYPTION_KEY` (AES-256-GCM) in the module's SQLite database; existing plaintext values are encrypted on startup. **Export All to CSV (Backup)** leaves PSKs blank (re-importing such a file keeps the stored PSKs); use **Export All incl. PSKs** for a full backup and protect that file. Exported cells beginning with `=`, `+`, `-` or `@` are prefixed with `'` to prevent spreadsheet formula execution and are restored on import.
 * **Graylog integration** — checks the Graylog API to assert status. A firewall is `online` when logs are found within `GRAYLOG_SEARCH_TIMEFRAME` (default 24 h).
 * **HookWise alerting** — sends HTTP webhooks on transition states (`online` ↔ `offline`).
 
@@ -498,7 +529,7 @@ An optional module (`EXT_FGT_CONF_GEN=true`) for managing templates and generati
 
 * **Database Configuration Integration** — allows selecting any firewall to load and parse its latest successful backup automatically (decrypting it on-the-fly).
 * **Multi-User Isolation** — saves templates per-user by default, with an optional checkbox to save/edit globally.
-* **Link Shortener** — generates unique shortened URLs (`/fgt-confgen/s/<shortCode>`) to share templates.
+* **Link Shortener** — generates unguessable shortened URLs (`/fgt-confgen/s/<shortCode>`, 64-bit random codes) to share templates with other signed-in users.
 
 ### FortiGate Policy Split Advisor (PolSplit)
 
