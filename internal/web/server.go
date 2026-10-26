@@ -48,7 +48,7 @@ func init() {
 
 // Authenticator is the subset of internal/auth used by the login handler.
 type Authenticator interface {
-	VerifyRadius(username, password string) bool
+	VerifyRadius(username, password string) ([]string, bool)
 	VerifyTOTP(secret, code string) (int64, bool)
 }
 
@@ -178,6 +178,7 @@ func New(cfg *config.Config, store Store, sched *scheduler.Scheduler,
 		cveCancel()
 		return nil, err
 	}
+	sess.SetEpochStore(store)
 	if cfg.CVEAutoUpdate {
 		interval := time.Duration(cfg.CVERefreshHours) * time.Hour
 		if interval <= 0 {
@@ -413,6 +414,8 @@ func (s *Server) Routes() chi.Router {
 	// retains the same headers and compression behavior as every other page.
 	r.Use(s.recoverer)
 	r.Use(s.sess.CSRFProtected)
+	// Role enforcement sits on the root router so it also covers extensions.
+	r.Use(s.enforceRoles)
 
 	r.NotFound(s.handleNotFound)
 	r.MethodNotAllowed(s.handleMethodNotAllowed)

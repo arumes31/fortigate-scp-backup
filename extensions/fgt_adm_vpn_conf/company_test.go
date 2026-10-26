@@ -120,7 +120,7 @@ func TestCompanyIdentifierCSVRequiresNewHeader(t *testing.T) {
 			if err := writeConfigsCSV(&exported, []*VpnConfig{{
 				Kundenname: "customer", Standort: "site", Firewallname: "edge.example.test",
 				RemoteipFull: "10.105.1.8", CompanyName: "Acme-Europe", GraylogEnabled: true,
-			}}); err != nil {
+			}}, true); err != nil {
 				t.Fatal(err)
 			}
 			records, err := csv.NewReader(&exported).ReadAll()

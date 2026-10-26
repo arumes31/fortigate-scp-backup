@@ -63,6 +63,11 @@ func (l *loginLimiter) fail(key string) {
 		a.count = 0
 		a.blocked = time.Time{}
 	}
+	// Failures older than the lockout window decay, so buckets that are never
+	// reset on success (the per-IP aggregate) do not accumulate forever.
+	if a.blocked.IsZero() && !a.lastSeen.IsZero() && time.Since(a.lastSeen) > l.lockout {
+		a.count = 0
+	}
 	a.count++
 	a.lastSeen = time.Now()
 	if a.count >= l.max {

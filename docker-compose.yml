@@ -39,6 +39,13 @@ services:
       - "COOKIE_SECURE=${COOKIE_SECURE:-true}"
       - "ENABLE_HSTS=${ENABLE_HSTS:-true}"
       - "TRUST_PROXY_HEADERS=true"
+      # X-Forwarded-For is honoured only from these peers (default: loopback and
+      # private ranges). Narrow it to the proxy/bridge gateway address if needed.
+      # - "TRUSTED_PROXIES=172.16.0.0/12"
+      # Restrict RADIUS logins by the Filter-Id/Class group in the Access-Accept;
+      # users outside RADIUS_OPERATOR_GROUP sign in read-only.
+      # - "RADIUS_REQUIRED_GROUP=fortisafe-users"
+      # - "RADIUS_OPERATOR_GROUP=fortisafe-operators"
 
       # --- Encryption at Rest ---
       - "ENCRYPTION_KEY_FILE=/run/secrets/encryption_key"

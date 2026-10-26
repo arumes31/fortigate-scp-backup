@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/netutil"
 )
 
 // Config holds every tunable value the application reads from the environment.
@@ -38,6 +41,13 @@ type Config struct {
 	RadiusServer  string
 	RadiusPort    int
 	RadiusSecret  string
+	// RadiusRequiredGroup, when set, must appear as a Filter-Id or Class value
+	// in the RADIUS Access-Accept; accepts without it are rejected.
+	RadiusRequiredGroup string
+	// RadiusOperatorGroup, when set, grants the full operator role only to
+	// RADIUS users whose Access-Accept carries it (Filter-Id or Class); every
+	// other accepted RADIUS user signs in with the read-only viewer role.
+	RadiusOperatorGroup string
 	// Brute-force protection.
 	LoginMaxAttempts       int
 	LoginLockoutMinutes    int
@@ -52,6 +62,9 @@ type Config struct {
 	// header; otherwise a direct client can spoof it (e.g. to defeat the login
 	// rate limiter).
 	TrustProxyHeaders bool
+	// TrustedProxies is the comma-separated CIDR allowlist of peers whose
+	// X-Forwarded-For header is honoured when TrustProxyHeaders is set.
+	TrustedProxies string
 
 	// Encryption at rest (firewall credentials + backup files).
 	EncryptionKey []byte
@@ -84,6 +97,13 @@ type Config struct {
 	GraylogSearchTimeframe string
 	HookwiseURL            string
 	HookwiseToken          string
+	// AdmVpnDSVToken, when set, is required (Bearer header or ?token=) to read
+	// the Graylog DSV feed. AdmVpnDSVAllowedCIDRs restricts it by peer address.
+	AdmVpnDSVToken        string
+	AdmVpnDSVAllowedCIDRs string
+	// AllowInsecureHTTPIntegrations permits plain http:// Graylog/HookWise URLs.
+	// Off by default so API tokens are never sent in cleartext.
+	AllowInsecureHTTPIntegrations bool
 
 	// Extension: fgt_conftail (Graylog configuration-change sessions to Hookwise)
 	ExtFgtConfTail            bool
@@ -185,6 +205,8 @@ func Load(logger *slog.Logger) *Config {
 		RadiusServer:           getenv("RADIUS_SERVER", "localhost"),
 		RadiusPort:             intenv("RADIUS_PORT", 1812),
 		RadiusSecret:           secretEnv("RADIUS_SECRET", logger),
+		RadiusRequiredGroup:    strings.TrimSpace(os.Getenv("RADIUS_REQUIRED_GROUP")),
+		RadiusOperatorGroup:    strings.TrimSpace(os.Getenv("RADIUS_OPERATOR_GROUP")),
 		LoginMaxAttempts:       intenv("LOGIN_MAX_ATTEMPTS", 5),
 		LoginLockoutMinutes:    intenv("LOGIN_LOCKOUT_MINUTES", 15),
 		BootstrapAdminPassword: secretEnv("BOOTSTRAP_ADMIN_PASSWORD", logger),
@@ -193,6 +215,7 @@ func Load(logger *slog.Logger) *Config {
 		CookieSecure:      boolenv("COOKIE_SECURE", true),
 		EnableHSTS:        boolenv("ENABLE_HSTS", false),
 		TrustProxyHeaders: boolenv("TRUST_PROXY_HEADERS", false),
+		TrustedProxies:    getenv("TRUSTED_PROXIES", netutil.DefaultTrustedProxies),
 
 		EncryptionKey:            decodeKey(secretEnv("ENCRYPTION_KEY", logger), logger),
 		SSHKnownHostsFile:        os.Getenv("SSH_KNOWN_HOSTS_FILE"),
@@ -218,6 +241,10 @@ func Load(logger *slog.Logger) *Config {
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),
 		HookwiseURL:            os.Getenv("HOOKWISE_URL"),
 		HookwiseToken:          secretEnv("HOOKWISE_TOKEN", logger),
+
+		AdmVpnDSVToken:                secretEnv("ADM_VPN_DSV_TOKEN", logger),
+		AdmVpnDSVAllowedCIDRs:         os.Getenv("ADM_VPN_DSV_ALLOWED_CIDRS"),
+		AllowInsecureHTTPIntegrations: boolenv("ALLOW_INSECURE_HTTP_INTEGRATIONS", false),
 
 		ExtFgtConfTail:            boolenv("EXT_FGT_CONFTAIL", false),
 		FgtConfTailHookwiseURL:    os.Getenv("FGT_CONFTAIL_HOOKWISE_URL"),
@@ -311,6 +338,21 @@ func (c *Config) ValidateRuntime() error {
 	}
 	if c.RadiusEnabled && len(c.RadiusSecret) < 16 {
 		errs = append(errs, errors.New("RADIUS_SECRET or RADIUS_SECRET_FILE must contain at least 16 bytes when RADIUS is enabled"))
+	}
+	if _, err := netutil.ParseCIDRList(c.TrustedProxies); err != nil {
+		errs = append(errs, fmt.Errorf("TRUSTED_PROXIES: %w", err))
+	}
+	if _, err := netutil.ParseCIDRList(c.AdmVpnDSVAllowedCIDRs); err != nil {
+		errs = append(errs, fmt.Errorf("ADM_VPN_DSV_ALLOWED_CIDRS: %w", err))
+	}
+	for _, integration := range []struct{ name, value string }{
+		{"GRAYLOG_URL", c.GraylogURL},
+		{"HOOKWISE_URL", c.HookwiseURL},
+		{"FGT_CONFTAIL_HOOKWISE_URL", c.FgtConfTailHookwiseURL},
+	} {
+		if integration.value != "" && !c.AllowInsecureHTTPIntegrations && !strings.HasPrefix(strings.ToLower(integration.value), "https://") {
+			errs = append(errs, fmt.Errorf("%s must use https:// (set ALLOW_INSECURE_HTTP_INTEGRATIONS=true to permit plain http)", integration.name))
+		}
 	}
 	if !validRemotePath(c.FortigateConfigPath) {
 		errs = append(errs, errors.New("FORTIGATE_CONFIG_PATH contains unsafe characters or a parent-directory segment"))

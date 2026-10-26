@@ -27,6 +27,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/extension"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	"github.com/arumes31/fortigate-scp-backup/internal/netutil"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
@@ -68,6 +69,17 @@ func main() {
 		"ssh_auto_accept_changed_keys", cfg.SSHAutoAcceptChangedKeys,
 		"port", cfg.Port,
 		"startup_progress_interval", startupHeartbeatInterval)
+	// ValidateRuntime already rejected a malformed list.
+	if proxies, err := netutil.ParseCIDRList(cfg.TrustedProxies); err == nil {
+		netutil.SetTrustedProxies(proxies)
+	}
+	if cfg.RadiusEnabled && cfg.RadiusRequiredGroup == "" && cfg.RadiusOperatorGroup == "" {
+		logger.Warn("RADIUS is enabled without RADIUS_REQUIRED_GROUP or RADIUS_OPERATOR_GROUP: " +
+			"every identity the RADIUS server accepts signs in with full operator rights")
+	}
+	if cfg.ExtAdmVpnConf && cfg.AdmVpnDSVToken == "" && cfg.AdmVpnDSVAllowedCIDRs == "" {
+		logger.Warn("the ADM VPN Graylog DSV feed is unauthenticated: set ADM_VPN_DSV_TOKEN and/or ADM_VPN_DSV_ALLOWED_CIDRS")
+	}
 
 	ctx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()

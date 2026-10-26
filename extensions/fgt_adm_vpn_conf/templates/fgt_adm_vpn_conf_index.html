@@ -171,6 +171,7 @@
                 <label>{{L .Base.Lang "CSV file"}} <input class="adm-import-file" type="file" name="file" accept=".csv"></label>
                 <button type="submit" class="btn">{{L .Base.Lang "Import"}}</button>
                 <a href="/fgt-adm-vpn-conf/export" class="btn">{{L .Base.Lang "Export All to CSV (Backup)"}}</a>
+                <a href="/fgt-adm-vpn-conf/export?include_secrets=1" class="btn">{{L .Base.Lang "Export All incl. PSKs"}}</a>
                 <a href="/fgt-adm-vpn-conf/export_bookmarks" class="btn">{{L .Base.Lang "Export to Browser Favorites"}}</a>
             </form>
         </div>
