@@ -37,6 +37,8 @@ const (
 	keyPendingTOTPUsername = "pending_totp_username"
 	keyPendingTOTPIssued   = "pending_totp_issued"
 	keyPendingTOTPIP       = "pending_totp_ip"
+	keyEpoch               = "session_epoch"
+	keyMustChangePassword  = "must_change_password"
 )
 
 type ctxKey struct{}
@@ -50,10 +52,31 @@ type Data struct {
 	CSRFToken    string
 }
 
+// EpochStore resolves a user's current session generation. Cookies carry the
+// generation they were issued under; bumping it server-side (logout, password
+// change) revokes every outstanding cookie for that user.
+type EpochStore interface {
+	SessionEpoch(ctx context.Context, username string) (int64, error)
+}
+
 // Manager wraps the cookie store.
 type Manager struct {
 	store      *sessions.CookieStore
 	trustProxy bool
+	epochs     EpochStore
+}
+
+// SetEpochStore enables server-side session revocation. Without it (tests and
+// fixtures) sessions remain purely cookie-based.
+func (m *Manager) SetEpochStore(epochs EpochStore) { m.epochs = epochs }
+
+// LoginOption adjusts the session established by Login.
+type LoginOption func(*sessions.Session)
+
+// RequirePasswordChange confines the new session to the password-change page
+// until PasswordChanged is called.
+func RequirePasswordChange() LoginOption {
+	return func(sess *sessions.Session) { sess.Values[keyMustChangePassword] = true }
 }
 
 // clientIP returns the address the session is pinned to. It delegates to the
@@ -97,10 +120,19 @@ func New(key []byte, secure, trustProxy bool) *Manager {
 	return &Manager{store: store, trustProxy: trustProxy}
 }
 
-// Login establishes an authenticated session.
-func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string) error {
+// Login establishes an authenticated session bound to the user's current
+// session generation.
+func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string, opts ...LoginOption) error {
 	sess, _ := m.store.Get(r, sessionName)
 	clearPendingTOTP(sess)
+	delete(sess.Values, keyMustChangePassword)
+	if m.epochs != nil {
+		epoch, err := m.epochs.SessionEpoch(r.Context(), username)
+		if err != nil {
+			return err
+		}
+		sess.Values[keyEpoch] = epoch
+	}
 	sess.Values[keyLoggedIn] = true
 	sess.Values[keyUsername] = username
 	sess.Values[keyIsRadius] = isRadius
@@ -108,6 +140,26 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string,
 	sess.Values[keyCSRFToken] = randomToken()
 	sess.Values[keyLastActive] = time.Now().Unix()
 	sess.Values[keyXForwarded] = m.clientIP(r)
+	for _, opt := range opts {
+		opt(sess)
+	}
+	return sess.Save(r, w)
+}
+
+// PasswordChanged lifts a forced password change and re-binds the current
+// session to the user's new session generation, so it survives the revocation
+// that the password change applied to every other session.
+func (m *Manager) PasswordChanged(w http.ResponseWriter, r *http.Request) error {
+	sess, _ := m.store.Get(r, sessionName)
+	delete(sess.Values, keyMustChangePassword)
+	if m.epochs != nil {
+		username, _ := sess.Values[keyUsername].(string)
+		epoch, err := m.epochs.SessionEpoch(r.Context(), username)
+		if err != nil {
+			return err
+		}
+		sess.Values[keyEpoch] = epoch
+	}
 	return sess.Save(r, w)
 }
 
@@ -123,6 +175,8 @@ func (m *Manager) BeginTOTP(w http.ResponseWriter, r *http.Request, username str
 	delete(sess.Values, keyCSRFToken)
 	delete(sess.Values, keyLastActive)
 	delete(sess.Values, keyXForwarded)
+	delete(sess.Values, keyEpoch)
+	delete(sess.Values, keyMustChangePassword)
 	sess.Values[keyPendingTOTPUsername] = username
 	sess.Values[keyPendingTOTPIssued] = time.Now().Unix()
 	sess.Values[keyPendingTOTPIP] = m.clientIP(r)
@@ -194,8 +248,13 @@ func WithTestUser(ctx context.Context, d Data) context.Context {
 	return context.WithValue(ctx, ctxKey{}, d)
 }
 
-// LoginRequired guards a handler. It enforces the idle timeout and IP pinning,
-// refreshes the activity marker, and stores the session snapshot in context.
+// passwordChangeAllowedPaths are reachable while a forced password change is
+// pending.
+var passwordChangeAllowedPaths = map[string]bool{"/change_password": true, "/logout": true, "/lang": true}
+
+// LoginRequired guards a handler. It enforces the idle timeout, IP pinning,
+// server-side revocation and a pending forced password change, refreshes the
+// activity marker, and stores the session snapshot in context.
 func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, _ := m.store.Get(r, sessionName)
@@ -222,6 +281,24 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 			delete(sess.Values, keyLoggedIn)
 			_ = sess.Save(r, w)
 			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+
+		// Server-side revocation: a cookie issued under an older session
+		// generation (logout, password change) is no longer accepted.
+		if m.epochs != nil {
+			stored, _ := sess.Values[keyEpoch].(int64)
+			current, err := m.epochs.SessionEpoch(r.Context(), d.Username)
+			if err != nil || current != stored {
+				delete(sess.Values, keyLoggedIn)
+				_ = sess.Save(r, w)
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+		}
+
+		if pending, _ := sess.Values[keyMustChangePassword].(bool); pending && !passwordChangeAllowedPaths[r.URL.Path] {
+			http.Redirect(w, r, "/change_password", http.StatusFound)
 			return
 		}
 

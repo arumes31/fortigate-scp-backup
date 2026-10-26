@@ -220,3 +220,50 @@ func TestValidateRuntime(t *testing.T) {
 		t.Fatal("unsafe remote path accepted")
 	}
 }
+
+func TestValidateRuntimeRequiresHTTPSIntegrations(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			PGPassword: "database-password",
+			SessionKey: make([]byte, 32), EncryptionKey: make([]byte, 32),
+			SSHKnownHostsFile: "known_hosts", FortigateConfigPath: "sys_config", SCPTimeout: 60,
+		}
+	}
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.GraylogURL = "http://graylog.example" },
+		func(c *Config) { c.HookwiseURL = "http://hookwise.example/w" },
+		func(c *Config) { c.FgtConfTailHookwiseURL = "http://hookwise.example/w" },
+	} {
+		c := base()
+		mutate(c)
+		if err := c.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "https://") {
+			t.Fatalf("plain http integration accepted: %v", err)
+		}
+		c.AllowInsecureHTTPIntegrations = true
+		if err := c.ValidateRuntime(); err != nil {
+			t.Fatalf("explicit insecure override rejected: %v", err)
+		}
+	}
+	c := base()
+	c.GraylogURL = "https://graylog.example"
+	if err := c.ValidateRuntime(); err != nil {
+		t.Fatalf("https integration rejected: %v", err)
+	}
+}
+
+func TestValidateRuntimeRejectsInvalidCIDRLists(t *testing.T) {
+	c := &Config{
+		PGPassword: "database-password",
+		SessionKey: make([]byte, 32), EncryptionKey: make([]byte, 32),
+		SSHKnownHostsFile: "known_hosts", FortigateConfigPath: "sys_config", SCPTimeout: 60,
+		TrustedProxies: "10.0.0.0/8, not-a-cidr",
+	}
+	if err := c.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXIES") {
+		t.Fatalf("invalid TRUSTED_PROXIES accepted: %v", err)
+	}
+	c.TrustedProxies = "127.0.0.1, 10.0.0.0/8"
+	c.AdmVpnDSVAllowedCIDRs = "300.1.1.1"
+	if err := c.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "ADM_VPN_DSV_ALLOWED_CIDRS") {
+		t.Fatalf("invalid ADM_VPN_DSV_ALLOWED_CIDRS accepted: %v", err)
+	}
+}

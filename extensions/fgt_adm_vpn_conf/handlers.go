@@ -196,6 +196,10 @@ func (e *Extension) add(w http.ResponseWriter, r *http.Request) {
 		GraylogEnabled:   formHas(r, "graylog_enabled"),
 		ClusterHostnames: formGet(r, "cluster_hostnames", ""),
 	}
+	if err := validateVpnConfigFields(c); err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := e.insertConfig(c); err != nil {
 		e.serverError(w, err)
 		return
@@ -273,8 +277,9 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	c.Kundenname = kundenname
 	c.Standort = standort
-	c.WanInterface = r.PostForm.Get("wan_interface")
-	c.LanInterface = r.PostForm.Get("lan_interface")
+	// An omitted interface field keeps the stored value.
+	c.WanInterface = formGet(r, "wan_interface", c.WanInterface)
+	c.LanInterface = formGet(r, "lan_interface", c.LanInterface)
 	c.GraylogEnabled = formHas(r, "graylog_enabled")
 	c.ClusterHostnames = formGet(r, "cluster_hostnames", "")
 
@@ -302,17 +307,9 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	c.RemoteipFull1st = fmt.Sprintf("10.150.11.%d", ip4[3])
 
 	if replacement := r.PostForm.Get("ipsec_psk_ro"); replacement != "" {
-		if len(replacement) > 100 {
-			http.Error(w, "Error: IPsec PSK RO must not exceed 100 bytes.", http.StatusBadRequest)
-			return
-		}
 		c.IpsecPskRo = replacement
 	}
 	if replacement := r.PostForm.Get("ipsec_psk_hci"); replacement != "" {
-		if len(replacement) > 100 {
-			http.Error(w, "Error: IPsec PSK HCI must not exceed 100 bytes.", http.StatusBadRequest)
-			return
-		}
 		c.IpsecPskHci = replacement
 	}
 	c.Radiusmgt = r.PostForm.Get("radiusmgt")
@@ -335,6 +332,10 @@ func (e *Extension) editSubmit(w http.ResponseWriter, r *http.Request) {
 	c.DnsNameFull = c.DnsName + ".adm.eworx.at"
 	c.Ike2Username = "vpn-adm-" + c.Kundenname + "-" + c.Standort
 
+	if err := validateVpnConfigFields(c); err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := e.updateConfigFull(c); err != nil {
 		e.serverError(w, err)
 		return
@@ -462,6 +463,10 @@ func (e *Extension) removalCommands(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
+	if err := validateVpnConfigFields(c); err != nil {
+		http.Error(w, "Error: this entry contains unsafe values; edit it first. "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, buildRemovalCommands(c))
 }
@@ -502,11 +507,18 @@ func (e *Extension) exportCSV(w http.ResponseWriter, r *http.Request) {
 		e.serverError(w, err)
 		return
 	}
+	// PSKs are left out unless explicitly requested; a secret-free export
+	// re-imports without touching the stored keys.
+	includeSecrets := r.URL.Query().Get("include_secrets") == "1"
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=vpn_configs_backup.csv")
 
-	if err := writeConfigsCSV(w, configs); err != nil {
+	if err := writeConfigsCSV(w, configs, includeSecrets); err != nil {
 		e.logger.Error("ADM VPN CSV export failed", "err", err)
+		return
+	}
+	if includeSecrets {
+		e.log(r, "FGT ADM VPN - Export", "Exported all configs to CSV including IPsec PSKs")
 		return
 	}
 	e.log(r, "FGT ADM VPN - Export", "Exported all configs to CSV")
@@ -550,6 +562,10 @@ func (e *Extension) exportBookmarks(w http.ResponseWriter, r *http.Request) {
 // ---- public Graylog DSV -----------------------------------------------------
 
 func (e *Extension) graylogDSV(w http.ResponseWriter, r *http.Request) {
+	if !e.dsvAuthorized(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	configs, err := e.enabledConfigs()
 	if err != nil {
 		e.serverError(w, err)
@@ -632,7 +648,7 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 
 	cell := func(row []string, name string) string {
 		if idx, ok := colMap[name]; ok && idx < len(row) {
-			return strings.TrimSpace(row[idx])
+			return csvUnescapeCell(strings.TrimSpace(row[idx]))
 		}
 		return ""
 	}
@@ -729,6 +745,26 @@ func (e *Extension) importCSV(w http.ResponseWriter, r *http.Request) {
 			DnsNameFull:      dnsNameFull,
 			GraylogEnabled:   graylogEnabled,
 			ClusterHostnames: clusterHostnames,
+		}
+
+		// A blank PSK cell on an existing entry keeps its stored secret, so a
+		// default (secret-free) export can be re-imported without rotating keys.
+		if fwFound && (cell(row, "ipsec-psk-ro") == "" || cell(row, "ipsec-psk-hci") == "") {
+			existing, err := e.getConfig(fwID)
+			if err != nil {
+				errorsList = append(errorsList, fmt.Sprintf("Row %d: An unexpected error occurred: %v", rowNo, err))
+				continue
+			}
+			if cell(row, "ipsec-psk-ro") == "" {
+				c.IpsecPskRo = existing.IpsecPskRo
+			}
+			if cell(row, "ipsec-psk-hci") == "" {
+				c.IpsecPskHci = existing.IpsecPskHci
+			}
+		}
+		if err := validateVpnConfigFields(c); err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("Row %d: %s", rowNo, err))
+			continue
 		}
 
 		if fwFound {
