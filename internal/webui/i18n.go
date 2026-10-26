@@ -381,6 +381,7 @@ var germanPageText = map[string]string{
 	"CSV file":                    "CSV-Datei",
 	"Import":                      "Importieren",
 	"Export All to CSV (Backup)":  "Alle als CSV exportieren (Backup)",
+	"Export All incl. PSKs":       "Alle inkl. PSKs exportieren",
 	"Export to Browser Favorites": "Als Browser-Favoriten exportieren",
 	"Edit configuration":          "Konfiguration bearbeiten",
 	"Edit status":                 "Bearbeitungsstatus",

@@ -27,6 +27,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: image-pipeline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build_candidate:
     name: Build immutable candidate
@@ -129,9 +133,9 @@ jobs:
             --env EXT_FGT_CONFCONV=true \
             --env EXT_FGT_CONFTAIL=true \
             --env EXT_GRAYLOG_DEVICE_DATA=false \
-            --env GRAYLOG_URL=http://127.0.0.1:9 \
+            --env GRAYLOG_URL=https://127.0.0.1:9 \
             --env GRAYLOG_TOKEN=synthetic-graylog-token \
-            --env HOOKWISE_URL=http://127.0.0.1:9/status \
+            --env HOOKWISE_URL=https://127.0.0.1:9/status \
             --env HOOKWISE_TOKEN=synthetic-hookwise-token \
             --env FGT_CONFTAIL_HOOKWISE_URL=https://127.0.0.1:9/w/synthetic \
             --env FGT_CONFTAIL_HOOKWISE_TOKEN=synthetic-conftail-hookwise-token \

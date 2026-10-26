@@ -93,7 +93,7 @@ func (e *Extension) bulkExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload bytes.Buffer
-	if err := writeConfigsCSV(&payload, configs); err != nil {
+	if err := writeConfigsCSV(&payload, configs, false); err != nil {
 		e.serverError(w, err)
 		return
 	}
@@ -231,7 +231,10 @@ func joinBulkIDs(ids []int64) string {
 	return strings.Join(values, ",")
 }
 
-func writeConfigsCSV(writer io.Writer, configs []*VpnConfig) error {
+// writeConfigsCSV writes the backup CSV. PSK columns are blank unless
+// includeSecrets is set (the non-secret "psauto" marker is always kept), and
+// every text cell is protected against spreadsheet formula execution.
+func writeConfigsCSV(writer io.Writer, configs []*VpnConfig, includeSecrets bool) error {
 	csvWriter := csv.NewWriter(writer)
 	csvWriter.UseCRLF = true
 	if err := csvWriter.Write(configCSVHeader); err != nil {
@@ -242,15 +245,28 @@ func writeConfigsCSV(writer io.Writer, configs []*VpnConfig) error {
 		if config.GraylogEnabled {
 			graylogEnabled = "YES"
 		}
-		if err := csvWriter.Write([]string{
+		pskRo, pskHci := exportedPSK(config.IpsecPskRo, includeSecrets), exportedPSK(config.IpsecPskHci, includeSecrets)
+		record := []string{
 			config.Kundenname, config.Standort, config.RemoteipFull, config.RemoteipFull1st,
 			config.Ike2Username, config.WanInterface, config.LanInterface, config.DnsName,
-			config.IpsecPskRo, config.IpsecPskHci, config.Radiusmgt, config.DnsNameFull,
+			pskRo, pskHci, config.Radiusmgt, config.DnsNameFull,
 			config.Firewallname, config.companyIdentifier(), graylogEnabled, config.ClusterHostnames,
-		}); err != nil {
+		}
+		for index := range record {
+			record[index] = csvSafeCell(record[index])
+		}
+		if err := csvWriter.Write(record); err != nil {
 			return err
 		}
 	}
 	csvWriter.Flush()
 	return csvWriter.Error()
+}
+
+// exportedPSK returns the PSK cell for the backup CSV.
+func exportedPSK(value string, includeSecrets bool) string {
+	if includeSecrets || strings.EqualFold(value, "psauto") {
+		return value
+	}
+	return ""
 }
