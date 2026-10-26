@@ -124,6 +124,7 @@
                     <legend>{{L .Base.Lang "Ignore messages matching:"}}</legend>
                     <label id="ct-ignore-attribute-option"><input type="radio" name="kind" value="attribute"> <span>{{L .Base.Lang "Exact attribute change"}}</span><code data-ct-ignore-attribute></code></label>
                     <label id="ct-ignore-operation-option"><input type="radio" name="kind" value="operation"> <span>{{L .Base.Lang "Operation and path"}}</span><code data-ct-ignore-operation></code></label>
+                    <label id="ct-ignore-administrator-option"><input type="radio" name="kind" value="administrator"> <span>{{L .Base.Lang "Exact administrator (case-sensitive)"}}</span><code data-ct-ignore-administrator></code></label>
                 </fieldset>
                 <div class="ct-dialog-actions">
                     <button type="button" class="btn" data-ct-ignore-cancel>{{L .Base.Lang "Cancel"}}</button>
@@ -155,11 +156,11 @@
         <span><b>{{L .Lang "log ID:"}}</b> {{.LogID}}</span>
         <span><b>{{L .Lang "attribution:"}}</b> {{.UserAttribution}}</span>
     </div>
-    {{if or .ConfigAttribute (and .Action .Path)}}
+    {{if or .Administrator .ConfigAttribute (and .Action .Path)}}
     <div class="ct-event-actions">
         <button type="button" class="btn btn-sm" data-ct-ignore-open
             data-event-id="{{.ID}}" data-attribute="{{.ConfigAttribute}}"
-            data-operation="{{.Action}} {{.Path}}">{{L .Lang "Ignore globally…"}}</button>
+            data-administrator="{{.Administrator}}" data-operation="{{if and .Action .Path}}{{.Action}} {{.Path}}{{end}}">{{L .Lang "Ignore globally…"}}</button>
     </div>
     {{end}}
 </li>

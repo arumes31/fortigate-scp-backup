@@ -346,6 +346,7 @@
         const eventID = ignoreDialog.querySelector("#ct-ignore-event-id");
         const attributeOption = ignoreDialog.querySelector("#ct-ignore-attribute-option");
         const operationOption = ignoreDialog.querySelector("#ct-ignore-operation-option");
+        const administratorOption = ignoreDialog.querySelector("#ct-ignore-administrator-option");
         const configureOption = (option, value, output) => {
             const available = Boolean(value.trim());
             option.hidden = !available;
@@ -366,9 +367,15 @@
                     button.dataset.operation || "",
                     operationOption.querySelector("[data-ct-ignore-operation]"),
                 );
+                const hasAdministrator = configureOption(
+                    administratorOption,
+                    button.dataset.administrator || "",
+                    administratorOption.querySelector("[data-ct-ignore-administrator]"),
+                );
                 const selected = hasAttribute
                     ? attributeOption.querySelector("input")
-                    : hasOperation ? operationOption.querySelector("input") : null;
+                    : hasOperation ? operationOption.querySelector("input")
+                        : hasAdministrator ? administratorOption.querySelector("input") : null;
                 if (!selected) return;
                 selected.checked = true;
                 ignoreDialog.showModal();

@@ -27,6 +27,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: image-pipeline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build_candidate:
     name: Build immutable candidate
@@ -129,9 +133,9 @@ jobs:
             --env EXT_FGT_CONFCONV=true \
             --env EXT_FGT_CONFTAIL=true \
             --env EXT_GRAYLOG_DEVICE_DATA=false \
-            --env GRAYLOG_URL=http://127.0.0.1:9 \
+            --env GRAYLOG_URL=https://127.0.0.1:9 \
             --env GRAYLOG_TOKEN=synthetic-graylog-token \
-            --env HOOKWISE_URL=http://127.0.0.1:9/status \
+            --env HOOKWISE_URL=https://127.0.0.1:9/status \
             --env HOOKWISE_TOKEN=synthetic-hookwise-token \
             --env FGT_CONFTAIL_HOOKWISE_URL=https://127.0.0.1:9/w/synthetic \
             --env FGT_CONFTAIL_HOOKWISE_TOKEN=synthetic-conftail-hookwise-token \
@@ -152,7 +156,7 @@ jobs:
           exit 1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm

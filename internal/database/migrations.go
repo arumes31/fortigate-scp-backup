@@ -81,6 +81,11 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_totp_replay_accepted_at ON totp_replay (accepted_at)`,
 		)
 	}},
+	{10, "session_epoch", func(ctx context.Context, s *Store) error {
+		return s.execAll(ctx,
+			`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch BIGINT NOT NULL DEFAULT 0`,
+		)
+	}},
 }
 
 // Migrate applies any pending migrations in order.

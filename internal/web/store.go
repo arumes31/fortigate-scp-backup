@@ -19,6 +19,8 @@ type Store interface {
 	ConsumeTOTP(ctx context.Context, userID int, timeStep int64) (bool, error)
 	GetFirstLogin(ctx context.Context, username string) (int, bool, error)
 	ChangePassword(ctx context.Context, username, oldPassword, newPassword string) (bool, error)
+	SessionEpoch(ctx context.Context, username string) (int64, error)
+	RevokeSessions(ctx context.Context, username string) error
 	ListFirewalls(ctx context.Context) ([]models.Firewall, error)
 	GetFirewall(ctx context.Context, id int) (*models.Firewall, error)
 	AddFirewall(ctx context.Context, fw models.Firewall) (int, error)

@@ -102,6 +102,7 @@ type dashboardCounts struct {
 }
 
 type dashboardEvent struct {
+	Administrator    string
 	Lang             string
 	ID               int64
 	Sequence         int
@@ -707,6 +708,7 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 		&event.DeviceID,
 		&event.VDOM,
 		&event.UserAttribution,
+		&event.Administrator,
 		&event.UI,
 		&event.Action,
 		&event.TransactionID,
@@ -721,6 +723,9 @@ func scanDashboardEvent(scanner dashboardScanner) (dashboardEvent, error) {
 		return dashboardEvent{}, err
 	}
 	event.EventAt = timeFromNanos(eventAt)
+	if event.UserAttribution == attributionUnattributed || event.Administrator == unattributedUser {
+		event.Administrator = ""
+	}
 	event.Late = late != 0
 	event.AttributeDiff, event.HasAttributeDiff = parseConfigAttributeDiff(event.ConfigAttribute)
 	return event, nil
@@ -833,7 +838,7 @@ func (s *store) dashboardEventPage(
 	page int,
 ) ([]dashboardEvent, error) {
 	rows, err := s.readDB.QueryContext(ctx, `SELECT
-		id, event_at_ns, source, device_name, device_id, vdom, user_attribution,
+		id, event_at_ns, source, device_name, device_id, vdom, user_attribution, user,
 		ui, action, transaction_id, config_path, config_object, config_attribute,
 		log_id, log_description, message, late
 		FROM events WHERE chain_id = ?

@@ -14,6 +14,8 @@ import (
 
 	// Pure-Go SQLite driver, registered under the name "sqlite".
 	_ "modernc.org/sqlite"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 )
 
 const (
@@ -344,7 +346,7 @@ func (e *Extension) availableIPs() (available []string, total int, err error) {
 
 func (e *Extension) getConfig(id int64) (*VpnConfig, error) {
 	row := e.db.QueryRow("SELECT "+selectCols+" FROM vpn_config WHERE id = ?", id)
-	return scanConfig(row)
+	return e.scanConfig(row)
 }
 
 func (e *Extension) queryConfigs(where string) ([]*VpnConfig, error) {
@@ -360,7 +362,7 @@ func (e *Extension) queryConfigs(where string) ([]*VpnConfig, error) {
 	defer func() { _ = rows.Close() }()
 	var out []*VpnConfig
 	for rows.Next() {
-		c, err := scanConfig(rows)
+		c, err := e.scanConfig(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -389,7 +391,7 @@ func (e *Extension) configsByIDs(ids []int64) ([]*VpnConfig, error) {
 	defer func() { _ = rows.Close() }()
 	configs := make([]*VpnConfig, 0, len(ids))
 	for rows.Next() {
-		config, err := scanConfig(rows)
+		config, err := e.scanConfig(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -412,6 +414,10 @@ func boolToInt(b bool) int {
 // insertConfig inserts a new row. last_graylog_status/last_graylog_check take
 // their column defaults (unknown / NULL), matching the Python insert path.
 func (e *Extension) insertConfig(c *VpnConfig) error {
+	pskRo, pskHci, err := e.sealSecrets(c)
+	if err != nil {
+		return err
+	}
 	result, err := e.db.Exec(`INSERT INTO vpn_config
 		(kundenname, standort, remoteip_full, remoteip_full_1st, ike2_username,
 		 wan_interface, lan_interface, dns_name, firewallname, connectwise_company_name,
@@ -420,7 +426,7 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.CompanyName,
-		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
+		pskRo, pskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames)
 	if err != nil {
 		return err
@@ -431,7 +437,11 @@ func (e *Extension) insertConfig(c *VpnConfig) error {
 
 // updateConfigFull writes every editable field (used by the edit handler).
 func (e *Extension) updateConfigFull(c *VpnConfig) error {
-	_, err := e.db.Exec(`UPDATE vpn_config SET
+	pskRo, pskHci, err := e.sealSecrets(c)
+	if err != nil {
+		return err
+	}
+	_, err = e.db.Exec(`UPDATE vpn_config SET
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
 		wan_interface=?, lan_interface=?, dns_name=?, firewallname=?, connectwise_company_name=?,
 		ipsec_psk_ro=?, ipsec_psk_hci=?, radiusmgt=?, dns_name_full=?,
@@ -439,7 +449,7 @@ func (e *Extension) updateConfigFull(c *VpnConfig) error {
 		WHERE id=?`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.CompanyName,
-		c.IpsecPskRo, c.IpsecPskHci, c.Radiusmgt, c.DnsNameFull,
+		pskRo, pskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.ID)
 	return err
 }
@@ -447,13 +457,17 @@ func (e *Extension) updateConfigFull(c *VpnConfig) error {
 // updateConfigImport mirrors the CSV upsert path, which updates every field of
 // the matched row EXCEPT firewallname (the match key).
 func (e *Extension) updateConfigImport(id int64, c *VpnConfig) error {
-	_, err := e.db.Exec(`UPDATE vpn_config SET
+	pskRo, pskHci, err := e.sealSecrets(c)
+	if err != nil {
+		return err
+	}
+	_, err = e.db.Exec(`UPDATE vpn_config SET
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
 		wan_interface=?, lan_interface=?, dns_name=?, ipsec_psk_ro=?, ipsec_psk_hci=?,
 		radiusmgt=?, dns_name_full=?, graylog_enabled=?, cluster_hostnames=?, connectwise_company_name=?
 		WHERE id=?`,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
-		c.WanInterface, c.LanInterface, c.DnsName, c.IpsecPskRo, c.IpsecPskHci,
+		c.WanInterface, c.LanInterface, c.DnsName, pskRo, pskHci,
 		c.Radiusmgt, c.DnsNameFull, boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.CompanyName, id)
 	return err
 }
@@ -627,4 +641,104 @@ func splitHostnames(s string) []string {
 		}
 	}
 	return out
+}
+
+// ---- PSK encryption at rest -------------------------------------------------
+
+// scanConfig reads one row and decrypts its PSK columns.
+func (e *Extension) scanConfig(s rowScanner) (*VpnConfig, error) {
+	c, err := scanConfig(s)
+	if err != nil {
+		return nil, err
+	}
+	if c.IpsecPskRo, err = e.openSecret(c.IpsecPskRo); err != nil {
+		return nil, err
+	}
+	if c.IpsecPskHci, err = e.openSecret(c.IpsecPskHci); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// sealSecrets returns the PSK column values to store for c, encrypted with
+// the shared cipher when one is configured.
+func (e *Extension) sealSecrets(c *VpnConfig) (string, string, error) {
+	pskRo, err := e.sealSecret(c.IpsecPskRo)
+	if err != nil {
+		return "", "", err
+	}
+	pskHci, err := e.sealSecret(c.IpsecPskHci)
+	if err != nil {
+		return "", "", err
+	}
+	return pskRo, pskHci, nil
+}
+
+func (e *Extension) sealSecret(value string) (string, error) {
+	if e.cipher == nil || !e.cipher.Enabled() || value == "" || crypto.IsEncryptedString(value) {
+		return value, nil
+	}
+	return e.cipher.EncryptString(value)
+}
+
+// openSecret decrypts a stored PSK. Values without the encrypted envelope are
+// legacy plaintext awaiting encryptLegacySecrets and are returned unchanged.
+func (e *Extension) openSecret(value string) (string, error) {
+	if !crypto.IsEncryptedString(value) {
+		return value, nil
+	}
+	if e.cipher == nil {
+		return "", errors.New("fgt_adm_vpn_conf: encrypted PSK found but no cipher configured")
+	}
+	return e.cipher.DecryptString(value)
+}
+
+// encryptLegacySecrets encrypts every plaintext PSK left by earlier versions.
+// It is idempotent and runs once at mount time.
+func (e *Extension) encryptLegacySecrets() error {
+	if e.cipher == nil || !e.cipher.Enabled() {
+		return nil
+	}
+	rows, err := e.db.Query(`SELECT id, COALESCE(ipsec_psk_ro,''), COALESCE(ipsec_psk_hci,'') FROM vpn_config`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id          int64
+		pskRo, pskH string
+	}
+	var updates []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.pskRo, &p.pskH); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if (p.pskRo != "" && !crypto.IsEncryptedString(p.pskRo)) || (p.pskH != "" && !crypto.IsEncryptedString(p.pskH)) {
+			updates = append(updates, p)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, p := range updates {
+		pskRo, err := e.sealSecret(p.pskRo)
+		if err != nil {
+			return err
+		}
+		pskHci, err := e.sealSecret(p.pskH)
+		if err != nil {
+			return err
+		}
+		if _, err := e.db.Exec(`UPDATE vpn_config SET ipsec_psk_ro = ?, ipsec_psk_hci = ? WHERE id = ?`, pskRo, pskHci, p.id); err != nil {
+			return err
+		}
+	}
+	if len(updates) > 0 {
+		e.logAction("Database Migration", fmt.Sprintf("Encrypted IPsec PSKs of %d vpn_config rows", len(updates)))
+	}
+	return nil
 }
