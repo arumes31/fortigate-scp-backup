@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,6 +62,7 @@ type graylogFetchCall struct {
 }
 
 type scriptedGraylogFetcher struct {
+	mu    sync.Mutex
 	calls []graylogFetchCall
 	fn    func(call int, sources []string) ([]RawEvent, FetchStats, error)
 }
@@ -72,6 +74,8 @@ func (f *scriptedGraylogFetcher) fetch(
 	from time.Time,
 	to time.Time,
 ) ([]RawEvent, FetchStats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, graylogFetchCall{
 		query:   query,
 		sources: append([]string{}, sources...),
@@ -235,7 +239,7 @@ func TestGraylogQueryFingerprintDoesNotExposeConfiguredQuery(t *testing.T) {
 	}
 }
 
-func TestPollWorkerDoesNotAdvanceOnPartialGraylogFailure(t *testing.T) {
+func TestPollWorkerCommitsHealthyFirewallsOnPartialGraylogFailure(t *testing.T) {
 	t.Parallel()
 	activation := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
 	s := newTestStore(t, activation)
@@ -247,12 +251,12 @@ func TestPollWorkerDoesNotAdvanceOnPartialGraylogFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSourceCatalog() error = %v", err)
 	}
-	fetcher := &scriptedGraylogFetcher{fn: func(call int, sources []string) ([]RawEvent, FetchStats, error) {
-		if call == 1 {
+	fetcher := &scriptedGraylogFetcher{fn: func(_ int, sources []string) ([]RawEvent, FetchStats, error) {
+		if sources[0] == "fw-02" {
 			return nil, FetchStats{Pages: 1}, errors.New("graylog page failed")
 		}
 		return []RawEvent{
-			rawConfigEvent("first-page", sources[0], "admin-a", "tx-1", activation.Add(time.Minute)),
+			rawConfigEvent(sources[0], sources[0], "admin-a", "tx-1", activation.Add(time.Minute)),
 		}, FetchStats{Pages: 1, Rows: 1}, nil
 	}}
 	worker := pollWorker{
@@ -268,8 +272,8 @@ func TestPollWorkerDoesNotAdvanceOnPartialGraylogFailure(t *testing.T) {
 	if _, err := worker.poll(context.Background(), activation.Add(15*time.Minute)); err == nil {
 		t.Fatal("poll() succeeded after one Graylog source group failed")
 	}
-	if got := countRows(t, s, "events"); got != 0 {
-		t.Fatalf("events persisted from partial result = %d, want 0", got)
+	if got := countRows(t, s, "events"); got != 12 {
+		t.Fatalf("events persisted from healthy firewalls = %d, want 12", got)
 	}
 	state, err := s.pollState(context.Background())
 	if err != nil {
@@ -484,5 +488,237 @@ func rawConfigEvent(id, source, user, transactionID string, eventAt time.Time) R
 		ConfigObject:        "1",
 		ConfigAttribute:     "name[old->new]",
 		LogID:               "0100044544",
+	}
+}
+
+type rangeGraylogFetcher func(context.Context, []string, time.Time, time.Time) ([]RawEvent, FetchStats, error)
+
+func (f rangeGraylogFetcher) fetch(ctx context.Context, _ string, sources []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+	return f(ctx, sources, from, to)
+}
+
+func recoveryWorker(t *testing.T, s *store, activation time.Time, fetcher graylogFetcher, ids ...int) *pollWorker {
+	t.Helper()
+	var registered []firewallRef
+	for _, id := range ids {
+		registered = append(registered, firewallRef{ID: id, Name: fmt.Sprintf("fw-%d.example.test", id)})
+	}
+	catalog, err := buildSourceCatalog(context.Background(), registered, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &pollWorker{store: s, graylog: fetcher,
+		loadCatalog: func(context.Context) (sourceCatalog, error) { return catalog, nil },
+		query:       "type:event", overlap: time.Hour, idle: 30 * time.Minute,
+		maxDescriptionBytes: maxTicketDescriptionBytes, missingUserWindow: missingUserWindow}
+}
+
+func TestPollWorkerRecoversEightDayBacklogWhileCollectingRecentChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	now := activation.Add(8 * 24 * time.Hour)
+	s := newTestStore(t, activation)
+	raw := []RawEvent{
+		rawConfigEvent("old", "fw-1", "admin", "1", activation.Add(10*time.Minute)),
+		rawConfigEvent("middle", "fw-1", "admin", "2", activation.Add(4*24*time.Hour)),
+		rawConfigEvent("recent", "fw-1", "admin", "3", now.Add(-5*time.Minute)),
+	}
+	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+		if to.Sub(from) > maxFirewallPollWindow {
+			t.Errorf("unbounded range: %s..%s", from, to)
+		}
+		var selected []RawEvent
+		for _, event := range raw {
+			if !event.Timestamp.Before(from) && !event.Timestamp.After(to) {
+				selected = append(selected, event)
+			}
+		}
+		return selected, FetchStats{Pages: 1, Rows: len(selected)}, nil
+	})
+	worker := recoveryWorker(t, s, activation, fetcher, 1)
+	stats, err := worker.poll(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inserted != 2 {
+		t.Fatalf("first pass inserted %d, want old and recent changes", stats.Inserted)
+	}
+	state, err := s.pollState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.BacklogFirewalls != 1 || !state.Watermark.After(activation) || !state.Watermark.Before(now) {
+		t.Fatalf("first pass did not checkpoint bounded progress: %+v", state)
+	}
+	for cycle := 0; cycle < 80 && state.Watermark.Before(now); cycle++ {
+		before := state.Watermark
+		// Recreate the worker to exercise durable rather than in-memory progress.
+		worker = recoveryWorker(t, s, activation, fetcher, 1)
+		if _, err := worker.poll(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		state, err = s.pollState(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !state.Watermark.After(before) {
+			t.Fatalf("history stuck at %s", before)
+		}
+	}
+	if !state.Watermark.Equal(now) || state.BacklogFirewalls != 0 {
+		t.Fatalf("backlog did not catch up: %+v", state)
+	}
+	if got := countRows(t, s, "events"); got != 3 {
+		t.Fatalf("events = %d, want all three without duplicates", got)
+	}
+}
+
+func TestPollWorkerHistoricalFailureDoesNotBlockRecentChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	now := activation.Add(8 * 24 * time.Hour)
+	s := newTestStore(t, activation)
+	var previousHistoryWidth time.Duration
+	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+		if to.Before(now.Add(-time.Hour)) {
+			width := to.Sub(from)
+			if previousHistoryWidth != 0 && width >= previousHistoryWidth {
+				t.Errorf("failed range did not shrink: %s >= %s", width, previousHistoryWidth)
+			}
+			previousHistoryWidth = width
+			return nil, FetchStats{}, errors.New("historical lookup unavailable")
+		}
+		return []RawEvent{rawConfigEvent(to.String(), "fw-1", "admin", "recent", to.Add(-time.Minute))}, FetchStats{Pages: 1, Rows: 1}, nil
+	})
+	worker := recoveryWorker(t, s, activation, fetcher, 1)
+	for cycle := range 3 {
+		stats, err := worker.poll(ctx, now.Add(time.Duration(cycle)*time.Minute))
+		if err == nil || stats.Inserted != 1 {
+			t.Fatalf("recent changes blocked by history: stats=%+v err=%v", stats, err)
+		}
+	}
+	state, err := s.pollState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Watermark.Equal(activation) || state.FailedFirewalls != 1 || state.BacklogFirewalls != 1 {
+		t.Fatalf("failed history was skipped or hidden: %+v", state)
+	}
+	if got := countRows(t, s, "events"); got != 3 {
+		t.Fatalf("recent events = %d, want 3", got)
+	}
+}
+
+func TestPollWorkerBlockedFirewallDoesNotBlockHealthyFirewall(t *testing.T) {
+	t.Parallel()
+	activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	now := activation.Add(time.Hour)
+	s := newTestStore(t, activation)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	release := make(chan struct{})
+	defer close(release)
+	fetcher := rangeGraylogFetcher(func(ctx context.Context, sources []string, _, to time.Time) ([]RawEvent, FetchStats, error) {
+		if sources[0] == "fw-1" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil, FetchStats{}, errors.New("firewall lookup blocked")
+		}
+		return []RawEvent{rawConfigEvent("healthy", sources[0], "admin", "1", to.Add(-45*time.Minute))}, FetchStats{Pages: 1, Rows: 1}, nil
+	})
+	worker := recoveryWorker(t, s, activation, fetcher, 1, 2)
+	done := make(chan error, 1)
+	go func() { _, err := worker.poll(ctx, now); done <- err }()
+	// Observe a committed event and sealed session while the first fetch is
+	// still blocked, rather than merely checking that its neighbor was queried.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var count int
+		if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 1 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("healthy firewall failed to commit while its neighbor was blocked")
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("blocked collector returned early: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("blocked firewall failure was hidden")
+	}
+}
+
+func TestPollWorkerSealsRecentSessionWhileHistoryKeepsFailing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	now := activation.Add(8 * 24 * time.Hour)
+	s := newTestStore(t, activation)
+	event := rawConfigEvent("recent-session", "fw-1", "admin", "recent", now.Add(-time.Minute))
+	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+		if to.Before(now.Add(-time.Hour)) {
+			return nil, FetchStats{}, errors.New("old range unavailable")
+		}
+		if to.Sub(from) != time.Hour {
+			t.Errorf("history failure shrank recent collection to %s", to.Sub(from))
+		}
+		return []RawEvent{event}, FetchStats{Pages: 1, Rows: 1}, nil
+	})
+	worker := recoveryWorker(t, s, activation, fetcher, 1)
+	for cycle := range 32 {
+		if _, err := worker.poll(ctx, now.Add(time.Duration(cycle)*time.Minute)); err == nil {
+			t.Fatal("historical failure was hidden")
+		}
+	}
+	if got := countRows(t, s, "outbox"); got != 1 {
+		t.Fatalf("recent session did not seal independently: %d deliveries", got)
+	}
+}
+
+func TestPollWorkerSweepsLongOverlapWithoutUnboundedQueries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	now := activation.Add(8 * 24 * time.Hour)
+	s := newTestStore(t, activation)
+	// History is already caught up, but Graylog indexed an older event late.
+	if _, err := s.applyPoll(ctx, pollBatch{EndedAt: now}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	event := rawConfigEvent("late-indexed", "fw-1", "admin", "late", now.Add(-150*time.Minute))
+	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+		if to.Sub(from) > maxFirewallPollWindow {
+			t.Errorf("unbounded look-back query: %s..%s", from, to)
+		}
+		if event.Timestamp.Before(from) || event.Timestamp.After(to) {
+			return nil, FetchStats{Pages: 1}, nil
+		}
+		return []RawEvent{event}, FetchStats{Pages: 1, Rows: 1}, nil
+	})
+	worker := recoveryWorker(t, s, activation, fetcher, 1)
+	worker.overlap = 3 * time.Hour
+	if _, err := worker.poll(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, s, "events"); got != 1 {
+		t.Fatalf("late-indexed event outside recent window was lost: %d", got)
+	}
+	state, err := s.pollState(ctx)
+	if err != nil || !state.Watermark.Equal(now) {
+		t.Fatalf("replay moved history checkpoint backwards: %+v, %v", state, err)
 	}
 }

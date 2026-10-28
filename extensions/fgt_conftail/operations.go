@@ -42,7 +42,7 @@ func (c diagnosticCode) String() string {
 func adaptivePollInterval(state PollState, lastIngestedAt, now time.Time) time.Duration {
 	hasCurrentFailure := !state.LastFailureAt.IsZero() &&
 		(state.LastSuccessAt.IsZero() || !state.LastFailureAt.Before(state.LastSuccessAt))
-	if hasCurrentFailure {
+	if hasCurrentFailure || state.BacklogFirewalls > 0 || state.FailedFirewalls > 0 {
 		return adaptivePollActiveInterval
 	}
 	if lastIngestedAt.IsZero() {

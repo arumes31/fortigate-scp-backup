@@ -28,7 +28,7 @@ const (
 	deliveryStateAccepted     = "accepted"
 	deliveryStateCleared      = "cleared"
 	maxTicketDescriptionBytes = 60_000
-	conftailSchemaVersion     = 7
+	conftailSchemaVersion     = 8
 )
 
 type store struct {
@@ -41,20 +41,27 @@ type store struct {
 }
 
 type PollState struct {
-	ActivationAt   time.Time
-	Watermark      time.Time
-	LastStartedAt  time.Time
-	LastSuccessAt  time.Time
-	LastFailureAt  time.Time
-	LastDuration   time.Duration
-	LastPages      int
-	LastFetched    int
-	LastInserted   int
-	LastError      string
-	LastIngestedAt time.Time
+	ActivationAt     time.Time
+	Watermark        time.Time
+	LastStartedAt    time.Time
+	LastSuccessAt    time.Time
+	LastFailureAt    time.Time
+	LastDuration     time.Duration
+	LastPages        int
+	LastFetched      int
+	LastInserted     int
+	LastError        string
+	LastIngestedAt   time.Time
+	FailedFirewalls  int
+	BacklogFirewalls int
 }
 
 type pollBatch struct {
+	FirewallID  int
+	Recent      bool
+	Replay      bool
+	RangeFrom   time.Time
+	SealFrom    time.Time
 	StartedAt   time.Time
 	EndedAt     time.Time
 	CompletedAt time.Time
@@ -126,6 +133,7 @@ const (
 )
 
 var conftailSchema = []string{
+	firewallPollSchema,
 	`CREATE TABLE IF NOT EXISTS firewall_companies (
 		firewall_id INTEGER PRIMARY KEY,
 		company TEXT NOT NULL
@@ -426,8 +434,14 @@ func (s *store) initSchema(ctx context.Context, activation time.Time) error {
 		version = 6
 	}
 	if version == 6 {
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = 7 WHERE id = 1`); err != nil {
 			return fmt.Errorf("upgrade conftail administrator ignores: %w", err)
+		}
+		version = 7
+	}
+	if version == 7 {
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET version = ? WHERE id = 1`, conftailSchemaVersion); err != nil {
+			return fmt.Errorf("upgrade conftail firewall checkpoints: %w", err)
 		}
 		version = conftailSchemaVersion
 	}
@@ -499,7 +513,9 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 		activation_at_ns, watermark_ns, last_started_at_ns, last_success_at_ns,
 		last_failure_at_ns, last_duration_ns, last_pages, last_fetched,
 		last_inserted, last_error,
-		(SELECT COALESCE(MAX(ingested_at_ns), 0) FROM events)
+		(SELECT COALESCE(MAX(ingested_at_ns), 0) FROM events),
+		(SELECT COUNT(*) FROM firewall_poll_state WHERE active = 1 AND last_error != ''),
+		(SELECT COUNT(*) FROM firewall_poll_state WHERE active = 1 AND watermark_ns < MAX(recent_to_ns, last_attempt_ns))
 		FROM poll_state WHERE id = 1`).Scan(
 		&activation,
 		&watermark,
@@ -512,6 +528,8 @@ func (s *store) pollState(ctx context.Context) (PollState, error) {
 		&state.LastInserted,
 		&state.LastError,
 		&lastIngested,
+		&state.FailedFirewalls,
+		&state.BacklogFirewalls,
 	)
 	if err != nil {
 		return PollState{}, fmt.Errorf("read conftail poll state: %w", err)
@@ -536,7 +554,7 @@ func (s *store) pollScheduleState(ctx context.Context) (PollState, time.Time, er
 
 func (s *store) markPollStarted(ctx context.Context, startedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE poll_state SET
-		last_started_at_ns = ?, last_error = '', updated_at_ns = ? WHERE id = 1`,
+		last_started_at_ns = ?, updated_at_ns = ? WHERE id = 1`,
 		unixNanos(startedAt), unixNanos(startedAt))
 	if err != nil {
 		return fmt.Errorf("mark conftail poll started: %w", err)
@@ -600,7 +618,19 @@ func (s *store) applyPoll(
 		return events[i].EventAt.Before(events[j].EventAt)
 	})
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	// Queue for the writer before starting the transaction deadline. Otherwise
+	// one slow transaction consumes every waiting firewall's write budget too.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return pollResult{}, fmt.Errorf("acquire conftail poll writer: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if batch.FirewallID != 0 {
+		writeCtx, cancel := context.WithTimeout(ctx, firewallWriteTimeout)
+		defer cancel()
+		ctx = writeCtx
+	}
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return pollResult{}, fmt.Errorf("begin conftail poll transaction: %w", err)
 	}
@@ -609,7 +639,7 @@ func (s *store) applyPoll(
 	// Replace the current catalog snapshot before any path can seal a chain.
 	// Removed or cleared mappings must not route new tickets to an old company.
 	if batch.Companies != nil {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM firewall_companies`); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM firewall_companies WHERE ? = 0 OR firewall_id = ?`, batch.FirewallID, batch.FirewallID); err != nil {
 			return pollResult{}, fmt.Errorf("clear conftail company catalog: %w", err)
 		}
 		for id, company := range batch.Companies {
@@ -693,6 +723,7 @@ func (s *store) applyPoll(
 		tx,
 		batch.EndedAt.UTC(),
 		maxDescriptionBytes,
+		batch.FirewallID,
 	)
 	if err != nil {
 		return pollResult{}, err
@@ -704,6 +735,8 @@ func (s *store) applyPoll(
 		batch.EndedAt.UTC(),
 		idle,
 		maxDescriptionBytes,
+		batch.FirewallID,
+		batch.SealFrom,
 	)
 	if err != nil {
 		return pollResult{}, err
@@ -720,6 +753,15 @@ func (s *store) applyPoll(
 	fetched := batch.Fetched
 	if fetched == 0 {
 		fetched = len(batch.Events)
+	}
+	if batch.FirewallID != 0 {
+		if err := advanceFirewallPoll(ctx, tx, batch); err != nil {
+			return pollResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return pollResult{}, fmt.Errorf("commit conftail firewall poll: %w", err)
+		}
+		return result, nil
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE poll_state SET
 		watermark_ns = ?, last_started_at_ns = ?, last_success_at_ns = ?,
@@ -802,8 +844,9 @@ func eventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, error) {
 	var exists bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM events
-		WHERE semantic_hash = ? OR (? != '' AND graylog_id = ?)
-	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
+		WHERE semantic_hash = ?
+		UNION ALL SELECT 1 FROM events WHERE graylog_id != '' AND graylog_id = ?
+	)`, event.SemanticHash, event.GraylogID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check conftail event identity: %w", err)
 	}
@@ -814,8 +857,9 @@ func ignoredEventExists(ctx context.Context, tx *sql.Tx, event Event) (bool, err
 	var exists bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM ignored_events
-		WHERE semantic_hash = ? OR (? != '' AND graylog_id = ?)
-	)`, event.SemanticHash, event.GraylogID, event.GraylogID).Scan(&exists)
+		WHERE semantic_hash = ?
+		UNION ALL SELECT 1 FROM ignored_events WHERE graylog_id != '' AND graylog_id = ?
+	)`, event.SemanticHash, event.GraylogID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check ignored conftail event identity: %w", err)
 	}
@@ -834,18 +878,20 @@ func reconcileActiveEventAttribution(
 	var eventID int64
 	var chainID, user, attribution, state string
 	var firewallID int
-	err := tx.QueryRowContext(ctx, `SELECT
+	// Keep the partial-index predicates explicit. Parameter-gated OR conditions
+	// turn these per-event lookups into full ledger scans on SQLite.
+	err := tx.QueryRowContext(ctx, `WITH candidates AS (
+		SELECT id, 0 AS priority FROM events WHERE graylog_id != '' AND graylog_id = ?
+		UNION ALL
+		SELECT id, 1 AS priority FROM events
+		WHERE user_was_missing = 1 AND correlation_hash = ? AND ? = 1
+	) SELECT
 		e.id, e.chain_id, e.firewall_id, e.user, e.user_attribution, c.state
-		FROM events e JOIN chains c ON c.id = e.chain_id
-		WHERE (? != '' AND e.graylog_id = ?)
-			OR (? = 1 AND e.user_was_missing = 1 AND e.correlation_hash = ?)
-		ORDER BY CASE WHEN ? != '' AND e.graylog_id = ? THEN 0 ELSE 1 END LIMIT 1`,
+		FROM candidates k JOIN events e ON e.id = k.id JOIN chains c ON c.id = e.chain_id
+		ORDER BY k.priority, e.id LIMIT 1`,
 		event.GraylogID,
-		event.GraylogID,
-		boolInt(event.UserWasMissing),
 		event.CorrelationHash,
-		event.GraylogID,
-		event.GraylogID,
+		boolInt(event.UserWasMissing),
 	).Scan(
 		&eventID,
 		&chainID,
@@ -1341,15 +1387,14 @@ func isLateArrival(ctx context.Context, tx *sql.Tx, event Event, idle time.Durat
 }
 
 func sealQuietChains(
-	ctx context.Context,
-	tx *sql.Tx,
-	endedAt time.Time,
-	idle time.Duration,
-	maxDescriptionBytes int,
+	ctx context.Context, tx *sql.Tx, endedAt time.Time, idle time.Duration,
+	maxDescriptionBytes, firewallID int, sealFrom time.Time,
 ) (int, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM chains
-		WHERE state = 'active' AND last_event_at_ns <= ? ORDER BY last_event_at_ns, id`,
-		unixNanos(endedAt.Add(-idle)))
+		WHERE state = 'active' AND last_event_at_ns <= ?
+		AND (? = 0 OR firewall_id = ?) AND last_event_at_ns >= ?
+		ORDER BY last_event_at_ns, id`,
+		unixNanos(endedAt.Add(-idle)), firewallID, firewallID, unixNanos(sealFrom))
 	if err != nil {
 		return 0, fmt.Errorf("list quiet conftail chains: %w", err)
 	}
@@ -1517,13 +1562,11 @@ func appendStagedEvent(ctx context.Context, tx *sql.Tx, chain chainRecord, event
 }
 
 func finalizeStagedChains(
-	ctx context.Context,
-	tx *sql.Tx,
-	sealedAt time.Time,
-	maxDescriptionBytes int,
+	ctx context.Context, tx *sql.Tx, sealedAt time.Time, maxDescriptionBytes, firewallID int,
 ) (int, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM chains
-		WHERE state = 'staging' ORDER BY first_event_at_ns, id`)
+		WHERE state = 'staging' AND (? = 0 OR firewall_id = ?)
+		ORDER BY first_event_at_ns, id`, firewallID, firewallID)
 	if err != nil {
 		return 0, fmt.Errorf("list staged late conftail chains: %w", err)
 	}
