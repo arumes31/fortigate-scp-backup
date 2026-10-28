@@ -1159,7 +1159,7 @@ function renderTree(data) {
             .attr("class", "node")
             .attr("role", "button")
             .attr("tabindex", 0)
-            .attr("aria-label", d => d.data.name || d.data.kind)
+            .attr("aria-description", d => d.data.name || d.data.kind)
             .attr("transform", `translate(${source.y0 || 60},${source.x0 || 0})`)
             .style("cursor", "pointer")
             .on("click", (ev, d) => {
@@ -1215,6 +1215,7 @@ function renderTree(data) {
             g.append("text")
                 .attr("x", -w / 2 + 10).attr("y", 4)
                 .attr("fill", st.stroke).attr("font-size", isMajor ? "15px" : "12px")
+                .attr("aria-hidden", "true")
                 .text(st.icon);
 
             g.append("text")
@@ -1234,6 +1235,7 @@ function renderTree(data) {
             if (d._children && d._children.length) {
                 g.append("text")
                     .attr("class", "chevron")
+                    .attr("aria-hidden", "true")
                     .attr("x", w / 2 - 14).attr("y", 4)
                     .attr("fill", "rgba(255,255,255,0.5)").attr("font-size", "10px")
                     .text(d.children ? "▾" : "▸");

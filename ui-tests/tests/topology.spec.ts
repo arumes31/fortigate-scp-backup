@@ -119,7 +119,8 @@ test('topology keeps the graph primary and makes share, debug, maximize, and fac
   await expect(debugDialog).toBeHidden();
   await expect(debugOpener).toBeFocused();
 
-  const firewallNode = page.getByRole('button', { name: 'edge.example.test', exact: true });
+  const firewallNode = page.getByRole('button', { name: 'edge.example.te… FortiGate-VM', exact: true });
+  await expect(firewallNode).toHaveAccessibleDescription('edge.example.test');
   await firewallNode.press('Enter');
   const faceplate = page.locator('#facePanel');
   await expect(faceplate).toHaveAttribute('aria-hidden', 'false');
