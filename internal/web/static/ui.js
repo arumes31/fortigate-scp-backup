@@ -138,7 +138,12 @@ function tt(key) { return (window.I18N && window.I18N[key]) || key; }
                 }
             });
             dialog.addEventListener('close', function () {
-                if (opener && opener.isConnected) opener.focus();
+                var active = document.activeElement;
+                // The close event is queued; respect focus moved elsewhere
+                // after dialog.close() has already returned.
+                if (opener && opener.isConnected &&
+                    (active === document.body || active === dialog ||
+                        dialog.contains(active) || active === opener)) opener.focus();
             });
             dialog.querySelectorAll('[data-dialog-close]').forEach(function (button) {
                 button.addEventListener('click', function () { dialog.close(); });
