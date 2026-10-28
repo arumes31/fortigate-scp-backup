@@ -923,7 +923,7 @@ func (e *Extension) dashboard(w http.ResponseWriter, r *http.Request) {
 		Dashboard:           data,
 		Filters:             dashboardFiltersView(filters),
 		Health:              dashboardPollHealth(data.Poll, now, pollInterval),
-		SessionHealth:       dashboardSessionHealth(data.Counts, now),
+		SessionHealth:       dashboardSessionHealth(data.Counts, now, data.Poll),
 		DeliveryHealth:      dashboardDeliveryHealth(data.Counts, now),
 		NextPollRun:         dashboardNextPollRun(data.Poll, pollInterval),
 		PollRunning:         dashboardPollRunning(data.Poll),
@@ -1411,21 +1411,34 @@ func dashboardPollHealth(state PollState, now time.Time, interval time.Duration)
 		checkedAt = state.LastFailureAt
 	}
 	evidence := fmt.Sprintf("%d page(s) / %d fetched / %d inserted", state.LastPages, state.LastFetched, state.LastInserted)
-	if dashboardPollRunning(state) {
-		return dashboardHealth{
-			State: "waiting", Label: "Collector polling", Detail: "Graylog query in progress",
-			Evidence: evidence, CheckedAt: checkedAt,
-		}
-	}
 	if !state.LastFailureAt.IsZero() &&
 		(state.LastSuccessAt.IsZero() || !state.LastFailureAt.Before(state.LastSuccessAt)) {
+		detail := state.LastError
+		if dashboardPollRunning(state) {
+			detail += " (retry in progress; other firewalls continue independently)"
+		}
 		return dashboardHealth{
 			State:  "failed",
 			Label:  "Collector failed",
-			Detail: state.LastError,
+			Detail: detail,
 			Action: dashboardPollRemediation(state.LastError),
 			Code:   codeGraylogPollFailed, Evidence: evidence, CheckedAt: checkedAt,
 		}
+	}
+	if dashboardPollRunning(state) {
+		if now.After(state.LastStartedAt.Add(conftailPollTimeout + 5*time.Second)) {
+			return dashboardHealth{State: "stale", Label: "Collector is stale",
+				Detail: "Poll exceeded its deadline", Evidence: evidence, CheckedAt: checkedAt}
+		}
+		return dashboardHealth{
+			State: "waiting", Label: "Collector polling", Detail: "Collecting and saving firewall changes",
+			Evidence: evidence, CheckedAt: checkedAt,
+		}
+	}
+	if state.BacklogFirewalls > 0 {
+		return dashboardHealth{State: "waiting", Label: "Collector catching up",
+			Detail:   fmt.Sprintf("%d firewall(s) recovering history; recent changes collected separately", state.BacklogFirewalls),
+			Evidence: evidence, CheckedAt: checkedAt}
 	}
 	if state.LastSuccessAt.IsZero() {
 		return dashboardHealth{
@@ -1466,7 +1479,14 @@ func dashboardPollRemediation(lastError string) string {
 	}
 }
 
-func dashboardSessionHealth(counts dashboardCounts, checkedAt time.Time) dashboardHealth {
+func dashboardSessionHealth(counts dashboardCounts, checkedAt time.Time, poll PollState) dashboardHealth {
+	health := dashboardPollHealth(poll, checkedAt, adaptivePollInterval(poll, poll.LastIngestedAt, checkedAt))
+	if health.State == "failed" || health.State == "stale" || poll.BacklogFirewalls > 0 || poll.LastSuccessAt.IsZero() {
+		return dashboardHealth{State: "waiting", Label: "Session processing delayed",
+			Detail: "Sessions seal after their firewall's changes are collected successfully.",
+			Evidence: fmt.Sprintf("%d active / %d sealed / %d firewall(s) failed / %d catching up",
+				counts.Active, counts.Sealed, poll.FailedFirewalls, poll.BacklogFirewalls), CheckedAt: checkedAt}
+	}
 	return dashboardHealth{
 		State: "healthy", Label: "Background processing healthy",
 		Evidence: fmt.Sprintf("%d active / %d sealed", counts.Active, counts.Sealed), CheckedAt: checkedAt,

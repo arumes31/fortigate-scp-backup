@@ -752,7 +752,7 @@ func TestDashboardRendersConfirmedHookwiseQueueClearAction(t *testing.T) {
 }
 
 func TestDashboardShowsRunningPollAndStatusRefreshContract(t *testing.T) {
-	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-time.Minute)
 	s := newTestStore(t, base)
 	if err := s.markPollStarted(context.Background(), base.Add(time.Minute)); err != nil {
 		t.Fatal(err)
@@ -993,6 +993,28 @@ func TestDashboardDeliveryHealthIsIndependentFromCollector(t *testing.T) {
 	if health.State != "failed" || health.Code != codeHookwiseDeliveryFailed || !strings.Contains(health.Evidence, "2 failed") ||
 		!strings.Contains(health.Action, "Hookwise") {
 		t.Fatalf("delivery health = %+v", health)
+	}
+}
+
+func TestDashboardKeepsFailureVisibleDuringRetry(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	state := PollState{LastStartedAt: now, LastFailureAt: now.Add(-time.Minute),
+		LastSuccessAt: now.Add(-8 * 24 * time.Hour), LastError: "check ignored conftail event identity: context deadline exceeded",
+		FailedFirewalls: 1, BacklogFirewalls: 1}
+	health := dashboardPollHealth(state, now, time.Minute)
+	if health.State != "failed" || !strings.Contains(health.Detail, state.LastError) || !strings.Contains(health.Detail, "retry in progress") {
+		t.Fatalf("retry masked failure: %+v", health)
+	}
+	pipeline := dashboardSessionHealth(dashboardCounts{Active: 1, Sealed: 624}, now, state)
+	if pipeline.State == "healthy" {
+		t.Fatalf("stalled pipeline reported healthy: %+v", pipeline)
+	}
+	state.LastFailureAt = time.Time{}
+	state.LastStartedAt = now.Add(-conftailPollTimeout - time.Minute)
+	health = dashboardPollHealth(state, now, time.Minute)
+	if health.State != "stale" {
+		t.Fatalf("overdue poll reported healthy: %+v", health)
 	}
 }
 

@@ -7,12 +7,19 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	maxPollEvents          = 100_000
-	maxPollNormalizedBytes = 64 << 20
+	maxPollEvents             = 100_000
+	maxPollNormalizedBytes    = 64 << 20
+	firewallPollConcurrency   = 8
+	firewallPollTimeout       = 15 * time.Second
+	firewallWriteTimeout      = 3 * time.Second
+	maxFirewallPollWindow     = time.Hour
+	minFirewallPollWindow     = time.Second
+	maxFirewallHistoryWindows = 4
 )
 
 type graylogFetcher interface {
@@ -65,7 +72,6 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	if err := w.store.markPollStarted(ctx, startedAt); err != nil {
 		return pollCycleStats{}, err
 	}
-
 	catalog, err := w.loadCatalog(ctx)
 	if err != nil {
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
@@ -73,136 +79,297 @@ func (w *pollWorker) poll(ctx context.Context, pollEnd time.Time) (pollCycleStat
 	if w.publishCatalog != nil {
 		w.publishCatalog(catalog)
 	}
-	sourceGroups := catalog.sourceGroups()
-	if len(sourceGroups) == 0 {
-		return pollCycleStats{}, w.recordFailure(
-			ctx,
-			startedAt,
-			errors.New("conftail source catalog has no queryable aliases"),
-		)
+	if len(catalog.aliases) == 0 {
+		return pollCycleStats{}, w.recordFailure(ctx, startedAt, errors.New("conftail source catalog has no queryable aliases"))
 	}
 	state, err := w.store.pollState(ctx)
 	if err != nil {
 		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
 	}
 	if pollEnd.Before(state.Watermark) {
-		return pollCycleStats{}, w.recordFailure(
-			ctx,
-			startedAt,
-			errors.New("conftail poll end precedes the stored watermark"),
-		)
+		return pollCycleStats{}, w.recordFailure(ctx, startedAt, errors.New("conftail poll end precedes the stored watermark"))
 	}
+	checkpoints, err := w.store.firewallCheckpoints(ctx, catalog, state)
+	if err != nil {
+		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+	}
+	type outcome struct {
+		stats pollCycleStats
+		err   error
+	}
+	jobs := make(chan firewallCheckpoint)
+	results := make(chan outcome, len(checkpoints))
+	var workers sync.WaitGroup
+	for range min(firewallPollConcurrency, len(checkpoints)) {
+		workers.Go(func() {
+			for cp := range jobs {
+				stats, err := w.pollFirewall(ctx, catalog, cp, state.ActivationAt, pollEnd)
+				results <- outcome{stats, err}
+			}
+		})
+	}
+	for _, cp := range checkpoints {
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case jobs <- cp:
+		case <-ctx.Done():
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
+	stats := pollCycleStats{}
+	var failures []error
+	for result := range results {
+		stats.add(result.stats)
+		if result.err != nil {
+			failures = append(failures, result.err)
+		}
+	}
+	if ctx.Err() != nil {
+		failures = append(failures, ctx.Err())
+	}
+	var pollErr error
+	if len(failures) != 0 {
+		pollErr = fmt.Errorf("%d firewall poll failure(s): %w", len(failures), errors.Join(failures...))
+	}
+	// Persist aggregate health even if the cycle's deadline expired. Individual
+	// successful transactions and their checkpoints are already durable.
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := w.store.finishPoll(finishCtx, startedAt, w.currentTime(), stats, pollErr); err != nil {
+		return stats, errors.Join(pollErr, err)
+	}
+	return stats, pollErr
+}
 
-	from := state.Watermark.Add(-w.overlap)
-	if from.Before(state.ActivationAt) {
-		from = state.ActivationAt
+func (s *pollCycleStats) add(other pollCycleStats) {
+	s.Pages += other.Pages
+	s.Fetched += other.Fetched
+	s.Quarantined += other.Quarantined
+	s.Retries += other.Retries
+	s.Skipped += other.Skipped
+	s.Inserted += other.Inserted
+	s.Duplicates += other.Duplicates
+	s.Ignored += other.Ignored
+	s.Sealed += other.Sealed
+}
+
+func (w *pollWorker) pollFirewall(parent context.Context, catalog sourceCatalog, cp firewallCheckpoint, activation, pollEnd time.Time) (pollCycleStats, error) {
+	ctx, cancel := context.WithTimeout(parent, firewallPollTimeout)
+	defer cancel()
+	if _, err := w.store.db.ExecContext(ctx, `UPDATE firewall_poll_state SET last_attempt_ns = ? WHERE firewall_id = ?`, unixNanos(pollEnd), cp.ID); err != nil {
+		return pollCycleStats{}, err
 	}
-	events := make([]Event, 0)
+	stats := pollCycleStats{}
+	var failures []error
+	// Always collect the newest changes before working on older history. The
+	// historical cursor remains intact until every intervening window commits.
+	from := pollEnd.Add(-min(w.overlap, cp.RecentWindow))
+	if from.Before(activation) {
+		from = activation
+	}
+	recentFrom := from
+	sealFrom := from
+	if !cp.RecentFrom.IsZero() && !cp.RecentTo.Before(from) {
+		sealFrom = minTime(sealFrom, cp.RecentFrom)
+	}
+	if !cp.Watermark.Before(sealFrom) {
+		sealFrom = time.Time{}
+	}
+	recentCtx, recentCancel := context.WithTimeout(ctx, firewallPollTimeout/2)
+	recent, recentErr := w.pollFirewallWindow(recentCtx, catalog, pollBatch{
+		FirewallID: cp.ID, RangeFrom: from, EndedAt: pollEnd, Recent: true, SealFrom: sealFrom,
+	}, activation, pollEnd)
+	recentCancel()
+	stats.add(recent)
+	if recentErr != nil {
+		failures = append(failures, fmt.Errorf("recent changes: %w", recentErr))
+	} else {
+		if !cp.RecentFrom.IsZero() && !cp.RecentTo.Before(from) {
+			from = minTime(from, cp.RecentFrom)
+		}
+		cp.RecentFrom, cp.RecentTo = from, pollEnd
+		if !cp.Watermark.Before(from) {
+			cp.Watermark = pollEnd
+		}
+	}
+	var historyErr error
+	historyAttempted := false
+	// A failed recent query does not suppress historical recovery, and vice versa.
+	for range maxFirewallHistoryWindows {
+		if ctx.Err() != nil {
+			break
+		}
+		replay := !cp.Watermark.Before(pollEnd)
+		to := minTime(cp.Watermark.Add(cp.Window), pollEnd)
+		if !cp.RecentFrom.IsZero() && cp.RecentFrom.After(cp.Watermark) {
+			to = minTime(to, cp.RecentFrom)
+		}
+		from := cp.Watermark
+		if replay {
+			// Sweep look-back periods longer than the recent window in bounded
+			// pieces too. This retains late-indexing coverage without multi-day queries.
+			from = maxTime(activation, pollEnd.Add(-w.overlap))
+			if !from.Before(recentFrom) {
+				break
+			}
+			if cp.ReplayTo.After(from) && cp.ReplayTo.Before(recentFrom) {
+				from = cp.ReplayTo
+			}
+			to = minTime(from.Add(cp.Window), recentFrom)
+		}
+		history, err := w.pollFirewallWindow(ctx, catalog, pollBatch{
+			FirewallID: cp.ID, RangeFrom: from, EndedAt: to, Replay: replay,
+			ReplayComplete: replay && !to.Before(recentFrom),
+		}, activation, pollEnd)
+		historyAttempted = true
+		stats.add(history)
+		if err != nil {
+			historyErr = err
+			failures = append(failures, fmt.Errorf("history %s..%s: %w", from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano), err))
+			break
+		}
+		if replay {
+			cp.ReplayTo = to
+			if !to.Before(recentFrom) {
+				break
+			}
+			continue
+		}
+		cp.Watermark = to
+		if !cp.RecentFrom.IsZero() && !to.Before(cp.RecentFrom) {
+			cp.Watermark = maxTime(to, cp.RecentTo)
+		}
+	}
+	pollErr := errors.Join(failures...)
+	message := ""
+	window := cp.Window
+	if historyAttempted {
+		window = min(maxFirewallPollWindow, cp.Window*2)
+		if historyErr != nil {
+			window = max(minFirewallPollWindow, cp.Window/2)
+		}
+	}
+	recentWindow := min(maxFirewallPollWindow, cp.RecentWindow*2)
+	if recentErr != nil {
+		recentWindow = max(minFirewallPollWindow, cp.RecentWindow/2)
+	}
+	if pollErr != nil {
+		message = sanitizeDeliveryError(pollErr)
+		if w.logger != nil {
+			w.logger.Error("conftail firewall poll failed", "firewall_id", cp.ID, "err", message, "next_window", window)
+		}
+	}
+	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+	defer finishCancel()
+	_, finishErr := w.store.db.ExecContext(finishCtx, `UPDATE firewall_poll_state SET window_ns = ?, recent_window_ns = ?, last_error = ? WHERE firewall_id = ?`, int64(window), int64(recentWindow), message, cp.ID)
+	if err := errors.Join(pollErr, finishErr); err != nil {
+		return stats, fmt.Errorf("firewall %d: %w", cp.ID, err)
+	}
+	return stats, nil
+}
+
+func (w *pollWorker) pollFirewallWindow(ctx context.Context, catalog sourceCatalog, batch pollBatch, activation, pollEnd time.Time) (pollCycleStats, error) {
+	firewallID, from, to := batch.FirewallID, batch.RangeFrom, batch.EndedAt
+	// Fetch full neighboring context even when the committed window shrinks to
+	// a second. Context rows inform attribution but are not committed or sealed
+	// ahead of the historical cursor.
+	queryFrom := maxTime(activation, from.Add(-w.missingUserWindow))
+	queryTo := minTime(pollEnd, to.Add(w.missingUserWindow))
+	stats := pollCycleStats{}
+	var events []Event
+	var inWindow []bool
+	var normalizedBytes int64
 	maxEvents := w.maxEvents
 	if maxEvents == 0 {
-		maxEvents = maxPollEvents
+		maxEvents = maxPollEvents / firewallPollConcurrency
 	}
-	maxNormalizedBytes := w.maxNormalizedBytes
-	if maxNormalizedBytes == 0 {
-		maxNormalizedBytes = maxPollNormalizedBytes
+	maxBytes := w.maxNormalizedBytes
+	if maxBytes == 0 {
+		maxBytes = maxPollNormalizedBytes / firewallPollConcurrency
 	}
-	var normalizedBytes int64
-	stats := pollCycleStats{}
-	queryFingerprint := graylogQueryFingerprint(w.query)
-	for _, sources := range sourceGroups {
+	aliases := catalog.byID[firewallID].Aliases
+	for start := 0; start < len(aliases); start += maxSourceAliasesPerGroup {
+		sources := aliases[start:min(start+maxSourceAliasesPerGroup, len(aliases))]
 		if w.logger != nil {
-			w.logger.Info(
-				"conftail Graylog query started",
-				"query_sha256", queryFingerprint,
-				"query_bytes", len(w.query),
-				"source_count", len(sources),
-				"from", from,
-				"to", pollEnd,
-			)
+			w.logger.Info("conftail Graylog query started", "firewall_id", firewallID, "recent", batch.Recent,
+				"query_sha256", graylogQueryFingerprint(w.query), "query_bytes", len(w.query), "source_count", len(sources), "from", queryFrom, "to", queryTo)
 		}
-		rawEvents, fetchStats, fetchErr := w.graylog.fetch(ctx, w.query, sources, from, pollEnd)
-		stats.Pages += fetchStats.Pages
-		stats.Fetched += fetchStats.Rows
-		stats.Quarantined += fetchStats.Quarantined
-		stats.Retries += fetchStats.Retries
-		if fetchErr != nil {
-			return pollCycleStats{}, w.recordFailure(ctx, startedAt, fetchErr)
+		rawEvents, fetched, err := w.graylog.fetch(ctx, w.query, sources, queryFrom, queryTo)
+		stats.Pages += fetched.Pages
+		stats.Fetched += fetched.Rows
+		stats.Quarantined += fetched.Quarantined
+		stats.Retries += fetched.Retries
+		if err != nil {
+			return stats, err
 		}
 		if w.logger != nil {
-			w.logger.Info(
-				"conftail Graylog query completed",
-				"query_sha256", queryFingerprint,
-				"query_bytes", len(w.query),
-				"source_count", len(sources),
-				"from", from,
-				"to", pollEnd,
-				"pages", fetchStats.Pages,
-				"rows", fetchStats.Rows,
-				"quarantined_rows", fetchStats.Quarantined,
-				"retries", fetchStats.Retries,
-			)
+			w.logger.Info("conftail Graylog query completed", "firewall_id", firewallID,
+				"query_sha256", graylogQueryFingerprint(w.query), "query_bytes", len(w.query), "source_count", len(sources), "from", queryFrom, "to", queryTo,
+				"pages", fetched.Pages, "rows", fetched.Rows, "quarantined_rows", fetched.Quarantined, "retries", fetched.Retries)
 		}
 		if stats.Fetched > maxEvents {
-			return pollCycleStats{}, w.recordFailure(
-				ctx,
-				startedAt,
-				fmt.Errorf("conftail poll exceeds the %d-event safety limit", maxEvents),
-			)
+			return stats, fmt.Errorf("conftail poll exceeds the %d-event safety limit", maxEvents)
 		}
-		for index := range rawEvents {
-			eventTime := rawEvents[index].Timestamp.UTC()
-			if eventTime.Before(from) || eventTime.After(pollEnd) {
+		for _, raw := range rawEvents {
+			if raw.Timestamp.Before(queryFrom) || raw.Timestamp.After(queryTo) {
 				stats.Quarantined++
 				continue
 			}
-			firewall, ok := catalog.resolve(rawEvents[index].Source)
-			if !ok {
-				stats.Skipped++
+			firewall, ok := catalog.resolve(raw.Source)
+			if !ok || firewall.ID != firewallID {
+				if !raw.Timestamp.Before(from) && !raw.Timestamp.After(to) {
+					stats.Skipped++
+				}
 				continue
 			}
-			event, normalizeErr := normalizeRawEvent(rawEvents[index], firewall, pollEnd)
-			if normalizeErr != nil {
+			event, err := normalizeRawEvent(raw, firewall, pollEnd)
+			if err != nil {
 				stats.Quarantined++
 				continue
 			}
 			normalizedBytes += normalizedEventBytes(event)
-			if normalizedBytes > maxNormalizedBytes {
-				return pollCycleStats{}, w.recordFailure(
-					ctx,
-					startedAt,
-					fmt.Errorf("conftail poll exceeds the %d-byte normalized-data safety limit", maxNormalizedBytes),
-				)
+			if normalizedBytes > maxBytes {
+				return stats, fmt.Errorf("conftail poll exceeds the %d-byte normalized-data safety limit", maxBytes)
 			}
 			events = append(events, event)
+			inWindow = append(inWindow, !raw.Timestamp.Before(from) && !raw.Timestamp.After(to))
 		}
 	}
 	if err := recoverMissingUsers(ctx, events, w.missingUserWindow); err != nil {
-		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+		return stats, err
 	}
-
-	companies := make(map[int]string, len(catalog.byID))
-	for id, firewall := range catalog.byID {
-		companies[id] = firewall.Company
+	committed := events[:0]
+	for i, event := range events {
+		if inWindow[i] {
+			committed = append(committed, event)
+		}
 	}
-	result, err := w.store.applyPoll(ctx, pollBatch{
-		StartedAt:   startedAt,
-		EndedAt:     pollEnd,
-		CompletedAt: w.currentTime(),
-		Pages:       stats.Pages,
-		Fetched:     stats.Fetched,
-		Events:      events,
-		Companies:   companies,
-	}, w.idle, w.maxDescriptionBytes)
+	batch.StartedAt, batch.Pages, batch.Fetched, batch.Events = pollEnd, stats.Pages, stats.Fetched, committed
+	batch.Companies = map[int]string{firewallID: catalog.byID[firewallID].Company}
+	result, err := w.store.applyPoll(ctx, batch, w.idle, w.maxDescriptionBytes)
 	if err != nil {
-		return pollCycleStats{}, w.recordFailure(ctx, startedAt, err)
+		return stats, err
 	}
-	stats.Inserted = result.Inserted
-	stats.Duplicates = result.Duplicates
-	stats.Ignored = result.Ignored
-	stats.Sealed = result.Sealed
+	stats.Inserted, stats.Duplicates, stats.Ignored, stats.Sealed = result.Inserted, result.Duplicates, result.Ignored, result.Sealed
 	return stats, nil
 }
 
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
 func graylogQueryFingerprint(query string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(query)))
 }
