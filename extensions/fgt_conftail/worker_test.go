@@ -525,7 +525,7 @@ func TestPollWorkerRecoversEightDayBacklogWhileCollectingRecentChanges(t *testin
 		rawConfigEvent("recent", "fw-1", "admin", "3", now.Add(-5*time.Minute)),
 	}
 	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
-		if to.Sub(from) > maxFirewallPollWindow {
+		if to.Sub(from) > maxFirewallPollWindow+2*missingUserWindow {
 			t.Errorf("unbounded range: %s..%s", from, to)
 		}
 		var selected []RawEvent
@@ -673,7 +673,7 @@ func TestPollWorkerSealsRecentSessionWhileHistoryKeepsFailing(t *testing.T) {
 		if to.Before(now.Add(-time.Hour)) {
 			return nil, FetchStats{}, errors.New("old range unavailable")
 		}
-		if to.Sub(from) != time.Hour {
+		if to.Sub(from) != time.Hour+missingUserWindow {
 			t.Errorf("history failure shrank recent collection to %s", to.Sub(from))
 		}
 		return []RawEvent{event}, FetchStats{Pages: 1, Rows: 1}, nil
@@ -700,11 +700,12 @@ func TestPollWorkerSweepsLongOverlapWithoutUnboundedQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := rawConfigEvent("late-indexed", "fw-1", "admin", "late", now.Add(-150*time.Minute))
+	indexed := false
 	fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
-		if to.Sub(from) > maxFirewallPollWindow {
+		if to.Sub(from) > maxFirewallPollWindow+2*missingUserWindow {
 			t.Errorf("unbounded look-back query: %s..%s", from, to)
 		}
-		if event.Timestamp.Before(from) || event.Timestamp.After(to) {
+		if !indexed || event.Timestamp.Before(from) || event.Timestamp.After(to) {
 			return nil, FetchStats{Pages: 1}, nil
 		}
 		return []RawEvent{event}, FetchStats{Pages: 1, Rows: 1}, nil
@@ -714,11 +715,76 @@ func TestPollWorkerSweepsLongOverlapWithoutUnboundedQueries(t *testing.T) {
 	if _, err := worker.poll(ctx, now); err != nil {
 		t.Fatal(err)
 	}
+	if got := countRows(t, s, "events"); got != 0 {
+		t.Fatalf("event was visible before indexing: %d", got)
+	}
+	indexed = true
+	now = now.Add(time.Minute)
+	if _, err := worker.poll(ctx, now); err != nil {
+		t.Fatal(err)
+	}
 	if got := countRows(t, s, "events"); got != 1 {
 		t.Fatalf("late-indexed event outside recent window was lost: %d", got)
 	}
 	state, err := s.pollState(ctx)
 	if err != nil || !state.Watermark.Equal(now) {
 		t.Fatalf("replay moved history checkpoint backwards: %+v, %v", state, err)
+	}
+}
+
+func TestPollWorkerTinyHistoryWindowsRetainAttributionContext(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{name: "earlier companion", offset: -4 * time.Minute},
+		{name: "later companion", offset: 4 * time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			activation := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+			cursor := activation.Add(10 * time.Minute)
+			now := activation.Add(8 * 24 * time.Hour)
+			s := newTestStore(t, activation)
+			if _, err := s.applyPoll(ctx, pollBatch{EndedAt: cursor}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+				t.Fatal(err)
+			}
+			missing := rawConfigEvent("missing", "fw-1", "", "shared", cursor.Add(500*time.Millisecond))
+			companion := rawConfigEvent("companion", "fw-1", "operator", "shared", missing.Timestamp.Add(test.offset))
+			fetcher := rangeGraylogFetcher(func(_ context.Context, _ []string, from, to time.Time) ([]RawEvent, FetchStats, error) {
+				var selected []RawEvent
+				for _, event := range []RawEvent{missing, companion} {
+					if !event.Timestamp.Before(from) && !event.Timestamp.After(to) {
+						selected = append(selected, event)
+					}
+				}
+				return selected, FetchStats{Pages: 1, Rows: len(selected)}, nil
+			})
+			worker := recoveryWorker(t, s, activation, fetcher, 1)
+			catalog, err := worker.loadCatalog(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := s.pollState(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.firewallCheckpoints(ctx, catalog, state); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Exec(`UPDATE firewall_poll_state SET window_ns = ?`, int64(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := worker.poll(ctx, now); err != nil {
+				t.Fatal(err)
+			}
+			if got := countRowsWhere(t, s, "events", "graylog_id = 'missing' AND user = 'operator' AND user_attribution = 'recovered'"); got != 1 {
+				t.Fatal("small recovery window lost administrator attribution")
+			}
+			if got := countRowsWhere(t, s, "events", "graylog_id = 'companion'"); got != 0 {
+				t.Fatal("context-only event committed outside checkpoint range")
+			}
+		})
 	}
 }

@@ -89,7 +89,11 @@ func (s *store) firewallCheckpoints(ctx context.Context, catalog sourceCatalog, 
 
 func advanceFirewallPoll(ctx context.Context, tx *sql.Tx, batch pollBatch) error {
 	if batch.Replay {
-		_, err := tx.ExecContext(ctx, `UPDATE firewall_poll_state SET replay_to_ns = ? WHERE firewall_id = ?`, unixNanos(batch.EndedAt), batch.FirewallID)
+		cursor := unixNanos(batch.EndedAt)
+		if batch.ReplayComplete {
+			cursor = 0
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE firewall_poll_state SET replay_to_ns = ? WHERE firewall_id = ?`, cursor, batch.FirewallID)
 		return err
 	}
 	if batch.Recent {

@@ -57,18 +57,19 @@ type PollState struct {
 }
 
 type pollBatch struct {
-	FirewallID  int
-	Recent      bool
-	Replay      bool
-	RangeFrom   time.Time
-	SealFrom    time.Time
-	StartedAt   time.Time
-	EndedAt     time.Time
-	CompletedAt time.Time
-	Pages       int
-	Fetched     int
-	Events      []Event
-	Companies   map[int]string
+	FirewallID     int
+	Recent         bool
+	Replay         bool
+	ReplayComplete bool
+	RangeFrom      time.Time
+	SealFrom       time.Time
+	StartedAt      time.Time
+	EndedAt        time.Time
+	CompletedAt    time.Time
+	Pages          int
+	Fetched        int
+	Events         []Event
+	Companies      map[int]string
 }
 
 type pollResult struct {
