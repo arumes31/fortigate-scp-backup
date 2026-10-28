@@ -102,7 +102,7 @@ test('ConfTail filters, chips, and pagination submit sensitive values only by PO
   const chipRequestPromise = page.waitForRequest(request =>
     request.url().endsWith('/fgt-conftail/') && request.method() === 'POST',
   );
-  await page.getByRole('button', { name: /Remove Source filter/ }).click();
+  await page.getByRole('button', { name: 'Source: branch-source.example.test (Remove)', exact: true }).click();
   const chipRequest = await chipRequestPromise;
   expect(chipRequest.postData()).toContain('user=body-only-operator');
   expect(chipRequest.postData()).not.toContain('source=');
