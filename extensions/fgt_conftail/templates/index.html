@@ -225,7 +225,7 @@
                 <form method="post" action="/fgt-conftail/" class="ct-filter-chip-form">
                     {{template "csrf" $.Base.CSRFToken}}
                     {{template "dashboardHiddenFields" .Fields}}
-                    <button type="submit" class="chip ct-filter-chip" aria-label="Remove {{.Label}} filter: {{.Value}}">{{.Label}}: <span class="no-caps">{{.Value}}</span> <span aria-hidden="true">×</span></button>
+                    <button type="submit" class="chip ct-filter-chip" aria-label="{{.Label}}: {{.Value}} ({{L $.Base.Lang "Remove"}})">{{.Label}}: <span class="no-caps">{{.Value}}</span> <span aria-hidden="true">×</span></button>
                 </form>
                 {{end}}
             </div>
