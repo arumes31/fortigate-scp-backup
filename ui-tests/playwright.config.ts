@@ -36,7 +36,7 @@ export default defineConfig({
     { name: 'desktop-1920', use: { viewport: { width: 1920, height: 1080 } } },
   ],
   webServer: {
-    command: 'go test ../internal/web -run TestUXAuditPreview -count=1 -v',
+    command: 'go test -timeout=25m ../internal/web -run TestUXAuditPreview -count=1 -v',
     cwd: '.',
     env: {
       FORTISAFE_UX_FIXTURE: '1',

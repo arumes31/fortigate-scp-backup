@@ -4,6 +4,33 @@ import { expect, test } from './quality-fixture';
 
 test.setTimeout(60_000);
 
+for (const target of ['firewall node', 'faceplate close button']) {
+  test(`closing Debug preserves newer focus on the ${target}`, async ({ page }) => {
+    await page.goto('/topology', { waitUntil: 'networkidle' });
+    const node = page.getByRole('button', { name: 'edge.example.te… FortiGate-VM', exact: true });
+    await node.press('Enter');
+    const close = page.getByRole('button', { name: 'Close faceplate' });
+    await expect(close).toBeFocused();
+    await page.getByRole('button', { name: 'Debug', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: /Debug/ });
+    await expect(dialog).toBeVisible();
+
+    // Native dialog.close() queues its close event. Move focus in the same
+    // task so its delayed listener must respect the user's newer destination.
+    const destination = target === 'firewall node' ? node : close;
+    const handle = await destination.elementHandle();
+    await dialog.evaluate((element: HTMLDialogElement, next: SVGElement | HTMLElement) => {
+      return new Promise<void>(resolve => {
+        element.addEventListener('close', () => resolve(), { once: true });
+        element.close();
+        next.focus();
+      });
+    }, handle);
+    await expect(destination).toBeFocused();
+    await expect(dialog).toBeHidden();
+  });
+}
+
 test('maximized topology fills the viewport and restores its normal layout', async ({ page }) => {
   await page.goto('/topology', { waitUntil: 'networkidle' });
   const graph = page.locator('#topoSvg');
@@ -119,7 +146,8 @@ test('topology keeps the graph primary and makes share, debug, maximize, and fac
   await expect(debugDialog).toBeHidden();
   await expect(debugOpener).toBeFocused();
 
-  const firewallNode = page.getByRole('button', { name: 'edge.example.test', exact: true });
+  const firewallNode = page.getByRole('button', { name: 'edge.example.te… FortiGate-VM', exact: true });
+  await expect(firewallNode).toHaveAccessibleDescription('edge.example.test');
   await firewallNode.press('Enter');
   const faceplate = page.locator('#facePanel');
   await expect(faceplate).toHaveAttribute('aria-hidden', 'false');
