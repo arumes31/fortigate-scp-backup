@@ -127,6 +127,8 @@ func (e *Extension) Mount(r chi.Router, deps extension.Deps) error {
 	if err != nil {
 		return fmt.Errorf("initialize conftail Graylog client: %w", err)
 	}
+	// Parallel firewall queries share the original collector memory budget.
+	graylog.maxDecodedBytes = graylogMaxDecodedBytes / firewallPollConcurrency
 	hookwise, err := newHookwiseClient(
 		e.cfg.FgtConfTailHookwiseURL,
 		e.cfg.FgtConfTailHookwiseToken,

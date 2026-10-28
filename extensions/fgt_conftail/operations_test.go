@@ -27,6 +27,8 @@ func TestAdaptivePollIntervalUsesActivityBands(t *testing.T) {
 		{name: "recent changes", lastIngestedAt: now.Add(-20 * time.Minute), want: 5 * time.Minute},
 		{name: "idle", lastIngestedAt: now.Add(-time.Hour), want: 15 * time.Minute},
 		{name: "no events", want: 15 * time.Minute},
+		{name: "history recovery", state: PollState{BacklogFirewalls: 1}, want: time.Minute},
+		{name: "firewall failure", state: PollState{FailedFirewalls: 1}, want: time.Minute},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
