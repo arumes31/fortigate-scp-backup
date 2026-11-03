@@ -178,12 +178,16 @@ func (r *run) count(ctx context.Context, query string) (int64, error) {
 	defer close(cached.ready)
 	params := url.Values{"query": {query}, "limit": {"1"}, "from": {r.window.start.Format(time.RFC3339Nano)}, "to": {r.window.end.Format(time.RFC3339Nano)}}
 	var response struct {
-		TotalResults json.Number      `json:"total_results"`
-		Metadata     responseMetadata `json:"metadata"`
+		TotalResults json.Number `json:"total_results"`
+		From         string      `json:"from"`
+		To           string      `json:"to"`
 	}
 	cached.err = r.request(ctx, http.MethodGet, "/api/search/universal/absolute?"+params.Encode(), nil, &response)
 	if cached.err == nil {
-		cached.err = r.validateEffectiveWindow(response.Metadata)
+		// Universal search returns its effective range at the top level, unlike
+		// aggregation metadata. Require both bounds even for an empty result so
+		// a server-side range limit cannot become a full-window no-data claim.
+		cached.err = r.validateWindow(response.From, response.To)
 	}
 	if cached.err == nil {
 		cached.n, cached.err = nonnegativeInteger(response.TotalResults)
@@ -221,9 +225,16 @@ func (r *run) validateEffectiveWindow(metadata responseMetadata) error {
 	if effective.Type == "" && effective.From == "" && effective.To == "" {
 		return nil // Older endpoints do not return effective range metadata.
 	}
-	from, fromErr := time.Parse(time.RFC3339Nano, effective.From)
-	to, toErr := time.Parse(time.RFC3339Nano, effective.To)
-	if (effective.Type != "" && effective.Type != "absolute") || fromErr != nil || toErr != nil || !from.Equal(r.window.start) || !to.Equal(r.window.end) {
+	if effective.Type != "" && effective.Type != "absolute" {
+		return errors.New("graylog effective time window differs from the requested pinned window")
+	}
+	return r.validateWindow(effective.From, effective.To)
+}
+
+func (r *run) validateWindow(start, end string) error {
+	from, fromErr := time.Parse(time.RFC3339Nano, start)
+	to, toErr := time.Parse(time.RFC3339Nano, end)
+	if fromErr != nil || toErr != nil || !from.Equal(r.window.start) || !to.Equal(r.window.end) {
 		return errors.New("graylog effective time window differs from the requested pinned window")
 	}
 	return nil

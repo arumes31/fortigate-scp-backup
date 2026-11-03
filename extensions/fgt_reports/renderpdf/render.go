@@ -255,6 +255,9 @@ func (d *document) clean(text string) string {
 	d.font(bodySize, false)
 	var out strings.Builder
 	for _, r := range text {
+		if !d.check() {
+			return ""
+		}
 		if r == '\t' {
 			out.WriteByte(' ')
 			continue
@@ -294,7 +297,10 @@ func (d *document) wrap(text string, width, size float64, bold bool) []string {
 		return []string{"-"}
 	}
 	d.font(size, bold)
-	lines, err := d.pdf.SplitTextWithWordWrap(text, width)
+	if !d.check() {
+		return nil
+	}
+	lines, err := wrapText(d.ctx, text, width, d.pdf.MeasureTextWidth)
 	if err != nil {
 		d.err = err
 	}

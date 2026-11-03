@@ -172,6 +172,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		ex.External += ":" + display(vip.get("extport")) + "/" + strings.ToUpper(protocol)
 	}
 	if !portforward {
+		protocol = allIPProtocols
 		port = interval{1, 65535}
 		portOK = true
 		externalPort = interval{1, 65535}
@@ -217,7 +218,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		}
 	}
 	sort.Strings(ex.Groups)
-	supported := knownVersion && vip.parent.name == "firewall vip" && ex.Type == "static-nat" && backendOK == nil && backendIP.Is4() && portOK && externalPortOK && (protocol == "tcp" || protocol == "udp" || protocol == "sctp")
+	supported := knownVersion && vip.parent.name == "firewall vip" && ex.Type == "static-nat" && backendOK == nil && backendIP.Is4() && portOK && externalPortOK && (!portforward || protocol == "tcp" || protocol == "udp" || protocol == "sctp")
 	if _, err := netip.ParseAddr(externalIP); err != nil {
 		supported = false
 	}
@@ -293,12 +294,13 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		}
 	}
 	type policyInfo struct {
-		n           *node
-		sequence    int
-		direct      bool
-		coverage    string
-		source      selector
-		conditional bool
+		n              *node
+		sequence       int
+		direct         bool
+		coverage       string
+		source         selector
+		serviceUnknown bool
+		conditional    bool
 	}
 	var related []policyInfo
 	enabledReferences := 0
@@ -339,7 +341,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		if policy.get("srcaddr-negate") == "enable" {
 			conditional = true
 		}
-		info := policyInfo{policy, i + 1, direct, coverage, source, conditional}
+		info := policyInfo{policy, i + 1, direct, coverage, source, u, conditional}
 		related = append(related, info)
 		trace := reportmodel.PolicyTrace{Sequence: i + 1, ID: display(policy.name), Name: display(policy.get("name")), Action: policy.value("action", "deny"), Source: display(strings.Join(policy.values["srcaddr"], ", ")), Destination: display(strings.Join(policy.values["dstaddr"], ", ")), Service: display(strings.Join(policy.values["service"], ", ")), Schedule: display(policy.value("schedule", "unknown")), Status: policy.value("status", "enable (default)"), VIPMatch: policy.value("match-vip", "omitted / not established"), Evidence: policy.evidence(), SourceInterface: display(strings.Join(policy.values["srcintf"], ", ")), DestinationInterface: display(strings.Join(policy.values["dstintf"], ", ")), Logging: display(policy.value("logtraffic", "not explicit")), Profiles: policyProfiles(policy)}
 		if len(source.countries) > 0 {
@@ -355,7 +357,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		case genericDeny && !inv.central && policy.get("match-vip") == "":
 			trace.Effect = "Generic deny has no explicit match-vip setting; applicability is indeterminate."
 		case coverage == "none" && !u:
-			trace.Effect = "Service does not match the evaluated translated backend port."
+			trace.Effect = "Service does not match the evaluated protocol or translated backend port."
 		case conditional:
 			trace.Effect = "Conditional or unresolved selector; verify schedule, source, and advanced matching settings."
 		case direct:
@@ -421,7 +423,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		accepts++
 		if permit.conditional || permit.coverage != "full" {
 			supported = false
-			if unsupportedPolicy(permit.n) || permit.source.unknown {
+			if unsupportedPolicy(permit.n) || permit.source.unknown || permit.serviceUnknown {
 				geoUnknown = geoSeen
 			}
 		}
@@ -471,7 +473,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 				}
 			}
 			if prior.conditional || prior.coverage != "full" {
-				geoUnknown = geoUnknown || prior.source.unknown || unsupportedPolicy(prior.n)
+				geoUnknown = geoUnknown || prior.source.unknown || unsupportedPolicy(prior.n) || prior.serviceUnknown
 				if len(prior.source.countries) > 0 {
 					partly = true
 					geoUnknown = geoUnknown || prior.source.unknown

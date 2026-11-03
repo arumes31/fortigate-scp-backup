@@ -42,6 +42,12 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	}
 }
 
+// Universal search reports effective bounds at the top level. Keep fixtures
+// faithful to that response contract rather than aggregation's metadata shape.
+func fixtureCount(r *http.Request, total any) map[string]any {
+	return map[string]any{"total_results": total, "from": r.URL.Query().Get("from"), "to": r.URL.Query().Get("to")}
+}
+
 func fixtureTotal(query string) int64 {
 	if strings.Count(query, "timestamp:[") == 2 {
 		return 10
@@ -116,7 +122,9 @@ func TestCollectUsesPinnedAggregatesCoverageAndNonoverlappingBuckets(t *testing.
 				t.Errorf("unexpected count endpoint: %s", r.URL.Path)
 			}
 			query, from, to = r.URL.Query().Get("query"), r.URL.Query().Get("from"), r.URL.Query().Get("to")
-			writeJSON(t, w, map[string]any{"total_results": fixtureTotal(query), "messages": []any{map[string]string{"message": "PRIVATE_RAW_LOG_SECRET"}}})
+			response := fixtureCount(r, fixtureTotal(query))
+			response["messages"] = []any{map[string]string{"message": "PRIVATE_RAW_LOG_SECRET"}}
+			writeJSON(t, w, response)
 		} else {
 			if r.URL.Path != "/api/search/aggregate" || r.Header.Get("X-Requested-By") == "" {
 				t.Error("unexpected aggregation request")
@@ -207,17 +215,17 @@ func TestNoDataMissingFieldsAndErrorsRemainDistinct(t *testing.T) {
 			c := testCollector(t, func(w http.ResponseWriter, r *http.Request) {
 				switch tc.name {
 				case "none":
-					writeJSON(t, w, map[string]any{"total_results": 0})
+					writeJSON(t, w, fixtureCount(r, 0))
 				case "unmapped":
 					n := 10
 					if strings.Contains(r.URL.Query().Get("query"), "_exists_:type") {
 						n = 0
 					}
-					writeJSON(t, w, map[string]any{"total_results": n})
+					writeJSON(t, w, fixtureCount(r, n))
 				case "HTTP":
 					http.Error(w, "PRIVATE_RESPONSE_BODY", http.StatusForbidden)
 				case "malformed":
-					_, _ = w.Write([]byte(`{"total_results":1.5}`))
+					writeJSON(t, w, fixtureCount(r, json.Number("1.5")))
 				case "oversize":
 					_, _ = w.Write([]byte(strings.Repeat(" ", maxResponse+1)))
 				}
@@ -338,7 +346,7 @@ func TestScopeEscapesQueriesAndNeverDropsVDOM(t *testing.T) {
 		if !strings.Contains(r.URL.Query().Get("query"), `vd:"root"`) {
 			t.Error("VDOM scope was removed")
 		}
-		writeJSON(t, w, map[string]any{"total_results": 0})
+		writeJSON(t, w, fixtureCount(r, 0))
 	})
 	s, a, p := observationInput()
 	if got := c.Collect(context.Background(), s, a, p, observationTime); got.Status != "no_data" || calls.Load() != 1 {
@@ -350,7 +358,7 @@ func TestCancellationAndQueryBudget(t *testing.T) {
 	var calls atomic.Int32
 	c := testCollector(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		writeJSON(t, w, map[string]any{"total_results": 1})
+		writeJSON(t, w, fixtureCount(r, 1))
 	})
 	s, a, p := observationInput()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -369,7 +377,7 @@ func TestCancellationAndQueryBudget(t *testing.T) {
 	}
 }
 
-func TestServerAdjustedEffectiveWindowIsRejected(t *testing.T) {
+func TestAggregationEffectiveWindowValidation(t *testing.T) {
 	r := &run{window: timeWindow{observationTime.Add(-24 * time.Hour), observationTime}}
 	for _, offset := range []time.Duration{0, time.Hour, -time.Hour} {
 		metadata := responseMetadata{EffectiveTimerange: aggregateTimerange{Type: "absolute", From: r.window.start.Add(offset).Format(time.RFC3339Nano), To: r.window.end.Format(time.RFC3339Nano)}}
@@ -377,11 +385,59 @@ func TestServerAdjustedEffectiveWindowIsRejected(t *testing.T) {
 			t.Fatalf("offset=%s window-validation=%v", offset, err)
 		}
 	}
-	c := testCollector(t, func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(t, w, map[string]any{"total_results": 0, "metadata": responseMetadata{EffectiveTimerange: aggregateTimerange{Type: "absolute", From: observationTime.Add(-time.Hour).Format(time.RFC3339Nano), To: observationTime.Format(time.RFC3339Nano)}}})
-	})
-	source, a, p := observationInput()
-	if result := c.Collect(context.Background(), source, a, p, observationTime); result.Status != "error" {
-		t.Fatalf("server-adjusted range was presented as an empty requested window: %+v", result)
+	if err := r.validateEffectiveWindow(responseMetadata{}); err != nil {
+		t.Fatalf("older aggregation endpoint without metadata: %v", err)
+	}
+	for _, effective := range []aggregateTimerange{
+		{Type: "relative", From: r.window.start.Format(time.RFC3339Nano), To: r.window.end.Format(time.RFC3339Nano)},
+		{Type: "absolute"},
+		{From: r.window.start.Format(time.RFC3339Nano)},
+		{From: "invalid", To: r.window.end.Format(time.RFC3339Nano)},
+	} {
+		if err := r.validateEffectiveWindow(responseMetadata{EffectiveTimerange: effective}); err == nil {
+			t.Fatalf("invalid aggregation range accepted: %+v", effective)
+		}
+	}
+}
+
+func TestUniversalSearchValidatesTopLevelWindowBeforeNoData(t *testing.T) {
+	from, to := observationTime.Add(-24*time.Hour), observationTime
+	requested := responseMetadata{EffectiveTimerange: aggregateTimerange{Type: "absolute", From: from.Format(time.RFC3339Nano), To: to.Format(time.RFC3339Nano)}}
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"exact zero", map[string]any{"total_results": 0, "from": from.Format(time.RFC3339Nano), "to": to.Format(time.RFC3339Nano)}, "no_data"},
+		{"equivalent offset", map[string]any{"total_results": 0, "from": from.In(time.FixedZone("offset", 2*60*60)).Format(time.RFC3339Nano), "to": to.In(time.FixedZone("offset", 2*60*60)).Format(time.RFC3339Nano)}, "no_data"},
+		{"clamped zero", map[string]any{"total_results": 0, "from": to.Add(-time.Hour).Format(time.RFC3339Nano), "to": to.Format(time.RFC3339Nano)}, "error"},
+		{"clamped nonzero", map[string]any{"total_results": 12, "from": to.Add(-time.Hour).Format(time.RFC3339Nano), "to": to.Format(time.RFC3339Nano)}, "error"},
+		{"changed end", map[string]any{"total_results": 0, "from": from.Format(time.RFC3339Nano), "to": to.Add(-time.Millisecond).Format(time.RFC3339Nano)}, "error"},
+		{"missing bounds", map[string]any{"total_results": 0}, "error"},
+		{"missing end", map[string]any{"total_results": 0, "from": from.Format(time.RFC3339Nano)}, "error"},
+		{"malformed start", map[string]any{"total_results": 0, "from": "invalid", "to": to.Format(time.RFC3339Nano)}, "error"},
+		{"metadata only", map[string]any{"total_results": 0, "metadata": requested}, "error"},
+		{"metadata cannot hide clamp", map[string]any{"total_results": 0, "from": to.Add(-time.Hour).Format(time.RFC3339Nano), "to": to.Format(time.RFC3339Nano), "metadata": requested}, "error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			c := testCollector(t, func(w http.ResponseWriter, req *http.Request) {
+				calls.Add(1)
+				if req.URL.Path != "/api/search/universal/absolute" {
+					t.Errorf("unexpected endpoint: %s", req.URL.Path)
+				}
+				writeJSON(t, w, tc.body)
+			})
+			source, a, p := observationInput()
+			// Collection pins to milliseconds, matching Graylog's response precision.
+			result := c.Collect(context.Background(), source, a, p, observationTime.Add(999*time.Microsecond))
+			if result.Status != tc.want || calls.Load() != 1 || len(result.Datasets) != 0 {
+				t.Fatalf("window validation: %+v, calls=%d", result, calls.Load())
+			}
+			if !result.WindowStart.Equal(from) || !result.WindowEnd.Equal(to) {
+				t.Fatalf("requested observation window changed: %+v", result)
+			}
+		})
 	}
 }

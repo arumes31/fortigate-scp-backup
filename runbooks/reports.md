@@ -108,6 +108,8 @@ Reporting reads the existing `DATA_DIR/fgt-adm-vpn-conf-db.db` source mapping wi
 
 A matched mapping supplies comma-separated `cluster_hostnames` when present, so an HA cluster can include both explicitly mapped member sources. Otherwise it supplies `firewallname`. With no mapping, collection uses the hostname in the captured backup, then the short registered firewall name if the snapshot has no hostname. At most 16 distinct, bounded source identities are accepted.
 
+For a registered FQDN, an alias or short-name match cannot override a different, populated canonical FQDN in `dns_name_full`. Canonical comparisons ignore case and a single terminal DNS dot; Graylog source names retain their original spelling. A conflicting mapping fails collection before any Graylog request. Correct the canonical mapping or the registered firewall identity when an alternate FQDN was previously used. Unambiguous registered short names and legacy mappings with an empty or short canonical name remain supported.
+
 An ambiguous, unreadable, malformed, or unusable existing mapping fails closed. It does not widen the query or fall back to all devices. Each query retains quoted exact source identities, any selected VDOMs, and an absolute UTC time window. Profile documents cannot supply arbitrary Graylog queries or alternate service URLs.
 
 Graylog must expose canonical extracted FortiGate fields. There is no custom report-field mapping editor in this release. Configure the existing Graylog parsing/extraction pipeline to supply the appropriate names and numeric values:
@@ -126,6 +128,8 @@ The collector uses the existing Graylog token with the absolute-search and serve
 ### Observed datasets
 
 The profile chooses a rolling **last 24 hours, last 7 days, or last 30 days** window, pinned once at collection start. Log times are absolute UTC; this window is independent of the configuration backup's time and the schedule's display time zone.
+
+The universal absolute-search response must supply matching top-level `from` and `to` bounds, including when its count is zero. If Graylog shortens the requested range through its Query Time Range Limit, or omits valid bounds, collection fails instead of labeling the full requested period as having no data. Configure Graylog to permit the selected report window. Aggregation responses use their separate effective-window metadata contract.
 
 | Dataset ID | Records and calculation |
 | --- | --- |
@@ -165,6 +169,8 @@ The parser preserves nested configuration, multiline quoted values, VDOM ownersh
 
 Definite policy conclusions target simple static IPv4 TCP/UDP/SCTP port forwards with recognized FortiOS 7.0/7.2/7.4/7.6 headers and resolvable selectors. This is configuration-derived analysis backed by fixtures, not certified emulation of every FortiOS datapath.
 
+One-to-one static mappings are evaluated across all IP protocols. A TCP-only or other narrower service cannot establish denial or geographic protection for the whole mapping. Explicit standard services using `protocol IP` with protocol number `0` have all-protocol scope; a customized service named `ALL` retains its configured meaning. Non-default destination IP-range or FQDN restrictions on custom services remain indeterminate until their address semantics can be established, rather than supplying an affirmative protection result.
+
 VIP/VIP-group references, central NAT backend-address correlation, external versus mapped service ports, prior denies, and earlier allow exceptions are considered. Policy sequence is separate from numeric ID. Explicitly disabled VIPs remain inventoried without active-publication claims. A generic deny with `match-vip disable` does not establish VIP protection; omitted `match-vip` remains uncertain across firmware/export histories.
 
 Virtual servers, IPv6/NAT46/NAT64 objects, advanced/proxy VIP types, dynamic addresses, identity/negated selectors, unsupported modes, and unknown versions remain visible. Where their semantics cannot be established, outcomes and dependent geographic claims are indeterminate. Complete inventory does not mean complete policy evaluation.
@@ -188,6 +194,8 @@ The private `DATA_DIR/fgt-reports.db` SQLite database stores encrypted profile d
 All report routes—including profile operations, catalog, schedule, data, and every export format—require an authenticated administrator or operator. Viewer users are denied server-side. Responses use `Cache-Control: private, no-store`. Generation, profile changes, and downloads are audited using identifiers rather than configuration or log payloads. Profiles and customer exports retain their separate data boundaries; no public sharing endpoint is created.
 
 The host accepts at most 16 MiB of complete decrypted configuration and verifies integrity. Parsing bounds nesting, object counts, selector traversal, relationship expansion, and generated explanation output. Jobs have a two-minute context deadline. Rendering checks input budgets before allocating table content and bounds text/page counts. A complete set is limited to 64 MiB before encryption; exceeding a limit preserves the prior set.
+
+PDF text cleaning and wrapping observe cancellation during their work. Wrapping measures glyph widths incrementally, so long Unicode or zero-width sequences do not trigger repeated measurement of an ever-growing line. Long multiline rows and unbroken labels remain supported within the existing document and page limits; resource failures never publish a truncated PDF.
 
 Graylog collection is bounded to **75 seconds**, **40 requests**, **two concurrent requests**, **45 seconds per request**, and **2 MiB per response**. Real group output is capped at 20 groups per grouping dataset; byte counters have one aggregate result and the trend has 12 buckets. These bounds are reported or fail explicitly rather than silently converting a sampled prefix into a whole-window result.
 

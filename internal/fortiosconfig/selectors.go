@@ -326,12 +326,20 @@ func (inv *inventory) interfaceCoverage(super, sub []string) string {
 }
 
 type interval struct{ lo, hi int }
+
+// A one-to-one address mapping is not limited to the VIP's port-forwarding
+// protocol. Its policy proof must cover all IP protocols, including non-TCP/UDP.
+const allIPProtocols = "all-ip"
+
 type serviceSet struct {
 	ports        map[string][]interval
+	ipProtocols  map[int]bool
 	all, unknown bool
 }
 
-func newServiceSet() serviceSet { return serviceSet{ports: map[string][]interval{}} }
+func newServiceSet() serviceSet {
+	return serviceSet{ports: map[string][]interval{}, ipProtocols: map[int]bool{}}
+}
 
 func portRange(value string) (interval, bool) {
 	if strings.Contains(value, ":") {
@@ -397,7 +405,30 @@ func (inv *inventory) servicesFor(names []string) serviceSet {
 			return
 		}
 		if obj := inv.services[name]; obj != nil {
-			if p := obj.get("protocol"); p != "" && p != "TCP/UDP/SCTP" {
+			// Destination-constrained services need NAT-stage address/FQDN
+			// evaluation. Until then, they cannot prove service coverage. The
+			// default wildcard and the complete IPv4 range are unrestricted.
+			if values, present := obj.values["iprange"]; present && (len(values) != 1 || values[0] != "0.0.0.0" && values[0] != "0.0.0.0-255.255.255.255") {
+				result.unknown = true
+				return
+			}
+			if values, present := obj.values["fqdn"]; present && (len(values) != 1 || values[0] != "") {
+				result.unknown = true
+				return
+			}
+			switch obj.value("protocol", "TCP/UDP/SCTP") {
+			case "IP":
+				number, err := strconv.Atoi(obj.value("protocol-number", "0"))
+				if err != nil || number < 0 || number > 254 {
+					result.unknown = true
+				} else if number == 0 {
+					result.all = true
+				} else {
+					result.ipProtocols[number] = true
+				}
+				return
+			case "TCP/UDP/SCTP":
+			default:
 				result.unknown = true
 				return
 			}
@@ -443,11 +474,30 @@ func (inv *inventory) servicesFor(names []string) serviceSet {
 	return result
 }
 
-// serviceCoverage returns full, partial, or none for a translated port range.
+// serviceCoverage returns full, partial, or none for a translated protocol/port
+// scope. Narrow services cannot prove coverage of a whole-IP address mapping.
 // Unknown service semantics are separate and must never count as a full match.
 func serviceCoverage(s serviceSet, proto string, target interval) (string, bool) {
 	if s.all {
 		return "full", false
+	}
+	if proto == allIPProtocols {
+		if len(s.ports) > 0 || len(s.ipProtocols) > 0 {
+			return "partial", s.unknown
+		}
+		return "none", s.unknown
+	}
+	var number int
+	switch proto {
+	case "tcp":
+		number = 6
+	case "udp":
+		number = 17
+	case "sctp":
+		number = 132
+	}
+	if s.ipProtocols[number] {
+		return "full", s.unknown
 	}
 	ranges := append([]interval(nil), s.ports[proto]...)
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].lo < ranges[j].lo })

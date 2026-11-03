@@ -65,18 +65,24 @@ func (c *Collector) mappedSources(ctx context.Context, fqdn string) ([]string, e
 	}
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
+	// A terminal DNS root dot and letter case do not change a registered
+	// firewall's identity. Keep mapped Graylog source values themselves intact.
+	fqdn, valid := mappingIdentity(fqdn)
+	if !valid {
+		return nil, errors.New("graylog registered firewall identity is invalid")
+	}
 	queries := []struct {
 		sql  string
 		args []any
 	}{
-		{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'') FROM vpn_config WHERE lower(dns_name_full)=lower(?) LIMIT 2`, []any{fqdn}},
-		{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'') FROM vpn_config WHERE lower(firewallname)=lower(?) OR lower(dns_name)=lower(?) LIMIT 2`, []any{fqdn, fqdn}},
+		{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,''), COALESCE(dns_name_full,'') FROM vpn_config WHERE lower(dns_name_full) IN (lower(?), lower(?)) LIMIT 2`, []any{fqdn, fqdn + "."}},
+		{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,''), COALESCE(dns_name_full,'') FROM vpn_config WHERE lower(firewallname) IN (lower(?), lower(?)) OR lower(dns_name) IN (lower(?), lower(?)) LIMIT 2`, []any{fqdn, fqdn + ".", fqdn, fqdn + "."}},
 	}
 	if short := shortHostname(fqdn); short != fqdn {
 		queries = append(queries, struct {
 			sql  string
 			args []any
-		}{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,'') FROM vpn_config WHERE lower(firewallname)=lower(?) OR lower(dns_name)=lower(?) OR lower(dns_name_full)=lower(?) LIMIT 2`, []any{short, short, short}})
+		}{`SELECT COALESCE(firewallname,''), COALESCE(cluster_hostnames,''), COALESCE(dns_name_full,'') FROM vpn_config WHERE lower(firewallname)=lower(?) OR lower(dns_name)=lower(?) OR lower(dns_name_full)=lower(?) LIMIT 2`, []any{short, short, short}})
 	}
 	for _, query := range queries {
 		rows, err := db.QueryContext(ctx, query.sql, query.args...)
@@ -84,9 +90,9 @@ func (c *Collector) mappedSources(ctx context.Context, fqdn string) ([]string, e
 			return nil, errors.New("graylog source mapping lookup failed")
 		}
 		matches := 0
-		var name, cluster string
+		var name, cluster, canonical string
 		for rows.Next() {
-			if err = rows.Scan(&name, &cluster); err != nil {
+			if err = rows.Scan(&name, &cluster, &canonical); err != nil {
 				break
 			}
 			matches++
@@ -100,6 +106,18 @@ func (c *Collector) mappedSources(ctx context.Context, fqdn string) ([]string, e
 			return nil, errors.New("graylog source mapping is ambiguous; collection was not widened")
 		}
 		if matches == 1 {
+			if canonical != "" {
+				canonical, valid = mappingIdentity(canonical)
+				if !valid {
+					return nil, errors.New("graylog source mapping contains an invalid canonical identity")
+				}
+			}
+			// Aliases and unique short names cannot override a known conflicting
+			// canonical FQDN. Legacy empty/short canonical values and explicitly
+			// registered short names retain their existing matching behavior.
+			if strings.Contains(fqdn, ".") && strings.Contains(canonical, ".") && !strings.EqualFold(canonical, fqdn) {
+				return nil, errors.New("graylog source mapping conflicts with the registered firewall identity")
+			}
 			if len(cluster) > 16*257 || len(name) > 256 {
 				return nil, errors.New("graylog source mapping exceeds the supported identity size")
 			}
@@ -119,6 +137,22 @@ func (c *Collector) mappedSources(ctx context.Context, fqdn string) ([]string, e
 		}
 	}
 	return nil, nil
+}
+
+// mappingIdentity accepts legacy unqualified names without imposing a new DNS
+// character policy. Populated malformed values must not become absent or
+// unqualified identities after normalization, so every label must be nonempty.
+func mappingIdentity(value string) (string, bool) {
+	if !validIdentity(value) {
+		return "", false
+	}
+	value = strings.TrimSuffix(value, ".")
+	for _, label := range strings.Split(value, ".") {
+		if label == "" {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func shortHostname(fqdn string) string {
