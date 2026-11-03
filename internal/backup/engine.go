@@ -177,6 +177,7 @@ func (s *Service) backup(fwID int) {
 
 		s.logger.Info("Committed backup and status update", "fw_id", fwID, "size", size)
 		s.emit(fwID, "Success")
+		s.publishCommitted(fwID, dbFilename, checksum)
 		break
 	}
 

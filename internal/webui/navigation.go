@@ -26,6 +26,7 @@ type NavigationOptions struct {
 	PolSplit bool
 	ConfConv bool
 	ConfTail bool
+	Reports  bool
 }
 
 // Navigation builds a fresh grouped navigation model for one request.
@@ -47,6 +48,9 @@ func Navigation(options NavigationOptions) []NavGroup {
 			current("licenses", labels.licenses, "/licenses", "nav-licenses"),
 			current("activity", labels.activity, "/activity_log", "nav-activity"),
 		}},
+	}
+	if options.Reports {
+		groups[0].Items = append(groups[0].Items, current("reports", labels.reports, "/reports/", "nav-activity"))
 	}
 
 	tools := make([]NavItem, 0, 5)
@@ -76,6 +80,7 @@ type navigationLabels struct {
 	dashboard, firewalls, search, audit, topology string
 	ipam, licenses, activity                      string
 	admVPN, confGen, polSplit, confConv, confTail string
+	reports                                       string
 }
 
 func navigationText(lang string) navigationLabels {
@@ -86,6 +91,7 @@ func navigationText(lang string) navigationLabels {
 			ipam: "IPAM", licenses: "Lizenzen", activity: "Aktivitätsprotokoll",
 			admVPN: "ADM-VPN-Konfiguration", confGen: "Richtliniengenerator", polSplit: "Richtlinienaufteilung",
 			confConv: "Konfigurationskonverter", confTail: "Konfigurationsänderungen",
+			reports: "Berichte",
 		}
 	}
 	return navigationLabels{
@@ -94,5 +100,6 @@ func navigationText(lang string) navigationLabels {
 		ipam: "IPAM", licenses: "Licenses", activity: "Activity log",
 		admVPN: "ADM VPN Config", confGen: "Policy Generator", polSplit: "Policy Split",
 		confConv: "Config Converter", confTail: "Configuration Tail",
+		reports: "Reports",
 	}
 }

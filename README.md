@@ -105,6 +105,7 @@ graph TD
 - 🌐 **Bilingual UI (EN/DE)**: English by default, one-click toggle to German — including localized audit findings and upgrade paths.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
+- 📄 **Automatic Firewall Reports**: The **Reports / Berichte** tab generates forwarding/exposure, technical configuration, customer review, and Graylog traffic/security reports. Per-firewall profiles control content, filters, charts, branding, language, and optional schedules. Download PDF, HTML, CSV, JSON, or XML; only the latest successful set is retained, encrypted at rest. Each set identifies its backup, captured settings, observation window, and coverage. See [Reports and Graylog observations](runbooks/reports.md).
 - 🖥️ **Terminal-style Web UI**: A full-width, keyboard-accessible interface with a self-hosted monospace typeface — no external fonts or scripts.
 
 ---
@@ -393,7 +394,7 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `EXT_ADM_VPN_CONF` | `false` | Enable the FGT ADM VPN Config module. |
-| `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster (shared by both Graylog-backed extensions). |
+| `GRAYLOG_URL` | *(Unset)* | API endpoint for the Graylog cluster, shared by Graylog-backed features including reports. |
 | `GRAYLOG_TOKEN` | *(Unset)* | Graylog authentication token. |
 | `GRAYLOG_SEARCH_TIMEFRAME` | `86400` | Device status log scan timeframe in seconds. |
 | `HOOKWISE_URL` | *(Unset)* | Webhook endpoint for HookWise up/down transition logs. |
@@ -401,6 +402,32 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 | `ADM_VPN_DSV_TOKEN` / `ADM_VPN_DSV_TOKEN_FILE` | *(Unset)* | When set, `/fgt-adm-vpn-conf/graylog_dsv` requires this token as `Authorization: Bearer <token>` or `?token=<token>`. |
 | `ADM_VPN_DSV_ALLOWED_CIDRS` | *(Unset)* | Comma-separated CIDRs/IPs allowed to read the DSV feed (client IP resolved like the login limiter). |
 | `ALLOW_INSECURE_HTTP_INTEGRATIONS` | `false` | `GRAYLOG_URL`, `HOOKWISE_URL` and `FGT_CONFTAIL_HOOKWISE_URL` must use `https://`; set `true` to permit plain `http://` (API tokens are then sent in cleartext). |
+
+### Extension: Automatic Firewall Reports
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `EXT_FGT_REPORTS` | `true` | Automatically generate the latest report set per firewall and show Reports to administrators/operators. |
+| `REPORTS_LANGUAGE` | `en` | Default report language, `en` or `de`, for firewalls without a saved profile. A saved profile controls its own report language; the web page follows the signed-in user's preference. |
+
+**Reports / Berichte** provides four report types:
+
+- **Port Forwarding & Exposure**: VIP/virtual-server inventory, ordered policy traces, and preceding geographic restrictions from the saved configuration.
+- **Technical Configuration**: allowlisted inventory, findings, recommendations, selected count charts, and evidence.
+- **Customer Review & Roadmap**: a reduced account-facing projection without internal addresses, object names, raw policy traces, or raw logs.
+- **Traffic & Security Observations**: bounded Graylog observations of received forward-traffic, application, address, policy, UTM, and VPN records, plus reported terminal-session byte counters and a 12-bucket record-count trend.
+
+All four have **PDF, HTML, CSV, JSON, and XML** exports. Downloads use the saved snapshot and captured profile; they do not run fresh Graylog searches. Customer exports keep their reduced data scope in every format.
+
+**Report settings** supports content/section/chart selection and order, VDOM/type/outcome/priority filters, EN/DE, cover and contents pages, portrait/landscape, logo/color branding, plain-text placeholders, and portable profile JSON import/export/copy/reset. Daily, weekly, or monthly schedules supplement automatic generation after every new backup. The schedule page shows the next occurrence and time zone; a single background worker processes queued work, so the selected time is not a completion guarantee.
+
+Traffic reporting reuses `GRAYLOG_URL` and `GRAYLOG_TOKEN` / `GRAYLOG_TOKEN_FILE`; no new Graylog settings are required. It reads the existing FGT ADM VPN Config mapping for exact firewall/HA source identities, then uses the captured hostname/registered short name when no mapping exists. Ambiguous mappings fail closed. Source identity, VDOM filters, and the profile's rolling last-24-hour/7-day/30-day window stay attached to every query. Graylog must extract the canonical FortiGate fields; see [source attribution and field requirements](runbooks/reports.md#graylog-source-attribution-and-field-requirements).
+
+Traffic counts are received log records, **not unique sessions, attacks, bandwidth, uptime, or billing measurements**. Missing fields, no matching records, bounded group results, and collection errors are distinguished. Configuration-only reporting remains available without Graylog; the traffic report states its readiness. The catalog marks SD-WAN/system performance, security ratings, endpoint/Fabric/other-product analytics, and other families requiring additional integration. Arbitrary SQL datasets, automatic distribution, and combined fleet reports are explicitly not implemented; this is not a claim of full FortiAnalyzer parity.
+
+Every successful backup queues its newest configuration. Startup backfills missing sets; minute-based reconciliation recovers missed notifications and scheduled work. The assessment, captured profile, and four PDFs replace the prior set atomically. A total generation or telemetry failure keeps the previous complete set; useful partial observations can publish with explicit limitations. There is no report history, and missed schedule occurrences coalesce into one latest-source job.
+
+Storage is private `DATA_DIR/fgt-reports.db`; profile documents, assessments, and PDFs are encrypted with the shared application cipher. Viewer accounts cannot access report pages, settings, data, or downloads. No live firewall connection, external renderer, or LLM is required. [Full reporting runbook, limits, dataset definitions, and verification](runbooks/reports.md).
 
 ### Extension: FortiGate Configuration Change Tail (ConfTail)
 

@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
@@ -124,6 +125,16 @@ func TestStoreIntegration(t *testing.T) {
 
 	if err := store.InsertBackup(ctx, id, store.Now(), "x.conf", 123, "abc"); err != nil {
 		t.Fatalf("insert backup: %v", err)
+	}
+	committed, err := store.GetBackupByFilename(ctx, id, "x.conf")
+	if err != nil || committed.ID <= 0 || committed.FwID != id || committed.Filename != "x.conf" || committed.SizeBytes != 123 || committed.Checksum != "abc" {
+		t.Fatalf("exact committed backup lookup = %+v, %v", committed, err)
+	}
+	if _, err := store.GetBackupByFilename(ctx, -1, "x.conf"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-firewall backup lookup = %v", err)
+	}
+	if _, err := store.GetBackupByFilename(ctx, id, "missing.conf"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing backup lookup = %v", err)
 	}
 	last, ok, err := store.LastBackupTime(ctx, id)
 	if err != nil || !ok {

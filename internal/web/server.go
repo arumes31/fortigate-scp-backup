@@ -395,6 +395,7 @@ func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData 
 		PolSplit: s.cfg.ExtFgtPolSplit,
 		ConfConv: s.cfg.ExtFgtConfConv,
 		ConfTail: s.cfg.ExtFgtConfTail,
+		Reports:  s.cfg.ExtFgtReports && s.CanReadReports(r),
 	})
 	return base
 }

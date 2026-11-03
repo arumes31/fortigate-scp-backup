@@ -63,6 +63,10 @@ services:
       - "MAIL_PASSWORD_FILE=/run/secrets/mail_password"
       - "MAIL_RECIPIENT=user1@test.com"
 
+      # --- Automatic reports (latest set only, generated after each backup) ---
+      - "EXT_FGT_REPORTS=${EXT_FGT_REPORTS:-true}"
+      - "REPORTS_LANGUAGE=${REPORTS_LANGUAGE:-en}"
+
       # --- Extension: FGT ADM VPN Config (Optional) ---
       - "EXT_ADM_VPN_CONF=${EXT_ADM_VPN_CONF:-false}"
       - "GRAYLOG_URL=${GRAYLOG_URL:-}"

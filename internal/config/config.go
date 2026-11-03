@@ -90,8 +90,11 @@ type Config struct {
 	MailRecipient string
 
 	// Extension: fgt_adm_vpn_conf
-	ExtAdmVpnConf          bool
-	ExtFgtConfGen          bool
+	ExtAdmVpnConf bool
+	ExtFgtConfGen bool
+	// Automatic configuration-derived PDF reporting; enabled by default.
+	ExtFgtReports          bool
+	ReportsLanguage        string
 	GraylogURL             string
 	GraylogToken           string
 	GraylogSearchTimeframe string
@@ -236,6 +239,8 @@ func Load(logger *slog.Logger) *Config {
 
 		ExtAdmVpnConf:          boolenv("EXT_ADM_VPN_CONF", false),
 		ExtFgtConfGen:          boolenv("EXT_FGT_CONF_GEN", false),
+		ExtFgtReports:          boolenv("EXT_FGT_REPORTS", true),
+		ReportsLanguage:        strings.ToLower(strings.TrimSpace(getenv("REPORTS_LANGUAGE", "en"))),
 		GraylogURL:             os.Getenv("GRAYLOG_URL"),
 		GraylogToken:           secretEnv("GRAYLOG_TOKEN", logger),
 		GraylogSearchTimeframe: getenv("GRAYLOG_SEARCH_TIMEFRAME", "86400"),
@@ -321,6 +326,9 @@ func Load(logger *slog.Logger) *Config {
 // any network listener or database migration is started.
 func (c *Config) ValidateRuntime() error {
 	var errs []error
+	if c.ExtFgtReports && c.ReportsLanguage != "en" && c.ReportsLanguage != "de" {
+		errs = append(errs, errors.New("REPORTS_LANGUAGE must be en or de when EXT_FGT_REPORTS is enabled"))
+	}
 	if c.PGPassword == "" {
 		errs = append(errs, errors.New("PG_PASSWORD or PG_PASSWORD_FILE is required"))
 	}
