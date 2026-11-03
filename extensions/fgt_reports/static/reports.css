@@ -1,3 +1,4 @@
+/* Page layout */
 .reports-page {
     max-width: 1800px;
     margin: 0 auto;
@@ -26,6 +27,7 @@
     line-height: 1.7
 }
 
+/* Report cards and scope */
 .report-cards {
     display: grid;
     grid-template-columns: repeat(3,minmax(0,1fr));
@@ -59,6 +61,7 @@
     display: block
 }
 
+/* Tables, status labels, and downloads */
 .report-table-scroll {
     overflow-x: auto;
     min-width: 0;
@@ -122,20 +125,7 @@
     margin-bottom: .75rem
 }
 
-.report-actions {
-    display: flex;
-    gap: .75rem;
-    flex-wrap: wrap;
-    margin: 1.5rem 0
-}
-
-.report-actions .btn {
-    max-width: 100%;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    text-align: left
-}
-
+/* Exposure details */
 .report-exposure {
     border-bottom: 1px solid var(--border,#334155);
     padding: 1rem 0
@@ -183,6 +173,7 @@
     margin-top: .75rem
 }
 
+/* Findings and shared controls */
 .reports-page>.card {
     margin-bottom: 1.2rem
 }
@@ -220,6 +211,7 @@
     display: none!important
 }
 
+/* Responsive overview */
 @media(max-width:900px) {
     .report-cards {
         grid-template-columns: 1fr
@@ -234,6 +226,7 @@
     }
 }
 
+/* Navigation and keyboard focus */
 .report-links {
     display: flex;
     align-items: center;
@@ -260,6 +253,7 @@
     outline-offset: 3px
 }
 
+/* Profile forms */
 .report-profile-form>.card {
     margin-bottom: 1.25rem
 }
@@ -368,6 +362,7 @@
     overflow-wrap: anywhere
 }
 
+/* Schedule fields and save actions */
 .report-time-fields {
     margin: .5rem 0;
     border: 0;
@@ -408,6 +403,7 @@
     overflow-wrap: anywhere
 }
 
+/* Profile reuse and notices */
 .report-reuse-grid {
     display: grid;
     grid-template-columns: repeat(3,minmax(0,1fr));
@@ -441,6 +437,7 @@
     border-left: 4px solid var(--accent,#67d6c3)
 }
 
+/* Catalog and availability */
 .report-catalog-grid {
     display: grid;
     grid-template-columns: repeat(2,minmax(0,1fr));
@@ -462,7 +459,7 @@
     border-color: #3e9b88
 }
 
-.report-status-requires_logs,.report-status-requires_integration,.report-status-requires_graylog {
+.report-status-requires_integration,.report-status-requires_graylog {
     border-color: #a88b5c
 }
 
@@ -475,6 +472,7 @@
     margin: .6rem 0
 }
 
+/* Export downloads */
 .report-export-grid {
     display: grid;
     grid-template-columns: repeat(3,minmax(0,1fr));
@@ -509,6 +507,7 @@
     padding: .25rem .35rem
 }
 
+/* Screen reader utilities */
 .report-sr-only {
     position: absolute;
     width: 1px;
@@ -521,6 +520,7 @@
     border: 0
 }
 
+/* Responsive forms and exports */
 @media(max-width:1000px) {
     .report-reuse-grid,.report-export-grid {
         grid-template-columns: 1fr
@@ -561,6 +561,7 @@
     }
 }
 
+/* Report layout overrides and telemetry metrics */
 .report-cards {
     grid-template-columns: repeat(3,minmax(0,1fr))
 }
@@ -591,6 +592,7 @@
     font-weight: 600
 }
 
+/* Responsive report cards */
 @media(max-width:1100px) {
     .report-cards {
         grid-template-columns: repeat(2,minmax(0,1fr))
@@ -603,6 +605,7 @@
     }
 }
 
+/* Profile macro help */
 .report-macro-help {
     margin-top: 1rem
 }
@@ -630,6 +633,7 @@
     }
 }
 
+/* Scroll container and screen reader positioning */
 .report-table-scroll {
     position: relative
 }
@@ -639,6 +643,7 @@
     top: 0
 }
 
+/* Profile section and chart ordering */
 .report-order-list {
     display: grid;
     gap: .4rem
@@ -670,6 +675,7 @@
     margin-bottom: 0
 }
 
+/* Policy action badges */
 .report-policy-action {
     display: inline-block;
     padding: .2rem .5rem;
@@ -691,6 +697,7 @@
     border-color: var(--success,#65d48a)
 }
 
+/* Graylog query diagnostics */
 .report-query {
     margin: 1rem 0
 }
