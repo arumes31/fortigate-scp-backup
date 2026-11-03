@@ -38,6 +38,33 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestReportsConfiguration(t *testing.T) {
+	t.Setenv("EXT_FGT_REPORTS", "")
+	t.Setenv("REPORTS_LANGUAGE", "")
+	c := Load(discard())
+	if !c.ExtFgtReports || c.ReportsLanguage != "en" {
+		t.Fatalf("report defaults: enabled=%v language=%q", c.ExtFgtReports, c.ReportsLanguage)
+	}
+	t.Setenv("EXT_FGT_REPORTS", "false")
+	t.Setenv("REPORTS_LANGUAGE", " DE ")
+	c = Load(discard())
+	if c.ExtFgtReports || c.ReportsLanguage != "de" {
+		t.Fatalf("report overrides: enabled=%v language=%q", c.ExtFgtReports, c.ReportsLanguage)
+	}
+	c = &Config{PGPassword: "database-password", SessionKey: make([]byte, 32), EncryptionKey: make([]byte, 32),
+		SSHKnownHostsFile: "known_hosts", FortigateConfigPath: "sys_config", SCPTimeout: 60, ExtFgtReports: true}
+	for _, lang := range []string{"en", "de"} {
+		c.ReportsLanguage = lang
+		if err := c.ValidateRuntime(); err != nil {
+			t.Fatalf("valid reports language %q rejected: %v", lang, err)
+		}
+	}
+	c.ReportsLanguage = "fr"
+	if err := c.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "REPORTS_LANGUAGE") {
+		t.Fatalf("unsupported reports language accepted: %v", err)
+	}
+}
+
 func TestLoadOverrides(t *testing.T) {
 	t.Setenv("PORT", "9000")
 	t.Setenv("TOTP_ENABLED", "true")

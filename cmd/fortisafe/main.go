@@ -38,6 +38,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_confgen"
 	fgtconftail "github.com/arumes31/fortigate-scp-backup/extensions/fgt_conftail"
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_polsplit"
+	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_reports"
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 )
 
@@ -198,21 +199,27 @@ func main() {
 	registry.Register(fgt_polsplit.New(cfg, logger))
 	registry.Register(fgt_confconv.New(cfg, logger))
 	registry.Register(fgtconftail.New(cfg, logger))
+	registry.Register(fgt_reports.New(cfg, logger))
+	reportSources := backup.NewReportSources(store, cfg.BackupDir, cipher)
 	if err := runStartupAction(logger, "extensions", func() error {
 		return registry.MountEnabled(router, extension.Deps{
-			Context:        ctx,
-			DB:             store.Pool(),
-			LogActivity:    store.LogActivity,
-			LoginRequired:  sess.LoginRequired,
-			CurrentUser:    func(r *http.Request) string { return sess.User(r).Username },
-			PageBase:       srv.PageBase,
-			BroadcastOp:    srv.BroadcastOp,
-			Schedule:       sched.Schedule,
-			ScheduleCron:   sched.ScheduleCron,
-			RegisterHealth: srv.RegisterHealth,
-			Logger:         logger,
-			TZ:             cfg.TZ,
-			DataDir:        cfg.DataDir,
+			Context:           ctx,
+			DB:                store.Pool(),
+			LogActivity:       store.LogActivity,
+			LoginRequired:     sess.LoginRequired,
+			CurrentUser:       func(r *http.Request) string { return sess.User(r).Username },
+			PageBase:          srv.PageBase,
+			CanReadReports:    srv.CanReadReports,
+			ListReportSources: reportSources.List,
+			ReadReportSource:  reportSources.Read,
+			SubscribeBackup:   backupSvc.SubscribeBackup,
+			BroadcastOp:       srv.BroadcastOp,
+			Schedule:          sched.Schedule,
+			ScheduleCron:      sched.ScheduleCron,
+			RegisterHealth:    srv.RegisterHealth,
+			Logger:            logger,
+			TZ:                cfg.TZ,
+			DataDir:           cfg.DataDir,
 			FirewallCreds: func(ctx context.Context, id int) (string, string, string, int, error) {
 				fw, err := store.GetFirewall(ctx, id)
 				if err != nil {

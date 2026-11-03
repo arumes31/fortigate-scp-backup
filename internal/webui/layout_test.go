@@ -124,6 +124,24 @@ func TestNavigationLocalizesGermanLabels(t *testing.T) {
 	}
 }
 
+func TestReportsNavigationVisibilityAndLocale(t *testing.T) {
+	t.Parallel()
+	if _, ok := flattenItems(Navigation(NavigationOptions{}))["reports"]; ok {
+		t.Fatal("reports shown without authorized visibility")
+	}
+	for _, lang := range []string{"en", "de"} {
+		items := flattenItems(Navigation(NavigationOptions{Lang: lang, Reports: true, Active: "reports"}))
+		assertNavItem(t, items, "reports", "/reports/", true)
+		want := "Reports"
+		if lang == "de" {
+			want = "Berichte"
+		}
+		if items["reports"].Label != want {
+			t.Fatalf("report label %q, want %q", items["reports"].Label, want)
+		}
+	}
+}
+
 func TestSharedShellRendersNamedDesktopUtilities(t *testing.T) {
 	t.Parallel()
 	pageFS := fstest.MapFS{"page.html": {Data: []byte(`{{define "content"}}<h1>Fixture page</h1>{{end}}`)}}

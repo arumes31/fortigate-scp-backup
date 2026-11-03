@@ -88,6 +88,13 @@ func TestViewerRoleIsReadOnly(t *testing.T) {
 		{http.MethodGet, "/download/7/file.conf", true},
 		{http.MethodGet, "/backups/7/compare", true},
 		{http.MethodGet, "/fgt-adm-vpn-conf/export", true},
+		{http.MethodGet, "/reports", true},
+		{http.MethodGet, "/reports/", true},
+		{http.MethodGet, "/reports/7", true},
+		{http.MethodGet, "/reports/7/forwarding.pdf", true},
+		{http.MethodGet, "/reports/api/7", true},
+		{http.MethodHead, "/reports/7/customer.pdf", true},
+		{http.MethodPost, "/reports/7/retry", true},
 		{http.MethodGet, "/dashboard", false},
 		{http.MethodPost, "/search", false},
 	}
@@ -101,6 +108,49 @@ func TestViewerRoleIsReadOnly(t *testing.T) {
 			srv.Routes().ServeHTTP(response, request)
 			if got := response.Code == http.StatusForbidden; got != test.forbidden {
 				t.Fatalf("%s %s status = %d, forbidden want %t", test.method, test.path, response.Code, test.forbidden)
+			}
+		})
+	}
+}
+
+func TestReportPermissionRequiresAuthenticatedOperator(t *testing.T) {
+	for _, role := range []string{models.RoleAdmin, models.RoleOperator, models.RoleViewer} {
+		t.Run(role, func(t *testing.T) {
+			srv := testServer(t)
+			srv.cfg.ExtFgtReports = true
+			login := httptest.NewRequest(http.MethodPost, "/login", nil)
+			login.RemoteAddr = "192.0.2.45:1234"
+			rr := httptest.NewRecorder()
+			if err := srv.sess.Login(rr, login, "report-user", role != models.RoleAdmin, role); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/reports/", nil)
+			req.RemoteAddr = login.RemoteAddr
+			req.AddCookie(cookieNamed(t, rr, "fortisafe"))
+			if srv.CanReadReports(req) {
+				t.Fatal("cookie without authenticated context authorized reports")
+			}
+			called := false
+			srv.sess.LoginRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				want := role != models.RoleViewer
+				if srv.CanReadReports(r) != want {
+					t.Fatalf("report access for %s differs from %v", role, want)
+				}
+				visible := false
+				for _, group := range srv.PageBase(r, "Reports", "reports").Navigation {
+					for _, item := range group.Items {
+						if item.Key == "reports" {
+							visible = true
+						}
+					}
+				}
+				if visible != want {
+					t.Fatalf("reports navigation visible=%v, want %v", visible, want)
+				}
+			})).ServeHTTP(httptest.NewRecorder(), req)
+			if !called {
+				t.Fatal("authenticated report fixture did not reach handler")
 			}
 		})
 	}

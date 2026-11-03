@@ -18,12 +18,21 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
 	"github.com/arumes31/fortigate-scp-backup/internal/mailer"
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"golang.org/x/crypto/ssh"
 )
 
 // StatusHook is notified whenever a firewall's backup status changes, so the UI
 // can update live (e.g. via SSE).
 type StatusHook func(fwID int, status string)
+
+// committedBackupGetter is supplementary to the core backup service: optional
+// notification lookup failures must never affect successful backup persistence.
+type committedBackupGetter interface {
+	GetBackupByFilename(context.Context, int, string) (models.Backup, error)
+}
+
+const committedLookupTimeout = 2 * time.Second
 
 // Service performs firewall backups.
 type Service struct {
@@ -36,9 +45,12 @@ type Service struct {
 	logger          *slog.Logger
 	hostKeyCallback ssh.HostKeyCallback
 
-	sem  chan struct{}              // bounds concurrent backups (#28)
-	hook atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
-	fwMu sync.Map                   // fwID(int) -> *sync.Mutex: serialises runs per firewall
+	sem                chan struct{}              // bounds concurrent backups (#28)
+	hook               atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
+	fwMu               sync.Map                   // fwID(int) -> *sync.Mutex: serialises runs per firewall
+	committedMu        sync.RWMutex
+	committedObservers []func(models.Backup)
+	committedGetter    committedBackupGetter
 
 	// Live operational counters for the dashboard. All in-memory: they describe
 	// activity since process start and reset on restart.
@@ -110,14 +122,19 @@ func New(store *database.Store, m *mailer.Mailer, cfg *config.Config, cipher *cr
 	if n < 1 {
 		n = 1
 	}
+	var committedGetter committedBackupGetter
+	if store != nil {
+		committedGetter = store
+	}
 	return &Service{
-		store:       store,
-		mailer:      m,
-		cfg:         cfg,
-		cipher:      cipher,
-		encrypt:     cipher.Encrypt,
-		replaceFile: replaceFileAtomic,
-		logger:      logger,
+		store:           store,
+		mailer:          m,
+		cfg:             cfg,
+		cipher:          cipher,
+		encrypt:         cipher.Encrypt,
+		replaceFile:     replaceFileAtomic,
+		logger:          logger,
+		committedGetter: committedGetter,
 		hostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return fmt.Errorf("SSH host key verification is not configured for %s", hostname)
 		},
@@ -137,6 +154,62 @@ func (s *Service) SetHostKeyCallback(callback ssh.HostKeyCallback) {
 // stored atomically because backup jobs (which read it via emit) may already be
 // running by the time the web server wires up the hook.
 func (s *Service) SetStatusHook(h StatusHook) { s.hook.Store(&h) }
+
+// SubscribeBackup adds a committed-backup observer without replacing the UI
+// status hook. Observers must enqueue work and return promptly; heavy work must
+// run in their own bounded workers. Registration is safe during backup jobs.
+func (s *Service) SubscribeBackup(observer func(models.Backup)) {
+	if observer == nil {
+		return
+	}
+	s.committedMu.Lock()
+	s.committedObservers = append(s.committedObservers, observer)
+	s.committedMu.Unlock()
+}
+
+// notifyCommitted isolates optional observers from a completed backup's status.
+func (s *Service) notifyCommitted(b models.Backup) {
+	if b.ID <= 0 || b.FwID <= 0 {
+		return
+	}
+	s.committedMu.RLock()
+	observers := append([]func(models.Backup){}, s.committedObservers...)
+	s.committedMu.RUnlock()
+	for _, observer := range observers {
+		func() {
+			defer func() {
+				if recover() != nil {
+					s.logger.Error("committed backup observer failed", "fw_id", b.FwID, "backup_id", b.ID)
+				}
+			}()
+			observer(b)
+		}()
+	}
+}
+
+// publishCommitted looks up the exact inserted row, not a mutable latest row.
+// Lookup failure leaves the backup successful; report startup/reconciliation
+// can recover the missed event from the committed backup catalog.
+func (s *Service) publishCommitted(fwID int, filename, checksum string) {
+	s.committedMu.RLock()
+	hasObservers := len(s.committedObservers) > 0
+	s.committedMu.RUnlock()
+	if !hasObservers || s.committedGetter == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), committedLookupTimeout)
+	defer cancel()
+	b, err := s.committedGetter.GetBackupByFilename(ctx, fwID, filename)
+	if err != nil {
+		s.logger.Error("failed to read committed backup event", "fw_id", fwID)
+		return
+	}
+	if b.FwID == fwID && b.Filename == filename && b.Checksum == checksum {
+		s.notifyCommitted(b)
+		return
+	}
+	s.logger.Warn("committed backup event row no longer available", "fw_id", fwID)
+}
 
 // fwLock returns the per-firewall mutex, creating it on first use.
 func (s *Service) fwLock(fwID int) *sync.Mutex {

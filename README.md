@@ -105,6 +105,7 @@ graph TD
 - 🌐 **Bilingual UI (EN/DE)**: English by default, one-click toggle to German — including localized audit findings and upgrade paths.
 - ✉️ **SMTP Alerts**: Failure notifications with STARTTLS enforced (plaintext delivery is refused).
 - 🔌 **Modular Extension System**: A clean loader mounts self-contained extensions (such as the FGT ADM VPN configuration module) with their own routes, storage, and background workers.
+- 📄 **Automatic PDF Reports**: The **Reports / Berichte** tab creates a forwarding/exposure report, technical configuration report, and customer review after each successful backup. Only the latest successful set per firewall is retained, encrypted at rest. Each report identifies its source backup and analysis limitations. See [Automatic Reports](runbooks/reports.md).
 - 🖥️ **Terminal-style Web UI**: A full-width, keyboard-accessible interface with a self-hosted monospace typeface — no external fonts or scripts.
 
 ---
@@ -401,6 +402,17 @@ Mail delivery requires STARTTLS and selects `AUTH PLAIN` or `AUTH LOGIN` from th
 | `ADM_VPN_DSV_TOKEN` / `ADM_VPN_DSV_TOKEN_FILE` | *(Unset)* | When set, `/fgt-adm-vpn-conf/graylog_dsv` requires this token as `Authorization: Bearer <token>` or `?token=<token>`. |
 | `ADM_VPN_DSV_ALLOWED_CIDRS` | *(Unset)* | Comma-separated CIDRs/IPs allowed to read the DSV feed (client IP resolved like the login limiter). |
 | `ALLOW_INSECURE_HTTP_INTEGRATIONS` | `false` | `GRAYLOG_URL`, `HOOKWISE_URL` and `FGT_CONFTAIL_HOOKWISE_URL` must use `https://`; set `true` to permit plain `http://` (API tokens are then sent in cleartext). |
+
+### Extension: Automatic Firewall Reports
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `EXT_FGT_REPORTS` | `true` | Automatically generate three configuration-derived PDFs per firewall and show the Reports navigation item to admins/operators. |
+| `REPORTS_LANGUAGE` | `en` | PDF template language: `en` or `de`. Changing it replaces the latest sets on reconciliation. The web page follows the signed-in user's language. |
+
+Every successful backup queues its newest configuration. Startup backfills missing sets, and a one-minute reconciliation recovers missed notifications. Reports are generated in a bounded background worker; backup success does not depend on report generation. The forwarding, technical, and customer PDFs replace the previous set atomically. Failed generation retains the previous successful set and displays its older source timestamp; there is no report history.
+
+Report storage is the private `DATA_DIR/fgt-reports.db` SQLite database. Assessments and PDFs are encrypted with the shared application cipher. Viewer accounts cannot access report pages, data, or downloads. No firewall connection, external renderer, or LLM is used by reporting. [Report contents, analysis coverage, lifecycle, and verification](runbooks/reports.md).
 
 ### Extension: FortiGate Configuration Change Tail (ConfTail)
 

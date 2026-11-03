@@ -16,6 +16,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	"github.com/arumes31/fortigate-scp-backup/internal/reportmodel"
 	"github.com/arumes31/fortigate-scp-backup/internal/webui"
 )
 
@@ -42,6 +44,18 @@ type Deps struct {
 	// session, locale, configuration, and active navigation route. Extensions
 	// provide only their page title and stable navigation key.
 	PageBase PageBaseProvider
+	// CanReadReports authorizes configuration-derived reports after
+	// LoginRequired. It is independent of navigation visibility.
+	CanReadReports func(*http.Request) bool
+	// ListReportSources returns the newest committed backup for each firewall.
+	// ReadReportSource pins one backup ID, verifies its ownership and checksum,
+	// and returns complete bounded plaintext; it never truncates or substitutes.
+	ListReportSources func(context.Context) ([]reportmodel.Source, error)
+	ReadReportSource  func(context.Context, int, int) (reportmodel.Source, []byte, error)
+	// SubscribeBackup registers a process-lifetime committed-backup observer.
+	// Observers must only enqueue bounded work; parsing/rendering belongs to
+	// their worker. Existing status hooks remain independent.
+	SubscribeBackup func(func(models.Backup))
 	// FirewallCreds returns a firewall's SSH connection details with the password
 	// decrypted, for extensions that reach the device directly (e.g. live CLI
 	// diagnostics). nil when the host did not wire it.

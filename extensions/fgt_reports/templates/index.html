@@ -1,0 +1,25 @@
+{{define "head"}}<link rel="stylesheet" href="/reports/static/reports.css">{{end}}
+{{define "content"}}
+<div class="page reports-page">
+  <div class="reports-heading"><div><h1 class="page-title"><span class="accent-bar"></span>{{R .Base.Lang "title"}}</h1><p>{{R .Base.Lang "intro"}}</p></div><a class="btn" href="/reports/">{{R .Base.Lang "refresh"}}</a></div>
+  <div class="report-cards">
+    <article class="card"><span class="report-number">01</span><h2>{{R .Base.Lang "forwarding"}}</h2><p>{{R .Base.Lang "forwarding_help"}}</p></article>
+    <article class="card"><span class="report-number">02</span><h2>{{R .Base.Lang "technical"}}</h2><p>{{R .Base.Lang "technical_help"}}</p></article>
+    <article class="card"><span class="report-number">03</span><h2>{{R .Base.Lang "customer"}}</h2><p>{{R .Base.Lang "customer_help"}}</p></article>
+  </div>
+  <p class="report-scope">{{R .Base.Lang "scope"}} <span>{{R .Base.Lang "language"}}: <strong>{{.Language}}</strong></span></p>
+  {{if .Rows}}
+  <div class="card"><label for="report-search">{{R .Base.Lang "search"}}</label><input class="form-control" id="report-search" type="search" autocomplete="off" data-report-search>
+    <div class="report-table-scroll" tabindex="0" role="region" aria-label="{{R .Base.Lang "title"}}"><table class="report-table"><thead><tr><th>{{R .Base.Lang "firewall"}}</th><th>{{R .Base.Lang "newest"}}</th><th>{{R .Base.Lang "state"}}</th><th>{{R .Base.Lang "downloads"}}</th></tr></thead><tbody>
+    {{range .Rows}}<tr data-report-row>
+      <td><strong>{{.Firewall}}</strong><div class="report-muted">#{{.FirewallID}}</div></td>
+      <td>{{.LatestBackup}}{{if .Ready}}<div class="report-muted">{{R $.Base.Lang "report_backup"}}: {{.ReportBackup}}</div><div class="report-muted">{{R $.Base.Lang "generated"}}: {{.Generated}}</div>{{end}}</td>
+      <td><span class="report-status report-status-{{.Status}}">{{R $.Base.Lang .Status}}</span>{{if .Limited}}<p class="report-warning">{{R $.Base.Lang "limited"}}</p>{{end}}{{if .Stale}}<p class="report-warning">{{R $.Base.Lang "stale"}}</p>{{end}}{{if .Error}}<p class="report-warning">{{R $.Base.Lang (printf "error_%s" .Error)}}</p>{{end}}</td>
+      <td>{{if .Ready}}<div class="report-downloads"><a href="/reports/{{.FirewallID}}/forwarding.pdf">{{R $.Base.Lang "forwarding"}} · PDF</a><a href="/reports/{{.FirewallID}}/technical.pdf">{{R $.Base.Lang "technical"}} · PDF</a><a href="/reports/{{.FirewallID}}/customer.pdf">{{R $.Base.Lang "customer"}} · PDF</a><a class="btn btn-sm" href="/reports/{{.FirewallID}}">{{R $.Base.Lang "preview"}}</a></div>{{else}}<p>{{R $.Base.Lang "pending"}}</p>{{end}}
+      <form method="post" action="/reports/{{.FirewallID}}/regenerate">{{template "csrf" $.Base.CSRFToken}}<button class="btn btn-sm" type="submit"{{if eq .Status "running"}} disabled{{end}}>{{R $.Base.Lang "regenerate"}}</button></form></td>
+    </tr>{{end}}
+    </tbody></table></div>
+  </div>{{else}}<div class="card report-empty"><p>{{R .Base.Lang "empty"}}</p></div>{{end}}
+</div>
+{{end}}
+{{define "scripts"}}<script src="/reports/static/reports.js" defer></script>{{end}}

@@ -39,6 +39,9 @@ func (s *Server) enforceRoles(next http.Handler) http.Handler {
 // viewerMayAccess reports whether a read-only viewer may perform the request.
 func viewerMayAccess(r *http.Request) bool {
 	path := r.URL.Path
+	if path == "/reports" || strings.HasPrefix(path, "/reports/") {
+		return false
+	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		if strings.HasPrefix(path, "/backups/") && strings.HasSuffix(path, "/compare") {
@@ -53,4 +56,12 @@ func viewerMayAccess(r *http.Request) bool {
 	default:
 		return viewerUnsafeAllowed[path]
 	}
+}
+
+// CanReadReports is the host authorization boundary for derived configuration
+// exports. A valid cookie alone is insufficient: LoginRequired must establish
+// the authenticated request context before an extension calls this method.
+func (s *Server) CanReadReports(r *http.Request) bool {
+	d, ok := s.sess.AuthenticatedUser(r)
+	return ok && (d.Role == models.RoleAdmin || d.Role == models.RoleOperator)
 }
