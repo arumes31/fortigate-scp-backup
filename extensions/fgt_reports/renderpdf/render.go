@@ -38,15 +38,17 @@ const (
 type block struct {
 	Heading  string     `json:"heading,omitempty" xml:"heading,omitempty"`
 	Text     string     `json:"text,omitempty" xml:"text,omitempty"`
+	Layout   string     `json:"layout,omitempty" xml:"layout,omitempty"`
+	Badge    string     `json:"badge,omitempty" xml:"badge,omitempty"`
 	Columns  []string   `json:"columns,omitempty" xml:"columns>column,omitempty"`
 	Widths   []float64  `json:"-" xml:"-"`
 	Rows     [][]string `json:"rows,omitempty" xml:"-"`
+	Actions  []string   `json:"actions,omitempty" xml:"actions>action,omitempty"`
 	Chart    *chart     `json:"chart,omitempty" xml:"chart,omitempty"`
 	Contents bool       `json:"-" xml:"-"`
 }
 
-// content is a detached presentation model. In particular, customer content
-// never retains the original assessment, raw findings, or technical evidence.
+// content is a detached presentation model shared by PDF and the other exports.
 type content struct {
 	Title          string  `json:"title" xml:"title"`
 	Identification string  `json:"identification" xml:"identification"`
@@ -75,7 +77,7 @@ type document struct {
 
 // Render returns a complete PDF or an error; it never truncates a report to
 // meet a page/resource limit. lang must be en or de, and kind must be one of
-// forwarding, technical, or customer. Source times are rendered with offsets.
+// forwarding, technical, or traffic. Source times are rendered with offsets.
 func Render(ctx context.Context, source reportmodel.Source, assessment reportmodel.Assessment, kind, lang string) ([]byte, error) {
 	if lang != "en" && lang != "de" {
 		return nil, errors.New("reports: unsupported language")
@@ -133,10 +135,19 @@ func renderDocument(ctx context.Context, source reportmodel.Source, view content
 		if !d.check() {
 			break
 		}
+		if b.Layout == "publication" || b.Layout == "finding" {
+			d.record(b)
+			starts[index] = d.page
+			continue
+		}
+		heading := b.Heading
+		if b.Layout == "inventory" {
+			heading += " (" + b.Badge + ")"
+		}
 		if len(b.Columns) > 0 {
-			opening := d.tableOpeningHeight(b.Columns, b.Widths, b.Rows)
-			if b.Heading != "" {
-				opening += 17 + float64(len(d.wrap(b.Heading, d.width-2*margin, 13, true)))*18
+			opening := d.tableOpeningHeight(heading, b.Columns, b.Widths, b.Rows, b.Actions)
+			if heading != "" {
+				opening += 17 + float64(len(d.wrap(heading, d.width-2*margin, 13, true)))*18
 			}
 			if b.Text != "" {
 				opening += 6 + float64(len(d.wrap(b.Text, d.width-2*margin, bodySize, false)))*lineHeight
@@ -146,8 +157,8 @@ func renderDocument(ctx context.Context, source reportmodel.Source, view content
 			}
 			d.ensure(math.Min(opening, d.bottom-contentTop))
 		}
-		if b.Heading != "" {
-			d.heading(b.Heading)
+		if heading != "" {
+			d.heading(heading)
 		}
 		starts[index] = d.page
 		if b.Text != "" {
@@ -158,7 +169,7 @@ func renderDocument(ctx context.Context, source reportmodel.Source, view content
 			d.chart(b.Chart)
 		}
 		if len(b.Columns) > 0 {
-			d.table(b.Heading, b.Columns, b.Widths, b.Rows)
+			d.table(heading, b.Columns, b.Widths, b.Rows, b.Actions)
 			d.y += 10
 		}
 	}
@@ -338,12 +349,12 @@ func (d *document) heading(text string) {
 
 // table repeats its column headings and splits oversized rows across pages.
 // No row is clipped, and long unbroken object names wrap at glyph boundaries.
-func (d *document) table(title string, columns []string, relativeWidths []float64, rows [][]string) {
+func (d *document) table(title string, columns []string, relativeWidths []float64, rows [][]string, actions []string) {
 	if len(columns) == 0 || !d.check() {
 		return
 	}
 	widths := d.tableWidths(len(columns), relativeWidths)
-	d.ensure(d.tableOpeningHeight(columns, relativeWidths, rows))
+	d.ensure(d.tableOpeningHeight(title, columns, relativeWidths, rows, actions))
 	headers := make([][]string, len(columns))
 	headerLines := 1
 	for i, title := range columns {
@@ -376,22 +387,17 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 		if !d.check() {
 			return
 		}
-		cells := make([][]string, len(columns))
-		rowLines := 1
-		for i := range columns {
-			value := ""
-			if i < len(row) {
-				value = row[i]
-			}
-			cells[i] = d.wrap(value, widths[i]-2*cellPad, 8.5, false)
-			rowLines = max(rowLines, len(cells[i]))
+		action := ""
+		if rowIndex < len(actions) {
+			action = actions[rowIndex]
 		}
+		layout := d.wrapTableRow(widths, row, action)
 		// A normal-sized row stays together whenever it can fit on a fresh page.
-		rowHeight := float64(rowLines)*12 + 2*cellPad
-		if rowHeight <= d.bottom-contentTop-headerHeight && d.y+rowHeight > d.bottom {
+		rowHeight := float64(layout.lines)*12 + 2*cellPad
+		if rowHeight <= d.tableRowRoom(title, headerHeight) && d.y+rowHeight > d.bottom {
 			continueTable()
 		}
-		for offset := 0; offset < rowLines; {
+		for offset := 0; offset < layout.lines; {
 			if !d.check() {
 				return
 			}
@@ -400,16 +406,24 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 				continueTable()
 				continue
 			}
-			count := min(rowLines-offset, available)
+			count := min(layout.lines-offset, available)
 			height := float64(count)*12 + 2*cellPad
 			if rowIndex%2 == 0 {
 				d.pdf.SetFillColor(246, 248, 250)
 				d.pdf.RectFromUpperLeftWithStyle(margin, d.y, d.width-2*margin, height, "F")
 			}
 			x := margin
-			for i, lines := range cells {
+			for i, lines := range layout.cells {
+				if i == 1 && offset < layout.actionLines {
+					d.pdf.SetFillColor(layout.tone.Background[0], layout.tone.Background[1], layout.tone.Background[2])
+					d.pdf.RectFromUpperLeftWithStyle(x+3, d.y+3, widths[i]-6, float64(min(count, layout.actionLines-offset))*12+8, "F")
+				}
 				for line := 0; line < count && offset+line < len(lines); line++ {
-					d.drawText(x+cellPad, d.y+cellPad+8.5+float64(line)*12, lines[offset+line], 8.5, false, [3]uint8{26, 45, 60})
+					color, bold := [3]uint8{26, 45, 60}, false
+					if i == 1 && offset+line < layout.actionLines {
+						color, bold = layout.tone.Foreground, true
+					}
+					d.drawText(x+cellPad, d.y+cellPad+8.5+float64(line)*12, lines[offset+line], 8.5, bold, color)
 				}
 				x += widths[i]
 			}
@@ -418,7 +432,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 			d.pdf.Line(margin, d.y+height, d.width-margin, d.y+height)
 			d.y += height
 			offset += count
-			if offset < rowLines {
+			if offset < layout.lines {
 				continueTable()
 			}
 		}
@@ -443,16 +457,63 @@ func (d *document) tableWidths(count int, relativeWidths []float64) []float64 {
 
 // Keep the initial table heading with data. Very tall rows are allowed to
 // split, so reserve only a useful first portion of such a row.
-func (d *document) tableOpeningHeight(columns []string, relativeWidths []float64, rows [][]string) float64 {
+func (d *document) tableOpeningHeight(title string, columns []string, relativeWidths []float64, rows [][]string, actions []string) float64 {
 	widths := d.tableWidths(len(columns), relativeWidths)
 	headerLines, rowLines := 1, 1
 	for i, column := range columns {
 		headerLines = max(headerLines, len(d.wrap(column, widths[i]-2*cellPad, 8.5, true)))
-		if len(rows) > 0 && i < len(rows[0]) {
-			rowLines = max(rowLines, len(d.wrap(rows[0][i], widths[i]-2*cellPad, 8.5, false)))
-		}
 	}
-	return float64(headerLines)*12 + 2*cellPad + math.Min(float64(rowLines)*12+2*cellPad, 250)
+	if len(rows) > 0 {
+		action := ""
+		if len(actions) > 0 {
+			action = actions[0]
+		}
+		rowLines = d.wrapTableRow(widths, rows[0], action).lines
+	}
+	headerHeight := float64(headerLines)*12 + 2*cellPad
+	rowHeight := float64(rowLines)*12 + 2*cellPad
+	if rowHeight > d.tableRowRoom(title, headerHeight) {
+		rowHeight = math.Min(rowHeight, 250)
+	}
+	return headerHeight + rowHeight
+}
+
+func (d *document) tableRowRoom(title string, headerHeight float64) float64 {
+	room := d.bottom - contentTop - headerHeight
+	if title != "" {
+		room -= 17 + float64(len(d.wrap(title+choose(d.lang, " (continued)", " (Fortsetzung)"), d.width-2*margin, 13, true)))*18
+	}
+	return room
+}
+
+type tableRowLayout struct {
+	cells              [][]string
+	lines, actionLines int
+	tone               actionTone
+}
+
+// Use the same font metrics when reserving a table opening and drawing rows.
+// In particular, bold action labels can wrap before their regular equivalent.
+func (d *document) wrapTableRow(widths []float64, row []string, action string) tableRowLayout {
+	result := tableRowLayout{cells: make([][]string, len(widths)), lines: 1, tone: toneForAction(action)}
+	for i, width := range widths {
+		value := ""
+		if i < len(row) {
+			value = row[i]
+		}
+		if i == 1 && result.tone.Class != "" {
+			first, rest, _ := strings.Cut(value, "\n")
+			result.cells[i] = d.wrap(first, width-2*cellPad, 8.5, true)
+			result.actionLines = len(result.cells[i])
+			if rest != "" {
+				result.cells[i] = append(result.cells[i], d.wrap(rest, width-2*cellPad, 8.5, false)...)
+			}
+		} else {
+			result.cells[i] = d.wrap(value, width-2*cellPad, 8.5, false)
+		}
+		result.lines = max(result.lines, len(result.cells[i]))
+	}
+	return result
 }
 
 func choose(lang, en, de string) string {

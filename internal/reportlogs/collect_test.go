@@ -309,7 +309,7 @@ func TestMappingExactPrecedenceAmbiguityAndFallback(t *testing.T) {
 	c := New(nil, dir)
 	source := reportmodel.Source{Firewall: "fw.customer-a.test"}
 	hosts, err := c.sources(context.Background(), source, reportmodel.Assessment{Hostname: "ignored-config-host"})
-	if err != nil || strings.Join(hosts, ",") != "a-primary,a-secondary" {
+	if err != nil || strings.Join(hosts.hosts, ",") != "a-primary,a-secondary" {
 		t.Fatalf("canonical identity did not win: %v %v", hosts, err)
 	}
 	source.Firewall = "fw.unknown.test"
@@ -318,11 +318,11 @@ func TestMappingExactPrecedenceAmbiguityAndFallback(t *testing.T) {
 	}
 	source.Firewall = "unique.test"
 	hosts, err = c.sources(context.Background(), source, reportmodel.Assessment{Hostname: "config-host"})
-	if err != nil || strings.Join(hosts, ",") != "config-host" {
+	if err != nil || strings.Join(hosts.hosts, ",") != "config-host" {
 		t.Fatalf("configuration hostname fallback: %v %v", hosts, err)
 	}
 	hosts, err = c.sources(context.Background(), source, reportmodel.Assessment{})
-	if err != nil || strings.Join(hosts, ",") != "unique" {
+	if err != nil || strings.Join(hosts.hosts, ",") != "unique" {
 		t.Fatalf("short firewall fallback: %v %v", hosts, err)
 	}
 	if _, err = db.Exec(`INSERT INTO vpn_config VALUES (?,?,?,?)`, "fw.customer-a.test", "duplicate", "duplicate", "bad-node"); err != nil {

@@ -30,7 +30,7 @@ func (e *Extension) exportXML(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) exportReport(w http.ResponseWriter, r *http.Request, format, mime string) {
 	kind := chi.URLParam(r, "kind")
 	switch kind {
-	case "forwarding", "technical", "customer", "traffic":
+	case "forwarding", "technical", "traffic":
 	default:
 		http.NotFound(w, r)
 		return

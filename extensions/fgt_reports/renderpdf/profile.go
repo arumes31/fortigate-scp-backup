@@ -34,7 +34,7 @@ func prepare(ctx context.Context, source reportmodel.Source, a reportmodel.Asses
 	if err := ctx.Err(); err != nil {
 		return empty, options, "", err
 	}
-	if kind != "forwarding" && kind != "technical" && kind != "customer" && kind != "traffic" {
+	if kind != "forwarding" && kind != "technical" && kind != "traffic" {
 		return empty, options, "", errors.New("reports: unsupported report type")
 	}
 	p, err := reportmodel.NormalizeProfile(p)
@@ -42,7 +42,7 @@ func prepare(ctx context.Context, source reportmodel.Source, a reportmodel.Asses
 		return empty, options, "", fmt.Errorf("reports: invalid profile: %w", err)
 	}
 	// Select copies slices for isolation, so bound the full input before it is
-	// called, including technical fields that a customer projection will omit.
+	// called, including technical fields omitted by the selected view.
 	for _, scope := range []string{"forwarding", "technical"} {
 		if err := validateProjection(ctx, source, a, scope); err != nil {
 			return empty, options, "", err
@@ -63,9 +63,6 @@ func prepare(ctx context.Context, source reportmodel.Source, a reportmodel.Asses
 		view = trafficContent(source, selected.Telemetry, p.Language)
 	} else {
 		view = projectVisible(source, selected, kind, p.Language, p.ShowInventory, p.ShowFindings, p.ShowTraces)
-	}
-	if kind == "customer" && p.Customer != "" {
-		view.Identification = p.Customer
 	}
 	view.Company = p.Organization
 	macros := map[string]string{
@@ -97,7 +94,7 @@ func prepare(ctx context.Context, source reportmodel.Source, a reportmodel.Asses
 	if hash == "" {
 		return empty, options, "", errors.New("reports: profile hash unavailable")
 	}
-	profile := profileBlock(p, selection, hash, kind)
+	profile := profileBlock(p, selection, hash)
 	var extra []block
 	extra = append(extra, profile)
 	if kind != "traffic" {
@@ -107,14 +104,14 @@ func prepare(ctx context.Context, source reportmodel.Source, a reportmodel.Asses
 			}
 		}
 	}
-	view.Blocks = append(extra, view.Blocks...)
-	if (kind == "technical" || kind == "customer") && selected.Telemetry != nil {
-		view.Blocks = append(view.Blocks, telemetrySummary(selected.Telemetry, p.Language, kind == "customer")...)
+	if kind == "forwarding" {
+		// Put the requested publication details before optional charts and profile metadata.
+		view.Blocks = append(view.Blocks, extra...)
+	} else {
+		view.Blocks = append(extra, view.Blocks...)
 	}
-	if kind == "customer" {
-		for i := range view.Blocks {
-			view.Blocks[i].Contents = view.Blocks[i].Heading != ""
-		}
+	if kind == "technical" && selected.Telemetry != nil {
+		view.Blocks = append(view.Blocks, telemetrySummary(selected.Telemetry, p.Language)...)
 	}
 	options = renderOptions{language: p.Language, landscape: p.Orientation == "landscape", cover: p.Cover, contents: p.Contents}
 	rgb, _ := hex.DecodeString(p.Accent[1:]) // NormalizeProfile admits only #RRGGBB.
@@ -166,22 +163,16 @@ func expandMacros(input string, values map[string]string, maxRunes int) (string,
 	return value, nil
 }
 
-func profileBlock(p reportmodel.Profile, selection reportmodel.Selection, hash, kind string) block {
+func profileBlock(p reportmodel.Profile, selection reportmodel.Selection, hash string) block {
 	lang := p.Language
 	rows := [][]string{
 		{choose(lang, "Profile revision", "Profilrevision"), hash},
 		{choose(lang, "Selected configuration view", "Gewählte Konfigurationsansicht"), localized(lang, selection.Description, selection.DescriptionDE)},
 	}
-	if kind != "customer" {
-		rows = append(rows, []string{choose(lang, "Profile", "Profil"), p.Name})
-	}
+	rows = append(rows, []string{choose(lang, "Profile", "Profil"), p.Name})
 	vdoms := choose(lang, "All virtual domains", "Alle virtuellen Domänen")
 	if len(p.Filters.VDOMs) > 0 {
-		if kind == "customer" {
-			vdoms = fmt.Sprintf(choose(lang, "%d selected virtual-domain filters", "%d ausgewählte Domänenfilter"), len(p.Filters.VDOMs))
-		} else {
-			vdoms = strings.Join(p.Filters.VDOMs, ", ")
-		}
+		vdoms = strings.Join(p.Filters.VDOMs, ", ")
 	}
 	rows = append(rows, []string{"VDOM", vdoms})
 	for _, filter := range []struct {
@@ -215,9 +206,7 @@ func profileBlock(p reportmodel.Profile, selection reportmodel.Selection, hash, 
 		return choose(lang, "Hidden by profile", "Im Profil ausgeblendet")
 	}
 	rows = append(rows, []string{choose(lang, "Detailed findings", "Detaillierte Feststellungen"), shown(p.ShowFindings)})
-	if kind != "customer" {
-		rows = append(rows, []string{choose(lang, "Technical inventory", "Technisches Inventar"), shown(p.ShowInventory)}, []string{choose(lang, "Policy traces", "Richtlinienpfade"), shown(p.ShowTraces)})
-	}
+	rows = append(rows, []string{choose(lang, "Technical inventory", "Technisches Inventar"), shown(p.ShowInventory)}, []string{choose(lang, "Policy traces", "Richtlinienpfade"), shown(p.ShowTraces)})
 	b := mainBlock(fields(choose(lang, "Report profile and filters", "Berichtsprofil und Filter"), lang, rows))
 	b.Text = choose(lang, "Configuration filters apply after full policy analysis. VDOM filters also scope Graylog queries. Publication type, publication outcome and finding-priority filters apply only to configuration observations. Logs retain their separate device and time-window scope.", "Konfigurationsfilter werden nach der vollständigen Richtlinienanalyse angewandt. VDOM-Filter grenzen auch Graylog-Abfragen ein. Filter für Veröffentlichungstyp, Veröffentlichungsergebnis und Feststellungspriorität gelten nur für Konfigurationsbeobachtungen. Logs behalten ihren eigenen Geräte- und Zeitumfang.")
 	return b
@@ -280,6 +269,14 @@ func cleanContent(ctx context.Context, c *content, logoBytes int) error {
 		}
 		if err := clean(&b.Text); err != nil {
 			return err
+		}
+		if err := clean(&b.Badge); err != nil {
+			return err
+		}
+		for j := range b.Actions {
+			if err := clean(&b.Actions[j]); err != nil {
+				return err
+			}
 		}
 		for j := range b.Columns {
 			if err := clean(&b.Columns[j]); err != nil {

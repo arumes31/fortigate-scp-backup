@@ -41,6 +41,7 @@ func (c *Collector) Collect(ctx context.Context, source reportmodel.Source, a re
 		result.Reason = "The report observation settings are invalid."
 		return result
 	}
+	result.VDOMs = append([]string{}, p.Filters.VDOMs...)
 	duration := 24 * time.Hour
 	switch p.TimeRange {
 	case "last7d":
@@ -65,11 +66,12 @@ func (c *Collector) Collect(ctx context.Context, source reportmodel.Source, a re
 	}
 	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
-	result.Sources, err = c.sources(ctx, source, a)
+	resolved, err := c.sources(ctx, source, a)
 	if err != nil {
 		result.Reason = err.Error()
 		return result
 	}
+	result.Sources, result.SourceOrigin, result.SourceMatch = resolved.hosts, resolved.origin, resolved.match
 	if validIdentity(source.Firewall) {
 		result.DeviceIdentity = source.Firewall
 	} else {
@@ -77,6 +79,11 @@ func (c *Collector) Collect(ctx context.Context, source reportmodel.Source, a re
 	}
 	r := &run{collector: c, window: window, sem: make(chan struct{}, 2), counts: map[string]*countResult{}}
 	base := scopeQuery(result.Sources, p.Filters.VDOMs, window)
+	if len(base) > maxScopeQueryBytes {
+		result.Reason = "The source and VDOM selectors exceed the supported query size."
+		return result
+	}
+	result.Query = base
 	total, err := r.count(ctx, base)
 	if err != nil {
 		result.Reason = err.Error()
@@ -84,7 +91,7 @@ func (c *Collector) Collect(ctx context.Context, source reportmodel.Source, a re
 	}
 	if total == 0 {
 		result.Status = "no_data"
-		result.Reason = "No received records matched the selected source, VDOM scope, and time window. This does not establish absence of activity; extraction, retention, permissions, and forwarding may affect coverage."
+		result.Reason = "No received records matched the displayed source, VDOM scope, and time window. Use the captured query in Graylog to check source spelling, vd extraction, forwarding, retention, and search permissions. This does not establish absence of activity."
 		return result
 	}
 	classified, err := r.count(ctx, base+" AND _exists_:type AND _exists_:subtype")

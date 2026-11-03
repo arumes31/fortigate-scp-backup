@@ -17,10 +17,10 @@ func validateTelemetry(ctx context.Context, t *reportmodel.Telemetry) error {
 		return ctx.Err()
 	}
 	b := projectionBudget{ctx: ctx, remaining: maxText - 8192}
-	if len(t.Datasets) > 64 || len(t.Sources) > 256 {
+	if len(t.Datasets) > 64 || len(t.Sources) > 256 || len(t.VDOMs) > 256 {
 		return errProjectionLimit
 	}
-	if !b.take(t.Status, t.Reason, t.DeviceIdentity) || !b.list(t.Sources) {
+	if !b.take(t.Status, t.Reason, t.DeviceIdentity, t.SourceOrigin, t.SourceMatch, t.Query) || !b.list(t.Sources) || !b.list(t.VDOMs) {
 		return b.err
 	}
 	for _, dataset := range t.Datasets {
@@ -88,7 +88,7 @@ func formatTelemetryTime(t time.Time, lang string) string {
 }
 
 func trafficContent(source reportmodel.Source, t *reportmodel.Telemetry, lang string) content {
-	c := baseContent(source, "traffic", lang, false)
+	c := baseContent(source, "traffic", lang)
 	c.Blocks = append(c.Blocks, block{Text: choose(lang,
 		"Observed FortiGate log aggregates from Graylog. Counts refer to received log records, not unique sessions, attacks or complete network traffic. Configuration and log observations have separate timestamps and scope.",
 		"Beobachtete FortiGate-Logaggregate aus Graylog. Die Zahlen beziehen sich auf empfangene Logeinträge, nicht auf eindeutige Sitzungen, Angriffe oder den vollständigen Netzwerkverkehr. Konfiguration und Logbeobachtungen haben getrennte Zeitangaben und Umfänge.")})
@@ -98,7 +98,7 @@ func trafficContent(source reportmodel.Source, t *reportmodel.Telemetry, lang st
 		{choose(lang, "Configuration SHA-256", "Konfiguration SHA-256"), checksum(source.Checksum, lang)},
 		{choose(lang, "Assessment schema", "Bewertungsschema"), reportmodel.Version},
 	})))
-	c.Blocks = append(c.Blocks, telemetrySummary(t, lang, false)...)
+	c.Blocks = append(c.Blocks, telemetrySummary(t, lang)...)
 	if t == nil {
 		return c
 	}
@@ -220,9 +220,8 @@ func trafficContent(source reportmodel.Source, t *reportmodel.Telemetry, lang st
 	return c
 }
 
-// This summary intentionally ignores telemetry Reason, dataset prose, missing
-// field names, device identity and row labels for the customer audience.
-func telemetrySummary(t *reportmodel.Telemetry, lang string, customer bool) []block {
+// telemetrySummary records the captured scope and availability without raw log messages.
+func telemetrySummary(t *reportmodel.Telemetry, lang string) []block {
 	if t == nil {
 		t = &reportmodel.Telemetry{Status: "not_configured"}
 	}
@@ -233,11 +232,22 @@ func telemetrySummary(t *reportmodel.Telemetry, lang string, customer bool) []bl
 		{choose(lang, "Window end", "Zeitraum bis"), formatTelemetryTime(t.WindowEnd, lang)},
 		{choose(lang, "Observations retrieved", "Beobachtungen abgerufen"), formatTelemetryTime(t.RetrievedAt, lang)},
 	}
-	if !customer {
-		rows = append(rows, []string{choose(lang, "Device attribution", "Gerätezuordnung"), t.DeviceIdentity}, []string{choose(lang, "Source selectors", "Quellselektion"), strings.Join(t.Sources, ", ")})
-		if t.Reason != "" {
-			rows = append(rows, []string{choose(lang, "Coverage detail", "Details zum Umfang"), t.Reason})
+	rows = append(rows, []string{choose(lang, "Device attribution", "Gerätezuordnung"), t.DeviceIdentity}, []string{choose(lang, "Source selectors", "Quellselektion"), strings.Join(t.Sources, ", ")})
+	if t.SourceOrigin != "" {
+		rows = append(rows, []string{choose(lang, "Hostname source", "Herkunft der Hostnamen"), telemetrySourceOrigin(t.SourceOrigin, lang)})
+	}
+	if t.SourceMatch != "" {
+		rows = append(rows, []string{choose(lang, "ADM VPN Config match", "Zuordnung in ADM VPN Config"), telemetrySourceMatch(t.SourceMatch, lang)})
+	}
+	if t.Query != "" {
+		vdoms := choose(lang, "All virtual domains for the selected firewall", "Alle virtuellen Domänen der ausgewählten Firewall")
+		if len(t.VDOMs) > 0 {
+			vdoms = strings.Join(t.VDOMs, ", ")
 		}
+		rows = append(rows, []string{choose(lang, "Queried VDOMs", "Abgefragte VDOMs"), vdoms}, []string{choose(lang, "Graylog base query", "Graylog-Basisabfrage"), t.Query})
+	}
+	if t.Reason != "" {
+		rows = append(rows, []string{choose(lang, "Coverage detail", "Details zum Umfang"), t.Reason})
 	}
 	b := mainBlock(fields(choose(lang, "Observed log coverage", "Umfang der Logbeobachtungen"), lang, rows))
 	b.Text = choose(lang, "Separate log queries can describe overlapping records. Counts must not be added across views or treated as unique sessions, users, attacks or device uptime. Missing or partial data is not a passing security check.", "Getrennte Logabfragen können sich überschneidende Einträge beschreiben. Zahlen dürfen nicht über Ansichten addiert oder als eindeutige Sitzungen, Benutzer, Angriffe oder Geräteverfügbarkeit verstanden werden. Fehlende oder teilweise Daten sind keine bestandene Sicherheitsprüfung.")
@@ -246,14 +256,14 @@ func telemetrySummary(t *reportmodel.Telemetry, lang string, customer bool) []bl
 		summary := block{Contents: true, Heading: choose(lang, "Observation overview", "Beobachtungsübersicht"), Columns: []string{choose(lang, "View", "Ansicht"), choose(lang, "Availability", "Verfügbarkeit"), choose(lang, "Received log records", "Empfangene Logeinträge")}, Widths: []float64{1.4, 1.8, 1}}
 		for _, dataset := range t.Datasets {
 			title := telemetryDatasetTitle(dataset.ID, lang)
-			if !customer && dataset.Title != "" {
+			if dataset.Title != "" {
 				title = localized(lang, dataset.Title, dataset.TitleDE)
 			}
 			state := telemetryStatus(dataset.Status, lang)
 			if dataset.Truncated {
 				state += "; " + choose(lang, "bounded groups", "begrenzte Gruppen")
 			}
-			if !customer && dataset.Reason != "" {
+			if dataset.Reason != "" {
 				state += "\n" + dataset.Reason
 			}
 			summary.Rows = append(summary.Rows, []string{title, state, observedTotal(dataset, lang)})
@@ -261,6 +271,34 @@ func telemetrySummary(t *reportmodel.Telemetry, lang string, customer bool) []bl
 		result = append(result, summary)
 	}
 	return result
+}
+
+func telemetrySourceOrigin(origin, lang string) string {
+	switch origin {
+	case "adm_vpn_cluster_hostnames":
+		return choose(lang, "ADM VPN Config / cluster hostnames", "ADM VPN Config / Cluster-Hostnamen")
+	case "adm_vpn_firewallname":
+		return choose(lang, "ADM VPN Config / firewall name", "ADM VPN Config / Firewallname")
+	case "config_hostname":
+		return choose(lang, "Saved configuration / hostname", "Gespeicherte Konfiguration / Hostname")
+	case "registered_short_hostname":
+		return choose(lang, "Registered firewall / short hostname", "Registrierte Firewall / kurzer Hostname")
+	default:
+		return choose(lang, "Not established", "Nicht ermittelt")
+	}
+}
+
+func telemetrySourceMatch(match, lang string) string {
+	switch match {
+	case "dns_name_full":
+		return choose(lang, "Full DNS name", "Vollständiger DNS-Name")
+	case "exact_alias":
+		return choose(lang, "Exact firewall-name or DNS alias", "Exakter Firewallname oder DNS-Alias")
+	case "short_alias":
+		return choose(lang, "Short registered hostname", "Kurzer registrierter Hostname")
+	default:
+		return choose(lang, "Not established", "Nicht ermittelt")
+	}
 }
 
 func telemetryDatasetTitle(id, lang string) string {

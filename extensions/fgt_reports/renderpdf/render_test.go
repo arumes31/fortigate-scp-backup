@@ -67,7 +67,7 @@ func fixture() (reportmodel.Source, reportmodel.Assessment) {
 
 func TestRenderAllTypesAndLanguages(t *testing.T) {
 	source, assessment := fixture()
-	for _, kind := range []string{"forwarding", "technical", "customer"} {
+	for _, kind := range []string{"forwarding", "technical", "traffic"} {
 		for _, lang := range []string{"en", "de"} {
 			t.Run(kind+"-"+lang, func(t *testing.T) {
 				pdf, err := Render(context.Background(), source, assessment, kind, lang)
@@ -119,33 +119,6 @@ func TestProjectionBudgetRejectsLargeValuesAndEmptyRows(t *testing.T) {
 	}
 }
 
-func TestCustomerProjectionCannotCarryTechnicalPayload(t *testing.T) {
-	source, a := fixture()
-	sentinel := "PRIVATE-PAYLOAD-NEVER-IN-CUSTOMER"
-	source.Firewall = "10.99.1.2 " + sentinel
-	source.Checksum = sentinel // provenance accepts only an actual SHA-256 encoding
-	a.Firmware, a.Hostname = sentinel, sentinel
-	a.VDOMs = []string{sentinel}
-	a.Warnings = []string{sentinel}
-	a.Exposures = []reportmodel.Exposure{{VDOM: sentinel, Name: sentinel, External: "10.99.1.3", Backends: []string{sentinel}, Outcome: sentinel, GeoStatus: sentinel, Evidence: sentinel, Notes: []string{sentinel}}}
-	a.Sections = []reportmodel.Section{{Title: sentinel, Rows: []reportmodel.Row{{Value: sentinel}}}}
-	a.Findings = []reportmodel.Finding{{ID: "management:" + sentinel, Priority: sentinel, Title: sentinel, TitleDE: sentinel, Detail: sentinel, DetailDE: sentinel, Recommendation: sentinel, RecommendationDE: sentinel, Evidence: sentinel}, {ID: sentinel, Priority: "high", Detail: sentinel}}
-	for _, lang := range []string{"en", "de"} {
-		projected, err := json.Marshal(project(source, a, "customer", lang))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, disallowed := range []string{sentinel, "10.99.1.2", "10.99.1.3"} {
-			if bytes.Contains(projected, []byte(disallowed)) {
-				t.Fatalf("customer projection retained technical payload %q", disallowed)
-			}
-		}
-		if !bytes.Contains(projected, []byte(choose(lang, "Administrative access", "Administrativer Zugriff"))) {
-			t.Fatal("known findings must map to an actionable customer topic")
-		}
-	}
-}
-
 func TestForwardingProjectionPreservesEveryTraceField(t *testing.T) {
 	source, a := fixture()
 	trace := a.Exposures[0].Trace[1]
@@ -156,7 +129,7 @@ func TestForwardingProjectionPreservesEveryTraceField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{trace.SourceInterface, trace.DestinationInterface, trace.Profiles, trace.Logging, "203.0.113.20:8443/TCP", "10.10.20.15:443", "Sequence 1 | policy 900", "Sequence 2 | policy 20"} {
+	for _, want := range []string{trace.SourceInterface, trace.DestinationInterface, trace.Profiles, trace.Logging, "203.0.113.20:8443/TCP", "10.10.20.15:443", "1 / ID 900", "2 / ID 20"} {
 		if !bytes.Contains(projected, []byte(want)) {
 			t.Errorf("forwarding projection lost %q", want)
 		}
@@ -164,13 +137,13 @@ func TestForwardingProjectionPreservesEveryTraceField(t *testing.T) {
 }
 
 // These tests additionally exercise an independent PDF reader when Poppler is
-// available. The projection/privacy tests above run on every Go-only CI host.
-func TestPDFTextRoundTripAndCustomerRedaction(t *testing.T) {
+// available. The projection tests above run on every Go-only CI host.
+func TestPDFTextRoundTripPreservesGermanText(t *testing.T) {
 	if _, err := exec.LookPath("pdftotext"); err != nil {
 		t.Skip("pdftotext is not installed")
 	}
 	source, a := fixture()
-	for _, kind := range []string{"forwarding", "technical", "customer"} {
+	for _, kind := range []string{"forwarding", "technical"} {
 		data, err := Render(context.Background(), source, a, kind, "de")
 		if err != nil {
 			t.Fatal(err)
@@ -179,16 +152,7 @@ func TestPDFTextRoundTripAndCustomerRedaction(t *testing.T) {
 		if !strings.Contains(text, "FortiSafe") || !strings.Contains(text, "Seite") || !strings.Contains(text, "2026-11-03T19:30:00Z") {
 			t.Fatalf("%s: missing provenance/footer after independent PDF extraction", kind)
 		}
-		if kind == "customer" {
-			for _, forbidden := range []string{"10.10.20.15", "203.0.113.20", "Kundenportal", "edge-vienna", "Country restriction", "server-protection", "root / firewall"} {
-				if strings.Contains(text, forbidden) {
-					t.Errorf("customer PDF leaked %q", forbidden)
-				}
-			}
-			if !strings.Contains(text, "Kundenübersicht") || !strings.Contains(text, "Veröffentlichte Dienste") {
-				t.Error("German customer text did not survive Unicode extraction")
-			}
-		} else if !strings.Contains(text, "Kundenportal-Übergabe") {
+		if !strings.Contains(text, "Kundenportal-Übergabe") {
 			t.Errorf("%s: German object name was lost", kind)
 		}
 	}
@@ -248,7 +212,7 @@ func TestWritePreviewFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, a := fixture()
-	for _, kind := range []string{"forwarding", "technical", "customer"} {
+	for _, kind := range []string{"forwarding", "technical", "traffic"} {
 		for _, lang := range []string{"en", "de"} {
 			data, err := Render(context.Background(), source, a, kind, lang)
 			if err != nil {

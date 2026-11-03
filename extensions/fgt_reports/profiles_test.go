@@ -223,7 +223,7 @@ func TestProfileImportAuthorizationAndCapturedExport(t *testing.T) {
 		}
 	}
 	e.generate(claim(t, e))
-	for _, path := range []string{"/reports/7/profile.json", "/reports/7/customer.json"} {
+	for _, path := range []string{"/reports/7/profile.json", "/reports/7/technical.json"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("X-Test-Role", "operator")
 		response := httptest.NewRecorder()
@@ -244,37 +244,90 @@ func TestProfileImportAuthorizationAndCapturedExport(t *testing.T) {
 	}
 }
 
-func TestStoreMigrationAddsTrafficWithoutRemovingExistingReports(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
-	if err != nil {
+func TestStoreMigrationRemovesCustomerAndPreservesSupportedReports(t *testing.T) {
+	for _, withTraffic := range []bool{false, true} {
+		name := "before traffic reports"
+		if withTraffic {
+			name = "with traffic reports"
+		}
+		t.Run(name, func(t *testing.T) {
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			db.SetMaxOpenConns(1)
+			legacy := strings.Replace(reportSchema, " technical BLOB NOT NULL,", " technical BLOB NOT NULL,\n customer BLOB NOT NULL,", 1)
+			if !withTraffic {
+				legacy = strings.Replace(legacy, ",\n traffic BLOB NOT NULL DEFAULT X''", "", 1)
+			}
+			if _, err := db.Exec(legacy); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO report_targets(firewall_id,backup_id,backup_ns,checksum,generation,status)
+ VALUES(7,1,1,'digest','2:en','ready')`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO report_latest(firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,customer)
+ VALUES(7,1,1,2,'2:en','digest',0,?,?,?,?)`, []byte("old assessment"), []byte("old forwarding"), []byte("old technical"), []byte("old customer")); err != nil {
+				t.Fatal(err)
+			}
+			wantTraffic := ""
+			if withTraffic {
+				wantTraffic = "old traffic"
+				if _, err := db.Exec("UPDATE report_latest SET traffic=?", []byte(wantTraffic)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := initDB(context.Background(), db); err != nil {
+					t.Fatal("migration must succeed and be idempotent", err)
+				}
+			}
+			var assessment, traffic, forwarding, technical []byte
+			if err := db.QueryRow("SELECT assessment,traffic,forwarding,technical FROM report_latest WHERE firewall_id=7").Scan(&assessment, &traffic, &forwarding, &technical); err != nil {
+				t.Fatal(err)
+			}
+			if string(assessment) != "old assessment" || string(traffic) != wantTraffic || string(forwarding) != "old forwarding" || string(technical) != "old technical" {
+				t.Fatal("migration removed or rewrote a supported report")
+			}
+			var retiredColumns int
+			if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('report_latest') WHERE name='customer'").Scan(&retiredColumns); err != nil || retiredColumns != 0 {
+				t.Fatalf("retired report column retained: %d %v", retiredColumns, err)
+			}
+			var secureDelete int
+			if err := db.QueryRow("PRAGMA secure_delete").Scan(&secureDelete); err != nil || secureDelete != 1 {
+				t.Fatalf("retired reports must be removed with secure_delete enabled: %d %v", secureDelete, err)
+			}
+		})
+	}
+}
+
+func TestReportVersionUpgradeRegeneratesExistingBackup(t *testing.T) {
+	f := &sourceFixture{}
+	f.set(source(1))
+	e := testExtension(t, f)
+	e.generate(claim(t, e))
+	legacyGeneration := "2:" + reportmodel.ProfileHash(reportmodel.DefaultProfile("en"))
+	if _, err := e.db.Exec("UPDATE report_targets SET generation=?", legacyGeneration); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
-	legacy := strings.Replace(reportSchema, ",\n traffic BLOB NOT NULL DEFAULT X''", "", 1)
-	if _, err := db.Exec(legacy); err != nil {
+	if _, err := e.db.Exec("UPDATE report_latest SET generation=?", legacyGeneration); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO report_targets(firewall_id,backup_id,backup_ns,checksum,generation,status)
- VALUES(7,1,1,'digest','1:en','ready')`); err != nil {
-		t.Fatal(err)
+	job := claim(t, e)
+	if job.BackupID != 1 || job.Generation == legacyGeneration {
+		t.Fatal("version upgrade did not queue the existing latest backup")
 	}
-	if _, err := db.Exec(`INSERT INTO report_latest(firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,customer)
- VALUES(7,1,1,2,'1:en','digest',0,?,?,?,?)`, []byte("old assessment"), []byte("old forwarding"), []byte("old technical"), []byte("old customer")); err != nil {
-		t.Fatal(err)
+	assertPublished(t, e, 1)
+	e.generate(job)
+	assertPublished(t, e, 1)
+	var generation string
+	if err := e.db.QueryRow("SELECT generation FROM report_latest WHERE firewall_id=7").Scan(&generation); err != nil || generation != job.Generation {
+		t.Fatalf("upgraded set did not replace the old generation: %q %v", generation, err)
 	}
-	if err := initDB(context.Background(), db); err != nil {
-		t.Fatal(err)
-	}
-	if err := initDB(context.Background(), db); err != nil {
-		t.Fatal("migration was not idempotent", err)
-	}
-	var traffic, forwarding, technical, customer []byte
-	if err := db.QueryRow("SELECT traffic,forwarding,technical,customer FROM report_latest WHERE firewall_id=7").Scan(&traffic, &forwarding, &technical, &customer); err != nil {
-		t.Fatal(err)
-	}
-	if len(traffic) != 0 || string(forwarding) != "old forwarding" || string(technical) != "old technical" || string(customer) != "old customer" {
-		t.Fatal("migration removed or rewrote a previously published report")
+	if _, err := nextTarget(e.ctx, e.db, time.Now()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unchanged source was queued again after regeneration: %v", err)
 	}
 }
 

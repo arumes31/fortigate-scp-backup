@@ -93,7 +93,7 @@ func TestViewerRoleIsReadOnly(t *testing.T) {
 		{http.MethodGet, "/reports/7", true},
 		{http.MethodGet, "/reports/7/forwarding.pdf", true},
 		{http.MethodGet, "/reports/api/7", true},
-		{http.MethodHead, "/reports/7/customer.pdf", true},
+		{http.MethodHead, "/reports/7/traffic.pdf", true},
 		{http.MethodPost, "/reports/7/retry", true},
 		{http.MethodGet, "/dashboard", false},
 		{http.MethodPost, "/search", false},

@@ -151,7 +151,7 @@ func TestSelectionPreservesEvidenceAndNeverReanalyzesSubset(t *testing.T) {
 		},
 		Findings:  []Finding{{VDOM: "a", Category: "publications", Exposure: "private-object", Priority: "Medium"}, {VDOM: "b", Category: "publications", Exposure: "other-object", Priority: "Medium"}, {Category: "analysis", Priority: "Informational"}},
 		Sections:  []Section{{ID: "interfaces", Rows: []Row{{VDOM: "a", Label: "Misleading VDOM b label"}, {VDOM: "b", Label: "Misleading VDOM a label"}}}, {ID: "ha", Rows: []Row{{VDOM: "", Label: "Appliance-wide HA"}}}},
-		Telemetry: &Telemetry{Sources: []string{"private-source"}, Datasets: []TelemetryDataset{{Rows: []TelemetryRow{{Bytes: &bytesCount}}}}},
+		Telemetry: &Telemetry{Sources: []string{"private-source"}, VDOMs: []string{"a"}, Datasets: []TelemetryDataset{{Rows: []TelemetryRow{{Bytes: &bytesCount}}}}},
 	}
 	p := DefaultProfile("en")
 	p.Filters.VDOMs = []string{"a"}
@@ -175,8 +175,9 @@ func TestSelectionPreservesEvidenceAndNeverReanalyzesSubset(t *testing.T) {
 	selected.Exposures[0].Notes[0] = "mutated"
 	selected.Sections[1].Rows[0].Label = "mutated"
 	selected.Telemetry.Sources[0] = "mutated"
+	selected.Telemetry.VDOMs[0] = "mutated"
 	*selected.Telemetry.Datasets[0].Rows[0].Bytes = 99
-	if a.Exposures[0].Trace[0].ID != "90" || a.Exposures[0].Notes[0] != "earlier bypass" || a.Sections[0].Rows[0].Label == "mutated" || bytesCount != 42 || a.Telemetry.Sources[0] != "private-source" {
+	if a.Exposures[0].Trace[0].ID != "90" || a.Exposures[0].Notes[0] != "earlier bypass" || a.Sections[0].Rows[0].Label == "mutated" || bytesCount != 42 || a.Telemetry.Sources[0] != "private-source" || a.Telemetry.VDOMs[0] != "a" {
 		t.Fatal("selection aliased mutable assessment data")
 	}
 }
