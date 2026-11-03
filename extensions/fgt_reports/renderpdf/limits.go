@@ -15,16 +15,6 @@ var errProjectionLimit = errors.New("reports: PDF presentation input limit excee
 // font loading and layout. No configuration-derived value enters the error.
 func validateProjection(ctx context.Context, source reportmodel.Source, a reportmodel.Assessment, kind string) error {
 	b := projectionBudget{ctx: ctx, remaining: maxText - 8192}
-	if kind == "customer" {
-		// This projection only loops over findings; all other assessment data is
-		// counted with len and never copied. The checksum is length-validated.
-		for _, f := range a.Findings {
-			if !b.take(f.ID, f.Priority) {
-				return b.err
-			}
-		}
-		return ctx.Err()
-	}
 	if !b.take(source.Firewall, a.Firmware, a.Hostname) || !b.list(a.VDOMs) || !b.list(a.Warnings) {
 		return b.err
 	}

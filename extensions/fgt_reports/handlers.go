@@ -203,8 +203,6 @@ func (e *Extension) download(w http.ResponseWriter, r *http.Request) {
 		query = "SELECT forwarding FROM report_latest WHERE firewall_id=?"
 	case "technical":
 		query = "SELECT technical FROM report_latest WHERE firewall_id=?"
-	case "customer":
-		query = "SELECT customer FROM report_latest WHERE firewall_id=?"
 	case "traffic":
 		query = "SELECT traffic FROM report_latest WHERE firewall_id=?"
 	default:

@@ -86,11 +86,14 @@ func (b block) MarshalXML(encoder *xml.Encoder, start xml.StartElement) error {
 	type xmlBlock struct {
 		Heading string   `xml:"heading,omitempty"`
 		Text    string   `xml:"text,omitempty"`
+		Layout  string   `xml:"layout,omitempty"`
+		Badge   string   `xml:"badge,omitempty"`
 		Columns []string `xml:"columns>column,omitempty"`
 		Rows    []row    `xml:"rows>row,omitempty"`
+		Actions []string `xml:"actions>action,omitempty"`
 		Chart   *chart   `xml:"chart,omitempty"`
 	}
-	value := xmlBlock{Heading: b.Heading, Text: b.Text, Columns: b.Columns, Chart: b.Chart}
+	value := xmlBlock{Heading: b.Heading, Text: b.Text, Layout: b.Layout, Badge: b.Badge, Columns: b.Columns, Actions: b.Actions, Chart: b.Chart}
 	for _, cells := range b.Rows {
 		value.Rows = append(value.Rows, row{Cells: cells})
 	}
@@ -127,6 +130,11 @@ func writeCSV(out *boundedBuffer, doc exportDocument) error {
 		}
 		if b.Text != "" {
 			if err := write(section, "", "text", b.Text); err != nil {
+				return err
+			}
+		}
+		if b.Badge != "" {
+			if err := write(section, "", "badge", b.Badge); err != nil {
 				return err
 			}
 		}
@@ -215,15 +223,3 @@ func writeHTML(out *boundedBuffer, doc exportDocument, options renderOptions) er
 	}
 	return htmlReport.Execute(out, view)
 }
-
-var htmlReport = template.Must(template.New("report").Parse(`<!doctype html>
-<html lang="{{.Language}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Report.Title}}</title>
-<style>:root{--accent:{{.Accent}};color-scheme:light}*{box-sizing:border-box}body{margin:0;font:15px/1.55 system-ui,sans-serif;color:#1a2d3c;background:#eef2f5}main,header,nav,footer{max-width:1100px;margin:auto;padding:24px 32px;background:white}header{border-top:7px solid var(--accent)}h1,h2,h3{line-height:1.25;color:#143c50;overflow-wrap:anywhere}h1{font-size:30px}h2{font-size:22px;margin-top:32px}p,.text{white-space:pre-wrap;overflow-wrap:anywhere}.muted{color:#536673}.logo{max-width:180px;max-height:80px;object-fit:contain}.cover{min-height:65vh;padding-top:64px}.cover h1{font-size:38px}nav ol{padding-left:24px}nav a{color:#174b70}section{margin-bottom:28px}.scroll{overflow:auto;max-width:100%;border:1px solid #d5dfe6}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid #d5dfe6;white-space:pre-wrap;overflow-wrap:anywhere}th{background:#e2ecf2}tr:nth-child(even){background:#f6f8fa}.chart{padding:12px 0}.bar-row{display:grid;grid-template-columns:minmax(100px,1fr) minmax(80px,1.5fr) 60px;gap:12px;align-items:center;margin:9px 0}.bar-label{overflow-wrap:anywhere}.bar-track{height:14px;background:#edf1f5}.bar{display:block;height:100%;background:var(--accent)}footer{border-top:1px solid #d5dfe6;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:500px){main,header,nav,footer{padding:18px}h1{font-size:25px}.bar-row{grid-template-columns:minmax(70px,1fr) minmax(50px,1fr) 42px;font-size:12px}}@media print{body{background:white}main,header,nav,footer{max-width:none;padding:0}.cover,nav{break-after:page}.scroll{overflow:visible;border:0}thead{display:table-header-group}tr{break-inside:avoid}h2,h3{break-after:avoid}a{color:inherit;text-decoration:none}@page{size:A4{{if .Landscape}} landscape{{end}};margin:16mm}}
-</style></head><body>
-<header{{if .Cover}} class="cover"{{end}}>{{if .Logo}}<img class="logo" src="{{.Logo}}" alt="{{.LogoLabel}}">{{end}}{{if .Report.Company}}<p>{{.Report.Company}}</p>{{end}}<h1>{{.Report.Title}}</h1><p>{{.Report.Identification}}</p>{{if .Report.Subtitle}}<p>{{.Report.Subtitle}}</p>{{end}}<p class="muted">{{.Source.BackupAt}} · {{.Source.GeneratedAt}}</p>{{if .Report.Introduction}}<p>{{.Report.Introduction}}</p>{{end}}</header>
-{{if .Contents}}<nav aria-label="{{.ContentsLabel}}"><h2>{{.ContentsLabel}}</h2><ol>{{range .Blocks}}{{if .Contents}}<li><a href="#section-{{.Index}}">{{.Heading}}</a></li>{{end}}{{end}}</ol></nav>{{end}}
-<main>{{range .Blocks}}<section id="section-{{.Index}}">{{if .Heading}}<h2>{{.Heading}}</h2>{{end}}{{if .Text}}<p>{{.Text}}</p>{{end}}
-{{if .Points}}<div class="chart" role="img" aria-label="{{.Heading}}; {{$.CountLabel}}">{{range .Points}}<div class="bar-row"><span class="bar-label">{{.Label}}</span><span class="bar-track"><span class="bar" style="width:{{.Percent}}%"></span></span><strong>{{.Value}}</strong></div>{{end}}</div>{{end}}
-{{if .Columns}}<div class="scroll" tabindex="0" role="region" aria-label="{{.Heading}}"><table><thead><tr>{{range .Columns}}<th scope="col">{{.}}</th>{{end}}</tr></thead><tbody>{{range .Rows}}<tr>{{range .}}<td>{{.}}</td>{{end}}</tr>{{end}}</tbody></table></div>{{end}}</section>{{end}}</main>
-<footer>{{.Report.Footer}}
-Schema {{.Schema}} · {{.ProfileRevision}}</footer></body></html>`))

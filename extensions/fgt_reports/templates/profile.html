@@ -19,7 +19,7 @@
         <div class="report-field report-field-wide"><label for="profile-footer">{{R .Base.Lang "footer"}}</label><input class="form-control" type="text" id="profile-footer" name="footer" value="{{.Profile.Footer}}" maxlength="300"></div>
       </div>
       <p class="report-help">{{R .Base.Lang "custom_text_help"}}</p>
-      <details class="report-macro-help"><summary>{{R .Base.Lang "text_placeholders"}}</summary><p class="report-help">{{R .Base.Lang "text_placeholders_help"}}</p><dl class="report-macro-list">{{range .Macros}}<div><dt><code>{{.ID}}</code></dt><dd>{{.Label}}</dd></div>{{end}}</dl><p class="report-help">{{R .Base.Lang "customer_placeholder_help"}}</p></details>
+      <details class="report-macro-help"><summary>{{R .Base.Lang "text_placeholders"}}</summary><p class="report-help">{{R .Base.Lang "text_placeholders_help"}}</p><dl class="report-macro-list">{{range .Macros}}<div><dt><code>{{.ID}}</code></dt><dd>{{.Label}}</dd></div>{{end}}</dl></details>
     </section>
     <section class="card" aria-labelledby="profile-layout-title"><h2 id="profile-layout-title">{{R .Base.Lang "layout_branding"}}</h2>
       <div class="report-form-grid">

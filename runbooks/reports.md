@@ -4,12 +4,11 @@ FortiSafe generates a current report set for each firewall after a successful co
 
 | Report | Source and contents |
 | --- | --- |
-| **Port Forwarding & Exposure** | VIP and virtual-server inventory, mapped backends, related policies in configuration order, source/service restrictions, and preceding geographic-deny explanations from the saved configuration. |
+| **Port Forwarding & Exposure** | VIP and virtual-server overview followed by per-VIP details, mapped backends, geographic restrictions, evidence, and a five-column policy table in configuration order. Deny actions are red and Allow/Accept actions are green; the action text remains visible. |
 | **Technical Configuration** | Allowlisted configuration inventory, findings, recommendations, source references, selected count charts, and analysis coverage. |
-| **Customer Review & Roadmap** | A reduced customer-facing projection with configured-object counts, curated discussion topics, and proposed next steps. It omits management/backend addresses, object names, policy traces, raw findings, and raw log observations. |
 | **Traffic & Security Observations** | Received FortiGate traffic, UTM, and VPN observations from the configured Graylog source, with collection time, field coverage, grouping limits, and dataset-specific status. When Graylog is absent or disabled, the report explains that state. |
 
-Each audience has **PDF, HTML, CSV, JSON, and XML** downloads. Non-PDF downloads are produced from the saved assessment and the profile captured with that set. Opening an export does not fetch new logs, reanalyze another backup, or silently adopt newer settings. Customer exports keep their reduced projection in every format.
+Each report has **PDF, HTML, CSV, JSON, and XML** downloads. Non-PDF downloads are produced from the saved assessment and the profile captured with that set. Opening an export does not fetch new logs, reanalyze another backup, or silently adopt newer settings.
 
 **Inspect findings** opens the selected forwarding inventory, technical evidence, captured profile and filters, and a compact Graylog coverage overview. **Report settings** edits the profile for one firewall. **Report catalog** shows implemented datasets and the dependencies or missing implementations of other report families. **Generation schedule** lists the next scheduled run per firewall.
 
@@ -50,7 +49,7 @@ Empty filter lists mean all values. Empty section or chart selections mean those
 
 VDOM filters also constrain Graylog queries through the canonical `vd` field. Publication-type, policy-outcome, and finding-priority filters affect configuration analysis only. The backup timestamp and the Graylog observation window describe different sources and are displayed separately.
 
-Custom company/customer labels are explicit operator input. The customer projection does not infer a customer's identity, commercial value, costs, or subscription state. Branding and custom text can appear in customer-facing exports; use appropriate content for that audience.
+Company and customer labels are explicit operator input used for report branding and text placeholders. All remaining reports retain their technical detail; branding does not reduce the exported data scope.
 
 ### Logos and text placeholders
 
@@ -60,7 +59,7 @@ Subtitle, introduction, and footer support these exact plain-text placeholders:
 
 | Placeholder | Value |
 | --- | --- |
-| `{{firewall}}` | Firewall display name; for customer reports, the explicit customer alias or neutral firewall ID. |
+| `{{firewall}}` | Firewall display name. |
 | `{{firewall_id}}` | FortiSafe firewall ID. |
 | `{{backup_id}}` | Source backup ID. |
 | `{{backup_at}}` | Source backup time. |
@@ -88,7 +87,9 @@ A successful backup emits a committed-backup event after its database commit. Th
 
 At startup and every minute, reconciliation selects the newest committed backup per registered firewall. This backfills existing installations and recovers missed notifications. A job pins the firewall ID, backup ID, timestamp, checksum, and profile generation. It reads that exact encrypted backup through ownership, path-confinement, size, and integrity checks. It never substitutes another backup if the pinned source is missing.
 
-One worker creates the assessment and **all four PDFs**. The captured profile, assessment, observation metadata, and PDF set are published atomically. A newer backup or profile supersedes older in-flight work. The latest-report row is replaced; no report-history rows, artifact directories, or PDF caches are created. A successful backup with unchanged configuration still replaces the set so its provenance and observation window remain current.
+One worker creates the assessment and **all three PDFs**. The captured profile, assessment, observation metadata, and PDF set are published atomically. A newer backup or profile supersedes older in-flight work. The latest-report row is replaced; no report-history rows, artifact directories, or PDF caches are created. A successful backup with unchanged configuration still replaces the set so its provenance and observation window remain current.
+
+The former **Customer Review & Roadmap** report has been removed. Upgrading securely removes its stored PDF column, and its former download URLs return 404. The supported report snapshots remain available while version-based reconciliation queues replacement sets with the new forwarding layout and Graylog collection. Customer display names remain optional branding fields for the three supported reports.
 
 A failed job retains the prior successful set. Failed jobs have at most three attempts with minute-based backoff; a new source, profile change, scheduled occurrence, or explicit regeneration can queue new work. Interrupted running jobs are requeued after restart. Parser and renderer panics are contained as job failures.
 
@@ -106,11 +107,17 @@ Reporting reads the existing `DATA_DIR/fgt-adm-vpn-conf-db.db` source mapping wi
 2. Exact registered name against `firewallname` or `dns_name`.
 3. When the registered name is an FQDN, an unambiguous short-name match against those mapping fields.
 
-A matched mapping supplies comma-separated `cluster_hostnames` when present, so an HA cluster can include both explicitly mapped member sources. Otherwise it supplies `firewallname`. With no mapping, collection uses the hostname in the captured backup, then the short registered firewall name if the snapshot has no hostname. At most 16 distinct, bounded source identities are accepted.
+A matched mapping supplies comma-separated `cluster_hostnames` when present, so an HA cluster can include both explicitly mapped member sources. Otherwise it supplies `firewallname`. A populated cluster list containing only blanks or commas is invalid; it cannot silently switch to the firewall name. With no mapping, collection uses the hostname in the captured backup, then the short registered firewall name if the snapshot has no hostname. At most 16 distinct, bounded configured identities are accepted.
+
+For each identity, the query includes its original spelling and its lowercase equivalent, matching the source handling in the existing ConfTail collector. Duplicates are removed, so at most 32 exact source spellings are queried. This supports installations where ADM VPN Config contains mixed-case hostnames while Graylog receives lowercase sources. The variants are checked against the effective source names of other ADM entries; a case-insensitive ownership conflict stops collection before any HTTP request.
 
 For a registered FQDN, an alias or short-name match cannot override a different, populated canonical FQDN in `dns_name_full`. Canonical comparisons ignore case and a single terminal DNS dot; Graylog source names retain their original spelling. A conflicting mapping fails collection before any Graylog request. Correct the canonical mapping or the registered firewall identity when an alternate FQDN was previously used. Unambiguous registered short names and legacy mappings with an empty or short canonical name remain supported.
 
 An ambiguous, unreadable, malformed, or unusable existing mapping fails closed. It does not widen the query or fall back to all devices. Each query retains quoted exact source identities, any selected VDOMs, and an absolute UTC time window. Profile documents cannot supply arbitrary Graylog queries or alternate service URLs.
+
+The traffic overview and report capture the actual queried hostnames, their origin (ADM cluster names, ADM firewall name, configuration hostname, or registered short name), the ADM matching method, selected VDOMs, and the base Graylog query. These diagnostics remain available when a valid query finds no records; older saved snapshots without them omit the additional fields. The captured query is bounded to 320 KiB and contains only the source/VDOM/time selector, without credentials, API URLs, or raw log messages.
+
+For **No matching records**, expand **Graylog source query** and copy it into Graylog Search using the same absolute observation window. Check the displayed ADM hostnames against received `source` values, then the selected `vd` values, extraction, forwarding, retention, and the token's search permissions. Dataset-specific queries add their own event and field filters. A missing result never removes the selected VDOM constraint or switches to another firewall; it does not establish that no activity occurred.
 
 Graylog must expose canonical extracted FortiGate fields. There is no custom report-field mapping editor in this release. Configure the existing Graylog parsing/extraction pipeline to supply the appropriate names and numeric values:
 
@@ -189,9 +196,9 @@ Arbitrary SQL datasets, email/remote-server distribution, and combined fleet rep
 
 ## Storage, access, and resource bounds
 
-The private `DATA_DIR/fgt-reports.db` SQLite database stores encrypted profile documents, the captured assessment, and four PDFs using the application's shared AES-GCM cipher. Files have restrictive permissions. Atomic replacement, secure deletion, and incremental reclamation avoid logical historical report sets. The main PostgreSQL schema remains compatible; committed-backup lookup uses an existing indexed key.
+The private `DATA_DIR/fgt-reports.db` SQLite database stores encrypted profile documents, the captured assessment, and three PDFs using the application's shared AES-GCM cipher. Files have restrictive permissions. Atomic replacement, secure deletion, and incremental reclamation avoid logical historical report sets. The main PostgreSQL schema remains compatible; committed-backup lookup uses an existing indexed key.
 
-All report routes—including profile operations, catalog, schedule, data, and every export format—require an authenticated administrator or operator. Viewer users are denied server-side. Responses use `Cache-Control: private, no-store`. Generation, profile changes, and downloads are audited using identifiers rather than configuration or log payloads. Profiles and customer exports retain their separate data boundaries; no public sharing endpoint is created.
+All report routes—including profile operations, catalog, schedule, data, and every export format—require an authenticated administrator or operator. Viewer users are denied server-side. Responses use `Cache-Control: private, no-store`. Generation, profile changes, and downloads are audited using identifiers rather than configuration or log payloads. No public sharing endpoint is created.
 
 The host accepts at most 16 MiB of complete decrypted configuration and verifies integrity. Parsing bounds nesting, object counts, selector traversal, relationship expansion, and generated explanation output. Jobs have a two-minute context deadline. Rendering checks input budgets before allocating table content and bounds text/page counts. A complete set is limited to 64 MiB before encryption; exceeding a limit preserves the prior set.
 
@@ -200,6 +207,20 @@ PDF text cleaning and wrapping observe cancellation during their work. Wrapping 
 Graylog collection is bounded to **75 seconds**, **40 requests**, **two concurrent requests**, **45 seconds per request**, and **2 MiB per response**. Real group output is capped at 20 groups per grouping dataset; byte counters have one aggregate result and the trend has 12 buckets. These bounds are reported or fail explicitly rather than silently converting a sampled prefix into a whole-window result.
 
 The native Go PDF renderer embeds licensed DejaVu fonts and supports searchable Unicode text, repeated table headers, split long rows, and page totals. Unsupported glyphs are represented by Unicode code points. Deployment remains CGO-free.
+
+## Report-store upgrade and rollback
+
+The customer-report removal is a forward migration of `DATA_DIR/fgt-reports.db`. Startup inspects the existing columns, adds `traffic` if an older store lacks it, and drops `customer` if present. The column changes share one transaction with secure deletion enabled: an error before commit rolls them back, and a successful restart leaves the already-migrated schema intact. Supported report blobs remain available until normal regeneration replaces the report set, and the migration preserves saved profiles.
+
+Former `/reports/{firewallID}/customer.pdf`, `.html`, `.csv`, `.json`, and `.xml` URLs return **404**. Update bookmarks, scripts, and download integrations to select `forwarding`, `technical`, or `traffic` explicitly. Those reports include technical details; choose the replacement according to the data the consumer needs.
+
+To retain the option of downgrading to a version that still expects the `customer` column:
+
+1. Before upgrading, shut down FortiSafe cleanly and keep a protected copy of `DATA_DIR/fgt-reports.db`. Preserve its ownership and restrictive permissions, and retain the application's existing encryption key through the normal secret-management process.
+2. To roll back, stop FortiSafe again, preserve a protected copy of the current report database, then restore the pre-upgrade database together with the matching older application version. Use the encryption key that encrypted the saved database. Downgrading the application alone does not recreate the removed column or its PDF contents.
+3. Start the older version and verify the Reports page, profile settings, and regeneration. Restoring the database also restores profiles and scheduling state to the backup's point in time; later report-setting changes must be reapplied if needed.
+
+The application has no automatic down migration. The migrated database cannot recover the securely removed customer PDFs. Keep the current database until the rollback is verified: deleting it would also discard saved profiles and schedules. This report migration does not change PostgreSQL or the retained firewall configuration backups.
 
 ## Verification and synthetic preview
 
@@ -212,7 +233,7 @@ go test -race ./...
 golangci-lint run
 ```
 
-Focused tests cover committed backup notifications, pinned-source integrity, queue recovery, atomic replacement, profile revisions and scheduling, latest-set retention, authorization, parser redaction, audience-safe exports, ordering, Graylog source/field coverage, aggregation consistency, and PDF layout/Unicode. Poppler round-trip text checks run when `pdftotext` is installed.
+Focused tests cover committed backup notifications, pinned-source integrity, queue recovery, atomic replacement, profile revisions and scheduling, latest-set retention, authorization, parser redaction, escaped and formula-safe exports, ordering, Graylog source/field coverage, aggregation consistency, and PDF layout/Unicode. Poppler round-trip text checks run when `pdftotext` is installed.
 
 Generate synthetic PDF previews outside the repository:
 

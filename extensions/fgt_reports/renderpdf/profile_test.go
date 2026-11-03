@@ -61,7 +61,7 @@ func TestExportsUseSelectedSnapshotAcrossFormats(t *testing.T) {
 	source, a, p := profileFixture()
 	for _, lang := range []string{"en", "de"} {
 		p.Language = lang
-		for _, kind := range []string{"forwarding", "technical", "customer", "traffic"} {
+		for _, kind := range []string{"forwarding", "technical", "traffic"} {
 			for _, format := range []string{"html", "csv", "json", "xml"} {
 				t.Run(lang+"-"+kind+"-"+format, func(t *testing.T) {
 					data, err := Export(context.Background(), source, a, kind, format, p)
@@ -127,72 +127,12 @@ func TestExportsUseSelectedSnapshotAcrossFormats(t *testing.T) {
 							t.Fatal("HTML must be standalone and script-free")
 						}
 					}
-					if kind == "forwarding" && !bytes.Contains(data, []byte(choose(lang, "policy 900", "Richtlinie 900"))) {
+					if kind == "forwarding" && !bytes.Contains(data, []byte("1 / ID 900")) {
 						t.Fatal("filter removed earlier deny trace")
 					}
 				})
 			}
 		}
-	}
-}
-
-func TestEveryCustomerFormatOmitsTechnicalAndTelemetryIdentifiers(t *testing.T) {
-	source, a, p := profileFixture()
-	secret := "PRIVATE-IDENTIFIER-DO-NOT-EXPORT"
-	source.Firewall = "10.99.7.3-" + secret
-	a.Hostname, a.Firmware = secret, secret
-	a.Warnings = []string{secret}
-	a.VDOMs = []string{secret}
-	a.Exposures[0].VDOM = secret
-	a.Exposures[0].Name = secret
-	a.Exposures[0].External = "10.99.7.4"
-	a.Exposures[0].Backends = []string{secret}
-	a.Exposures[0].Evidence = secret
-	a.Exposures[0].Notes = []string{secret}
-	a.Findings[0] = reportmodel.Finding{ID: "management:" + secret, Category: "management", VDOM: secret, Priority: "Medium", Title: secret, TitleDE: secret, Detail: secret, DetailDE: secret, Recommendation: secret, RecommendationDE: secret, Evidence: secret}
-	a.Telemetry.DeviceIdentity = secret
-	a.Telemetry.Reason = secret
-	a.Telemetry.Sources = []string{secret}
-	for i := range a.Telemetry.Datasets {
-		a.Telemetry.Datasets[i].Title = secret
-		a.Telemetry.Datasets[i].TitleDE = secret
-		a.Telemetry.Datasets[i].Reason = secret
-		a.Telemetry.Datasets[i].MissingFields = []string{secret}
-		for j := range a.Telemetry.Datasets[i].Rows {
-			a.Telemetry.Datasets[i].Rows[j].Label = secret
-			a.Telemetry.Datasets[i].Rows[j].Secondary = secret
-		}
-	}
-	p.Filters.VDOMs = []string{secret}
-	p.Name = secret
-	p.Intro = "Reference: {{firewall}} / {{firewall_id}}. {{finding_count}} observations."
-	for _, format := range []string{"html", "csv", "json", "xml", "pdf"} {
-		t.Run(format, func(t *testing.T) {
-			var data []byte
-			var err error
-			if format == "pdf" {
-				if _, err := exec.LookPath("pdftotext"); err != nil {
-					t.Skip("pdftotext unavailable")
-				}
-				data, err = RenderWithProfile(context.Background(), source, a, "customer", p)
-				if err == nil {
-					data = []byte(extractText(t, data))
-				}
-			} else {
-				data, err = Export(context.Background(), source, a, "customer", format, p)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, forbidden := range []string{secret, "10.99.7.3", "10.99.7.4", "10.10.20.15", "edge-vienna"} {
-				if bytes.Contains(data, []byte(forbidden)) {
-					t.Errorf("customer %s leaked %q", format, forbidden)
-				}
-			}
-			if !bytes.Contains(data, []byte(p.Customer)) || !bytes.Contains(data, []byte("125")) {
-				t.Fatal("customer alias or actual aggregate was lost")
-			}
-		})
 	}
 }
 
@@ -432,7 +372,7 @@ func TestMissingFieldsRetainKnownRecordCountWithoutClaimingUsableData(t *testing
 		{ID: "applications", Status: "error", Total: 999}, {ID: "vpn_events", Status: "missing_fields"}}
 	for _, lang := range []string{"en", "de"} {
 		p.Language = lang
-		for _, kind := range []string{"customer", "traffic"} {
+		for _, kind := range []string{"technical", "traffic"} {
 			data, err := Export(context.Background(), source, a, kind, "json", p)
 			if err != nil {
 				t.Fatal(err)
@@ -472,7 +412,7 @@ func TestMissingFieldsRetainKnownRecordCountWithoutClaimingUsableData(t *testing
 func TestExportBoundsCancellationAndUnknownMacros(t *testing.T) {
 	source, a, p := profileFixture()
 	p.Intro = "{{password}}"
-	if _, err := Export(context.Background(), source, a, "customer", "json", p); err == nil {
+	if _, err := Export(context.Background(), source, a, "technical", "json", p); err == nil {
 		t.Fatal("unknown macro accepted")
 	}
 	p = reportmodel.DefaultProfile("en")
@@ -545,7 +485,7 @@ func TestWriteProfilePreviewFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, a, p := profileFixture()
-	for _, kind := range []string{"forwarding", "technical", "customer", "traffic"} {
+	for _, kind := range []string{"forwarding", "technical", "traffic"} {
 		for _, lang := range []string{"en", "de"} {
 			p.Language = lang
 			p.Orientation = "portrait"
@@ -587,7 +527,7 @@ func TestBrandLogoAndLiteralHTMLAreSafeAcrossPresentationModes(t *testing.T) {
 	p.Organization = "Example <Organization>"
 	for _, cover := range []bool{false, true} {
 		p.Cover = cover
-		data, err := Export(context.Background(), source, a, "customer", "html", p)
+		data, err := Export(context.Background(), source, a, "technical", "html", p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -597,7 +537,7 @@ func TestBrandLogoAndLiteralHTMLAreSafeAcrossPresentationModes(t *testing.T) {
 		if !bytes.Contains(data, []byte("data:image/png;base64,")) || bytes.Contains(data, []byte("ZgotmplZ")) {
 			t.Fatal("validated local logo missing from HTML")
 		}
-		pdf, err := RenderWithProfile(context.Background(), source, a, "customer", p)
+		pdf, err := RenderWithProfile(context.Background(), source, a, "technical", p)
 		if err != nil {
 			t.Fatal(err)
 		}

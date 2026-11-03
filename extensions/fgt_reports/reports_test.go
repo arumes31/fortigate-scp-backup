@@ -112,7 +112,7 @@ func assertPublished(t *testing.T, e *Extension, id int) {
 	if count != 1 || backupID != id {
 		t.Fatalf("published count=%d backup=%d want one backup %d", count, backupID, id)
 	}
-	for _, column := range []string{"assessment", "forwarding", "technical", "customer", "traffic"} {
+	for _, column := range []string{"assessment", "forwarding", "technical", "traffic"} {
 		var value []byte
 		if err := e.db.QueryRow("SELECT " + column + " FROM report_latest WHERE firewall_id=7").Scan(&value); err != nil {
 			t.Fatal(err)
@@ -277,7 +277,7 @@ end
 	if len(data.Assessment.Exposures) != 1 || data.Assessment.Exposures[0].GeoStatus != "Applicable" {
 		t.Fatalf("unexpected assessment: %+v", data.Assessment)
 	}
-	for _, kind := range []string{"forwarding", "technical", "customer"} {
+	for _, kind := range []string{"forwarding", "technical", "traffic"} {
 		var encrypted []byte
 		if err := e.db.QueryRow("SELECT " + kind + " FROM report_latest WHERE firewall_id=7").Scan(&encrypted); err != nil {
 			t.Fatal(err)
@@ -421,7 +421,7 @@ func TestReportReadAuthorizationAndDeletedFirewall(t *testing.T) {
 	e := testExtension(t, f)
 	e.generate(claim(t, e))
 	router := reportRouter(e)
-	for _, path := range []string{"/reports/7/data", "/reports/7/technical.pdf", "/reports/7/customer.pdf", "/reports/7/forwarding.pdf", "/reports/7/traffic.pdf"} {
+	for _, path := range []string{"/reports/7/data", "/reports/7/technical.pdf", "/reports/7/forwarding.pdf", "/reports/7/traffic.pdf"} {
 		for _, role := range []string{"", "viewer", "operator"} {
 			r := httptest.NewRequest(http.MethodGet, path, nil)
 			r.Header.Set("X-Test-Role", role)
@@ -526,7 +526,7 @@ func TestMountBackfillsAndCommittedBackupTriggersReplacement(t *testing.T) {
 	waitBackup(2)
 	assertPublished(t, e, 2)
 	paths := []string{"/reports/", "/reports/catalog", "/reports/calendar", "/reports/7", "/reports/7/profile", "/reports/7/profile.json", "/reports/static/reports.css"}
-	for _, kind := range []string{"forwarding", "technical", "customer", "traffic"} {
+	for _, kind := range []string{"forwarding", "technical", "traffic"} {
 		for _, format := range []string{"pdf", "html", "csv", "json", "xml"} {
 			paths = append(paths, "/reports/7/"+kind+"."+format)
 		}
@@ -556,6 +556,15 @@ func TestMountBackfillsAndCommittedBackupTriggersReplacement(t *testing.T) {
 		router.ServeHTTP(response, request)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("viewer reached report mutation %s: %d", operation, response.Code)
+		}
+	}
+	for _, format := range []string{"pdf", "html", "csv", "json", "xml"} {
+		request := httptest.NewRequest(http.MethodGet, "/reports/7/customer."+format, nil)
+		request.Header.Set("X-Test-Role", "operator")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("retired customer report still served as %s: %d", format, response.Code)
 		}
 	}
 }

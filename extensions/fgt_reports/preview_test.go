@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -208,11 +209,28 @@ func reportsBrowserTelemetry(ctx context.Context, source reportmodel.Source, _ r
 	end := now.UTC().Truncate(time.Millisecond)
 	telemetry := reportmodel.Telemetry{Status: "partial", WindowStart: end.Add(-duration), WindowEnd: end, RetrievedAt: end,
 		DeviceIdentity: source.Firewall, Sources: []string{"preview-edge-a", "preview-edge-b"},
+		SourceOrigin: "adm_vpn_cluster_hostnames", SourceMatch: "dns_name_full", VDOMs: append([]string{}, profile.Filters.VDOMs...),
 		Reason: "Synthetic observations: some groups are bounded and some terminal-session records lack byte fields. Dataset totals overlap and must not be added together."}
 	if !profile.Traffic {
 		telemetry.Status, telemetry.Reason = "disabled", "Log observations are disabled in the captured profile."
 		return telemetry
 	}
+	// Keep diagnostics representative of the captured synthetic scope without
+	// making any production Graylog request from this browser fixture.
+	query := `(source:"preview-edge-a" OR source:"preview-edge-b")`
+	if source.FirewallID == 8 {
+		query = `(source:"preview-berlin")`
+		telemetry.SourceOrigin = "adm_vpn_firewallname"
+	}
+	if len(telemetry.VDOMs) > 0 {
+		selectors := make([]string, 0, len(telemetry.VDOMs))
+		escape := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+		for _, vdom := range telemetry.VDOMs {
+			selectors = append(selectors, `vd:"`+escape.Replace(vdom)+`"`)
+		}
+		query += " AND (" + strings.Join(selectors, " OR ") + ")"
+	}
+	telemetry.Query = query + fmt.Sprintf(` AND timestamp:["%s" TO "%s"}`, telemetry.WindowStart.Format(time.RFC3339Nano), telemetry.WindowEnd.Format(time.RFC3339Nano))
 	if source.FirewallID == 8 {
 		telemetry.Status, telemetry.Reason, telemetry.Sources = "no_data", "No synthetic records match this source and window. This is not evidence of zero activity.", []string{"preview-berlin"}
 		return telemetry

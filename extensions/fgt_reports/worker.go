@@ -120,7 +120,7 @@ func (e *Extension) generate(t target) {
 		return
 	}
 	if published && e.logActivity != nil {
-		e.logActivity("system", "reports.generated", fmt.Sprintf("firewall_id=%d backup_id=%d types=forwarding,technical,customer,traffic", t.FirewallID, t.BackupID))
+		e.logActivity("system", "reports.generated", fmt.Sprintf("firewall_id=%d backup_id=%d types=forwarding,technical,traffic", t.FirewallID, t.BackupID))
 	}
 }
 
@@ -156,7 +156,7 @@ func (e *Extension) buildSet(ctx context.Context, data reportData) (encryptedSet
 		kind        string
 		destination *[]byte
 	}{
-		{"forwarding", &set.Forwarding}, {"technical", &set.Technical}, {"customer", &set.Customer}, {"traffic", &set.Traffic},
+		{"forwarding", &set.Forwarding}, {"technical", &set.Technical}, {"traffic", &set.Traffic},
 	} {
 		if err := ctx.Err(); err != nil {
 			return set, err

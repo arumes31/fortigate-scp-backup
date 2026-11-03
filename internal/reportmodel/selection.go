@@ -123,6 +123,7 @@ func cloneTelemetry(telemetry *Telemetry) *Telemetry {
 	}
 	clone := *telemetry
 	clone.Sources = append([]string{}, telemetry.Sources...)
+	clone.VDOMs = append([]string{}, telemetry.VDOMs...)
 	clone.Datasets = append([]TelemetryDataset{}, telemetry.Datasets...)
 	for i := range clone.Datasets {
 		clone.Datasets[i].MissingFields = append([]string{}, telemetry.Datasets[i].MissingFields...)

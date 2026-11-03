@@ -4,7 +4,7 @@ package reportmodel
 import "time"
 
 const (
-	Version       = "2"
+	Version       = "3"
 	SchemaVersion = 2
 )
 

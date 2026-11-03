@@ -11,7 +11,7 @@ import (
 )
 
 // A firewall has exactly one desired source and one published report set.
-// Replacing all four encrypted PDFs and their assessment is one transaction.
+// Replacing all three encrypted PDFs and their assessment is one transaction.
 // There is deliberately no report history, version directory, or artifact cache.
 const reportSchema = `
 CREATE TABLE IF NOT EXISTS report_targets (
@@ -36,7 +36,6 @@ CREATE TABLE IF NOT EXISTS report_latest (
  assessment BLOB NOT NULL,
  forwarding BLOB NOT NULL,
  technical BLOB NOT NULL,
- customer BLOB NOT NULL,
  traffic BLOB NOT NULL DEFAULT X''
 );
 CREATE TABLE IF NOT EXISTS report_profiles (
@@ -63,7 +62,6 @@ type encryptedSet struct {
 	Assessment []byte
 	Forwarding []byte
 	Technical  []byte
-	Customer   []byte
 	Traffic    []byte
 }
 
@@ -78,13 +76,14 @@ func initDB(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("initialize report store: %w", err)
 		}
 	}
-	// Existing report stores predate traffic reports. Preserve their usable
-	// PDFs until the versioned replacement succeeds.
+	// Older stores may predate traffic reports or still contain the removed
+	// customer report. Preserve the supported PDFs until their replacement
+	// succeeds, and remove the retired artifact with secure deletion enabled.
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info(report_latest)")
 	if err != nil {
 		return err
 	}
-	hasTraffic := false
+	hasTraffic, hasCustomer := false, false
 	for rows.Next() {
 		var cid, notnull, primary int
 		var name, kind string
@@ -94,6 +93,7 @@ func initDB(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		hasTraffic = hasTraffic || name == "traffic"
+		hasCustomer = hasCustomer || name == "customer"
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -102,10 +102,25 @@ func initDB(ctx context.Context, db *sql.DB) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if !hasTraffic {
-		_, err = db.ExecContext(ctx, "ALTER TABLE report_latest ADD COLUMN traffic BLOB NOT NULL DEFAULT X''")
+	if hasTraffic && !hasCustomer {
+		return nil
 	}
-	return err
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if !hasTraffic {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE report_latest ADD COLUMN traffic BLOB NOT NULL DEFAULT X''"); err != nil {
+			return err
+		}
+	}
+	if hasCustomer {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE report_latest DROP COLUMN customer"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 const enqueueSQL = `INSERT INTO report_targets
@@ -225,12 +240,12 @@ func publish(ctx context.Context, db *sql.DB, t target, generated time.Time, set
 		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO report_latest
- (firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,customer,traffic)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(firewall_id) DO UPDATE SET
+ (firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,traffic)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(firewall_id) DO UPDATE SET
  backup_id=excluded.backup_id,backup_ns=excluded.backup_ns,generated_ns=excluded.generated_ns,
  generation=excluded.generation,checksum=excluded.checksum,limited=excluded.limited,assessment=excluded.assessment,forwarding=excluded.forwarding,
- technical=excluded.technical,customer=excluded.customer,traffic=excluded.traffic`, t.FirewallID, t.BackupID, t.BackupNS,
-		generated.UnixNano(), t.Generation, t.Checksum, set.Limited, set.Assessment, set.Forwarding, set.Technical, set.Customer, set.Traffic)
+ technical=excluded.technical,traffic=excluded.traffic`, t.FirewallID, t.BackupID, t.BackupNS,
+		generated.UnixNano(), t.Generation, t.Checksum, set.Limited, set.Assessment, set.Forwarding, set.Technical, set.Traffic)
 	if err != nil {
 		return false, err
 	}

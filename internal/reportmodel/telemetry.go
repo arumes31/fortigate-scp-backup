@@ -6,14 +6,22 @@ import "time"
 // configuration facts. Counts refer to received log records, not unique
 // sessions, attacks, users, uptime, or complete traffic accounting.
 type Telemetry struct {
-	Status         string             `json:"status"`
-	Reason         string             `json:"reason"`
-	WindowStart    time.Time          `json:"window_start"`
-	WindowEnd      time.Time          `json:"window_end"`
-	RetrievedAt    time.Time          `json:"retrieved_at"`
-	DeviceIdentity string             `json:"device_identity"`
-	Sources        []string           `json:"sources"`
-	Datasets       []TelemetryDataset `json:"datasets"`
+	Status         string    `json:"status"`
+	Reason         string    `json:"reason"`
+	WindowStart    time.Time `json:"window_start"`
+	WindowEnd      time.Time `json:"window_end"`
+	RetrievedAt    time.Time `json:"retrieved_at"`
+	DeviceIdentity string    `json:"device_identity"`
+	Sources        []string  `json:"sources"`
+	// SourceOrigin and SourceMatch are stable provenance identifiers, not
+	// operator-supplied text. Query is the bounded generated source/VDOM/time
+	// selector actually sent to Graylog; it contains no URL, credentials, or
+	// raw message content. Empty diagnostics are valid for older snapshots.
+	SourceOrigin string             `json:"source_origin,omitempty"`
+	SourceMatch  string             `json:"source_match,omitempty"`
+	VDOMs        []string           `json:"vdoms,omitempty"`
+	Query        string             `json:"query,omitempty"`
+	Datasets     []TelemetryDataset `json:"datasets"`
 }
 
 type TelemetryDataset struct {

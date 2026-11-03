@@ -19,8 +19,6 @@ func Title(kind, lang string) string {
 		return choose(lang, "Technical Configuration Report", "Technischer Konfigurationsbericht")
 	case "traffic":
 		return choose(lang, "Traffic & Log Observations", "Verkehrs- und Logbeobachtungen")
-	case "customer":
-		return choose(lang, "Customer Review & Improvement Roadmap", "Kundenübersicht & Verbesserungsplan")
 	default:
 		return "FortiSafe Reports"
 	}
@@ -31,10 +29,7 @@ func project(source reportmodel.Source, a reportmodel.Assessment, kind, lang str
 }
 
 func projectVisible(source reportmodel.Source, a reportmodel.Assessment, kind, lang string, showInventory, showFindings, showTraces bool) content {
-	if kind == "customer" {
-		return customerContentVisible(source, a, lang, showFindings)
-	}
-	c := baseContent(source, kind, lang, false)
+	c := baseContent(source, kind, lang)
 	c.Blocks = append(c.Blocks, block{Text: choose(lang,
 		"Assessment of the saved configuration. Operational status and external reachability have not been tested. Policy conclusions apply only to the supported conditions described in this report.",
 		"Bewertung der gespeicherten Konfiguration. Betriebszustand und externe Erreichbarkeit wurden nicht getestet. Richtlinienaussagen gelten nur für die im Bericht beschriebenen unterstützten Bedingungen.")})
@@ -42,6 +37,12 @@ func projectVisible(source reportmodel.Source, a reportmodel.Assessment, kind, l
 	c.Blocks = append(c.Blocks, coverage(a, lang)...)
 	if kind == "forwarding" {
 		c.Blocks = append(c.Blocks, forwardingContentVisible(a, lang, showTraces)...)
+		if showInventory {
+			c.Blocks = append(c.Blocks, technicalInventory(a, lang)...)
+		}
+		if showFindings {
+			c.Blocks = append(c.Blocks, findingContent(a, lang)...)
+		}
 	} else {
 		c.Blocks = append(c.Blocks, technicalContentVisible(a, lang, showInventory, showFindings)...)
 		c.Blocks = append(c.Blocks, block{Text: choose(lang,
@@ -55,9 +56,9 @@ func projectVisible(source reportmodel.Source, a reportmodel.Assessment, kind, l
 	return c
 }
 
-func baseContent(source reportmodel.Source, kind, lang string, customer bool) content {
+func baseContent(source reportmodel.Source, kind, lang string) content {
 	identity := source.Firewall
-	if identity == "" || customer {
+	if identity == "" {
 		identity = fmt.Sprintf("Firewall #%d", source.FirewallID)
 	}
 	return content{
@@ -122,29 +123,43 @@ func forwardingContentVisible(a reportmodel.Assessment, lang string, showTraces 
 func inventory(exposures []reportmodel.Exposure, lang string) block {
 	b := block{
 		Contents: true, Heading: choose(lang, "Forwarding inventory", "Weiterleitungsinventar"),
-		Columns: []string{choose(lang, "VDOM / object", "VDOM / Objekt"), choose(lang, "External listener", "Externer Listener"), choose(lang, "Backend mapping", "Backend-Zuordnung"), choose(lang, "Assessment", "Bewertung")},
+		Columns: []string{choose(lang, "VIP / virtual server", "VIP / Virtual Server"), choose(lang, "VDOM / type", "VDOM / Typ"), choose(lang, "External listener", "Externer Listener"), choose(lang, "Assessment", "Bewertung")},
+		Widths:  []float64{1.45, 1, 1.4, 1.15},
+	}
+	for _, e := range exposures {
+		b.Rows = append(b.Rows, []string{e.Name, e.VDOM + " / " + e.Type, e.External, e.Outcome})
+	}
+	return b
+}
+
+// The technical report has no per-publication detail cards, so its summary
+// retains the backend mapping and geographic assessment alongside each VIP.
+func technicalForwardingInventory(exposures []reportmodel.Exposure, lang string) block {
+	b := block{
+		Contents: true, Heading: choose(lang, "Forwarding inventory", "Weiterleitungsinventar"),
+		Columns: []string{choose(lang, "VDOM / object / type", "VDOM / Objekt / Typ"), choose(lang, "External listener", "Externer Listener"), choose(lang, "Backend mapping", "Backend-Zuordnung"), choose(lang, "Assessment", "Bewertung")},
 		Widths:  []float64{1.15, 1.15, 1.25, 1.15},
 	}
 	for _, e := range exposures {
-		b.Rows = append(b.Rows, []string{e.VDOM + " / " + e.Name, e.External,
-			strings.Join(e.Backends, "\n"), e.Outcome + "\n" + choose(lang, "Geo: ", "Geo: ") + e.GeoStatus})
+		b.Rows = append(b.Rows, []string{e.VDOM + " / " + e.Name + "\n" + e.Type, e.External,
+			strings.Join(e.Backends, "\n"), e.Outcome + "\nGeo: " + e.GeoStatus})
 	}
 	return b
 }
 
 func exposureDetail(number int, e reportmodel.Exposure, lang string, showTraces bool) []block {
 	rows := [][]string{
-		{choose(lang, "Type / VDOM", "Typ / VDOM"), e.Type + " / " + e.VDOM},
-		{choose(lang, "External listener", "Externer Listener"), e.External},
-		{choose(lang, "External interface settings", "Externe Schnittstelle / Filter"), e.ExternalInterface},
-		{choose(lang, "Backends", "Backends"), strings.Join(e.Backends, "\n")},
+		{choose(lang, "Source", "Quelle"), e.External + " · " + e.ExternalInterface},
+		{choose(lang, "Configured backends", "Konfigurierte Backends"), strings.Join(e.Backends, "\n")},
+		{choose(lang, "Geographic restrictions", "Geografische Einschränkungen"), e.GeoStatus},
 		{choose(lang, "VIP groups", "VIP-Gruppen"), strings.Join(e.Groups, ", ")},
+		{choose(lang, "Evidence", "Nachweis"), e.Evidence},
 		{choose(lang, "Related policy IDs", "Zugehörige Richtlinien-IDs"), strings.Join(e.PolicyIDs, ", ")},
-		{choose(lang, "Policy conclusion", "Richtlinienaussage"), e.Outcome},
-		{choose(lang, "Geographic restriction", "Geografische Einschränkung"), e.GeoStatus},
-		{choose(lang, "Source reference", "Quellenverweis"), e.Evidence},
 	}
-	blocks := []block{fields(fmt.Sprintf("%d. %s", number, e.Name), lang, rows)}
+	detail := fields(fmt.Sprintf("%d. %s", number, e.Name), lang, rows)
+	detail.Layout, detail.Badge = "publication", e.Outcome
+	detail.Text = e.VDOM + " · " + e.Type + " · " + e.External
+	blocks := []block{detail}
 	for _, note := range e.Notes {
 		blocks = append(blocks, block{Text: "- " + note})
 	}
@@ -156,23 +171,21 @@ func exposureDetail(number int, e reportmodel.Exposure, lang string, showTraces 
 			"No supported policy trace was established. See the assessment and coverage notes; this does not prove that the object has no network effect.",
 			"Es konnte kein unterstützter Richtlinienpfad ermittelt werden. Beachten Sie Bewertung und Analysehinweise; dies beweist nicht, dass das Objekt keine Netzwirkung hat.")})
 	}
-	for _, trace := range e.Trace {
-		title := fmt.Sprintf("%s %d | %s %s", choose(lang, "Sequence", "Sequenz"), trace.Sequence, choose(lang, "policy", "Richtlinie"), trace.ID)
-		blocks = append(blocks, fields(title, lang, [][]string{
-			{choose(lang, "Name / action / state", "Name / Aktion / Status"), trace.Name + " / " + trace.Action + " / " + trace.Status},
-			{choose(lang, "Ingress / egress", "Eingang / Ausgang"), trace.SourceInterface + " / " + trace.DestinationInterface},
-			{choose(lang, "Source selectors", "Quellauswahl"), trace.Source},
-			{choose(lang, "Destination selectors", "Zielauswahl"), trace.Destination},
-			{choose(lang, "Service", "Dienst"), trace.Service},
-			{choose(lang, "Schedule", "Zeitplan"), trace.Schedule},
-			{choose(lang, "VIP matching", "VIP-Zuordnung"), trace.VIPMatch},
-			{choose(lang, "Security profiles", "Sicherheitsprofile"), trace.Profiles},
-			{choose(lang, "Logging", "Protokollierung"), trace.Logging},
-			{choose(lang, "Effect on this path", "Wirkung auf diesen Pfad"), trace.Effect},
-			{choose(lang, "Source reference", "Quellenverweis"), trace.Evidence},
-		}))
+	trace := block{Layout: "policies", Heading: e.Name + " / " + choose(lang, "Policy sequence", "Richtlinienreihenfolge"),
+		Columns: []string{choose(lang, "# / Policy", "# / Richtlinie"), choose(lang, "Action", "Aktion"), choose(lang, "Source → Destination", "Quelle → Ziel"), choose(lang, "Service / Schedule", "Dienst / Zeitplan"), choose(lang, "Assessment", "Bewertung")},
+		Widths:  []float64{1.15, 1, 1.55, 1.2, 1.5},
 	}
-	return blocks
+	for _, p := range e.Trace {
+		trace.Rows = append(trace.Rows, []string{
+			fmt.Sprintf("%d / ID %s\n%s\n%s", p.Sequence, p.ID, p.Name, p.Evidence),
+			actionLabel(p.Action, lang) + "\n" + p.Status + "\nmatch-vip: " + p.VIPMatch,
+			p.Source + " → " + p.Destination + "\n" + p.SourceInterface + " → " + p.DestinationInterface,
+			p.Service + "\n" + p.Schedule + "\n" + choose(lang, "Security profiles: ", "Sicherheitsprofile: ") + p.Profiles + "\n" + choose(lang, "Logging: ", "Protokollierung: ") + p.Logging,
+			p.Effect,
+		})
+		trace.Actions = append(trace.Actions, p.Action)
+	}
+	return append(blocks, trace)
 }
 
 func technicalContentVisible(a reportmodel.Assessment, lang string, showInventory, showFindings bool) []block {
@@ -181,19 +194,9 @@ func technicalContentVisible(a reportmodel.Assessment, lang string, showInventor
 		"Die ausgewählte Konfiguration enthält %d erkannte Veröffentlichungsdefinitionen in %d VDOMs. Die Bewertung enthält %d Prüfpunkte. Konfigurierte VPN-, HA-, Routing- und Sicherheitsprofileinstellungen sind Konfigurationsnachweise; ihr Betriebszustand wurde nicht verifiziert."),
 		len(a.Exposures), len(a.VDOMs), len(a.Findings))}}
 	if showInventory {
-		for _, section := range a.Sections {
-			rows := make([][]string, 0, len(section.Rows))
-			for _, row := range section.Rows {
-				detail := row.Value
-				if row.Evidence != "" {
-					detail += "\n" + choose(lang, "Source: ", "Quelle: ") + row.Evidence
-				}
-				rows = append(rows, []string{row.Label, detail})
-			}
-			blocks = append(blocks, mainBlock(fields(localized(lang, section.Title, section.TitleDE), lang, rows)))
-		}
+		blocks = append(blocks, technicalInventory(a, lang)...)
 		if len(a.Exposures) > 0 {
-			blocks = append(blocks, inventory(a.Exposures, lang), block{Text: choose(lang,
+			blocks = append(blocks, technicalForwardingInventory(a.Exposures, lang), block{Text: choose(lang,
 				"The Port Forwarding & Exposure report from this same backup contains the full per-object rule traces and geographic restriction explanations.",
 				"Der Bericht zu Portweiterleitungen aus demselben Backup enthält die vollständigen Richtlinienpfade und Erklärungen zu geografischen Einschränkungen je Objekt.")})
 		}
@@ -201,19 +204,42 @@ func technicalContentVisible(a reportmodel.Assessment, lang string, showInventor
 	if !showFindings {
 		return blocks
 	}
-	blocks = append(blocks, block{Contents: true, Heading: choose(lang, "Findings and recommended actions", "Feststellungen und empfohlene Maßnahmen")})
+	return append(blocks, findingContent(a, lang)...)
+}
+
+func technicalInventory(a reportmodel.Assessment, lang string) []block {
+	blocks := []block{{Contents: true, Heading: choose(lang, "Technical inventory", "Technisches Inventar")}}
+	for _, section := range a.Sections {
+		rows := make([][]string, 0, len(section.Rows))
+		for _, row := range section.Rows {
+			detail := row.Value
+			if row.Evidence != "" {
+				detail += "\n" + choose(lang, "Source: ", "Quelle: ") + row.Evidence
+			}
+			rows = append(rows, []string{row.Label, detail})
+		}
+		b := fields(localized(lang, section.Title, section.TitleDE), lang, rows)
+		b.Layout, b.Badge = "inventory", strconv.Itoa(len(rows))
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+
+func findingContent(a reportmodel.Assessment, lang string) []block {
+	blocks := []block{{Contents: true, Heading: choose(lang, "Review findings", "Prüfergebnisse")}}
 	if len(a.Findings) == 0 {
 		return append(blocks, block{Text: choose(lang,
 			"The implemented checks recorded no findings. This is not a complete security assessment or compliance certification; review the analysis coverage.",
 			"Die implementierten Prüfungen haben keine Feststellungen erfasst. Dies ist keine vollständige Sicherheitsbewertung oder Konformitätszertifizierung; beachten Sie den Analyseumfang.")})
 	}
 	for index, f := range a.Findings {
-		blocks = append(blocks, fields(fmt.Sprintf("%d. %s", index+1, localized(lang, f.Title, f.TitleDE)), lang, [][]string{
-			{choose(lang, "Priority / reference", "Priorität / Referenz"), f.Priority + " / " + f.ID},
-			{choose(lang, "Observation", "Feststellung"), localized(lang, f.Detail, f.DetailDE)},
+		b := fields(fmt.Sprintf("%d. %s", index+1, localized(lang, f.Title, f.TitleDE)), lang, [][]string{
 			{choose(lang, "Recommended action", "Empfohlene Maßnahme"), localized(lang, f.Recommendation, f.RecommendationDE)},
 			{choose(lang, "Source reference", "Quellenverweis"), f.Evidence},
-		}))
+			{choose(lang, "Reference", "Referenz"), f.ID},
+		})
+		b.Layout, b.Badge, b.Text = "finding", f.Priority, localized(lang, f.Detail, f.DetailDE)
+		blocks = append(blocks, b)
 	}
 	return blocks
 }
