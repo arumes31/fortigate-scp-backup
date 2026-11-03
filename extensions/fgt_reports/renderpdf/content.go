@@ -17,6 +17,8 @@ func Title(kind, lang string) string {
 		return choose(lang, "Port Forwarding & Exposure", "Portweiterleitungen & Erreichbarkeit")
 	case "technical":
 		return choose(lang, "Technical Configuration Report", "Technischer Konfigurationsbericht")
+	case "traffic":
+		return choose(lang, "Traffic & Log Observations", "Verkehrs- und Logbeobachtungen")
 	case "customer":
 		return choose(lang, "Customer Review & Improvement Roadmap", "Kundenübersicht & Verbesserungsplan")
 	default:
@@ -25,25 +27,29 @@ func Title(kind, lang string) string {
 }
 
 func project(source reportmodel.Source, a reportmodel.Assessment, kind, lang string) content {
+	return projectVisible(source, a, kind, lang, true, true, true)
+}
+
+func projectVisible(source reportmodel.Source, a reportmodel.Assessment, kind, lang string, showInventory, showFindings, showTraces bool) content {
 	if kind == "customer" {
-		return customerContent(source, a, lang)
+		return customerContentVisible(source, a, lang, showFindings)
 	}
 	c := baseContent(source, kind, lang, false)
 	c.Blocks = append(c.Blocks, block{Text: choose(lang,
 		"Assessment of the saved configuration. Operational status and external reachability have not been tested. Policy conclusions apply only to the supported conditions described in this report.",
 		"Bewertung der gespeicherten Konfiguration. Betriebszustand und externe Erreichbarkeit wurden nicht getestet. Richtlinienaussagen gelten nur für die im Bericht beschriebenen unterstützten Bedingungen.")})
-	c.Blocks = append(c.Blocks, provenance(source, a, lang))
+	c.Blocks = append(c.Blocks, mainBlock(provenance(source, a, lang)))
 	c.Blocks = append(c.Blocks, coverage(a, lang)...)
 	if kind == "forwarding" {
-		c.Blocks = append(c.Blocks, forwardingContent(a, lang)...)
+		c.Blocks = append(c.Blocks, forwardingContentVisible(a, lang, showTraces)...)
 	} else {
-		c.Blocks = append(c.Blocks, technicalContent(a, lang)...)
+		c.Blocks = append(c.Blocks, technicalContentVisible(a, lang, showInventory, showFindings)...)
 		c.Blocks = append(c.Blocks, block{Text: choose(lang,
 			"Configuration evidence is not operational verification or compliance certification. Source references identify the selected backup's blocks and lines; raw configuration is not embedded.",
 			"Konfigurationsnachweise sind keine Betriebsverifikation oder Konformitätszertifizierung. Quellenverweise identifizieren Blöcke und Zeilen des ausgewählten Backups; die Rohkonfiguration ist nicht eingebettet.")})
 		return c
 	}
-	c.Blocks = append(c.Blocks, block{Heading: choose(lang, "Reading this report", "Hinweise zum Bericht"), Text: choose(lang,
+	c.Blocks = append(c.Blocks, block{Contents: true, Heading: choose(lang, "Reading this report", "Hinweise zum Bericht"), Text: choose(lang,
 		"Policy IDs identify rules; sequence numbers describe their order. A configured mapping is not a live reachability test. Unknown conditions are not a security pass. Source references identify the selected backup's configuration blocks and lines; raw backup content is not embedded. Characters outside the embedded font are shown as Unicode code points.",
 		"Richtlinien-IDs identifizieren Regeln; Sequenznummern beschreiben ihre Reihenfolge. Eine konfigurierte Zuordnung ist kein Erreichbarkeitstest. Unbekannte Bedingungen sind kein Sicherheitsnachweis. Quellenverweise beziehen sich auf Blöcke und Zeilen des ausgewählten Backups; die Rohkonfiguration ist nicht eingebettet. Zeichen außerhalb der eingebetteten Schrift werden als Unicode-Codepunkte dargestellt.")})
 	return c
@@ -83,24 +89,24 @@ func coverage(a reportmodel.Assessment, lang string) []block {
 	if !a.Complete {
 		state = choose(lang, "Analysis has limitations. Review the conditions below before using policy conclusions.", "Die Analyse ist eingeschränkt. Beachten Sie die folgenden Bedingungen, bevor Sie Richtlinienaussagen verwenden.")
 	}
-	blocks := []block{{Heading: choose(lang, "Analysis coverage", "Analyseumfang"), Text: state}}
+	blocks := []block{{Contents: true, Heading: choose(lang, "Analysis coverage", "Analyseumfang"), Text: state}}
 	for _, warning := range a.Warnings {
 		blocks = append(blocks, block{Text: "- " + warning})
 	}
 	return blocks
 }
 
-func forwardingContent(a reportmodel.Assessment, lang string) []block {
+func forwardingContentVisible(a reportmodel.Assessment, lang string, showTraces bool) []block {
 	backends, traces := 0, 0
 	for _, exposure := range a.Exposures {
 		backends += len(exposure.Backends)
 		traces += len(exposure.Trace)
 	}
-	blocks := []block{fields(choose(lang, "Inventory summary", "Inventarübersicht"), lang, [][]string{
+	blocks := []block{mainBlock(fields(choose(lang, "Inventory summary", "Inventarübersicht"), lang, [][]string{
 		{choose(lang, "VIP / virtual-server definitions", "VIP- / Virtual-Server-Definitionen"), strconv.Itoa(len(a.Exposures))},
 		{choose(lang, "Configured backend entries", "Konfigurierte Backend-Einträge"), strconv.Itoa(backends)},
 		{choose(lang, "Recorded policy trace entries", "Erfasste Richtlinien-Schritte"), strconv.Itoa(traces)},
-	})}
+	}))}
 	if len(a.Exposures) == 0 {
 		return append(blocks, block{Text: choose(lang,
 			"No VIP or virtual-server definitions were detected in the analyzed scope. This does not establish that the firewall has no externally accessible services.",
@@ -108,14 +114,14 @@ func forwardingContent(a reportmodel.Assessment, lang string) []block {
 	}
 	blocks = append(blocks, inventory(a.Exposures, lang))
 	for index, exposure := range a.Exposures {
-		blocks = append(blocks, exposureDetail(index+1, exposure, lang)...)
+		blocks = append(blocks, exposureDetail(index+1, exposure, lang, showTraces)...)
 	}
 	return blocks
 }
 
 func inventory(exposures []reportmodel.Exposure, lang string) block {
 	b := block{
-		Heading: choose(lang, "Forwarding inventory", "Weiterleitungsinventar"),
+		Contents: true, Heading: choose(lang, "Forwarding inventory", "Weiterleitungsinventar"),
 		Columns: []string{choose(lang, "VDOM / object", "VDOM / Objekt"), choose(lang, "External listener", "Externer Listener"), choose(lang, "Backend mapping", "Backend-Zuordnung"), choose(lang, "Assessment", "Bewertung")},
 		Widths:  []float64{1.15, 1.15, 1.25, 1.15},
 	}
@@ -126,7 +132,7 @@ func inventory(exposures []reportmodel.Exposure, lang string) block {
 	return b
 }
 
-func exposureDetail(number int, e reportmodel.Exposure, lang string) []block {
+func exposureDetail(number int, e reportmodel.Exposure, lang string, showTraces bool) []block {
 	rows := [][]string{
 		{choose(lang, "Type / VDOM", "Typ / VDOM"), e.Type + " / " + e.VDOM},
 		{choose(lang, "External listener", "Externer Listener"), e.External},
@@ -141,6 +147,9 @@ func exposureDetail(number int, e reportmodel.Exposure, lang string) []block {
 	blocks := []block{fields(fmt.Sprintf("%d. %s", number, e.Name), lang, rows)}
 	for _, note := range e.Notes {
 		blocks = append(blocks, block{Text: "- " + note})
+	}
+	if !showTraces {
+		return append(blocks, block{Text: choose(lang, "Policy trace details are hidden by the selected profile. The assessment was computed from the complete configuration.", "Richtliniendetails sind im gewählten Profil ausgeblendet. Die Bewertung wurde aus der vollständigen Konfiguration ermittelt.")})
 	}
 	if len(e.Trace) == 0 {
 		return append(blocks, block{Text: choose(lang,
@@ -166,28 +175,33 @@ func exposureDetail(number int, e reportmodel.Exposure, lang string) []block {
 	return blocks
 }
 
-func technicalContent(a reportmodel.Assessment, lang string) []block {
-	blocks := []block{{Heading: choose(lang, "Engineering summary", "Technische Zusammenfassung"), Text: fmt.Sprintf(choose(lang,
+func technicalContentVisible(a reportmodel.Assessment, lang string, showInventory, showFindings bool) []block {
+	blocks := []block{{Contents: true, Heading: choose(lang, "Engineering summary", "Technische Zusammenfassung"), Text: fmt.Sprintf(choose(lang,
 		"The selected configuration contains %d detected publication definitions across %d VDOMs. The assessment recorded %d review observations. Configured VPN, HA, routing and security-profile settings are configuration evidence; their operational state has not been verified.",
 		"Die ausgewählte Konfiguration enthält %d erkannte Veröffentlichungsdefinitionen in %d VDOMs. Die Bewertung enthält %d Prüfpunkte. Konfigurierte VPN-, HA-, Routing- und Sicherheitsprofileinstellungen sind Konfigurationsnachweise; ihr Betriebszustand wurde nicht verifiziert."),
 		len(a.Exposures), len(a.VDOMs), len(a.Findings))}}
-	for _, section := range a.Sections {
-		rows := make([][]string, 0, len(section.Rows))
-		for _, row := range section.Rows {
-			detail := row.Value
-			if row.Evidence != "" {
-				detail += "\n" + choose(lang, "Source: ", "Quelle: ") + row.Evidence
+	if showInventory {
+		for _, section := range a.Sections {
+			rows := make([][]string, 0, len(section.Rows))
+			for _, row := range section.Rows {
+				detail := row.Value
+				if row.Evidence != "" {
+					detail += "\n" + choose(lang, "Source: ", "Quelle: ") + row.Evidence
+				}
+				rows = append(rows, []string{row.Label, detail})
 			}
-			rows = append(rows, []string{row.Label, detail})
+			blocks = append(blocks, mainBlock(fields(localized(lang, section.Title, section.TitleDE), lang, rows)))
 		}
-		blocks = append(blocks, fields(localized(lang, section.Title, section.TitleDE), lang, rows))
+		if len(a.Exposures) > 0 {
+			blocks = append(blocks, inventory(a.Exposures, lang), block{Text: choose(lang,
+				"The Port Forwarding & Exposure report from this same backup contains the full per-object rule traces and geographic restriction explanations.",
+				"Der Bericht zu Portweiterleitungen aus demselben Backup enthält die vollständigen Richtlinienpfade und Erklärungen zu geografischen Einschränkungen je Objekt.")})
+		}
 	}
-	if len(a.Exposures) > 0 {
-		blocks = append(blocks, inventory(a.Exposures, lang), block{Text: choose(lang,
-			"The Port Forwarding & Exposure report from this same backup contains the full per-object rule traces and geographic restriction explanations.",
-			"Der Bericht zu Portweiterleitungen aus demselben Backup enthält die vollständigen Richtlinienpfade und Erklärungen zu geografischen Einschränkungen je Objekt.")})
+	if !showFindings {
+		return blocks
 	}
-	blocks = append(blocks, block{Heading: choose(lang, "Findings and recommended actions", "Feststellungen und empfohlene Maßnahmen")})
+	blocks = append(blocks, block{Contents: true, Heading: choose(lang, "Findings and recommended actions", "Feststellungen und empfohlene Maßnahmen")})
 	if len(a.Findings) == 0 {
 		return append(blocks, block{Text: choose(lang,
 			"The implemented checks recorded no findings. This is not a complete security assessment or compliance certification; review the analysis coverage.",
@@ -235,3 +249,5 @@ func checksum(s, lang string) string {
 	}
 	return strings.ToLower(s)
 }
+
+func mainBlock(b block) block { b.Contents = true; return b }

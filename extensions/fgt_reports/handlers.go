@@ -28,6 +28,9 @@ type reportRow struct {
 	Stale        bool
 	ReportBackup string
 	Generated    string
+	ProfileName  string
+	NextDue      string
+	TrafficReady bool
 }
 
 type indexData struct {
@@ -39,6 +42,7 @@ type indexData struct {
 type detailData struct {
 	Base          webui.BaseData
 	Report        reportData
+	Selection     reportmodel.Selection
 	Stale         bool
 	BackupTime    string
 	GeneratedTime string
@@ -62,14 +66,20 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 	view := indexData{Base: e.pageBase(r, "Reports", "reports"), Language: e.cfg.ReportsLanguage}
 	for _, source := range sources {
 		row := reportRow{FirewallID: source.FirewallID, Firewall: source.Firewall, LatestBackup: displayTime(source.BackupAt), Status: "queued"}
+		profile, err := e.getProfile(ctx, source.FirewallID)
+		if err != nil {
+			reportError(w, err)
+			return
+		}
+		row.ProfileName, row.NextDue = profile.Profile.Name, displayTime(profile.NextDue)
 		var publishedID, backupNS, generatedNS int64
 		var generation string
 		var checksum string
 		var limited int
-		err := e.db.QueryRowContext(ctx, `SELECT t.status,t.error,COALESCE(l.backup_id,0),COALESCE(l.backup_ns,0),
- COALESCE(l.generated_ns,0),COALESCE(l.generation,''),COALESCE(l.checksum,''),COALESCE(l.limited,0)
+		err = e.db.QueryRowContext(ctx, `SELECT t.status,t.error,COALESCE(l.backup_id,0),COALESCE(l.backup_ns,0),
+ COALESCE(l.generated_ns,0),COALESCE(l.generation,''),COALESCE(l.checksum,''),COALESCE(l.limited,0),COALESCE(length(l.traffic),0)>0
  FROM report_targets t LEFT JOIN report_latest l USING(firewall_id) WHERE t.firewall_id=?`, source.FirewallID).
-			Scan(&row.Status, &row.Error, &publishedID, &backupNS, &generatedNS, &generation, &checksum, &limited)
+			Scan(&row.Status, &row.Error, &publishedID, &backupNS, &generatedNS, &generation, &checksum, &limited, &row.TrafficReady)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "Report status is temporarily unavailable", http.StatusServiceUnavailable)
 			return
@@ -79,7 +89,7 @@ func (e *Extension) index(w http.ResponseWriter, r *http.Request) {
 		if row.Ready {
 			row.ReportBackup = displayTime(time.Unix(0, backupNS))
 			row.Generated = displayTime(time.Unix(0, generatedNS))
-			row.Stale = int(publishedID) != source.BackupID || backupNS != source.BackupAt.UnixNano() || generation != e.generation() || (source.Checksum != "" && checksum != source.Checksum)
+			row.Stale = int(publishedID) != source.BackupID || backupNS != source.BackupAt.UnixNano() || generation != profileGeneration(profile.Profile) || (source.Checksum != "" && checksum != source.Checksum)
 		}
 		view.Rows = append(view.Rows, row)
 	}
@@ -124,6 +134,10 @@ func (e *Extension) loadData(ctx context.Context, firewallID int) (reportData, e
 		return data, err
 	}
 	err = json.Unmarshal(plain, &data)
+	clear(plain)
+	if err == nil && data.Profile.Schema == 0 {
+		data.Profile = reportmodel.DefaultProfile(data.Language)
+	}
 	return data, err
 }
 
@@ -146,8 +160,15 @@ func (e *Extension) detail(w http.ResponseWriter, r *http.Request) {
 		reportError(w, err)
 		return
 	}
-	view := detailData{Base: e.pageBase(r, "Reports", "reports"), Report: data,
-		Stale:      source.BackupID != data.Source.BackupID || data.Version+":"+data.Language != e.generation() || (source.Checksum != "" && source.Checksum != data.Source.Checksum),
+	profile, err := e.getProfile(r.Context(), source.FirewallID)
+	if err != nil {
+		reportError(w, err)
+		return
+	}
+	selected, selection := reportmodel.Select(data.Assessment, data.Profile)
+	data.Assessment = selected
+	view := detailData{Base: e.pageBase(r, "Reports", "reports"), Report: data, Selection: selection,
+		Stale:      source.BackupID != data.Source.BackupID || !source.BackupAt.Equal(data.Source.BackupAt) || data.Version != reportmodel.Version || profileGeneration(data.Profile) != profileGeneration(profile.Profile) || (source.Checksum != "" && source.Checksum != data.Source.Checksum),
 		BackupTime: displayTime(data.Source.BackupAt), GeneratedTime: displayTime(data.Source.GeneratedAt)}
 	if err := e.detailPage.RenderHTTP(w, view); err != nil {
 		e.logger.Error("report detail rendering failed")
@@ -184,6 +205,8 @@ func (e *Extension) download(w http.ResponseWriter, r *http.Request) {
 		query = "SELECT technical FROM report_latest WHERE firewall_id=?"
 	case "customer":
 		query = "SELECT customer FROM report_latest WHERE firewall_id=?"
+	case "traffic":
+		query = "SELECT traffic FROM report_latest WHERE firewall_id=?"
 	default:
 		http.NotFound(w, r)
 		return
@@ -197,6 +220,10 @@ func (e *Extension) download(w http.ResponseWriter, r *http.Request) {
 	err = e.db.QueryRowContext(r.Context(), query, source.FirewallID).Scan(&encrypted)
 	if err != nil {
 		reportError(w, err)
+		return
+	}
+	if len(encrypted) == 0 {
+		reportError(w, sql.ErrNoRows)
 		return
 	}
 	if len(encrypted) > maxReportSetBytes {

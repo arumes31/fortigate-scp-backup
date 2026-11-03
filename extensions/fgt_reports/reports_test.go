@@ -112,7 +112,7 @@ func assertPublished(t *testing.T, e *Extension, id int) {
 	if count != 1 || backupID != id {
 		t.Fatalf("published count=%d backup=%d want one backup %d", count, backupID, id)
 	}
-	for _, column := range []string{"assessment", "forwarding", "technical", "customer"} {
+	for _, column := range []string{"assessment", "forwarding", "technical", "customer", "traffic"} {
 		var value []byte
 		if err := e.db.QueryRow("SELECT " + column + " FROM report_latest WHERE firewall_id=7").Scan(&value); err != nil {
 			t.Fatal(err)
@@ -421,7 +421,7 @@ func TestReportReadAuthorizationAndDeletedFirewall(t *testing.T) {
 	e := testExtension(t, f)
 	e.generate(claim(t, e))
 	router := reportRouter(e)
-	for _, path := range []string{"/reports/7/data", "/reports/7/technical.pdf", "/reports/7/customer.pdf", "/reports/7/forwarding.pdf"} {
+	for _, path := range []string{"/reports/7/data", "/reports/7/technical.pdf", "/reports/7/customer.pdf", "/reports/7/forwarding.pdf", "/reports/7/traffic.pdf"} {
 		for _, role := range []string{"", "viewer", "operator"} {
 			r := httptest.NewRequest(http.MethodGet, path, nil)
 			r.Header.Set("X-Test-Role", role)
@@ -487,10 +487,14 @@ func TestMountBackfillsAndCommittedBackupTriggersReplacement(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var observer func(models.Backup)
-	err := e.Mount(chi.NewRouter(), extension.Deps{
-		Context: ctx, DataDir: t.TempDir(), Cipher: base.cipher, PageBase: base.pageBase,
-		LoginRequired: func(h http.Handler) http.Handler { return h }, CanReadReports: base.canRead,
-		ListReportSources: f.list, ReadReportSource: f.read, SubscribeBackup: func(fn func(models.Backup)) { observer = fn },
+	router := chi.NewRouter()
+	var err error
+	router.Route("/reports", func(r chi.Router) {
+		err = e.Mount(r, extension.Deps{
+			Context: ctx, DataDir: t.TempDir(), Cipher: base.cipher, PageBase: base.pageBase,
+			LoginRequired: func(h http.Handler) http.Handler { return h }, CanReadReports: base.canRead,
+			ListReportSources: f.list, ReadReportSource: f.read, SubscribeBackup: func(fn func(models.Backup)) { observer = fn },
+		})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -521,4 +525,37 @@ func TestMountBackfillsAndCommittedBackupTriggersReplacement(t *testing.T) {
 	observer(models.Backup{ID: 2, FwID: 7, Timestamp: source(2).BackupAt, Checksum: source(2).Checksum})
 	waitBackup(2)
 	assertPublished(t, e, 2)
+	paths := []string{"/reports/", "/reports/catalog", "/reports/calendar", "/reports/7", "/reports/7/profile", "/reports/7/profile.json", "/reports/static/reports.css"}
+	for _, kind := range []string{"forwarding", "technical", "customer", "traffic"} {
+		for _, format := range []string{"pdf", "html", "csv", "json", "xml"} {
+			paths = append(paths, "/reports/7/"+kind+"."+format)
+		}
+	}
+	for _, path := range paths {
+		for _, role := range []string{"viewer", "operator"} {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("X-Test-Role", role)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			want := http.StatusForbidden
+			if role == "operator" {
+				want = http.StatusOK
+			}
+			if response.Code != want {
+				t.Fatalf("mounted %s role %q status=%d want=%d", path, role, response.Code, want)
+			}
+			if path == "/reports/7/profile.json" && role == "operator" && !strings.Contains(response.Body.String(), profileFormat) {
+				t.Fatal("dynamic report export shadowed the profile export route")
+			}
+		}
+	}
+	for _, operation := range []string{"profile", "profile/import", "profile/copy", "profile/reset", "regenerate"} {
+		request := httptest.NewRequest(http.MethodPost, "/reports/7/"+operation, nil)
+		request.Header.Set("X-Test-Role", "viewer")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("viewer reached report mutation %s: %d", operation, response.Code)
+		}
+	}
 }

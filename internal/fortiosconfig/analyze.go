@@ -143,14 +143,14 @@ func Analyze(ctx context.Context, plain []byte) (reportmodel.Assessment, error) 
 	}
 	if !result.Complete {
 		result.Warnings = append(result.Warnings, "Some policy outcomes require review. Consult each forwarding's notes; incomplete analysis is not a passing check.")
-		result.Findings = append(result.Findings, reportmodel.Finding{ID: "analysis-coverage", Priority: "Informational", Title: "Assessment coverage requires review", TitleDE: "Analyseumfang prüfen", Detail: "Some configuration relationships could not be established from the saved snapshot.", DetailDE: "Einige Konfigurationsbeziehungen konnten aus der Sicherung nicht bestimmt werden.", Recommendation: "Have an engineer validate the reported limitations before using these results for an access-control decision.", RecommendationDE: "Die aufgeführten Einschränkungen vor einer Zugriffsentscheidung technisch prüfen lassen."})
+		result.Findings = append(result.Findings, reportmodel.Finding{ID: "analysis-coverage", Category: "analysis", Priority: "Informational", Title: "Assessment coverage requires review", TitleDE: "Analyseumfang prüfen", Detail: "Some configuration relationships could not be established from the saved snapshot.", DetailDE: "Einige Konfigurationsbeziehungen konnten aus der Sicherung nicht bestimmt werden.", Recommendation: "Have an engineer validate the reported limitations before using these results for an access-control decision.", RecommendationDE: "Die aufgeführten Einschränkungen vor einer Zugriffsentscheidung technisch prüfen lassen."})
 	}
 	result.Warnings = unique(result.Warnings)
 	return result, nil
 }
 
 func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) reportmodel.Exposure {
-	ex := reportmodel.Exposure{VDOM: display(vip.vdom()), Name: display(vip.name), Type: vip.value("type", "static-nat"), ExternalInterface: display(vip.value("extintf", "any")), Outcome: "Indeterminate", GeoStatus: "Not found", Backends: []string{}, Groups: []string{}, PolicyIDs: []string{}, Notes: []string{}, Trace: []reportmodel.PolicyTrace{}, Evidence: vip.evidence()}
+	ex := reportmodel.Exposure{VDOM: display(vip.vdom()), Name: display(vip.name), Kind: publicationKind(vip), Type: vip.value("type", "static-nat"), ExternalInterface: display(vip.value("extintf", "any")), Outcome: "Indeterminate", GeoStatus: "Not found", Backends: []string{}, Groups: []string{}, PolicyIDs: []string{}, Notes: []string{}, Trace: []reportmodel.PolicyTrace{}, Evidence: vip.evidence()}
 	disabled := vip.get("status") == "disable"
 	protocol := vip.value("protocol", "tcp")
 	externalIP := vip.get("extip")
@@ -615,19 +615,44 @@ func exposureFindings(ex reportmodel.Exposure) []reportmodel.Finding {
 	var result []reportmodel.Finding
 	key := ex.VDOM + ":" + ex.Name
 	if ex.GeoStatus == "Not applicable" || ex.GeoStatus == "Partial" || ex.GeoStatus == "Indeterminate" {
-		result = append(result, reportmodel.Finding{ID: "geo-coverage:" + key, Priority: "Medium", Title: "Review geographic restriction coverage", TitleDE: "Geografische Einschränkungen prüfen", Detail: "A configured geographic restriction does not establish complete coverage of every related publication path.", DetailDE: "Eine geografische Einschränkung belegt nicht die vollständige Abdeckung aller zugehörigen Veröffentlichungspfade.", Recommendation: "Review rule order, VIP matching, interfaces, services, schedules, and earlier exceptions.", RecommendationDE: "Reihenfolge, VIP-Zuordnung, Schnittstellen, Dienste, Zeitpläne und frühere Ausnahmen prüfen.", Evidence: ex.Evidence})
+		result = append(result, reportmodel.Finding{ID: "geo-coverage:" + key, VDOM: ex.VDOM, Category: "publications", Exposure: ex.Name, Priority: "Medium", Title: "Review geographic restriction coverage", TitleDE: "Geografische Einschränkungen prüfen", Detail: "A configured geographic restriction does not establish complete coverage of every related publication path.", DetailDE: "Eine geografische Einschränkung belegt nicht die vollständige Abdeckung aller zugehörigen Veröffentlichungspfade.", Recommendation: "Review rule order, VIP matching, interfaces, services, schedules, and earlier exceptions.", RecommendationDE: "Reihenfolge, VIP-Zuordnung, Schnittstellen, Dienste, Zeitpläne und frühere Ausnahmen prüfen.", Evidence: ex.Evidence})
 	}
 	for _, trace := range ex.Trace {
 		if trace.Action == "accept" && trace.Status != "disable" && trace.Source == "all" {
-			result = append(result, reportmodel.Finding{ID: "broad-source:" + key, Priority: "Medium", Title: "Review broad source permissions", TitleDE: "Breite Quellfreigaben prüfen", Detail: "A publication has a related allow policy with an unrestricted source selector; other restrictions may still apply.", DetailDE: "Eine Veröffentlichung hat eine zugehörige Freigaberegel ohne Quelleinschränkung; weitere Einschränkungen können gelten.", Recommendation: "Confirm the service owner and intended audience, and validate whether a narrower source scope is appropriate.", RecommendationDE: "Dienstverantwortliche und Zielgruppe bestätigen und mögliche Quelleinschränkungen bewerten.", Evidence: trace.Evidence})
+			result = append(result, reportmodel.Finding{ID: "broad-source:" + key, VDOM: ex.VDOM, Category: "publications", Exposure: ex.Name, Priority: "Medium", Title: "Review broad source permissions", TitleDE: "Breite Quellfreigaben prüfen", Detail: "A publication has a related allow policy with an unrestricted source selector; other restrictions may still apply.", DetailDE: "Eine Veröffentlichung hat eine zugehörige Freigaberegel ohne Quelleinschränkung; weitere Einschränkungen können gelten.", Recommendation: "Confirm the service owner and intended audience, and validate whether a narrower source scope is appropriate.", RecommendationDE: "Dienstverantwortliche und Zielgruppe bestätigen und mögliche Quelleinschränkungen bewerten.", Evidence: trace.Evidence})
 			break
 		}
 	}
 	for _, note := range ex.Notes {
 		if strings.Contains(note, "earlier DNAT object overlaps") {
-			result = append(result, reportmodel.Finding{ID: "overlap:" + key, Priority: "Medium", Title: "Review overlapping publication mappings", TitleDE: "Überlappende Veröffentlichungen prüfen", Detail: "An earlier translation object may select the same listener before this mapping.", DetailDE: "Ein früheres Übersetzungsobjekt kann denselben Listener vor dieser Zuordnung auswählen.", Recommendation: "Validate DNAT object order and the selected backend for the intended service.", RecommendationDE: "DNAT-Objektreihenfolge und ausgewähltes Backend für den vorgesehenen Dienst prüfen.", Evidence: ex.Evidence})
+			result = append(result, reportmodel.Finding{ID: "overlap:" + key, VDOM: ex.VDOM, Category: "publications", Exposure: ex.Name, Priority: "Medium", Title: "Review overlapping publication mappings", TitleDE: "Überlappende Veröffentlichungen prüfen", Detail: "An earlier translation object may select the same listener before this mapping.", DetailDE: "Ein früheres Übersetzungsobjekt kann denselben Listener vor dieser Zuordnung auswählen.", Recommendation: "Validate DNAT object order and the selected backend for the intended service.", RecommendationDE: "DNAT-Objektreihenfolge und ausgewähltes Backend für den vorgesehenen Dienst prüfen.", Evidence: ex.Evidence})
 			break
 		}
 	}
 	return result
+}
+
+func publicationKind(vip *node) string {
+	switch vip.parent.name {
+	case "firewall vip6":
+		return "ipv6"
+	case "firewall vip46":
+		return "nat46"
+	case "firewall vip64":
+		return "nat64"
+	}
+	switch vip.value("type", "static-nat") {
+	case "static-nat":
+		return "static_nat"
+	case "load-balance", "server-load-balance":
+		return "virtual_server"
+	case "fqdn":
+		return "fqdn"
+	case "access-proxy":
+		return "access_proxy"
+	case "dns-translation":
+		return "dns_translation"
+	default:
+		return "other"
+	}
 }

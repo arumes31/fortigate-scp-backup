@@ -3,7 +3,10 @@ package reportmodel
 
 import "time"
 
-const Version = "1"
+const (
+	Version       = "2"
+	SchemaVersion = 2
+)
 
 // Source pins a report set to one committed backup, never a mutable latest file.
 type Source struct {
@@ -25,12 +28,14 @@ type Assessment struct {
 	Exposures []Exposure `json:"exposures"`
 	Sections  []Section  `json:"sections"`
 	Findings  []Finding  `json:"findings"`
+	Telemetry *Telemetry `json:"telemetry,omitempty"`
 }
 
 type Exposure struct {
 	VDOM              string        `json:"vdom"`
 	Name              string        `json:"name"`
 	Type              string        `json:"type"`
+	Kind              string        `json:"kind"`
 	External          string        `json:"external"`
 	ExternalInterface string        `json:"external_interface"`
 	Backends          []string      `json:"backends"`
@@ -63,12 +68,14 @@ type PolicyTrace struct {
 }
 
 type Section struct {
+	ID      string `json:"id"`
 	Title   string `json:"title"`
 	TitleDE string `json:"title_de"`
 	Rows    []Row  `json:"rows"`
 }
 
 type Row struct {
+	VDOM     string `json:"vdom"`
 	Label    string `json:"label"`
 	Value    string `json:"value"`
 	Evidence string `json:"evidence"`
@@ -76,6 +83,9 @@ type Row struct {
 
 type Finding struct {
 	ID               string `json:"id"`
+	VDOM             string `json:"vdom"`
+	Category         string `json:"category"`
+	Exposure         string `json:"exposure,omitempty"`
 	Priority         string `json:"priority"`
 	Title            string `json:"title"`
 	TitleDE          string `json:"title_de"`

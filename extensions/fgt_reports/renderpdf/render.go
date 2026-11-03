@@ -36,59 +36,60 @@ const (
 )
 
 type block struct {
-	Heading string
-	Text    string
-	Columns []string
-	Widths  []float64
-	Rows    [][]string
+	Heading  string     `json:"heading,omitempty" xml:"heading,omitempty"`
+	Text     string     `json:"text,omitempty" xml:"text,omitempty"`
+	Columns  []string   `json:"columns,omitempty" xml:"columns>column,omitempty"`
+	Widths   []float64  `json:"-" xml:"-"`
+	Rows     [][]string `json:"rows,omitempty" xml:"-"`
+	Chart    *chart     `json:"chart,omitempty" xml:"chart,omitempty"`
+	Contents bool       `json:"-" xml:"-"`
 }
 
 // content is a detached presentation model. In particular, customer content
 // never retains the original assessment, raw findings, or technical evidence.
 type content struct {
-	Title          string
-	Identification string
-	Footer         string
-	Blocks         []block
+	Title          string  `json:"title" xml:"title"`
+	Identification string  `json:"identification" xml:"identification"`
+	Company        string  `json:"company,omitempty" xml:"company,omitempty"`
+	Subtitle       string  `json:"subtitle,omitempty" xml:"subtitle,omitempty"`
+	Introduction   string  `json:"introduction,omitempty" xml:"introduction,omitempty"`
+	Footer         string  `json:"footer" xml:"footer"`
+	Blocks         []block `json:"sections" xml:"sections>section"`
 }
 
 type document struct {
-	pdf       *gopdf.GoPdf
-	ctx       context.Context
-	content   content
-	lang      string
-	y         float64
-	page      int
-	err       error
-	textBytes int
-	glyphs    map[rune]bool
+	pdf           *gopdf.GoPdf
+	ctx           context.Context
+	content       content
+	lang          string
+	y             float64
+	page          int
+	err           error
+	textBytes     int
+	glyphs        map[rune]bool
+	width, height float64
+	options       renderOptions
+	bottom        float64
+	footerLines   []string
 }
 
 // Render returns a complete PDF or an error; it never truncates a report to
 // meet a page/resource limit. lang must be en or de, and kind must be one of
 // forwarding, technical, or customer. Source times are rendered with offsets.
 func Render(ctx context.Context, source reportmodel.Source, assessment reportmodel.Assessment, kind, lang string) ([]byte, error) {
-	if ctx == nil {
-		return nil, errors.New("reports: context is required")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	if lang != "en" && lang != "de" {
 		return nil, errors.New("reports: unsupported language")
 	}
-	if kind != "forwarding" && kind != "technical" && kind != "customer" {
-		return nil, errors.New("reports: unsupported report type")
+	return RenderWithProfile(ctx, source, assessment, kind, reportmodel.DefaultProfile(lang))
+}
+
+func renderDocument(ctx context.Context, source reportmodel.Source, view content, options renderOptions) ([]byte, error) {
+	d := &document{pdf: &gopdf.GoPdf{}, ctx: ctx, content: view, lang: options.language,
+		glyphs: make(map[rune]bool), width: pageWidth, height: pageHeight, options: options}
+	if options.landscape {
+		d.width, d.height = pageHeight, pageWidth
 	}
-	if err := validateProjection(ctx, source, assessment, kind); err != nil {
-		return nil, err
-	}
-	view := project(source, assessment, kind, lang)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	d := &document{pdf: &gopdf.GoPdf{}, ctx: ctx, content: view, lang: lang, glyphs: make(map[rune]bool)}
-	d.pdf.Start(gopdf.Config{PageSize: gopdf.Rect{W: pageWidth, H: pageHeight}})
+	d.pdf.Start(gopdf.Config{PageSize: gopdf.Rect{W: d.width, H: d.height}})
 	regularFont, err := fontFiles.ReadFile("fonts/DejaVuSans.ttf")
 	if err != nil {
 		return nil, err
@@ -103,28 +104,58 @@ func Render(ctx context.Context, source reportmodel.Source, assessment reportmod
 	if err := d.pdf.AddTTFFontData("bold", boldFont); err != nil {
 		return nil, fmt.Errorf("reports: embed bold font: %w", err)
 	}
-	d.pdf.SetInfo(gopdf.PdfInfo{
-		Title: view.Title, Author: "FortiSafe", Creator: "FortiSafe Reports",
-		Subject: "Saved configuration assessment", CreationDate: source.GeneratedAt,
-	})
+	d.footerLines = d.wrap(view.Footer, d.width-2*margin-65, 7.2, false)
+	d.bottom = d.height - 57 - float64(max(0, len(d.footerLines)-1))*10
+	d.pdf.SetInfo(gopdf.PdfInfo{Title: view.Title, Author: "FortiSafe", Creator: "FortiSafe Reports",
+		Subject: "Saved configuration and captured log observations", CreationDate: source.GeneratedAt})
+	if options.cover {
+		d.coverPage(source)
+	}
+	var contents []contentsEntry
+	if options.contents {
+		contents = d.reserveContents(view.Blocks)
+	}
 	d.newPage()
+	if !options.cover {
+		d.logo(120, 40)
+	}
 	d.paragraph(view.Title, 24, true, 31)
 	d.paragraph(view.Identification, 11, false, 17)
+	for _, line := range []string{view.Company, view.Subtitle, view.Introduction} {
+		if line != "" {
+			d.y += 6
+			d.paragraph(line, bodySize, false, lineHeight)
+		}
+	}
 	d.y += 12
-	for _, b := range view.Blocks {
+	starts := make(map[int]int, len(contents))
+	for index, b := range view.Blocks {
 		if !d.check() {
 			break
 		}
-		if b.Heading != "" {
-			if len(b.Columns) > 0 && b.Text == "" {
-				lines := d.wrap(b.Heading, pageWidth-2*margin, 13, true)
-				d.ensure(17 + float64(len(lines))*18 + d.tableOpeningHeight(b.Columns, b.Widths, b.Rows))
+		if len(b.Columns) > 0 {
+			opening := d.tableOpeningHeight(b.Columns, b.Widths, b.Rows)
+			if b.Heading != "" {
+				opening += 17 + float64(len(d.wrap(b.Heading, d.width-2*margin, 13, true)))*18
 			}
+			if b.Text != "" {
+				opening += 6 + float64(len(d.wrap(b.Text, d.width-2*margin, bodySize, false)))*lineHeight
+			}
+			if b.Chart != nil {
+				opening += d.chartHeight(b.Chart)
+			}
+			d.ensure(math.Min(opening, d.bottom-contentTop))
+		}
+		if b.Heading != "" {
 			d.heading(b.Heading)
 		}
+		starts[index] = d.page
 		if b.Text != "" {
 			d.paragraph(b.Text, bodySize, false, lineHeight)
 			d.y += 6
+		}
+		if b.Chart != nil {
+			d.chart(b.Chart)
 		}
 		if len(b.Columns) > 0 {
 			d.table(b.Heading, b.Columns, b.Widths, b.Rows)
@@ -134,38 +165,40 @@ func Render(ctx context.Context, source reportmodel.Source, assessment reportmod
 	if d.err != nil {
 		return nil, d.err
 	}
-	// Add page totals only after pagination, without putting the source model
-	// or any hidden payload in metadata, attachments, or outline titles.
+	d.fillContents(contents, starts)
 	for page := 1; page <= d.page; page++ {
 		if err := d.pdf.SetPage(page); err != nil {
 			return nil, fmt.Errorf("reports: footer page: %w", err)
 		}
 		d.pdf.SetStrokeColor(209, 218, 225)
 		d.pdf.SetLineWidth(0.5)
-		d.pdf.Line(margin, 803, pageWidth-margin, 803)
-		d.drawText(margin, 819, view.Footer, 7.2, false, [3]uint8{87, 102, 115})
-		label := fmt.Sprintf("%s %d / %d", choose(lang, "Page", "Seite"), page, d.page)
+		d.pdf.Line(margin, d.bottom+18, d.width-margin, d.bottom+18)
+		for index, line := range d.footerLines {
+			d.drawText(margin, d.bottom+34+float64(index)*10, line, 7.2, false, [3]uint8{87, 102, 115})
+		}
+		label := fmt.Sprintf("%s %d / %d", choose(d.lang, "Page", "Seite"), page, d.page)
 		d.font(7.2, false)
 		width, err := d.pdf.MeasureTextWidth(label)
 		if err != nil {
 			return nil, err
 		}
-		d.drawText(pageWidth-margin-width, 819, label, 7.2, false, [3]uint8{87, 102, 115})
+		d.drawText(d.width-margin-width, d.height-23, label, 7.2, false, [3]uint8{87, 102, 115})
 	}
 	if d.err != nil {
 		return nil, d.err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	data, err := d.pdf.GetBytesPdfReturnErr()
-	if err != nil {
+	out := &boundedBuffer{ctx: ctx}
+	if _, err := d.pdf.WriteTo(out); err != nil {
 		return nil, fmt.Errorf("reports: encode PDF: %w", err)
 	}
+	// gopdf currently does not propagate all writer errors from object encoding.
+	if out.err != nil {
+		return nil, out.err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return data, nil
+	return out.Bytes(), nil
 }
 
 func (d *document) check() bool {
@@ -197,14 +230,16 @@ func (d *document) newPage() {
 	d.pdf.AddPage()
 	d.page++
 	d.pdf.SetFillColor(15, 46, 66)
-	d.pdf.RectFromUpperLeftWithStyle(0, 0, pageWidth, 45, "F")
+	d.pdf.RectFromUpperLeftWithStyle(0, 0, d.width, 45, "F")
 	d.drawText(margin, 29, "FortiSafe", 14, true, [3]uint8{255, 255, 255})
-	d.drawText(405, 28, choose(d.lang, "CONFIGURATION REVIEW", "KONFIGURATIONSPRÜFUNG"), 7, true, [3]uint8{174, 217, 233})
+	d.drawText(d.width-190, 28, choose(d.lang, "FIREWALL REPORTS", "FIREWALL-BERICHTE"), 7, true, [3]uint8{174, 217, 233})
+	d.pdf.SetFillColor(d.options.accent[0], d.options.accent[1], d.options.accent[2])
+	d.pdf.RectFromUpperLeftWithStyle(0, 43, d.width, 3, "F")
 	d.y = contentTop
 }
 
 func (d *document) ensure(height float64) {
-	if d.y+height > contentEnd {
+	if d.y+height > d.bottom {
 		d.newPage()
 	}
 }
@@ -277,7 +312,7 @@ func (d *document) drawText(x, baseline float64, text string, size float64, bold
 }
 
 func (d *document) paragraph(text string, size float64, bold bool, height float64) {
-	for _, line := range d.wrap(text, pageWidth-2*margin, size, bold) {
+	for _, line := range d.wrap(text, d.width-2*margin, size, bold) {
 		d.ensure(height)
 		d.drawText(margin, d.y+size, line, size, bold, [3]uint8{26, 45, 60})
 		d.y += height
@@ -285,7 +320,7 @@ func (d *document) paragraph(text string, size float64, bold bool, height float6
 }
 
 func (d *document) heading(text string) {
-	lines := d.wrap(text, pageWidth-2*margin, 13, true)
+	lines := d.wrap(text, d.width-2*margin, 13, true)
 	d.ensure(float64(len(lines))*18 + 45)
 	d.y += 10
 	for _, line := range lines {
@@ -301,7 +336,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 	if len(columns) == 0 || !d.check() {
 		return
 	}
-	widths := tableWidths(len(columns), relativeWidths)
+	widths := d.tableWidths(len(columns), relativeWidths)
 	d.ensure(d.tableOpeningHeight(columns, relativeWidths, rows))
 	headers := make([][]string, len(columns))
 	headerLines := 1
@@ -313,7 +348,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 	printHeader := func() {
 		d.ensure(headerHeight + 2*cellPad + 12)
 		d.pdf.SetFillColor(226, 236, 242)
-		d.pdf.RectFromUpperLeftWithStyle(margin, d.y, pageWidth-2*margin, headerHeight, "F")
+		d.pdf.RectFromUpperLeftWithStyle(margin, d.y, d.width-2*margin, headerHeight, "F")
 		x := margin
 		for i := range columns {
 			for line, value := range headers[i] {
@@ -347,14 +382,14 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 		}
 		// A normal-sized row stays together whenever it can fit on a fresh page.
 		rowHeight := float64(rowLines)*12 + 2*cellPad
-		if rowHeight <= contentEnd-contentTop-headerHeight && d.y+rowHeight > contentEnd {
+		if rowHeight <= d.bottom-contentTop-headerHeight && d.y+rowHeight > d.bottom {
 			continueTable()
 		}
 		for offset := 0; offset < rowLines; {
 			if !d.check() {
 				return
 			}
-			available := int(math.Floor((contentEnd - d.y - 2*cellPad) / 12))
+			available := int(math.Floor((d.bottom - d.y - 2*cellPad) / 12))
 			if available < 1 {
 				continueTable()
 				continue
@@ -363,7 +398,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 			height := float64(count)*12 + 2*cellPad
 			if rowIndex%2 == 0 {
 				d.pdf.SetFillColor(246, 248, 250)
-				d.pdf.RectFromUpperLeftWithStyle(margin, d.y, pageWidth-2*margin, height, "F")
+				d.pdf.RectFromUpperLeftWithStyle(margin, d.y, d.width-2*margin, height, "F")
 			}
 			x := margin
 			for i, lines := range cells {
@@ -374,7 +409,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 			}
 			d.pdf.SetStrokeColor(218, 226, 232)
 			d.pdf.SetLineWidth(0.35)
-			d.pdf.Line(margin, d.y+height, pageWidth-margin, d.y+height)
+			d.pdf.Line(margin, d.y+height, d.width-margin, d.y+height)
 			d.y += height
 			offset += count
 			if offset < rowLines {
@@ -384,7 +419,7 @@ func (d *document) table(title string, columns []string, relativeWidths []float6
 	}
 }
 
-func tableWidths(count int, relativeWidths []float64) []float64 {
+func (d *document) tableWidths(count int, relativeWidths []float64) []float64 {
 	widths := make([]float64, count)
 	total := 0.0
 	for i := range widths {
@@ -395,7 +430,7 @@ func tableWidths(count int, relativeWidths []float64) []float64 {
 		total += widths[i]
 	}
 	for i := range widths {
-		widths[i] = widths[i] / total * (pageWidth - 2*margin)
+		widths[i] = widths[i] / total * (d.width - 2*margin)
 	}
 	return widths
 }
@@ -403,7 +438,7 @@ func tableWidths(count int, relativeWidths []float64) []float64 {
 // Keep the initial table heading with data. Very tall rows are allowed to
 // split, so reserve only a useful first portion of such a row.
 func (d *document) tableOpeningHeight(columns []string, relativeWidths []float64, rows [][]string) float64 {
-	widths := tableWidths(len(columns), relativeWidths)
+	widths := d.tableWidths(len(columns), relativeWidths)
 	headerLines, rowLines := 1, 1
 	for i, column := range columns {
 		headerLines = max(headerLines, len(d.wrap(column, widths[i]-2*cellPad, 8.5, true)))

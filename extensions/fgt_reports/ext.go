@@ -1,5 +1,5 @@
-// Package fgt_reports automatically publishes the latest configuration-derived
-// forwarding, technical, and customer PDFs for each registered firewall.
+// Package fgt_reports automatically publishes the latest configuration and
+// Graylog-derived reports for each registered firewall.
 package fgt_reports
 
 import (
@@ -30,25 +30,31 @@ import (
 var assets embed.FS
 
 type Extension struct {
-	cfg         *config.Config
-	logger      *slog.Logger
-	db          *sql.DB
-	cipher      *crypto.Cipher
-	ctx         context.Context
-	wake        chan struct{}
-	done        chan struct{}
-	page        *webui.Renderer
-	detailPage  *webui.Renderer
-	pageBase    extension.PageBaseProvider
-	listSources func(context.Context) ([]reportmodel.Source, error)
-	readSource  func(context.Context, int, int) (reportmodel.Source, []byte, error)
-	canRead     func(*http.Request) bool
-	currentUser func(*http.Request) string
-	logActivity func(string, string, string)
-	broadcast   func(string, int, string)
+	cfg          *config.Config
+	dataDir      string
+	logger       *slog.Logger
+	db           *sql.DB
+	cipher       *crypto.Cipher
+	ctx          context.Context
+	wake         chan struct{}
+	done         chan struct{}
+	page         *webui.Renderer
+	detailPage   *webui.Renderer
+	profilePage  *webui.Renderer
+	catalogPage  *webui.Renderer
+	calendarPage *webui.Renderer
+	pageBase     extension.PageBaseProvider
+	listSources  func(context.Context) ([]reportmodel.Source, error)
+	readSource   func(context.Context, int, int) (reportmodel.Source, []byte, error)
+	canRead      func(*http.Request) bool
+	currentUser  func(*http.Request) string
+	logActivity  func(string, string, string)
+	broadcast    func(string, int, string)
 	// Dependency seams keep lifecycle/atomicity tests independent of PDF layout.
-	analyze func(context.Context, []byte) (reportmodel.Assessment, error)
-	render  func(context.Context, reportmodel.Source, reportmodel.Assessment, string, string) ([]byte, error)
+	analyze          func(context.Context, []byte) (reportmodel.Assessment, error)
+	render           func(context.Context, reportmodel.Source, reportmodel.Assessment, string, string) ([]byte, error)
+	renderProfile    func(context.Context, reportmodel.Source, reportmodel.Assessment, string, reportmodel.Profile) ([]byte, error)
+	collectTelemetry func(context.Context, reportmodel.Source, reportmodel.Assessment, reportmodel.Profile, time.Time) reportmodel.Telemetry
 }
 
 func New(cfg *config.Config, logger *slog.Logger) *Extension {
@@ -67,6 +73,7 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		return errors.New("fgt_reports: encrypted storage is required")
 	}
 	e.ctx, e.cipher = d.Context, d.Cipher
+	e.dataDir = d.DataDir
 	e.pageBase, e.canRead = d.PageBase, d.CanReadReports
 	e.listSources, e.readSource = d.ListReportSources, d.ReadReportSource
 	e.currentUser, e.logActivity, e.broadcast = d.CurrentUser, d.LogActivity, d.BroadcastOp
@@ -83,6 +90,18 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 		return err
 	}
 	e.detailPage, err = webui.ParsePage(assets, "templates/detail.html", funcs)
+	if err != nil {
+		return err
+	}
+	e.profilePage, err = webui.ParsePage(assets, "templates/profile.html", funcs)
+	if err != nil {
+		return err
+	}
+	e.catalogPage, err = webui.ParsePage(assets, "templates/catalog.html", funcs)
+	if err != nil {
+		return err
+	}
+	e.calendarPage, err = webui.ParsePage(assets, "templates/calendar.html", funcs)
 	if err != nil {
 		return err
 	}
@@ -125,9 +144,21 @@ func (e *Extension) Mount(r chi.Router, d extension.Deps) error {
 	r.Group(func(pr chi.Router) {
 		pr.Use(d.LoginRequired, e.authorized)
 		pr.Get("/", e.index)
+		pr.Get("/catalog", e.catalog)
+		pr.Get("/calendar", e.calendar)
 		pr.Get("/{firewallID}", e.detail)
 		pr.Get("/{firewallID}/data", e.data)
 		pr.Get("/{firewallID}/{kind}.pdf", e.download)
+		pr.Get("/{firewallID}/{kind}.html", e.exportHTML)
+		pr.Get("/{firewallID}/{kind}.csv", e.exportCSV)
+		pr.Get("/{firewallID}/{kind}.json", e.exportJSON)
+		pr.Get("/{firewallID}/{kind}.xml", e.exportXML)
+		pr.Get("/{firewallID}/profile", e.profile)
+		pr.Post("/{firewallID}/profile", e.updateProfile)
+		pr.Get("/{firewallID}/profile.json", e.exportProfile)
+		pr.Post("/{firewallID}/profile/import", e.importProfile)
+		pr.Post("/{firewallID}/profile/copy", e.copyProfile)
+		pr.Post("/{firewallID}/profile/reset", e.resetProfile)
 		pr.Post("/{firewallID}/regenerate", e.regenerate)
 		pr.Handle("/static/*", http.StripPrefix("/reports/static/", http.FileServer(http.FS(staticFS))))
 	})
@@ -164,7 +195,9 @@ func (e *Extension) signal() {
 	}
 }
 
-func (e *Extension) generation() string { return reportmodel.Version + ":" + e.cfg.ReportsLanguage }
+func (e *Extension) generation() string {
+	return profileGeneration(reportmodel.DefaultProfile(e.cfg.ReportsLanguage))
+}
 
 func (e *Extension) run() {
 	defer close(e.done)
@@ -182,6 +215,9 @@ func (e *Extension) run() {
 		if err := e.refresh(e.ctx); err != nil {
 			e.logger.Warn("report source reconciliation failed")
 			continue
+		}
+		if err := e.enqueueScheduled(e.ctx, time.Now()); err != nil {
+			e.logger.Warn("report schedule reconciliation failed")
 		}
 		for e.ctx.Err() == nil {
 			t, err := nextTarget(e.ctx, e.db, time.Now())
@@ -208,7 +244,15 @@ func (e *Extension) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return reconcile(ctx, e.db, sources, e.generation())
+	return reconcileGenerations(ctx, e.db, sources, func(tx *sql.Tx, id int) (string, error) {
+		// Read the profile in the same transaction as the queue update. An
+		// earlier snapshot could otherwise undo a concurrent profile edit.
+		saved, err := e.readProfile(ctx, tx, id)
+		if err != nil {
+			return "", err
+		}
+		return profileGeneration(saved.Profile), nil
+	})
 }
 
 var _ extension.Extension = (*Extension)(nil)

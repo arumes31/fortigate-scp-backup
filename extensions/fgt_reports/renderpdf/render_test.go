@@ -44,11 +44,11 @@ func fixture() (reportmodel.Source, reportmodel.Assessment) {
 			},
 		}},
 		Sections: []reportmodel.Section{
-			{Title: "Interfaces and zones", TitleDE: "Schnittstellen und Zonen", Rows: []reportmodel.Row{
+			{ID: "interfaces", Title: "Interfaces and zones", TitleDE: "Schnittstellen und Zonen", Rows: []reportmodel.Row{
 				{Label: "wan1", Value: "role=wan; mode=static; ip=203.0.113.10/24", Evidence: "system interface / lines 10-19"},
 				{Label: "dmz", Value: "ip=10.10.20.1/24", Evidence: "system interface / lines 20-28"},
 			}},
-			{Title: "VPN configuration", TitleDE: "VPN-Konfiguration", Rows: []reportmodel.Row{
+			{ID: "vpn", Title: "VPN configuration", TitleDE: "VPN-Konfiguration", Rows: []reportmodel.Row{
 				{Label: "Branch connection", Value: "phase1-interface; proposal=aes256-sha256; psk=<excluded>", Evidence: "vpn ipsec phase1-interface / lines 110-125"},
 			}},
 		},
@@ -204,7 +204,7 @@ func TestPDFOversizedRowContinuesWithoutLosingText(t *testing.T) {
 		fmt.Fprintf(&longValue, "ROW%04d configuration detail and evidence.\n", i)
 	}
 	longValue.WriteString("END-OF-LONG-ROW")
-	a.Sections = []reportmodel.Section{{Title: "Pagination exercise", Rows: []reportmodel.Row{{
+	a.Sections = []reportmodel.Section{{ID: "interfaces", Title: "Pagination exercise", Rows: []reportmodel.Row{{
 		Label: strings.Repeat("LongUnbrokenObjectName", 90),
 		Value: longValue.String(),
 	}}}}

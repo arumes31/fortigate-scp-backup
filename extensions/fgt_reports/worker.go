@@ -9,6 +9,7 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/extensions/fgt_reports/renderpdf"
 	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
+	"github.com/arumes31/fortigate-scp-backup/internal/reportlogs"
 	"github.com/arumes31/fortigate-scp-backup/internal/reportmodel"
 )
 
@@ -19,6 +20,7 @@ type reportData struct {
 	Assessment reportmodel.Assessment `json:"assessment"`
 	Language   string                 `json:"language"`
 	Version    string                 `json:"version"`
+	Profile    reportmodel.Profile    `json:"profile"`
 }
 
 func (e *Extension) generate(t target) {
@@ -49,6 +51,19 @@ func (e *Extension) generate(t target) {
 			failure()
 		}
 	}()
+	stage = "profile"
+	saved, err := e.getProfile(ctx, t.FirewallID)
+	if err != nil {
+		failure()
+		return
+	}
+	if profileGeneration(saved.Profile) != t.Generation {
+		if err := e.refresh(ctx); err != nil {
+			failure()
+		}
+		return
+	}
+	stage = "source"
 	source, plain, err := e.readSource(ctx, t.FirewallID, t.BackupID)
 	if err != nil {
 		failure()
@@ -72,8 +87,19 @@ func (e *Extension) generate(t target) {
 		failure()
 		return
 	}
+	stage = "telemetry"
+	collect := e.collectTelemetry
+	if collect == nil {
+		collect = reportlogs.New(e.cfg, e.dataDir).Collect
+	}
+	telemetry := collect(ctx, source, assessment, saved.Profile, time.Now().UTC())
+	if telemetry.Status == "error" {
+		failure()
+		return
+	}
+	assessment.Telemetry = &telemetry
 	source.GeneratedAt = time.Now().UTC()
-	data := reportData{Source: source, Assessment: assessment, Language: e.cfg.ReportsLanguage, Version: reportmodel.Version}
+	data := reportData{Source: source, Assessment: assessment, Language: saved.Profile.Language, Version: reportmodel.Version, Profile: saved.Profile}
 	stage = "rendering"
 	set, err := e.buildSet(ctx, data)
 	if err != nil {
@@ -94,16 +120,26 @@ func (e *Extension) generate(t target) {
 		return
 	}
 	if published && e.logActivity != nil {
-		e.logActivity("system", "reports.generated", fmt.Sprintf("firewall_id=%d backup_id=%d types=forwarding,technical,customer", t.FirewallID, t.BackupID))
+		e.logActivity("system", "reports.generated", fmt.Sprintf("firewall_id=%d backup_id=%d types=forwarding,technical,customer,traffic", t.FirewallID, t.BackupID))
 	}
 }
 
 func (e *Extension) buildSet(ctx context.Context, data reportData) (encryptedSet, error) {
+	if data.Profile.Schema == 0 {
+		data.Profile = reportmodel.DefaultProfile(data.Language)
+	}
 	set := encryptedSet{Limited: !data.Assessment.Complete}
+	if t := data.Assessment.Telemetry; t != nil && (t.Status == "partial" || t.Status == "missing_fields") {
+		set.Limited = true
+	}
+	if err := checkReportDataBudget(ctx, data); err != nil {
+		return set, err
+	}
 	summary, err := json.Marshal(data)
 	if err != nil {
 		return set, err
 	}
+	defer clear(summary)
 	if len(summary) > maxReportSetBytes {
 		return set, errors.New("report assessment exceeds limit")
 	}
@@ -112,20 +148,25 @@ func (e *Extension) buildSet(ctx context.Context, data reportData) (encryptedSet
 		return set, err
 	}
 	total := len(summary)
-	render := e.render
+	render := e.renderProfile
 	if render == nil {
-		render = renderpdf.Render
+		render = renderpdf.RenderWithProfile
 	}
 	for _, item := range []struct {
 		kind        string
 		destination *[]byte
 	}{
-		{"forwarding", &set.Forwarding}, {"technical", &set.Technical}, {"customer", &set.Customer},
+		{"forwarding", &set.Forwarding}, {"technical", &set.Technical}, {"customer", &set.Customer}, {"traffic", &set.Traffic},
 	} {
 		if err := ctx.Err(); err != nil {
 			return set, err
 		}
-		pdf, err := render(ctx, data.Source, data.Assessment, item.kind, data.Language)
+		var pdf []byte
+		if e.render != nil && e.renderProfile == nil {
+			pdf, err = e.render(ctx, data.Source, data.Assessment, item.kind, data.Language)
+		} else {
+			pdf, err = render(ctx, data.Source, data.Assessment, item.kind, data.Profile)
+		}
 		if err != nil {
 			return set, err
 		}

@@ -1,0 +1,10 @@
+{{define "head"}}<link rel="stylesheet" href="/reports/static/reports.css">{{end}}
+{{define "content"}}
+<div class="page reports-page">
+  <nav class="report-links" aria-label="{{R .Base.Lang "report_navigation"}}"><a href="/reports/">← {{R .Base.Lang "back"}}</a><a href="/reports/catalog">{{R .Base.Lang "catalog"}}</a></nav>
+  <h1 class="page-title"><span class="accent-bar"></span>{{R .Base.Lang "calendar"}}</h1><p class="report-lead">{{R .Base.Lang "calendar_intro"}}</p>
+  <p class="report-scope">{{R .Base.Lang "schedule_help"}}</p>
+  {{if .Rows}}<section class="card"><div class="report-table-scroll" tabindex="0" role="region" aria-label="{{R .Base.Lang "calendar"}}"><table class="report-table"><thead><tr><th scope="col">{{R .Base.Lang "firewall"}}</th><th scope="col">{{R .Base.Lang "profile_name"}}</th><th scope="col">{{R .Base.Lang "frequency"}}</th><th scope="col">{{R .Base.Lang "timezone"}}</th><th scope="col">{{R .Base.Lang "next_due"}}</th><th scope="col">{{R .Base.Lang "settings"}}</th></tr></thead><tbody>{{range .Rows}}<tr><th scope="row">{{.Firewall}}<div class="report-muted">#{{.FirewallID}}</div></th><td>{{.Profile}}</td><td>{{R $.Base.Lang (printf "frequency_%s" .Frequency)}}</td><td>{{.Timezone}}</td><td>{{if and .NextDue (ne .NextDue "—")}}{{.NextDue}}{{else}}{{R $.Base.Lang "next_backup"}}{{end}}</td><td><a href="/reports/{{.FirewallID}}/profile">{{R $.Base.Lang "edit_profile"}}<span class="report-sr-only">: {{.Firewall}}</span></a></td></tr>{{end}}</tbody></table></div></section>{{else}}<div class="card report-empty"><p>{{R .Base.Lang "empty"}}</p></div>{{end}}
+</div>
+{{end}}
+{{define "scripts"}}<script src="/reports/static/reports.js" defer></script>{{end}}

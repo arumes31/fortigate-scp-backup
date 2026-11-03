@@ -24,7 +24,7 @@ type customerTopic struct {
 // allowlisted finding-ID prefixes, normalized priorities and aggregate counts
 // cross the audience boundary. An unknown finding becomes a generic review
 // topic rather than a raw technical finding in a customer document.
-func customerContent(source reportmodel.Source, a reportmodel.Assessment, lang string) content {
+func customerContentVisible(source reportmodel.Source, a reportmodel.Assessment, lang string, showFindings bool) content {
 	c := baseContent(source, "customer", lang, true)
 	c.Blocks = append(c.Blocks, block{Text: choose(lang,
 		"A discussion guide based on a saved firewall configuration. It supports an agreed improvement plan; operational performance, external reachability and contract status have not been assessed.",
@@ -50,24 +50,26 @@ func customerContent(source reportmodel.Source, a reportmodel.Assessment, lang s
 			"An engineer should clarify the analysis limitations using the technical report.",
 			"Die Analysegrenzen sollten anhand des technischen Berichts geklärt werden.")})
 	}
-	topics := customerTopics(a.Findings, lang)
-	c.Blocks = append(c.Blocks, block{Heading: choose(lang, "Priority discussion topics", "Priorisierte Gesprächsthemen")})
-	if len(topics) == 0 {
-		c.Blocks = append(c.Blocks, block{Text: choose(lang,
-			"No rule-generated review observations were recorded. Confirm business requirements, ownership of published services and the analysis scope in the next review. The absence of findings is not a security guarantee.",
-			"Es wurden keine regelbasierten Prüfpunkte erfasst. Bestätigen Sie im nächsten Review die Geschäftsanforderungen, die Verantwortung für veröffentlichte Dienste und den Analyseumfang. Das Fehlen von Feststellungen ist keine Sicherheitsgarantie.")})
-	}
-	for _, topic := range topics {
-		priority := choose(lang, "Planned review", "Geplante Prüfung")
-		if topic.priority <= 1 {
-			priority = choose(lang, "Priority review", "Priorisierte Prüfung")
+	if showFindings {
+		topics := customerTopics(a.Findings, lang)
+		c.Blocks = append(c.Blocks, block{Heading: choose(lang, "Priority discussion topics", "Priorisierte Gesprächsthemen")})
+		if len(topics) == 0 {
+			c.Blocks = append(c.Blocks, block{Text: choose(lang,
+				"No rule-generated review observations were recorded. Confirm business requirements, ownership of published services and the analysis scope in the next review. The absence of findings is not a security guarantee.",
+				"Es wurden keine regelbasierten Prüfpunkte erfasst. Bestätigen Sie im nächsten Review die Geschäftsanforderungen, die Verantwortung für veröffentlichte Dienste und den Analyseumfang. Das Fehlen von Feststellungen ist keine Sicherheitsgarantie.")})
 		}
-		c.Blocks = append(c.Blocks, fields(topic.title, lang, [][]string{
-			{choose(lang, "Review level / observations", "Prüfstufe / Prüfpunkte"), fmt.Sprintf("%s / %d", priority, topic.count)},
-			{choose(lang, "Customer relevance", "Bedeutung für den Kunden"), topic.meaning},
-			{choose(lang, "Proposed action", "Vorgeschlagene Maßnahme"), topic.action},
-			{choose(lang, "Information needed", "Benötigte Information"), topic.question},
-		}))
+		for _, topic := range topics {
+			priority := choose(lang, "Planned review", "Geplante Prüfung")
+			if topic.priority <= 1 {
+				priority = choose(lang, "Priority review", "Priorisierte Prüfung")
+			}
+			c.Blocks = append(c.Blocks, fields(topic.title, lang, [][]string{
+				{choose(lang, "Review level / observations", "Prüfstufe / Prüfpunkte"), fmt.Sprintf("%s / %d", priority, topic.count)},
+				{choose(lang, "Customer relevance", "Bedeutung für den Kunden"), topic.meaning},
+				{choose(lang, "Proposed action", "Vorgeschlagene Maßnahme"), topic.action},
+				{choose(lang, "Information needed", "Benötigte Information"), topic.question},
+			}))
+		}
 	}
 	c.Blocks = append(c.Blocks, block{
 		Heading: choose(lang, "Suggested improvement sequence", "Vorgeschlagene Reihenfolge"),

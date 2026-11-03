@@ -11,7 +11,7 @@ import (
 )
 
 // A firewall has exactly one desired source and one published report set.
-// Replacing all three encrypted PDFs and their assessment is one transaction.
+// Replacing all four encrypted PDFs and their assessment is one transaction.
 // There is deliberately no report history, version directory, or artifact cache.
 const reportSchema = `
 CREATE TABLE IF NOT EXISTS report_targets (
@@ -36,7 +36,14 @@ CREATE TABLE IF NOT EXISTS report_latest (
  assessment BLOB NOT NULL,
  forwarding BLOB NOT NULL,
  technical BLOB NOT NULL,
- customer BLOB NOT NULL
+ customer BLOB NOT NULL,
+ traffic BLOB NOT NULL DEFAULT X''
+);
+CREATE TABLE IF NOT EXISTS report_profiles (
+ firewall_id INTEGER PRIMARY KEY REFERENCES report_targets(firewall_id) ON DELETE CASCADE,
+ document BLOB NOT NULL,
+ next_due_ns INTEGER NOT NULL DEFAULT 0,
+ last_scheduled_ns INTEGER NOT NULL DEFAULT 0
 );`
 
 type target struct {
@@ -57,6 +64,7 @@ type encryptedSet struct {
 	Forwarding []byte
 	Technical  []byte
 	Customer   []byte
+	Traffic    []byte
 }
 
 func initDB(ctx context.Context, db *sql.DB) error {
@@ -70,7 +78,34 @@ func initDB(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("initialize report store: %w", err)
 		}
 	}
-	return nil
+	// Existing report stores predate traffic reports. Preserve their usable
+	// PDFs until the versioned replacement succeeds.
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(report_latest)")
+	if err != nil {
+		return err
+	}
+	hasTraffic := false
+	for rows.Next() {
+		var cid, notnull, primary int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notnull, &defaultValue, &primary); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		hasTraffic = hasTraffic || name == "traffic"
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasTraffic {
+		_, err = db.ExecContext(ctx, "ALTER TABLE report_latest ADD COLUMN traffic BLOB NOT NULL DEFAULT X''")
+	}
+	return err
 }
 
 const enqueueSQL = `INSERT INTO report_targets
@@ -86,6 +121,10 @@ const enqueueSQL = `INSERT INTO report_targets
 // reconcile persists new sources and removes reports for deleted firewalls or
 // firewalls with no remaining backup. A failed catalog lookup must never call it.
 func reconcile(ctx context.Context, db *sql.DB, sources []reportmodel.Source, generation string) error {
+	return reconcileGenerations(ctx, db, sources, func(*sql.Tx, int) (string, error) { return generation, nil })
+}
+
+func reconcileGenerations(ctx context.Context, db *sql.DB, sources []reportmodel.Source, generation func(*sql.Tx, int) (string, error)) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -97,8 +136,12 @@ func reconcile(ctx context.Context, db *sql.DB, sources []reportmodel.Source, ge
 			return errors.New("invalid report source catalog")
 		}
 		seen[source.FirewallID] = true
+		current, err := generation(tx, source.FirewallID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, enqueueSQL, source.FirewallID, source.BackupID,
-			source.BackupAt.UnixNano(), source.Checksum, generation); err != nil {
+			source.BackupAt.UnixNano(), source.Checksum, current); err != nil {
 			return err
 		}
 	}
@@ -182,12 +225,12 @@ func publish(ctx context.Context, db *sql.DB, t target, generated time.Time, set
 		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO report_latest
- (firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,customer)
- VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(firewall_id) DO UPDATE SET
+ (firewall_id,backup_id,backup_ns,generated_ns,generation,checksum,limited,assessment,forwarding,technical,customer,traffic)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(firewall_id) DO UPDATE SET
  backup_id=excluded.backup_id,backup_ns=excluded.backup_ns,generated_ns=excluded.generated_ns,
  generation=excluded.generation,checksum=excluded.checksum,limited=excluded.limited,assessment=excluded.assessment,forwarding=excluded.forwarding,
- technical=excluded.technical,customer=excluded.customer`, t.FirewallID, t.BackupID, t.BackupNS,
-		generated.UnixNano(), t.Generation, t.Checksum, set.Limited, set.Assessment, set.Forwarding, set.Technical, set.Customer)
+ technical=excluded.technical,customer=excluded.customer,traffic=excluded.traffic`, t.FirewallID, t.BackupID, t.BackupNS,
+		generated.UnixNano(), t.Generation, t.Checksum, set.Limited, set.Assessment, set.Forwarding, set.Technical, set.Customer, set.Traffic)
 	if err != nil {
 		return false, err
 	}
