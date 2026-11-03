@@ -105,6 +105,48 @@ func TestFindingBadgesAndPolicyActionsSurviveStructuredExports(t *testing.T) {
 	}
 }
 
+func TestBackendAndGeographicAssessmentSurviveSupportedExports(t *testing.T) {
+	source, a := fixture()
+	a.Exposures[0].Backends = []string{"10.23.45.67:10443"}
+	a.Exposures[0].GeoStatus = "GEO-MARKER"
+	for _, lang := range []string{"en", "de"} {
+		for _, kind := range []string{"forwarding", "technical"} {
+			for _, showInventory := range []bool{true, false} {
+				for _, format := range []string{"pdf", "html", "csv", "json", "xml"} {
+					t.Run(fmt.Sprintf("%s/%s/inventory-%t/%s", lang, kind, showInventory, format), func(t *testing.T) {
+						p := reportmodel.DefaultProfile(lang)
+						p.ShowInventory, p.Charts = showInventory, nil
+						var data []byte
+						var err error
+						if format == "pdf" {
+							if _, err := exec.LookPath("pdftotext"); err != nil {
+								t.Skip("pdftotext unavailable")
+							}
+							data, err = RenderWithProfile(context.Background(), source, a, kind, p)
+							if err == nil {
+								data = []byte(extractText(t, data))
+							}
+						} else {
+							data, err = Export(context.Background(), source, a, kind, format, p)
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						// Publication details are intrinsic to the forwarding report;
+						// technical reports expose them through the optional inventory.
+						want := kind == "forwarding" || showInventory
+						for _, marker := range []string{a.Exposures[0].Backends[0], a.Exposures[0].GeoStatus} {
+							if bytes.Contains(data, []byte(marker)) != want {
+								t.Errorf("presence of %q = %t; want %t", marker, !want, want)
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 func TestRemovedCustomerReportIsRejectedInEveryFormat(t *testing.T) {
 	source, a := fixture()
 	p := reportmodel.DefaultProfile("en")

@@ -132,6 +132,21 @@ func inventory(exposures []reportmodel.Exposure, lang string) block {
 	return b
 }
 
+// The technical report has no per-publication detail cards, so its summary
+// retains the backend mapping and geographic assessment alongside each VIP.
+func technicalForwardingInventory(exposures []reportmodel.Exposure, lang string) block {
+	b := block{
+		Contents: true, Heading: choose(lang, "Forwarding inventory", "Weiterleitungsinventar"),
+		Columns: []string{choose(lang, "VDOM / object / type", "VDOM / Objekt / Typ"), choose(lang, "External listener", "Externer Listener"), choose(lang, "Backend mapping", "Backend-Zuordnung"), choose(lang, "Assessment", "Bewertung")},
+		Widths:  []float64{1.15, 1.15, 1.25, 1.15},
+	}
+	for _, e := range exposures {
+		b.Rows = append(b.Rows, []string{e.VDOM + " / " + e.Name + "\n" + e.Type, e.External,
+			strings.Join(e.Backends, "\n"), e.Outcome + "\nGeo: " + e.GeoStatus})
+	}
+	return b
+}
+
 func exposureDetail(number int, e reportmodel.Exposure, lang string, showTraces bool) []block {
 	rows := [][]string{
 		{choose(lang, "Source", "Quelle"), e.External + " · " + e.ExternalInterface},
@@ -181,7 +196,7 @@ func technicalContentVisible(a reportmodel.Assessment, lang string, showInventor
 	if showInventory {
 		blocks = append(blocks, technicalInventory(a, lang)...)
 		if len(a.Exposures) > 0 {
-			blocks = append(blocks, inventory(a.Exposures, lang), block{Text: choose(lang,
+			blocks = append(blocks, technicalForwardingInventory(a.Exposures, lang), block{Text: choose(lang,
 				"The Port Forwarding & Exposure report from this same backup contains the full per-object rule traces and geographic restriction explanations.",
 				"Der Bericht zu Portweiterleitungen aus demselben Backup enthält die vollständigen Richtlinienpfade und Erklärungen zu geografischen Einschränkungen je Objekt.")})
 		}
