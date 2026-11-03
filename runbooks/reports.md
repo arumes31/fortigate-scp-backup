@@ -208,6 +208,20 @@ Graylog collection is bounded to **75 seconds**, **40 requests**, **two concurre
 
 The native Go PDF renderer embeds licensed DejaVu fonts and supports searchable Unicode text, repeated table headers, split long rows, and page totals. Unsupported glyphs are represented by Unicode code points. Deployment remains CGO-free.
 
+## Report-store upgrade and rollback
+
+The customer-report removal is a forward migration of `DATA_DIR/fgt-reports.db`. Startup inspects the existing columns, adds `traffic` if an older store lacks it, and drops `customer` if present. The column changes share one transaction with secure deletion enabled: an error before commit rolls them back, and a successful restart leaves the already-migrated schema intact. Supported report blobs remain available until normal regeneration replaces the report set, and the migration preserves saved profiles.
+
+Former `/reports/{firewallID}/customer.pdf`, `.html`, `.csv`, `.json`, and `.xml` URLs return **404**. Update bookmarks, scripts, and download integrations to select `forwarding`, `technical`, or `traffic` explicitly. Those reports include technical details; choose the replacement according to the data the consumer needs.
+
+To retain the option of downgrading to a version that still expects the `customer` column:
+
+1. Before upgrading, shut down FortiSafe cleanly and keep a protected copy of `DATA_DIR/fgt-reports.db`. Preserve its ownership and restrictive permissions, and retain the application's existing encryption key through the normal secret-management process.
+2. To roll back, stop FortiSafe again, preserve a protected copy of the current report database, then restore the pre-upgrade database together with the matching older application version. Use the encryption key that encrypted the saved database. Downgrading the application alone does not recreate the removed column or its PDF contents.
+3. Start the older version and verify the Reports page, profile settings, and regeneration. Restoring the database also restores profiles and scheduling state to the backup's point in time; later report-setting changes must be reapplied if needed.
+
+The application has no automatic down migration. The migrated database cannot recover the securely removed customer PDFs. Keep the current database until the rollback is verified: deleting it would also discard saved profiles and schedules. This report migration does not change PostgreSQL or the retained firewall configuration backups.
+
 ## Verification and synthetic preview
 
 Run the normal repository gates:
