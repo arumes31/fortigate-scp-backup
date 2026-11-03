@@ -151,6 +151,7 @@ func Analyze(ctx context.Context, plain []byte) (reportmodel.Assessment, error) 
 
 func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) reportmodel.Exposure {
 	ex := reportmodel.Exposure{VDOM: display(vip.vdom()), Name: display(vip.name), Type: vip.value("type", "static-nat"), ExternalInterface: display(vip.value("extintf", "any")), Outcome: "Indeterminate", GeoStatus: "Not found", Backends: []string{}, Groups: []string{}, PolicyIDs: []string{}, Notes: []string{}, Trace: []reportmodel.PolicyTrace{}, Evidence: vip.evidence()}
+	disabled := vip.get("status") == "disable"
 	protocol := vip.value("protocol", "tcp")
 	externalIP := vip.get("extip")
 	if externalIP == "0.0.0.0" {
@@ -259,7 +260,7 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 	}
 	// Both VIP and virtual-server entries participate in the DNAT order. Even
 	// a possible overlap blocks a positive conclusion when filters are unresolved.
-	for earlier := 0; earlier < index; earlier++ {
+	for earlier := 0; !disabled && earlier < index; earlier++ {
 		if !inv.work.take() {
 			return ex
 		}
@@ -288,10 +289,6 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		if !inv.appendNote(&ex, len("Central NAT: policy correlation uses mapped backend addresses, not VIP-name references."), func() string {
 			return "Central NAT: policy correlation uses mapped backend addresses, not VIP-name references."
 		}) {
-			return ex
-		}
-		if vip.get("status") == "disable" {
-			ex.Outcome = "Disabled"
 			return ex
 		}
 	}
@@ -349,6 +346,8 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 			trace.Source += " [countries: " + strings.Join(source.countries, ", ") + "]"
 		}
 		switch {
+		case disabled:
+			trace.Effect = "VIP is explicitly disabled; this policy is listed for configuration reference only."
 		case policy.get("status") == "disable":
 			trace.Effect = "Disabled policy; does not establish an active path."
 		case genericDeny && !inv.central && policy.get("match-vip") == "disable":
@@ -368,6 +367,20 @@ func analyzeExposure(inv *inventory, vip *node, index int, knownVersion bool) re
 		if direct {
 			ex.PolicyIDs = append(ex.PolicyIDs, display(policy.name))
 		}
+	}
+	// The object-level status applies independently of NAT mode. Preserve the
+	// mapping and related rules above, but do not evaluate a disabled VIP as an
+	// active publication or claim that geographic rules protect its traffic.
+	if disabled {
+		ex.Outcome = "Disabled"
+		ex.GeoStatus = "Not applicable"
+		if !inv.appendNote(&ex, len("The VIP is explicitly disabled. Its mapping and related policies are retained as configuration inventory; no active forwarding or geographic protection is inferred."), func() string {
+			return "The VIP is explicitly disabled. Its mapping and related policies are retained as configuration inventory; no active forwarding or geographic protection is inferred."
+		}) {
+			return ex
+		}
+		ex.Notes = unique(ex.Notes)
+		return ex
 	}
 	if enabledReferences == 0 && !inv.central {
 		ex.Outcome = "No enabled policy reference"
@@ -596,6 +609,9 @@ func policyProfiles(n *node) string {
 }
 
 func exposureFindings(ex reportmodel.Exposure) []reportmodel.Finding {
+	if ex.Outcome == "Disabled" {
+		return nil
+	}
 	var result []reportmodel.Finding
 	key := ex.VDOM + ":" + ex.Name
 	if ex.GeoStatus == "Not applicable" || ex.GeoStatus == "Partial" || ex.GeoStatus == "Indeterminate" {

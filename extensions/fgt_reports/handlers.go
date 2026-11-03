@@ -174,8 +174,17 @@ func (e *Extension) data(w http.ResponseWriter, r *http.Request) {
 
 func (e *Extension) download(w http.ResponseWriter, r *http.Request) {
 	kind := chi.URLParam(r, "kind")
-	// Only allow literal column identifiers; never interpolate request paths.
-	if kind != "forwarding" && kind != "technical" && kind != "customer" {
+	// Select a complete literal query. Request values are never used to build
+	// SQL identifiers, even after validation of the report kind.
+	var query string
+	switch kind {
+	case "forwarding":
+		query = "SELECT forwarding FROM report_latest WHERE firewall_id=?"
+	case "technical":
+		query = "SELECT technical FROM report_latest WHERE firewall_id=?"
+	case "customer":
+		query = "SELECT customer FROM report_latest WHERE firewall_id=?"
+	default:
 		http.NotFound(w, r)
 		return
 	}
@@ -185,7 +194,7 @@ func (e *Extension) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var encrypted []byte
-	err = e.db.QueryRowContext(r.Context(), "SELECT "+kind+" FROM report_latest WHERE firewall_id=?", source.FirewallID).Scan(&encrypted)
+	err = e.db.QueryRowContext(r.Context(), query, source.FirewallID).Scan(&encrypted)
 	if err != nil {
 		reportError(w, err)
 		return

@@ -343,3 +343,74 @@ func TestDynamicExternalAddressAndIngressFilterAreNotProven(t *testing.T) {
 		t.Fatalf("ingress filters silently ignored: %+v", ex)
 	}
 }
+
+func TestExplicitDisabledVIPPreservesInventoryInBothNATModes(t *testing.T) {
+	for _, central := range []bool{false, true} {
+		t.Run(fmt.Sprintf("central=%v", central), func(t *testing.T) {
+			destination := "Portal"
+			if central {
+				destination = "backend"
+			}
+			configuration := fixture(testPolicy("900", "deny", "CountryGroup", "all", "set match-vip enable") + testPolicy("20", "accept", "all", destination, ""))
+			configuration = strings.Replace(configuration, "set mappedport 443", "set mappedport 443\n        set status disable", 1)
+			if central {
+				configuration += "config system settings\nset central-nat enable\nend\n"
+			}
+			result := assessment(t, configuration)
+			if len(result.Exposures) != 1 {
+				t.Fatalf("disabled VIP disappeared from inventory: %+v", result.Exposures)
+			}
+			ex := result.Exposures[0]
+			if ex.Outcome != "Disabled" || ex.GeoStatus != "Not applicable" {
+				t.Fatalf("disabled VIP treated as an active publication: %+v", ex)
+			}
+			if len(ex.Trace) != 2 || !contains(ex.PolicyIDs, "20") || len(ex.Backends) != 1 || ex.External != "203.0.113.20:8443/TCP" {
+				t.Fatalf("disabled VIP lost its mapping or policy evidence: %+v", ex)
+			}
+			for _, trace := range ex.Trace {
+				if !strings.Contains(trace.Effect, "VIP is explicitly disabled") {
+					t.Fatalf("disabled VIP trace implies an active path: %+v", trace)
+				}
+			}
+			for _, finding := range result.Findings {
+				if strings.HasPrefix(finding.ID, "broad-source:") || strings.HasPrefix(finding.ID, "geo-coverage:") {
+					t.Fatalf("disabled object generated an active publication finding: %+v", finding)
+				}
+			}
+		})
+	}
+}
+
+func TestEarlierDisabledVIPDoesNotShadowEnabledVIP(t *testing.T) {
+	for _, central := range []bool{false, true} {
+		t.Run(fmt.Sprintf("central=%v", central), func(t *testing.T) {
+			prior := `config firewall vip
+edit DisabledEarlier
+set extip 203.0.113.20
+set mappedip 10.10.20.15
+set extintf wan1
+set portforward enable
+set extport 8443
+set mappedport 443
+set status disable
+next
+end
+`
+			destination := "Portal"
+			if central {
+				destination = "backend"
+			}
+			configuration := testHeader + prior + testObjects + "config firewall policy\n" + testPolicy("20", "accept", "all", destination, "") + "end\n"
+			if central {
+				configuration += "config system settings\nset central-nat enable\nend\n"
+			}
+			result := assessment(t, configuration)
+			if len(result.Exposures) != 2 || result.Exposures[0].Outcome != "Disabled" || result.Exposures[1].Outcome != "Configured permit" {
+				t.Fatalf("disabled earlier object affected active translation: %+v", result.Exposures)
+			}
+			if strings.Contains(strings.Join(result.Exposures[1].Notes, " "), "earlier DNAT object overlaps") {
+				t.Fatalf("disabled earlier object was considered an overlap: %+v", result.Exposures[1])
+			}
+		})
+	}
+}
