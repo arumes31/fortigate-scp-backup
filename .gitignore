@@ -16,6 +16,12 @@ __pycache__/
 
 # Project-specific / local files
 docs/
+.stfolder/
+.stignore
+extensions/fgt_conftail/templates/entry/
+extensions/fgt_conftail/templates/server/
+extensions/fgt_conftail/templates/tools/
+extensions/fgt_conftail/templates/vite/
 # Local fixtures that contain real customer data — never commit.
 example*.conf
 *.conf.local
