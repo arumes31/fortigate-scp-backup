@@ -34,4 +34,5 @@ jobs:
     uses: ./.github/workflows/image-pipeline.yml
     with:
       channel: main
-    secrets: inherit
+    # GITHUB_TOKEN is always available to called workflows; do not forward
+    # every repository secret to the image pipeline.

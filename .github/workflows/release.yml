@@ -26,7 +26,8 @@ jobs:
     with:
       channel: release
       release_tag: ${{ github.ref_name }}
-    secrets: inherit
+    # GITHUB_TOKEN is always available to called workflows; do not forward
+    # every repository secret to the image pipeline.
 
   release:
     name: Create GitHub release
