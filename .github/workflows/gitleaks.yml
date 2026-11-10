@@ -4,6 +4,7 @@ on:
   # push as well ran this twice per PR commit.
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
