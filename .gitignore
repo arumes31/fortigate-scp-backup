@@ -42,3 +42,7 @@ tasks/
 /ui-tests/node_modules/
 /ui-tests/playwright-report/
 /ui-tests/test-results/
+
+# Local environment files may hold credentials
+.env
+.env.*
