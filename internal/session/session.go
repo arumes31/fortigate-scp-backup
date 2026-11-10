@@ -320,7 +320,18 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 // X-CSRF-Token header. Mounting it on the root router also protects extensions.
 func (m *Manager) CSRFProtected(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if csrfSafeMethod(r.Method) || r.URL.Path == "/login" {
+		if csrfSafeMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/login" {
+			// The login form has no session token yet, so bind it to the
+			// FortiSafe origin instead: a cross-site page must not be able to
+			// submit its own credentials and swap the victim's session.
+			if err := loginOriginGuard.Check(r); err != nil {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -338,6 +349,11 @@ func (m *Manager) CSRFProtected(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// loginOriginGuard rejects cross-origin browser POSTs to /login using the
+// Sec-Fetch-Site and Origin headers. Requests without either header (non-browser
+// clients) are allowed because they cannot carry a victim's cookies.
+var loginOriginGuard = http.NewCrossOriginProtection()
 
 const csrfTokenReadLimit = 64 << 10
 

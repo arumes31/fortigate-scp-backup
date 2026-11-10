@@ -70,6 +70,38 @@ func TestCSRFProtectedRequiresSessionTokenForUnsafeRequest(t *testing.T) {
 	}
 }
 
+// TestCSRFProtectedRejectsCrossOriginLogin covers login CSRF (session swap).
+func TestCSRFProtectedRejectsCrossOriginLogin(t *testing.T) {
+	t.Parallel()
+	manager := New([]byte("csrf-test-key-012345678901234567890"), false, false)
+	protected := manager.CSRFProtected(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"cross-site fetch metadata", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"foreign origin", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"same-origin fetch metadata", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusNoContent},
+		{"matching origin", map[string]string{"Origin": "http://fortisafe.example"}, http.StatusNoContent},
+		{"non-browser client", nil, http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "http://fortisafe.example/login", strings.NewReader("username=a&password=b"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for k, v := range tc.headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		protected.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s: status = %d, want %d", tc.name, rec.Code, tc.want)
+		}
+	}
+}
+
 // TestCSRFProtectedPreservesMultipartBodyForHandlerLimits guards streaming semantics.
 func TestCSRFProtectedPreservesMultipartBodyForHandlerLimits(t *testing.T) {
 	t.Parallel()

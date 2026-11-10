@@ -29,6 +29,10 @@ backups/
 data/
 secrets/
 
+# Local environment files may hold credentials
+**/.env
+**/.env.*
+
 # Local build artifacts
 /fortisafe
 *.exe
