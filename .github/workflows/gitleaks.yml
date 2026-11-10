@@ -1,6 +1,9 @@
 name: Secret scanning
 on:
+  # PR commits are scanned by the pull_request trigger; scanning every branch
+  # push as well ran this twice per PR commit.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
