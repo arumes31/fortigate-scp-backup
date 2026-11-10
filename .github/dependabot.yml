@@ -6,6 +6,9 @@ updates:
     target-branch: "main"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   # Go modules (the app is now written in Go)
   - package-ecosystem: "gomod"
@@ -14,6 +17,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      gomod-minor-patch:
+        update-types: ["minor", "patch"]
 
   # Docker base images
   - package-ecosystem: "docker"
@@ -27,3 +33,6 @@ updates:
     directory: "/ui-tests"
     schedule:
       interval: "weekly"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
