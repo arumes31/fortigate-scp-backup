@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// No entry-count cap; the body size still bounds a request (~5k selected ids as multipart).
+// No entry-count cap; the body size still bounds a request (~100k URL-encoded ids).
 const maxBulkFormBytes = 1 << 20
 
 var configCSVHeader = []string{

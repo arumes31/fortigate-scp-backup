@@ -114,7 +114,8 @@
             if (!action) { return; }
             bulkButtons.forEach(function (button) { button.disabled = true; });
             announce(bulkFeedback, 'loading', de ? selected.length + ' Einträge werden vorbereitet…' : 'Preparing ' + selected.length + ' entries…');
-            fetch(action, { method: 'POST', body: new FormData(bulkForm) })
+            // URL-encoded, not multipart: Go caps multipart forms at 1000 parts.
+            fetch(action, { method: 'POST', body: new URLSearchParams(new FormData(bulkForm)) })
                 .then(function (response) {
                     if (!response.ok) { return response.text().then(function (text) { throw new Error(text.trim() || ('HTTP ' + response.status)); }); }
                     return response.blob().then(function (blob) { return { response: response, blob: blob }; });
