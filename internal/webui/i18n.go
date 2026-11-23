@@ -336,7 +336,7 @@ var germanPageText = map[string]string{
 	"Search entries":                     "Einträge durchsuchen",
 	"Search VPN entries":                 "VPN-Einträge durchsuchen",
 	"Firewall, customer, site, company…": "Firewall, Kunde, Standort, Firma…",
-	"Select visible":                     "Sichtbare auswählen",
+	"Select all":                         "Alle auswählen",
 	"selected":                           "ausgewählt",
 	"Export selected CSV":                "Ausgewählte als CSV exportieren",
 	"Generate selected":                  "Ausgewählte erzeugen",

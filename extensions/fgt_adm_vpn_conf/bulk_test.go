@@ -102,7 +102,7 @@ func TestBulkExportReturnsOnlySelectedRowsViaPOST(t *testing.T) {
 	}
 }
 
-func TestBulkRejectsZeroDuplicateUnknownAndOverLimitIDs(t *testing.T) {
+func TestBulkRejectsZeroDuplicateAndUnknownIDs(t *testing.T) {
 	e, ids := newBulkTestExtension(t, 2)
 	tests := []struct {
 		name string
@@ -111,13 +111,6 @@ func TestBulkRejectsZeroDuplicateUnknownAndOverLimitIDs(t *testing.T) {
 		{name: "zero"},
 		{name: "duplicate", ids: []int64{ids[0], ids[0]}},
 		{name: "unknown", ids: []int64{ids[0], 999999}},
-		{name: "over limit", ids: func() []int64 {
-			values := make([]int64, 101)
-			for index := range values {
-				values[index] = int64(index + 1)
-			}
-			return values
-		}()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

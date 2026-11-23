@@ -91,7 +91,7 @@
                 </div>
                 <form class="adm-bulk-bar" id="admBulkForm" method="post">
                     {{template "csrf" .Base.CSRFToken}}
-                    <button class="btn btn-sm" type="button" id="vpnSelectVisible">{{L .Base.Lang "Select visible"}}</button>
+                    <button class="btn btn-sm" type="button" id="vpnSelectAll">{{L .Base.Lang "Select all"}}</button>
                     <button class="btn btn-sm" type="button" id="vpnClearSelection">{{L .Base.Lang "Clear"}}</button>
                     <strong id="vpnSelectionCount">0 {{L .Base.Lang "selected"}}</strong>
                     <span class="dialog-feedback adm-bulk-feedback" id="vpnBulkFeedback" role="status" aria-live="polite" hidden></span>
