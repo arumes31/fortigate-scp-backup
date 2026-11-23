@@ -6,9 +6,7 @@
         var de = document.documentElement.lang === 'de';
         var messages = {
             'selected': 'ausgewählt',
-            'A maximum of 100 entries can be selected.': 'Es können höchstens 100 Einträge ausgewählt werden.',
             'Select at least one entry.': 'Wählen Sie mindestens einen Eintrag aus.',
-            'A maximum of 100 entries can be processed at once.': 'Es können höchstens 100 Einträge gleichzeitig verarbeitet werden.',
             'Loading configuration…': 'Konfiguration wird geladen…',
             'Edit form is unavailable': 'Das Bearbeitungsformular ist nicht verfügbar',
             'Saving configuration…': 'Konfiguration wird gespeichert…',
@@ -83,7 +81,6 @@
             window.FortiSafeUI.announce(target, kind, message);
         }
 
-        var maxSelection = 100;
         var bulkForm = root.querySelector('#admBulkForm');
         var bulkFeedback = root.querySelector('#vpnBulkFeedback');
         var selectionCount = root.querySelector('#vpnSelectionCount');
@@ -93,28 +90,12 @@
         function updateSelection() {
             var count = selectedBoxes().length;
             selectionCount.textContent = count + ' ' + t('selected');
-            bulkButtons.forEach(function (button) { button.disabled = count === 0 || count > maxSelection; });
+            bulkButtons.forEach(function (button) { button.disabled = count === 0; });
         }
-        selectionBoxes.forEach(function (box) {
-            box.addEventListener('change', function () {
-                if (box.checked && selectedBoxes().length > maxSelection) {
-                    box.checked = false;
-                    announce(bulkFeedback, 'error', t('A maximum of 100 entries can be selected.'));
-                }
-                updateSelection();
-            });
-        });
-        root.querySelector('#vpnSelectVisible').addEventListener('click', function () {
-            var omitted = 0;
-            selectionBoxes.forEach(function (box) {
-                var row = box.closest('[data-vpn-row]');
-                if (!row.hidden && !box.checked) {
-                    if (selectedBoxes().length < maxSelection) { box.checked = true; }
-                    else { omitted++; }
-                }
-            });
+        selectionBoxes.forEach(function (box) { box.addEventListener('change', updateSelection); });
+        root.querySelector('#vpnSelectAll').addEventListener('click', function () {
+            selectionBoxes.forEach(function (box) { box.checked = true; });
             updateSelection();
-            if (omitted > 0) { announce(bulkFeedback, 'error', de ? '100 sichtbare Einträge ausgewählt; ' + omitted + ' überschreiten das Limit.' : 'Selected 100 visible entries; ' + omitted + ' exceed the limit.'); }
         });
         root.querySelector('#vpnClearSelection').addEventListener('click', function () {
             selectionBoxes.forEach(function (box) { box.checked = false; });
@@ -128,16 +109,13 @@
                 announce(bulkFeedback, 'error', t('Select at least one entry.'));
                 return;
             }
-            if (selected.length > maxSelection) {
-                announce(bulkFeedback, 'error', t('A maximum of 100 entries can be processed at once.'));
-                return;
-            }
             var submitter = event.submitter;
             var action = submitter && submitter.formAction;
             if (!action) { return; }
             bulkButtons.forEach(function (button) { button.disabled = true; });
             announce(bulkFeedback, 'loading', de ? selected.length + ' Einträge werden vorbereitet…' : 'Preparing ' + selected.length + ' entries…');
-            fetch(action, { method: 'POST', body: new FormData(bulkForm) })
+            // URL-encoded, not multipart: Go caps multipart forms at 1000 parts.
+            fetch(action, { method: 'POST', body: new URLSearchParams(new FormData(bulkForm)) })
                 .then(function (response) {
                     if (!response.ok) { return response.text().then(function (text) { throw new Error(text.trim() || ('HTTP ' + response.status)); }); }
                     return response.blob().then(function (blob) { return { response: response, blob: blob }; });

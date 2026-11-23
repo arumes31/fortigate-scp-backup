@@ -13,10 +13,8 @@ import (
 	"strings"
 )
 
-const (
-	maxBulkEntries   = 100
-	maxBulkFormBytes = 64 << 10
-)
+// No entry-count cap; the body size still bounds a request (~100k URL-encoded ids).
+const maxBulkFormBytes = 1 << 20
 
 var configCSVHeader = []string{
 	"Kundenname", "Standort", "REMOTEIP-FULL", "REMOTEIP-FULL-1st",
@@ -149,9 +147,6 @@ func parseBulkIDs(w http.ResponseWriter, r *http.Request) ([]int64, error) {
 	values := r.PostForm["id"]
 	if len(values) == 0 {
 		return nil, bulkSelectionError("Select at least one entry.")
-	}
-	if len(values) > maxBulkEntries {
-		return nil, bulkSelectionError(fmt.Sprintf("A maximum of %d entries can be processed at once.", maxBulkEntries))
 	}
 	ids := make([]int64, 0, len(values))
 	seen := make(map[int64]struct{}, len(values))

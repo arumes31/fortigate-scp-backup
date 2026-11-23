@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -102,7 +103,26 @@ func TestBulkExportReturnsOnlySelectedRowsViaPOST(t *testing.T) {
 	}
 }
 
-func TestBulkRejectsZeroDuplicateUnknownAndOverLimitIDs(t *testing.T) {
+// The browser posts URL-encoded; more than 1000 ids must pass (multipart caps parts at 1000).
+func TestBulkExportAcceptsLargeURLEncodedSelection(t *testing.T) {
+	e, ids := newBulkTestExtension(t, 1001)
+	form := url.Values{}
+	for _, id := range ids {
+		form.Add("id", fmt.Sprint(id))
+	}
+	req := httptest.NewRequest(http.MethodPost, "/bulk/export", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	e.bulkExport(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Disposition"); got != `attachment; filename="vpn_configs_1001_selected.csv"` {
+		t.Errorf("Content-Disposition = %q", got)
+	}
+}
+
+func TestBulkRejectsZeroDuplicateAndUnknownIDs(t *testing.T) {
 	e, ids := newBulkTestExtension(t, 2)
 	tests := []struct {
 		name string
@@ -111,13 +131,6 @@ func TestBulkRejectsZeroDuplicateUnknownAndOverLimitIDs(t *testing.T) {
 		{name: "zero"},
 		{name: "duplicate", ids: []int64{ids[0], ids[0]}},
 		{name: "unknown", ids: []int64{ids[0], 999999}},
-		{name: "over limit", ids: func() []int64 {
-			values := make([]int64, 101)
-			for index := range values {
-				values[index] = int64(index + 1)
-			}
-			return values
-		}()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

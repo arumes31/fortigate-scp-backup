@@ -452,12 +452,12 @@ func registerUXExtensionRoutes(mux *http.ServeMux, templates *uxExtensionTemplat
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/edit/{id}", redirectADMVPN)
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/delete/{id}", redirectADMVPN)
 	mux.HandleFunc("POST /fgt-adm-vpn-conf/bulk/{operation}", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(64 << 10); err != nil {
+		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid selection", http.StatusBadRequest)
 			return
 		}
-		ids := r.MultipartForm.Value["id"]
-		if len(ids) == 0 || len(ids) > 100 {
+		ids := r.PostForm["id"]
+		if len(ids) == 0 {
 			http.Error(w, "selection outside fixture bounds", http.StatusBadRequest)
 			return
 		}
