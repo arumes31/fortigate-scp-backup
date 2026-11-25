@@ -222,6 +222,12 @@ function sdwanLabel(s) {
     const parts = [s.state === "dead" ? "⚠ dead" : "alive"];
     if (s.loss) parts.push("loss " + s.loss + "%");
     if (s.latency) parts.push(Math.round(s.latency) + "ms");
+    // updated_at is stored UTC; a failed check keeps the previous snapshot, so show its time.
+    if (s.updated_at) {
+        const at = new Date(s.updated_at.replace(" ", "T") + "Z");
+        const day = at.toDateString() === new Date().toDateString() ? "" : at.toLocaleDateString() + " ";
+        parts.push("@ " + day + at.toTimeString().slice(0, 5));
+    }
     return parts.join(" · ");
 }
 
@@ -1073,7 +1079,7 @@ function buildTree(data) {
             (data.ha ? `\nHA: ${data.ha.mode}${data.ha.group_name ? " · " + data.ha.group_name : ""}` : "") +
             (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : "") +
             (topoFwHealth ? `\n${topoFwHealth}` : "") +
-            (topoDiagStatus && topoDiagStatus.last_run ? `\n${tt("topo.ssh_collected")}: ${topoDiagStatus.switches} sw · ${(topoDiagStatus.duration_ms / 1000).toFixed(1)}s${topoDiagStatus.static ? " · full" : ""} @ ${(topoDiagStatus.last_run || "").slice(11, 16)}` : ""),
+            (topoDiagStatus && topoDiagStatus.last_run ? `\n${tt("topo.ssh_collected")}: ${topoDiagStatus.switches} sw · ${(topoDiagStatus.duration_ms / 1000).toFixed(1)}s${topoDiagStatus.static ? " · full" : ""} @ ${new Date(topoDiagStatus.last_run.replace(" ", "T") + "Z").toTimeString().slice(0, 5)}` : ""), // last_run is stored UTC
         badge: data.model || null,
         children: fwChildren
     }];

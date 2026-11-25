@@ -47,6 +47,9 @@ type VpnConfig struct {
 	LastGraylogCheck  *time.Time
 	// PendingHookwiseStatus is retried independently of the observed health.
 	PendingHookwiseStatus string
+	// LastAlertedStatus is the last online/offline state HookWise was told about
+	// (or the seeded baseline), so an error between states cannot hide a transition.
+	LastAlertedStatus string
 	// LastGraylogUnhealthySince marks when the current unhealthy streak began
 	// (nil while healthy). Used to surface only devices failing long enough to
 	// match the alert threshold. See graylogStatusUnhealthy.
@@ -91,6 +94,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS vpn_config (
 	last_graylog_check DATETIME,
 	graylog_unhealthy_since DATETIME,
 	pending_hookwise_status VARCHAR(20) NOT NULL DEFAULT '',
+	last_alerted_status VARCHAR(20) NOT NULL DEFAULT '',
 	last_dns_status VARCHAR(20) DEFAULT 'unknown',
 	last_dns_check DATETIME,
 	last_dns_resolved VARCHAR(255)
@@ -112,6 +116,7 @@ var migrations = []struct {
 	{"last_dns_status", "ALTER TABLE vpn_config ADD COLUMN last_dns_status VARCHAR(20) DEFAULT 'unknown'"},
 	{"last_dns_check", "ALTER TABLE vpn_config ADD COLUMN last_dns_check DATETIME"},
 	{"last_dns_resolved", "ALTER TABLE vpn_config ADD COLUMN last_dns_resolved VARCHAR(255)"},
+	{"last_alerted_status", "ALTER TABLE vpn_config ADD COLUMN last_alerted_status VARCHAR(20) NOT NULL DEFAULT ''"},
 }
 
 // openDB opens the private SQLite database. A single connection serialises
@@ -204,7 +209,8 @@ const selectCols = `id,
 	COALESCE(radiusmgt,''), COALESCE(dns_name_full,''), COALESCE(graylog_enabled,1),
 	COALESCE(cluster_hostnames,''), COALESCE(last_graylog_status,'unknown'),
 	last_graylog_check, graylog_unhealthy_since, COALESCE(pending_hookwise_status,''),
-	COALESCE(last_dns_status,'unknown'), COALESCE(last_dns_resolved,''), last_dns_check`
+	COALESCE(last_dns_status,'unknown'), COALESCE(last_dns_resolved,''), last_dns_check,
+	COALESCE(last_alerted_status,'')`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -222,6 +228,7 @@ func scanConfig(s rowScanner) (*VpnConfig, error) {
 		&glEnabled, &c.ClusterHostnames, &c.LastGraylogStatus, &lastCheck, &unhealthySince,
 		&c.PendingHookwiseStatus,
 		&c.LastDnsStatus, &c.LastDnsResolved, &dnsCheck,
+		&c.LastAlertedStatus,
 	)
 	if err != nil {
 		return nil, err
@@ -441,18 +448,27 @@ func (e *Extension) updateConfigFull(c *VpnConfig) error {
 	if err != nil {
 		return err
 	}
-	_, err = e.db.Exec(`UPDATE vpn_config SET
+	_, err = e.db.Exec(`UPDATE vpn_config SET `+dnsResetSet+`,
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
 		wan_interface=?, lan_interface=?, dns_name=?, firewallname=?, connectwise_company_name=?,
 		ipsec_psk_ro=?, ipsec_psk_hci=?, radiusmgt=?, dns_name_full=?,
 		graylog_enabled=?, cluster_hostnames=?
 		WHERE id=?`,
+		c.DnsNameFull, c.RemoteipFull, c.DnsNameFull, c.RemoteipFull, c.DnsNameFull, c.RemoteipFull,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
 		c.WanInterface, c.LanInterface, c.DnsName, c.Firewallname, c.CompanyName,
 		pskRo, pskHci, c.Radiusmgt, c.DnsNameFull,
 		boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.ID)
 	return err
 }
+
+// dnsResetSet clears the DNS check result when dns_name_full or remoteip_full
+// changes, so the worker re-checks at once instead of showing the old verdict for
+// up to a day. SET expressions see the pre-update row; bind (dns, ip) three times.
+const dnsResetSet = `
+		last_dns_check    = CASE WHEN COALESCE(dns_name_full,'') != ? OR COALESCE(remoteip_full,'') != ? THEN NULL ELSE last_dns_check END,
+		last_dns_status   = CASE WHEN COALESCE(dns_name_full,'') != ? OR COALESCE(remoteip_full,'') != ? THEN 'unknown' ELSE last_dns_status END,
+		last_dns_resolved = CASE WHEN COALESCE(dns_name_full,'') != ? OR COALESCE(remoteip_full,'') != ? THEN '' ELSE last_dns_resolved END`
 
 // updateConfigImport mirrors the CSV upsert path, which updates every field of
 // the matched row EXCEPT firewallname (the match key).
@@ -461,11 +477,12 @@ func (e *Extension) updateConfigImport(id int64, c *VpnConfig) error {
 	if err != nil {
 		return err
 	}
-	_, err = e.db.Exec(`UPDATE vpn_config SET
+	_, err = e.db.Exec(`UPDATE vpn_config SET `+dnsResetSet+`,
 		kundenname=?, standort=?, remoteip_full=?, remoteip_full_1st=?, ike2_username=?,
 		wan_interface=?, lan_interface=?, dns_name=?, ipsec_psk_ro=?, ipsec_psk_hci=?,
 		radiusmgt=?, dns_name_full=?, graylog_enabled=?, cluster_hostnames=?, connectwise_company_name=?
 		WHERE id=?`,
+		c.DnsNameFull, c.RemoteipFull, c.DnsNameFull, c.RemoteipFull, c.DnsNameFull, c.RemoteipFull,
 		c.Kundenname, c.Standort, c.RemoteipFull, c.RemoteipFull1st, c.Ike2Username,
 		c.WanInterface, c.LanInterface, c.DnsName, pskRo, pskHci,
 		c.Radiusmgt, c.DnsNameFull, boolToInt(c.GraylogEnabled), c.ClusterHostnames, c.CompanyName, id)
@@ -515,21 +532,24 @@ func (e *Extension) findIDByRemoteip(ip string) (int64, bool, error) {
 // start of the current unhealthy streak (nil while healthy), stored as NULL so
 // the dashboard can filter on how long a device has been failing. The pending
 // notification is saved atomically with the observation, before delivery.
-func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string, unhealthySince *time.Time, pending string) error {
+func (e *Extension) updateGraylogStatus(id int64, checkedAt time.Time, status string, unhealthySince *time.Time, pending, lastAlerted string) error {
 	var since any
 	if unhealthySince != nil {
 		since = formatDBTime(*unhealthySince)
 	}
 	_, err := e.db.Exec(
 		`UPDATE vpn_config SET last_graylog_check = ?, last_graylog_status = ?,
-		 graylog_unhealthy_since = ?, pending_hookwise_status = ? WHERE id = ?`,
-		formatDBTime(checkedAt), status, since, pending, id)
+		 graylog_unhealthy_since = ?, pending_hookwise_status = ?, last_alerted_status = ? WHERE id = ?`,
+		formatDBTime(checkedAt), status, since, pending, lastAlerted, id)
 	return err
 }
 
+// clearPendingHookwiseStatus records a confirmed delivery of status: it becomes
+// the last alerted state, and the pending slot clears unless a newer one replaced it.
 func (e *Extension) clearPendingHookwiseStatus(id int64, status string) error {
-	_, err := e.db.Exec(`UPDATE vpn_config SET pending_hookwise_status = ''
-		WHERE id = ? AND pending_hookwise_status = ?`, id, status)
+	_, err := e.db.Exec(`UPDATE vpn_config SET last_alerted_status = ?,
+		pending_hookwise_status = CASE WHEN pending_hookwise_status = ? THEN '' ELSE pending_hookwise_status END
+		WHERE id = ?`, status, status, id)
 	return err
 }
 

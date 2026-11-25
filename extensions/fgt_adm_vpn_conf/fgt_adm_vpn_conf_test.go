@@ -794,7 +794,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Newer columns must now be selectable.
-	for _, col := range []string{"connectwise_company_name", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since", "last_dns_status", "last_dns_check", "last_dns_resolved"} {
+	for _, col := range []string{"connectwise_company_name", "graylog_enabled", "cluster_hostnames", "last_graylog_status", "last_graylog_check", "graylog_unhealthy_since", "last_dns_status", "last_dns_check", "last_dns_resolved", "last_alerted_status"} {
 		if !columnExists(db, col) {
 			t.Errorf("column %q missing after migration", col)
 		}

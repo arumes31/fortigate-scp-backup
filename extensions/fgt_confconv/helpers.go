@@ -49,11 +49,13 @@ func replaceStr(list []string, old, new string) []string {
 }
 
 // quoteJoin renders a member/interface list the way FortiGate CLI expects:
-// space-separated, each element double-quoted.
+// space-separated, each element double-quoted with embedded backslashes and
+// quotes escaped (as polsplit's fgtQuote does): the parser unescapes them.
 func quoteJoin(list []string) string {
 	parts := make([]string, len(list))
 	for i, v := range list {
-		parts[i] = `"` + v + `"`
+		v = strings.ReplaceAll(v, `\`, `\\`)
+		parts[i] = `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
 	}
 	return strings.Join(parts, " ")
 }

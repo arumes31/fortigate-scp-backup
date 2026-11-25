@@ -8,8 +8,8 @@ import (
 )
 
 // viewerUnsafeAllowed lists the only state-changing endpoints a read-only
-// viewer may call: session housekeeping and the configuration search form.
-var viewerUnsafeAllowed = map[string]bool{"/logout": true, "/lang": true, "/search": true}
+// viewer may call: session housekeeping.
+var viewerUnsafeAllowed = map[string]bool{"/logout": true, "/lang": true}
 
 // viewerDeniedReadPrefixes are read-only routes that still hand out raw
 // configuration content or secrets (decrypted backups, config diffs, VPN
@@ -39,7 +39,8 @@ func (s *Server) enforceRoles(next http.Handler) http.Handler {
 // viewerMayAccess reports whether a read-only viewer may perform the request.
 func viewerMayAccess(r *http.Request) bool {
 	path := r.URL.Path
-	if path == "/reports" || strings.HasPrefix(path, "/reports/") {
+	// Configuration search returns matching lines of decrypted backups, secrets included.
+	if path == "/search" || path == "/reports" || strings.HasPrefix(path, "/reports/") {
 		return false
 	}
 	switch r.Method {

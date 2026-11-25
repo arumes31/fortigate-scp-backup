@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +45,7 @@ type fakeStore struct {
 	activity    *[]string
 	loginUser   *models.User
 	loginPass   string
+	authErr     error
 	consumeTOTP func(context.Context, int, int64) (bool, error)
 	epochs      map[string]int64
 }
@@ -90,6 +94,9 @@ func (s fakeStore) ConsumeTOTP(ctx context.Context, userID int, timeStep int64) 
 // AuthenticateLocal accepts the configured credential fixture while retaining
 // the default admin credentials expected by older tests.
 func (s fakeStore) AuthenticateLocal(_ context.Context, u, p string) (*models.User, bool, error) {
+	if s.authErr != nil {
+		return nil, false, s.authErr
+	}
 	if s.loginUser != nil && u == s.loginUser.Username && p == s.loginPass {
 		return s.loginUser, true, nil
 	}
@@ -279,7 +286,14 @@ func TestHandleAcceptHostKeyApprovesOnlyDetectedReplacement(t *testing.T) {
 	srv.SetHostKeyManager(manager)
 	routeCtx := chi.NewRouteContext()
 	routeCtx.URLParams.Add("fwID", "7")
-	req := httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7", nil)
+	staleReq := withURLParam(httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7?fingerprint="+url.QueryEscape(ssh.FingerprintSHA256(oldKey)), nil), "fwID", "7")
+	staleRecorder := httptest.NewRecorder()
+	srv.handleAcceptHostKey(staleRecorder, staleReq)
+	if staleRecorder.Code != http.StatusConflict {
+		t.Fatalf("stale fingerprint status = %d, want %d", staleRecorder.Code, http.StatusConflict)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7?fingerprint="+url.QueryEscape(ssh.FingerprintSHA256(newKey)), nil)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
 	recorder := httptest.NewRecorder()
 
@@ -330,7 +344,8 @@ func TestHandleAcceptHostKeyMapsPersistenceFailureToServerError(t *testing.T) {
 	if err := manager.Callback()(address, remote, webTestPublicKey(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Callback()(address, remote, webTestPublicKey(t)); err == nil {
+	changedKey := webTestPublicKey(t)
+	if err := manager.Callback()(address, remote, changedKey); err == nil {
 		t.Fatal("changed key unexpectedly accepted")
 	}
 	if err := os.Remove(knownHostsPath); err != nil {
@@ -346,7 +361,7 @@ func TestHandleAcceptHostKeyMapsPersistenceFailureToServerError(t *testing.T) {
 	srv := testServer(t)
 	srv.store = fakeStore{firewalls: []models.Firewall{{ID: 7, FQDN: "fw.example.com", SSHPort: 22}}}
 	srv.SetHostKeyManager(manager)
-	req := withURLParam(httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7", nil), "fwID", "7")
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/ssh_host_key/accept/7?fingerprint="+url.QueryEscape(ssh.FingerprintSHA256(changedKey)), nil), "fwID", "7")
 	recorder := httptest.NewRecorder()
 
 	srv.handleAcceptHostKey(recorder, req)
@@ -630,6 +645,54 @@ func TestRadiusIdentityCannotShadowLocalAdministrator(t *testing.T) {
 	}
 }
 
+// TestLoginDatabaseErrorDoesNotFallBackToRadius keeps a DB outage from
+// turning local accounts into RADIUS-only ones.
+func TestLoginDatabaseErrorDoesNotFallBackToRadius(t *testing.T) {
+	radiusCalls := 0
+	srv := testServerWithAuth(t,
+		fakeStore{authErr: errors.New("connection refused")},
+		fakeAuth{radius: true, radiusCalls: &radiusCalls},
+	)
+	srv.cfg.RadiusEnabled = true
+	form := url.Values{"username": {"admin"}, "password": {"radius-password"}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Invalid credentials") {
+		t.Fatalf("login response = %d", response.Code)
+	}
+	if radiusCalls != 0 {
+		t.Fatalf("RADIUS verifier called %d times after a database error", radiusCalls)
+	}
+}
+
+// TestLoginRejectsOversizedUsernameWithoutLogging bounds unauthenticated
+// activity-log writes.
+func TestLoginRejectsOversizedUsernameWithoutLogging(t *testing.T) {
+	var activity []string
+	srv := testServerWithAuth(t, fakeStore{activity: &activity}, fakeAuth{})
+	form := url.Values{"username": {strings.Repeat("a", maxLoginUsernameLen+1)}, "password": {"x"}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Invalid credentials") {
+		t.Fatalf("login response = %d", response.Code)
+	}
+	if len(activity) != 0 {
+		t.Fatalf("oversized username was logged: %d entries", len(activity))
+	}
+
+	form = url.Values{"username": {"admin"}, "password": {strings.Repeat("p", loginBodyLimit)}}
+	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Routes().ServeHTTP(httptest.NewRecorder(), request)
+	if len(activity) != 0 {
+		t.Fatalf("oversized login body was processed: %d entries", len(activity))
+	}
+}
+
 func TestLoginRejectsTOTPStageWithoutPendingPasswordValidation(t *testing.T) {
 	totpCalls := 0
 	srv := testServerWithAuth(t, fakeStore{}, fakeAuth{totp: true, totpCalls: &totpCalls})
@@ -707,9 +770,7 @@ func TestLoginRateLimit(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		post()
 	}
-	if !srv.limiter.allowed("10.0.0.9|admin") {
-		// good: blocked
-	} else {
+	if srv.limiter.acquire("10.0.0.9|admin") {
 		t.Fatal("expected key to be blocked after max failures")
 	}
 }
@@ -1488,20 +1549,62 @@ func TestRetryAllFailedRedirects(t *testing.T) {
 
 func TestLoginLimiter(t *testing.T) {
 	l := newLoginLimiter(2, time.Minute)
-	if !l.allowed("k") {
-		t.Fatal("fresh key allowed")
+	defer l.Close()
+	for range 2 {
+		if !l.acquire("k") {
+			t.Fatal("first max attempts must be admitted")
+		}
 	}
-	l.fail("k")
-	if !l.allowed("k") {
-		t.Fatal("one failure still allowed")
-	}
-	l.fail("k")
-	if l.allowed("k") {
+	if l.acquire("k") {
 		t.Fatal("should block after reaching max")
 	}
+	l.release("k")
+	if !l.acquire("k") {
+		t.Fatal("a released successful attempt must not keep the key blocked")
+	}
 	l.reset("k")
-	if !l.allowed("k") {
+	if !l.acquire("k") {
 		t.Fatal("reset should clear the block")
+	}
+}
+
+// A blocked IP must not allocate a per-account bucket for each new username.
+func TestBlockedIPAllocatesNoAccountBuckets(t *testing.T) {
+	srv := testServer(t)
+	for srv.ipLimiter.acquire("ip|198.51.100.7") {
+	}
+	for i := range 50 {
+		if srv.acquireLoginAttempt(fmt.Sprintf("acct|user-%d", i), "ip|198.51.100.7") {
+			t.Fatal("blocked IP admitted an attempt")
+		}
+	}
+	srv.limiter.mu.Lock()
+	n := len(srv.limiter.attempts)
+	srv.limiter.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("blocked IP allocated %d account buckets, want 0", n)
+	}
+}
+
+// TestLoginLimiterAdmitsOnlyMaxParallelAttempts guards the check-then-verify
+// race: concurrent attempts are counted before verification.
+func TestLoginLimiterAdmitsOnlyMaxParallelAttempts(t *testing.T) {
+	l := newLoginLimiter(5, time.Minute)
+	defer l.Close()
+	var admitted atomic.Int32
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if l.acquire("k") {
+				admitted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := admitted.Load(); got != 5 {
+		t.Fatalf("admitted %d parallel attempts, want 5", got)
 	}
 }
 

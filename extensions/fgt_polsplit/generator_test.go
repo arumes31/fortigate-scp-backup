@@ -643,3 +643,16 @@ func TestNamerCollisions(t *testing.T) {
 		t.Errorf("name too long: %d", len(got))
 	}
 }
+
+// TestGenerateEmitDenySkipsScopeModifiers: a negated/ISDB original never gets
+// a fallthrough deny — without the flags it would match a different scope.
+func TestGenerateEmitDenySkipsScopeModifiers(t *testing.T) {
+	pb := testParsedBackup()
+	pb.Policy.ScopeModifiers = []string{"srcaddr-negate"}
+	pols := []RecPolicy{{Src: []Entity{ent("10.0.0.1")}, Dst: []Entity{ent("10.9.9.9")},
+		Services: []ServiceSpec{{Key: "tcp/22", Proto: "tcp", Port: 22}}, Hits: 1}}
+	res := Generate(pb.Policy, pb, pols, GenOptions{Prefix: "PS5", EmitDeny: true})
+	if strings.Contains(res.Config, "DENY-REST") || len(res.Warnings) == 0 {
+		t.Errorf("deny emitted for negated policy (warnings %v):\n%s", res.Warnings, res.Config)
+	}
+}

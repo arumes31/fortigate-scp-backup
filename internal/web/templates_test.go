@@ -118,7 +118,7 @@ func TestIndexRendersPendingSSHHostKeyAcceptance(t *testing.T) {
 	})
 
 	body := recorder.Body.String()
-	for _, want := range []string{"Accept new SSH key", "SHA256:detected", `/ssh_host_key/accept/7`} {
+	for _, want := range []string{"Accept new SSH key", "SHA256:detected", `/ssh_host_key/accept/7`, `name="fingerprint" value="SHA256:detected"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rendered firewall page missing %q", want)
 		}

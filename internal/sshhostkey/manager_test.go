@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -103,7 +104,10 @@ func TestManagerRejectsChangedKeyUntilExplicitlyAccepted(t *testing.T) {
 		t.Fatalf("pending key = %+v", pending)
 	}
 
-	accepted, err := manager.Accept("fw.example.com", 2222)
+	if _, err := manager.Accept("fw.example.com", 2222, ssh.FingerprintSHA256(oldKey)); !errors.Is(err, ErrFingerprintMismatch) {
+		t.Fatalf("Accept with stale fingerprint = %v, want ErrFingerprintMismatch", err)
+	}
+	accepted, err := manager.Accept("fw.example.com", 2222, pending.Fingerprint)
 	if err != nil {
 		t.Fatalf("accept changed key: %v", err)
 	}
@@ -123,7 +127,7 @@ func TestManagerAcceptRequiresDetectedReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Accept("fw.example.com", 22); !errors.Is(err, ErrNoPendingKey) {
+	if _, err := manager.Accept("fw.example.com", 22, ""); !errors.Is(err, ErrNoPendingKey) {
 		t.Fatalf("Accept without mismatch = %v, want ErrNoPendingKey", err)
 	}
 }
@@ -247,3 +251,40 @@ func TestManagerAutoAcceptSerializesConcurrentChanges(t *testing.T) {
 }
 
 var _ net.Addr = testAddr("")
+
+func TestDialTimesOutWithoutSSHBanner(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	// Accept and hold the connection open without ever sending a banner.
+	held := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			held <- c
+		}
+	}()
+	defer func() {
+		select {
+		case c := <-held:
+			_ = c.Close()
+		default:
+		}
+	}()
+
+	cfg := &ssh.ClientConfig{User: "u", HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 300 * time.Millisecond}
+	start := time.Now()
+	client, err := Dial(ln.Addr().String(), cfg)
+	if err == nil {
+		_ = client.Close()
+		t.Fatal("Dial succeeded against a server that never sends a banner")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Dial took %v, want it bounded by the 300ms timeout", elapsed)
+	}
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() {
+		t.Fatalf("Dial error = %v, want a timeout", err)
+	}
+}

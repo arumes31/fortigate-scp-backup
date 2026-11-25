@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
@@ -40,7 +41,7 @@ func wanDevices(doc *cfgDoc, routes []StaticRoute) map[string]bool {
 		if r.Device == "" {
 			continue
 		}
-		if r.Dst == "" || strings.HasPrefix(r.Dst, "0.0.0.0") {
+		if fortiosconfig.IsDefaultRouteDst(r.Dst) {
 			wan[r.Device] = true
 		}
 	}

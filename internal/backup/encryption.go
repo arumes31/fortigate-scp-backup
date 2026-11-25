@@ -97,8 +97,11 @@ func readLegacyBackup(path string, cipher *crypto.Cipher) ([]byte, bool, error) 
 	return data, true, nil
 }
 
+// encryptTempPrefix names replaceFileAtomic temp files so cleanup can recognise leftovers.
+const encryptTempPrefix = ".fortisafe-encrypt-"
+
 func replaceFileAtomic(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".fortisafe-encrypt-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), encryptTempPrefix+"*")
 	if err != nil {
 		return err
 	}

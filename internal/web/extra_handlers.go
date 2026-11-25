@@ -114,11 +114,15 @@ func (s *Server) handleAcceptHostKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "firewall not found", http.StatusNotFound)
 		return
 	}
-	accepted, err := s.hostKeyManager.Accept(host, port)
+	accepted, err := s.hostKeyManager.Accept(host, port, r.FormValue("fingerprint"))
 	if err != nil {
 		s.logger.Warn("SSH host-key acceptance rejected", "fw_id", fwID, "err", err)
 		if errors.Is(err, sshhostkey.ErrNoPendingKey) {
 			http.Error(w, "no detected SSH key is awaiting acceptance", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, sshhostkey.ErrFingerprintMismatch) {
+			http.Error(w, "the detected SSH key changed since it was displayed; review the new fingerprint", http.StatusConflict)
 			return
 		}
 		http.Error(w, "failed to accept detected SSH key", http.StatusInternalServerError)

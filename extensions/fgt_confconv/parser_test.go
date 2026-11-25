@@ -381,3 +381,44 @@ func TestFGConfigClone(t *testing.T) {
 		t.Error("mutating the clone's route must not affect the original")
 	}
 }
+
+// TestParseConfigMultiLineQuotedValue: an automation script embedding
+// interface CLI must not create a phantom interface or break later parsing.
+func TestParseConfigMultiLineQuotedValue(t *testing.T) {
+	cfg := ParseConfig(`config system automation-action
+    edit "shut"
+        set script "
+config system interface
+edit port1
+set status down
+next
+end
+"
+    next
+end
+config system interface
+    edit "port2"
+        set ip 10.0.0.1 255.255.255.0
+    next
+end
+`)
+	if _, ok := cfg.Interfaces["port1"]; ok {
+		t.Error("phantom port1 parsed from script content")
+	}
+	if p2, ok := cfg.Interfaces["port2"]; !ok || p2.IP != "10.0.0.1 255.255.255.0" {
+		t.Errorf("port2 after script = %+v (ok=%t)", p2, ok)
+	}
+}
+
+// TestQuoteJoinEscapes: embedded quotes/backslashes are escaped so the CLI
+// value stays one token per element and round-trips through the parser.
+func TestQuoteJoinEscapes(t *testing.T) {
+	in := []string{`a"b`, `c\d`, "plain"}
+	got := quoteJoin(in)
+	if want := `"a\"b" "c\\d" "plain"`; got != want {
+		t.Fatalf("quoteJoin = %s, want %s", got, want)
+	}
+	if back := splitConfigValues(got); len(back) != 3 || back[0] != in[0] || back[1] != in[1] {
+		t.Errorf("round-trip = %q", back)
+	}
+}

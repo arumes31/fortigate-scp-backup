@@ -35,13 +35,24 @@ func (s reportFixtureStore) ListBackups(ctx context.Context, fwID int) ([]models
 	}
 	return s.backups[fwID], s.err
 }
+func (s reportFixtureStore) LatestBackups(ctx context.Context) ([]models.Backup, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []models.Backup
+	for _, rows := range s.backups {
+		out = append(out, rows...)
+	}
+	return out, s.err
+}
 
 func TestReportSourcesSelectLatestByTimestampThenID(t *testing.T) {
 	t.Parallel()
 	ts := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	store := reportFixtureStore{refs: []models.FirewallRef{{ID: 2, FQDN: "branch"}, {ID: 1, FQDN: "main"}, {ID: 3, FQDN: "empty"}}, backups: map[int][]models.Backup{
-		1: {{ID: 2, FwID: 1, Timestamp: ts}, {ID: 6, FwID: 1, Timestamp: ts}, {ID: 99, FwID: 2, Timestamp: ts.Add(time.Hour)}},
+		1: {{ID: 2, FwID: 1, Timestamp: ts}, {ID: 6, FwID: 1, Timestamp: ts}, {ID: 0, FwID: 1, Timestamp: ts.Add(time.Hour)}},
 		2: {{ID: 50, FwID: 2, Timestamp: ts.Add(-time.Hour)}, {ID: 3, FwID: 2, Timestamp: ts}},
+		9: {{ID: 77, FwID: 9, Timestamp: ts}}, // firewall no longer in refs
 	}}
 	sources, err := NewReportSources(store, t.TempDir(), nil).List(context.Background())
 	if err != nil {

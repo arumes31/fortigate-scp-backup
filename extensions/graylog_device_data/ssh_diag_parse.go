@@ -720,6 +720,8 @@ type SdwanHealth struct {
 	Loss    float64 `json:"loss,omitempty"`
 	Latency float64 `json:"latency,omitempty"`
 	Jitter  float64 `json:"jitter,omitempty"`
+	// UpdatedAt (UTC) dates the snapshot: a failed health-check keeps the last good rows.
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 var reSdwanSeq = regexp.MustCompile(`Seq\(\d+\s+(\S+)\): state\((\w+)\), packet-loss\(([\d.]+)%\), latency\(([\d.]+)\), jitter\(([\d.]+)\)`)

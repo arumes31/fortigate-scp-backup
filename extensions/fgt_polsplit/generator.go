@@ -412,7 +412,11 @@ func Generate(orig *OrigPolicy, parsed *ParsedBackup, policies []RecPolicy, opts
 	// Covers the original's exact scope with action deny + logging; its move
 	// runs LAST, so it lands directly above the disabled original and below
 	// every split — fallthrough traffic logs loudly instead of dying silently.
-	if opts.EmitDeny {
+	if opts.EmitDeny && len(orig.ScopeModifiers) > 0 {
+		// The deny copies srcaddr/dstaddr/service without the negate/ISDB
+		// flags, so it would match a different (usually wider) scope.
+		res.Warnings = append(res.Warnings, "fallthrough deny skipped — the original uses "+strings.Join(orig.ScopeModifiers, ", "))
+	} else if opts.EmitDeny {
 		denyID := nextID // last allocated ID; nothing follows in this batch
 		denyName := polNamer.allocSanitized(sanitizePolicyName(fitPolicyName(
 			fmt.Sprintf("%s>%s", ifaceLabel(orig.SrcIntf), ifaceLabel(orig.DstIntf)), "DENY-REST", maxPolicyNameLen)), maxPolicyNameLen)

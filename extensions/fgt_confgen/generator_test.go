@@ -141,3 +141,29 @@ func TestGenerateWhitespaceEntriesExcluded(t *testing.T) {
 		t.Errorf("surrounding whitespace on a real srcaddr must be trimmed:\n%s", out)
 	}
 }
+
+// TestGenerateOutput2UniqueTruncatedNames: services sharing a long prefix
+// truncate to the same 32-byte name; each split must still get a unique name.
+func TestGenerateOutput2UniqueTruncatedNames(t *testing.T) {
+	p := minimalPolicy()
+	p.PolicyName = "A-very-long-policy-name-xyz"
+	p.Services = []Service{{Type: "template", Name: "HTTPS-ALT-1"}, {Type: "template", Name: "HTTPS-ALT-2"}}
+	out, err := GenerateOutput2(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "set name ") {
+			continue
+		}
+		name := strings.Trim(strings.TrimPrefix(line, "set name "), `"`)
+		if seen[name] || len(name) > 32 {
+			t.Errorf("duplicate or overlong policy name %q:\n%s", name, out)
+		}
+		seen[name] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("want 2 policy names, got %v", seen)
+	}
+}

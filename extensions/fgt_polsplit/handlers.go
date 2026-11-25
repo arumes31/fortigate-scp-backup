@@ -159,8 +159,8 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("policy %d not found in the latest backup of %s (%s)", policyID, fqdn, ts.Format("2006-01-02 15:04")))
 		return
 	}
-	if parsed.Policy.Action != "accept" {
-		e.jsonError(w, http.StatusBadRequest, fmt.Sprintf("policy %d has action %q — only accept policies can be split", policyID, displayAction(parsed.Policy.Action)))
+	if msg := splitRefusal(parsed.Policy); msg != "" {
+		e.jsonError(w, http.StatusBadRequest, msg)
 		return
 	}
 	warnings := policyWarnings(parsed.Policy)
@@ -178,6 +178,20 @@ func (e *Extension) policyInfo(w http.ResponseWriter, r *http.Request) {
 
 // policyWarnings flags target-policy states the operator should see before
 // acting on an analysis.
+// splitRefusal returns why the policy cannot be split, or "" when it can.
+// Negated or internet-service policies are refused: splitting them by the
+// observed destination/service would rewrite an inverted or ISDB match into
+// plain address/service matches with a different scope.
+func splitRefusal(p *OrigPolicy) string {
+	if p.Action != "accept" {
+		return fmt.Sprintf("policy %d has action %q — only accept policies can be split", p.ID, displayAction(p.Action))
+	}
+	if len(p.ScopeModifiers) > 0 {
+		return fmt.Sprintf("policy %d uses %s — negated and internet-service policies cannot be split by address/service", p.ID, strings.Join(p.ScopeModifiers, ", "))
+	}
+	return ""
+}
+
 func policyWarnings(p *OrigPolicy) []string {
 	var w []string
 	if p.Status == "disable" {
@@ -185,6 +199,8 @@ func policyWarnings(p *OrigPolicy) []string {
 	}
 	return w
 }
+
+const maxAnalyzeRequestBytes = 1 << 20
 
 type analyzeRequest struct {
 	FwID            int    `json:"fw_id"`
@@ -493,6 +509,8 @@ func baselineWindows(now time.Time, rangeSec, compareSec int) (tr, baseTr timeRa
 
 func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 	var req analyzeRequest
+	// The request is a few small fields; cap it like confgen's policy form.
+	r.Body = http.MaxBytesReader(w, r.Body, maxAnalyzeRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		e.jsonError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -565,8 +583,8 @@ func (e *Extension) analyze(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("policy %d not found in the latest backup of %s", req.PolicyID, fqdn))
 		return
 	}
-	if parsed.Policy.Action != "accept" {
-		e.jsonError(w, http.StatusBadRequest, fmt.Sprintf("policy %d has action %q — only accept policies can be split", req.PolicyID, displayAction(parsed.Policy.Action)))
+	if msg := splitRefusal(parsed.Policy); msg != "" {
+		e.jsonError(w, http.StatusBadRequest, msg)
 		return
 	}
 

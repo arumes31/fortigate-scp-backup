@@ -39,39 +39,55 @@ func newLoginLimiter(max int, lockout time.Duration) *loginLimiter {
 	return l
 }
 
-// allowed reports whether the key may attempt a login now.
-func (l *loginLimiter) allowed(key string) bool {
+// acquire atomically checks the key and counts one attempt against it before
+// the credentials are verified, blocking the key once max is reached. A
+// successful attempt hands its count back with release or reset.
+func (l *loginLimiter) acquire(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	a := l.attempts[key]
-	if a == nil {
-		return true
-	}
-	return a.blocked.IsZero() || time.Now().After(a.blocked)
-}
-
-// fail records a failed attempt, blocking the key once max is reached.
-func (l *loginLimiter) fail(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	now := time.Now()
 	a := l.attempts[key]
 	if a == nil {
 		a = &loginAttempt{}
 		l.attempts[key] = a
 	}
-	if !a.blocked.IsZero() && time.Now().After(a.blocked) {
+	if !a.blocked.IsZero() {
+		if now.Before(a.blocked) {
+			return false
+		}
 		a.count = 0
 		a.blocked = time.Time{}
 	}
 	// Failures older than the lockout window decay, so buckets that are never
 	// reset on success (the per-IP aggregate) do not accumulate forever.
-	if a.blocked.IsZero() && !a.lastSeen.IsZero() && time.Since(a.lastSeen) > l.lockout {
+	if !a.lastSeen.IsZero() && now.Sub(a.lastSeen) > l.lockout {
 		a.count = 0
 	}
 	a.count++
-	a.lastSeen = time.Now()
+	a.lastSeen = now
 	if a.count >= l.max {
-		a.blocked = time.Now().Add(l.lockout)
+		a.blocked = now.Add(l.lockout)
+	}
+	return true
+}
+
+// release returns one attempt counted by acquire that turned out to succeed.
+func (l *loginLimiter) release(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a := l.attempts[key]
+	if a == nil {
+		return
+	}
+	if a.count > 0 {
+		a.count--
+	}
+	if a.count == 0 {
+		delete(l.attempts, key)
+		return
+	}
+	if a.count < l.max {
+		a.blocked = time.Time{}
 	}
 }
 

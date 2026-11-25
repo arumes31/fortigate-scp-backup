@@ -2,6 +2,8 @@ package web
 
 import (
 	"strings"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
 )
 
 // This file implements a small structural scanner for FortiGate configuration
@@ -62,8 +64,20 @@ func parseCfg(cfg string) *cfgDoc {
 		})
 	}
 
+	var quote byte
 	for i, raw := range lines {
+		// Continuation lines of a multi-line quoted value (automation
+		// scripts, certificates) may look like `edit`/`end` and must not
+		// change the nesting.
+		if quote != 0 {
+			quote = fortiosconfig.QuoteState(raw, quote)
+			continue
+		}
 		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "#") { // an apostrophe in a comment opens no value
+			continue
+		}
+		quote = fortiosconfig.QuoteState(raw, 0)
 		lower := strings.ToLower(trimmed)
 		switch {
 		case strings.HasPrefix(lower, "config "):
@@ -155,8 +169,17 @@ func (d *cfgDoc) blocksUnder(path string) []cfgBlock {
 // Returns the 0-based line index.
 func (d *cfgDoc) findDirect(b cfgBlock, prefix string) (int, string, bool) {
 	depth := 0
+	var quote byte
 	for i := b.Start + 1; i < b.End && i < len(d.lines); i++ {
+		if quote != 0 { // continuation of a multi-line value, as in parseCfg
+			quote = fortiosconfig.QuoteState(d.lines[i], quote)
+			continue
+		}
 		trimmed := strings.TrimSpace(d.lines[i])
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		quote = fortiosconfig.QuoteState(d.lines[i], 0)
 		lower := strings.ToLower(trimmed)
 		switch {
 		case strings.HasPrefix(lower, "config ") || strings.HasPrefix(lower, "edit "):

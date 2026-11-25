@@ -450,6 +450,11 @@ func (e *Extension) worker() {
 		"graylog_configured", e.cfg.GraylogURL != "" && e.cfg.GraylogToken != "",
 		"device_query", e.cfg.GraylogDeviceQuery, "stp_query", e.cfg.GraylogStpQuery)
 	for {
+		if ids, err := e.existingFirewallIDs(); err != nil {
+			e.logger.Warn("graylog device worker: listing firewall ids for prune failed", "err", err)
+		} else if err := e.pruneDeletedFirewalls(ids); err != nil {
+			e.logger.Warn("graylog device worker: pruning deleted firewalls failed", "err", err)
+		}
 		fws, err := e.switchFirewalls()
 		if err != nil {
 			e.logger.Error("graylog device worker: listing firewalls failed", "err", err)

@@ -118,6 +118,11 @@ func checkClaimConflicts(selections []RecipeSelection) error {
 // regardless of the order they appear in selections, threading one cloned
 // FGConfig through so later recipes see earlier recipes' mutations.
 func RunPipeline(cfg *FGConfig, selections []RecipeSelection) (*ConvertResult, error) {
+	if cfg.MultiVDOM {
+		// Interfaces, policies and routes are parsed without their VDOM, so a
+		// recipe could rewrite the wrong VDOM's objects.
+		return nil, &PipelineError{Msg: "multi-VDOM configurations are not supported by Configuration Conversions"}
+	}
 	bySel := make(map[string]RecipeSelection, len(selections))
 	for _, sel := range selections {
 		if _, ok := recipeRegistry[sel.Key]; !ok {

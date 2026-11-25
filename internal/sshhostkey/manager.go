@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -22,6 +23,10 @@ import (
 // ErrNoPendingKey means no rejected replacement key is awaiting approval for
 // the requested host.
 var ErrNoPendingKey = errors.New("no pending SSH host key")
+
+// ErrFingerprintMismatch means the pending key changed since the operator
+// reviewed its fingerprint.
+var ErrFingerprintMismatch = errors.New("pending SSH host key fingerprint does not match")
 
 // PendingKey is the safe, displayable part of a rejected replacement key.
 type PendingKey struct {
@@ -90,9 +95,9 @@ func (m *Manager) Pending(host string, port int) (PendingKey, bool) {
 	return pending.PendingKey, ok
 }
 
-// Accept replaces the stored key with the exact replacement most recently
-// rejected for host and port.
-func (m *Manager) Accept(host string, port int) (PendingKey, error) {
+// Accept replaces the stored key with the replacement most recently rejected
+// for host and port, only if it still has the fingerprint the operator saw.
+func (m *Manager) Accept(host string, port int, fingerprint string) (PendingKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -100,6 +105,9 @@ func (m *Manager) Accept(host string, port int) (PendingKey, error) {
 	pending, ok := m.pending[normalized]
 	if !ok {
 		return PendingKey{}, ErrNoPendingKey
+	}
+	if pending.Fingerprint != fingerprint {
+		return PendingKey{}, ErrFingerprintMismatch
 	}
 	return m.acceptLocked(normalized, pending)
 }
@@ -294,4 +302,32 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// Dial connects to addr and completes the SSH handshake within cfg.Timeout.
+// ssh.Dial only bounds the TCP connect, so a peer that accepts but never sends
+// a banner would hang forever. The returned client's connection has no deadline.
+func Dial(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	var deadline time.Time
+	if cfg.Timeout > 0 {
+		deadline = time.Now().Add(cfg.Timeout)
+	}
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return ssh.NewClient(c, chans, reqs), nil
 }

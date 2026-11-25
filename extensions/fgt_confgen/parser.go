@@ -3,6 +3,8 @@ package fgt_confgen
 import (
 	"regexp"
 	"strings"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
 )
 
 var (
@@ -212,11 +214,19 @@ func ParseConfig(content string) ParsedConfig {
 
 	var stack []stackElem
 
+	var quote byte
 	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
+		// Continuation lines of a multi-line quoted value (automation
+		// scripts, certificates) may look like `edit`/`end`; skip them.
+		if quote != 0 {
+			quote = fortiosconfig.QuoteState(rawLine, quote)
 			continue
 		}
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") { // an apostrophe in a comment opens no value
+			continue
+		}
+		quote = fortiosconfig.QuoteState(line, 0)
 
 		if strings.HasPrefix(line, "config ") {
 			secName := strings.TrimSpace(strings.TrimPrefix(line, "config "))

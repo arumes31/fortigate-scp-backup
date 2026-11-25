@@ -26,6 +26,7 @@ import (
 const (
 	sessionName            = "fortisafe"
 	idleTimeout            = time.Hour
+	absoluteTimeout        = 12 * time.Hour
 	pendingTOTPTimeout     = 5 * time.Minute
 	keyLoggedIn            = "logged_in"
 	keyUsername            = "username"
@@ -33,6 +34,7 @@ const (
 	keyRole                = "role"
 	keyCSRFToken           = "csrf_token"
 	keyLastActive          = "last_activity"
+	keyLoginAt             = "login_at"
 	keyXForwarded          = "x_forwarded_for"
 	keyPendingTOTPUsername = "pending_totp_username"
 	keyPendingTOTPIssued   = "pending_totp_issued"
@@ -139,6 +141,7 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username string,
 	sess.Values[keyRole] = role
 	sess.Values[keyCSRFToken] = randomToken()
 	sess.Values[keyLastActive] = time.Now().Unix()
+	sess.Values[keyLoginAt] = time.Now().Unix()
 	sess.Values[keyXForwarded] = m.clientIP(r)
 	for _, opt := range opts {
 		opt(sess)
@@ -174,6 +177,7 @@ func (m *Manager) BeginTOTP(w http.ResponseWriter, r *http.Request, username str
 	delete(sess.Values, keyRole)
 	delete(sess.Values, keyCSRFToken)
 	delete(sess.Values, keyLastActive)
+	delete(sess.Values, keyLoginAt)
 	delete(sess.Values, keyXForwarded)
 	delete(sess.Values, keyEpoch)
 	delete(sess.Values, keyMustChangePassword)
@@ -272,6 +276,15 @@ func (m *Manager) LoginRequired(next http.Handler) http.Handler {
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
+		}
+
+		// Absolute lifetime: activity cannot extend a session past it. A cookie
+		// without login_at predates this check and is treated as expired.
+		if loginAt, ok := sess.Values[keyLoginAt].(int64); !ok || time.Since(time.Unix(loginAt, 0)) > absoluteTimeout {
+			delete(sess.Values, keyLoggedIn)
+			_ = sess.Save(r, w)
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
 		}
 
 		// Client-IP pinning (trusted-proxy aware, consistent with the login

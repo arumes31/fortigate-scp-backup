@@ -92,7 +92,10 @@ func PeerIP(r *http.Request) string {
 func ClientIP(r *http.Request, trustProxy bool) string {
 	peer := PeerIP(r)
 	if trustProxy && ContainsAddr(*trustedProxies.Load(), peer) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// A proxy may append a separate header line instead of extending the
+		// client's, so the proxy-observed address is in the last line.
+		if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 && values[len(values)-1] != "" {
+			xff := values[len(values)-1]
 			// XFF is appended left-to-right by each hop, so the leftmost
 			// entries are client-supplied and spoofable. With a single trusted
 			// reverse proxy the rightmost entry is the peer address that proxy

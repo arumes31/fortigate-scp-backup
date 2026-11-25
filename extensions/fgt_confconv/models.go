@@ -148,6 +148,9 @@ type FGConfig struct {
 	// exist, without needing to model ping-server details.
 	SDWANHealthChecks []string
 	WatchedLines      []WatchedLine
+	// MultiVDOM is set for vdom=1 backups: the model is not VDOM-aware, so
+	// the pipeline refuses to convert them.
+	MultiVDOM bool
 }
 
 // Clone returns a deep copy so a pipeline run can mutate freely without
@@ -155,6 +158,7 @@ type FGConfig struct {
 func (c *FGConfig) Clone() *FGConfig {
 	out := &FGConfig{
 		Version:    c.Version,
+		MultiVDOM:  c.MultiVDOM,
 		Interfaces: make(map[string]*InterfaceEntry, len(c.Interfaces)),
 		Zones:      make(map[string]*ZoneEntry, len(c.Zones)),
 		SDWANZones: make(map[string]*SDWANZone, len(c.SDWANZones)),

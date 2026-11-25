@@ -144,10 +144,21 @@ type searchData struct {
 	Truncated bool
 }
 
+const (
+	loginBodyLimit      = 64 << 10
+	maxLoginUsernameLen = 256
+)
+
 // handleLogin renders and processes the login form (public route).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.render(w, "login.html", s.loginView(r, ""))
+		return
+	}
+	// Bound unauthenticated input before anything is parsed, limited or logged.
+	r.Body = http.MaxBytesReader(w, r.Body, loginBodyLimit)
+	if err := r.ParseForm(); err != nil || len(r.FormValue("username")) > maxLoginUsernameLen {
+		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 		return
 	}
 	if r.FormValue("stage") == "totp" {
@@ -169,7 +180,7 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 	// across many usernames from a single host (which never trips the former).
 	ipKey := clientIP(r, s.cfg.TrustProxyHeaders)
 	rlKey := ipKey + "|" + username
-	if !s.limiter.allowed(rlKey) || !s.ipLimiter.allowed(ipKey) {
+	if !s.acquireLoginAttempt(rlKey, ipKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
 		s.render(w, "login.html", s.loginView(r, "Too many failed attempts. Please try again later."))
 		return
@@ -177,16 +188,23 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, localOK, err := s.store.AuthenticateLocal(ctx, username, password)
 	if err != nil {
+		// A database outage must not silently downgrade to RADIUS for local users.
 		s.logger.Error("login user lookup failed", "user", username, "err", err)
+		s.recordLoginFailure(username, "Login unavailable")
+		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
+		return
 	}
 
 	if localOK {
 		if s.cfg.TOTPEnabled {
 			if user == nil || user.TOTPSecret == "" {
-				s.recordLoginFailure(username, rlKey, ipKey, "TOTP required but no secret found")
+				s.recordLoginFailure(username, "TOTP required but no secret found")
 				s.render(w, "login.html", s.loginView(r, "TOTP required but no secret found"))
 				return
 			}
+			// The password was right; the TOTP step reserves its own attempt.
+			s.limiter.release(rlKey)
+			s.ipLimiter.release(ipKey)
 			if err := s.sess.BeginTOTP(w, r, username); err != nil {
 				s.logger.Error("failed to begin TOTP login", "user", username, "err", err)
 				s.render(w, "login.html", s.loginView(r, "Failed to establish session. Please try again."))
@@ -195,13 +213,13 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 			s.render(w, "login.html", s.totpLoginView(r, username, ""))
 			return
 		}
-		s.completeLogin(w, r, username, false, localRole(user), user, rlKey)
+		s.completeLogin(w, r, username, false, localRole(user), user, rlKey, ipKey)
 		return
 	}
 	// A local username must not be shadowed by an identically named RADIUS
 	// identity. Existing RADIUS rows remain eligible for their normal flow.
 	if user != nil && !user.IsRadiusUser {
-		s.recordLoginFailure(username, rlKey, ipKey, "Invalid credentials")
+		s.recordLoginFailure(username, "Invalid credentials")
 		s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 		return
 	}
@@ -209,7 +227,7 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 	if groups, ok := s.auth.VerifyRadius(username, password); ok {
 		role, allowed := s.radiusRole(groups)
 		if !allowed {
-			s.recordLoginFailure(username, rlKey, ipKey, "RADIUS Access-Accept lacks the required group")
+			s.recordLoginFailure(username, "RADIUS Access-Accept lacks the required group")
 			s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 			return
 		}
@@ -219,11 +237,11 @@ func (s *Server) handlePrimaryLogin(w http.ResponseWriter, r *http.Request) {
 		if u, uerr := s.store.GetUserForLogin(ctx, username); uerr == nil {
 			user = u
 		}
-		s.completeLogin(w, r, username, true, role, user, rlKey)
+		s.completeLogin(w, r, username, true, role, user, rlKey, ipKey)
 		return
 	}
 
-	s.recordLoginFailure(username, rlKey, ipKey, "Invalid credentials")
+	s.recordLoginFailure(username, "Invalid credentials")
 	s.render(w, "login.html", s.loginView(r, "Invalid credentials"))
 }
 
@@ -238,7 +256,7 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 
 	ipKey := clientIP(r, s.cfg.TrustProxyHeaders)
 	rlKey := ipKey + "|" + username
-	if !s.limiter.allowed(rlKey) || !s.ipLimiter.allowed(ipKey) {
+	if !s.acquireLoginAttempt(rlKey, ipKey) {
 		s.store.LogActivity(username, "Login Blocked", "Too many failed attempts")
 		s.render(w, "login.html", s.totpLoginView(r, username, "Too many failed attempts. Please try again later."))
 		return
@@ -250,7 +268,7 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil || user == nil || user.TOTPSecret == "" {
 		_ = s.sess.ClearPendingTOTP(w, r)
-		s.recordLoginFailure(username, rlKey, ipKey, "TOTP required but no secret found")
+		s.recordLoginFailure(username, "TOTP required but no secret found")
 		s.render(w, "login.html", s.loginView(r, "Your sign-in expired. Please enter your password again."))
 		return
 	}
@@ -258,7 +276,7 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	totpCode := r.FormValue("totp_code")
 	timeStep, valid := s.auth.VerifyTOTP(user.TOTPSecret, totpCode)
 	if !validTOTPCode(totpCode) || !valid {
-		s.recordLoginFailure(username, rlKey, ipKey, "Invalid TOTP code")
+		s.recordLoginFailure(username, "Invalid TOTP code")
 		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
 		return
 	}
@@ -267,11 +285,11 @@ func (s *Server) handleTOTPLogin(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("failed to consume TOTP step", "user", username, "err", err)
 	}
 	if err != nil || !consumed {
-		s.recordLoginFailure(username, rlKey, ipKey, "Replayed or unavailable TOTP code")
+		s.recordLoginFailure(username, "Replayed or unavailable TOTP code")
 		s.render(w, "login.html", s.totpLoginView(r, username, "Invalid TOTP code"))
 		return
 	}
-	s.completeLogin(w, r, username, false, localRole(user), user, rlKey)
+	s.completeLogin(w, r, username, false, localRole(user), user, rlKey, ipKey)
 }
 
 // localRole returns the stored role of a verified local account.
@@ -311,21 +329,34 @@ func validTOTPCode(code string) bool {
 	return true
 }
 
-// recordLoginFailure charges both rate-limit buckets and records the rejected
-// attempt in the activity log.
-func (s *Server) recordLoginFailure(username, rlKey, ipKey, details string) {
-	s.limiter.fail(rlKey)
-	s.ipLimiter.fail(ipKey)
+// acquireLoginAttempt reserves one attempt in both rate-limit buckets before
+// credentials are checked, so parallel requests cannot exceed the limit.
+func (s *Server) acquireLoginAttempt(rlKey, ipKey string) bool {
+	// IP first: a blocked IP must not allocate an account bucket per username.
+	if !s.ipLimiter.acquire(ipKey) {
+		return false
+	}
+	if !s.limiter.acquire(rlKey) {
+		s.ipLimiter.release(ipKey)
+		return false
+	}
+	return true
+}
+
+// recordLoginFailure records a rejected attempt in the activity log. The
+// attempt was already charged by acquireLoginAttempt.
+func (s *Server) recordLoginFailure(username, details string) {
 	s.store.LogActivity(username, "Login Failed", details)
 }
 
 // completeLogin resets the per-account failure counter, persists the
 // authenticated session, and confines first-time local users to the
 // password-change page. The per-IP aggregate bucket is deliberately not reset,
-// so one valid login cannot be used to keep spraying other accounts; it decays
-// on its own once the lockout window passes without failures.
-func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string, user *models.User, rlKey string) {
+// so one valid login cannot be used to keep spraying other accounts; only this
+// attempt's reservation is returned, and earlier failures decay on their own.
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, username string, isRadius bool, role string, user *models.User, rlKey, ipKey string) {
 	s.limiter.reset(rlKey)
+	s.ipLimiter.release(ipKey)
 	mustChange := user != nil && user.FirstLogin == 1 && !isRadius
 	var opts []session.LoginOption
 	if mustChange {
@@ -757,6 +788,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "change_password.html", changePasswordData{Base: base, Error: err.Error()})
 		return
 	}
+	// Guessing the current password is rate limited like login guesses.
+	rlKey := "change_password|" + d.Username
+	if !s.limiter.acquire(rlKey) {
+		s.store.LogActivity(d.Username, "Password Change Blocked", "Too many failed attempts")
+		s.render(w, "change_password.html", changePasswordData{Base: base, Error: "Too many failed attempts. Please try again later."})
+		return
+	}
 	ok, err := s.store.ChangePassword(ctx, d.Username, oldPassword, newPassword)
 	if err != nil {
 		s.logger.Error("failed to change password", "user", d.Username, "err", err)
@@ -764,6 +802,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
+		s.limiter.reset(rlKey)
 		s.store.LogActivity(d.Username, "Change Password", "Password changed successfully")
 		// The store revoked every session of this user; keep only this one.
 		if err := s.sess.PasswordChanged(w, r); err != nil {

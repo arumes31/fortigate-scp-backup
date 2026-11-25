@@ -45,7 +45,7 @@ func TestFinalizeFileRejectsDisabledEncryption(t *testing.T) {
 	if err := os.WriteFile(p, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.finalizeFile(p); err == nil {
+	if _, _, err := s.finalizeFile(p, filepath.Join(dir, "out.conf")); err == nil {
 		t.Fatal("expected disabled encryption to be rejected")
 	}
 	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
@@ -63,7 +63,7 @@ func TestFinalizeFileRemovesPlaintextWhenEncryptionFails(t *testing.T) {
 	wantErr := errors.New("random source failed")
 	s.encrypt = func([]byte) ([]byte, error) { return nil, wantErr }
 
-	_, _, err := s.finalizeFile(p)
+	_, _, err := s.finalizeFile(p, p+".out")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("finalizeFile() error = %v, want original encryption error", err)
 	}
@@ -82,7 +82,7 @@ func TestFinalizeFileRemovesPlaintextWhenAtomicReplaceFails(t *testing.T) {
 	wantErr := errors.New("atomic replacement failed")
 	s.replaceFile = func(string, []byte) error { return wantErr }
 
-	_, _, err := s.finalizeFile(p)
+	_, _, err := s.finalizeFile(p, p+".out")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("finalizeFile() error = %v, want original replacement error", err)
 	}
@@ -96,13 +96,17 @@ func TestFinalizeFileEncrypts(t *testing.T) {
 	s := testService(t, key)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.conf")
+	part := p + partSuffix
 	content := []byte("secret config")
-	if err := os.WriteFile(p, content, 0o600); err != nil {
+	if err := os.WriteFile(part, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	size, _, err := s.finalizeFile(p)
+	size, _, err := s.finalizeFile(part, p)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(part); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plaintext part file still exists: %v", err)
 	}
 	if size != int64(len(content)) {
 		t.Errorf("size should describe plaintext: %d", size)
@@ -119,6 +123,116 @@ func TestFinalizeFileEncrypts(t *testing.T) {
 	}
 	if string(dec) != string(content) {
 		t.Fatal("decrypt mismatch")
+	}
+}
+
+func TestFinalizeFileNeverOverwritesExistingBackup(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(p, []byte("older backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	part := p + partSuffix
+	if err := os.WriteFile(part, []byte("new config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.finalizeFile(part, p); err == nil {
+		t.Fatal("expected an existing backup file to be refused")
+	}
+	if got, _ := os.ReadFile(p); string(got) != "older backup" {
+		t.Fatalf("existing backup was modified: %q", got)
+	}
+	if _, err := os.Stat(part); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plaintext part file still exists: %v", err)
+	}
+}
+
+// checkStorage must refuse an empty replacement volume (even after an earlier
+// refused run) and accept a volume that holds a recorded backup.
+func TestCheckStorageDetectsMissingVolume(t *testing.T) {
+	recorded := func(names ...string) func() ([]string, error) {
+		return func() ([]string, error) { return names, nil }
+	}
+	marker := func(dir string) bool {
+		_, err := os.Stat(filepath.Join(dir, storageMarker))
+		return err == nil
+	}
+
+	empty := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(empty, "1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(empty, "1", "20261125_120000Z.conf"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err) // a file from an earlier run on the replacement volume, not a recorded one
+	}
+	for range 2 {
+		if err := checkStorage(empty, recorded("1/old1.conf", "1/old2.conf")); err == nil {
+			t.Fatal("empty replacement volume accepted")
+		}
+	}
+	if marker(empty) {
+		t.Fatal("marker written on a refused volume")
+	}
+
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "1", "old2.conf"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStorage(real, recorded("1/old1.conf", "1/old2.conf")); err != nil || !marker(real) {
+		t.Fatalf("real volume: err=%v marker=%t", err, marker(real))
+	}
+	// Once marked, the volume is accepted without consulting the database.
+	if err := checkStorage(real, func() ([]string, error) { return nil, errors.New("db down") }); err != nil {
+		t.Fatalf("marked volume rejected: %v", err)
+	}
+
+	fresh := t.TempDir()
+	if err := checkStorage(fresh, recorded()); err != nil || !marker(fresh) {
+		t.Fatalf("fresh install: err=%v marker=%t", err, marker(fresh))
+	}
+}
+
+func TestSweepTempFilesKeepsBackupsWithoutRows(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	dir := t.TempDir()
+	for _, name := range []string{"20261125_120000.conf", "unrelated.txt", "20261125_130000.conf.part", encryptTempPrefix + "123"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.sweepTempFiles(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 || left[0] != "20261125_120000.conf" || left[1] != "unrelated.txt" {
+		t.Fatalf("files left after sweep = %v", left)
+	}
+}
+
+func TestBackupCoalescesWhileQueued(t *testing.T) {
+	s := testService(t, make([]byte, 32))
+	if !s.claim(7) {
+		t.Fatal("first claim should succeed")
+	}
+	// With a run already claimed, both entry points must return at once without
+	// touching the (nil) store; reaching it would panic.
+	s.Enqueue(7)
+	s.Backup(7)
+	if s.claim(7) {
+		t.Fatal("claim should stay held by the first run")
+	}
+	s.queued.Delete(7)
+	if !s.claim(7) {
+		t.Fatal("claim should succeed again once the run is released")
 	}
 }
 

@@ -100,12 +100,21 @@ func technical(doc *document, findings []reportmodel.Finding) ([]reportmodel.Sec
 			sections = append(sections, section)
 		}
 	}
+	// Same WAN definition as the audit's wanDevices: role wan or the device of
+	// a default static route.
+	defaultRouteDevices := map[string]bool{}
+	for _, route := range doc.objects("router static") {
+		if route.get("device") != "" && IsDefaultRouteDst(route.get("dst")) {
+			defaultRouteDevices[route.get("device")] = true
+		}
+	}
 	for _, iface := range doc.objects("system interface") {
-		if iface.get("role") != "wan" {
+		if !strings.EqualFold(iface.get("role"), "wan") && !defaultRouteDevices[iface.name] {
 			continue
 		}
-		if contains(iface.values["allowaccess"], "https") || contains(iface.values["allowaccess"], "ssh") || contains(iface.values["allowaccess"], "http") || contains(iface.values["allowaccess"], "telnet") {
-			findings = append(findings, reportmodel.Finding{ID: "management:" + iface.vdom() + ":" + iface.name, VDOM: reportVDOM(iface), Category: "administrators", Priority: "Medium", Title: "Review administration on WAN-designated interfaces", TitleDE: "Administration auf WAN-Schnittstellen prüfen", Detail: "An interface configured with the WAN role enables an administrative service. Trusted hosts and local-in policies may further restrict it.", DetailDE: "Eine Schnittstelle mit WAN-Rolle erlaubt einen Administrationsdienst. Trusted Hosts und Local-in-Regeln können den Zugriff weiter einschränken.", Recommendation: "Validate the intended management path and its source restrictions.", RecommendationDE: "Vorgesehenen Administrationspfad und Quelleinschränkungen prüfen.", Evidence: iface.evidence()})
+		access := iface.values["allowaccess"]
+		if contains(access, "https") || contains(access, "ssh") || contains(access, "http") || contains(access, "telnet") || contains(access, "snmp") {
+			findings = append(findings, reportmodel.Finding{ID: "management:" + iface.vdom() + ":" + iface.name, VDOM: reportVDOM(iface), Category: "administrators", Priority: "Medium", Title: "Review administration on WAN-designated interfaces", TitleDE: "Administration auf WAN-Schnittstellen prüfen", Detail: "An internet-facing interface (WAN role or default-route device) enables an administrative service. Trusted hosts and local-in policies may further restrict it.", DetailDE: "Eine internetseitige Schnittstelle (WAN-Rolle oder Default-Route-Gerät) erlaubt einen Administrationsdienst. Trusted Hosts und Local-in-Regeln können den Zugriff weiter einschränken.", Recommendation: "Validate the intended management path and its source restrictions.", RecommendationDE: "Vorgesehenen Administrationspfad und Quelleinschränkungen prüfen.", Evidence: iface.evidence()})
 		}
 	}
 	for _, phase := range append(doc.objects("vpn ipsec phase1-interface"), doc.objects("vpn ipsec phase2-interface")...) {
@@ -165,4 +174,14 @@ func reportVDOM(n *node) string {
 	default:
 		return display(n.vdom())
 	}
+}
+
+// IsDefaultRouteDst reports whether a static route dst is the default route;
+// an omitted dst means 0.0.0.0/0. A prefix match would also take 0.0.0.0/8.
+func IsDefaultRouteDst(dst string) bool {
+	switch strings.Join(strings.Fields(dst), " ") {
+	case "", "0.0.0.0 0.0.0.0", "0.0.0.0/0":
+		return true
+	}
+	return false
 }

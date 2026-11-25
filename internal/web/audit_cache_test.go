@@ -316,6 +316,26 @@ func TestAuditExemptionFlow(t *testing.T) {
 	}
 }
 
+// A failed cache clear must roll the rule back, so a retry cannot duplicate it.
+func TestCustomRuleRollsBackWhenCacheClearFails(t *testing.T) {
+	srv := testServerData(t)
+	db, _ := srv.insightsDB()
+	if _, err := db.Exec("DROP TABLE audit_cache"); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"name": {"r1"}, "pattern": {"x"}, "severity": {"info"}, "remediation": {"x"}}
+	req := httptest.NewRequest(http.MethodPost, "/audit/custom_rule", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.handleAuditCustomRule(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rr.Code)
+	}
+	if got := loadCustomRules(db); len(got) != 0 {
+		t.Fatalf("rule kept after failed save: %+v", got)
+	}
+}
+
 func TestCustomRuleBustsCache(t *testing.T) {
 	srv := testServerData(t)
 	db, _ := srv.insightsDB()
@@ -626,6 +646,19 @@ func TestAuditTicketEndpoint(t *testing.T) {
 	srv.handleAuditTicket(rr, httptest.NewRequest(http.MethodGet, "/audit/ticket", nil))
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d", rr.Code)
+	}
+
+	// A failed write is reported instead of silently redirecting.
+	db, _ := srv.insightsDB()
+	if _, err := db.Exec("DROP TABLE change_tickets"); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/audit/ticket", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = httptest.NewRecorder()
+	srv.handleAuditTicket(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("failed write: want 500, got %d", rr.Code)
 	}
 }
 

@@ -1,6 +1,9 @@
 package fgt_polsplit
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,5 +81,62 @@ func TestBaselineWindows(t *testing.T) {
 	tr, baseTr = baselineWindows(now, 30*86400, 7*86400)
 	if baseTr.To != tr.From || baseTr.From != "2026-06-10T12:00:00.000Z" {
 		t.Errorf("short baseline windows wrong: base %s .. %s, analysis from %s", baseTr.From, baseTr.To, tr.From)
+	}
+}
+
+// TestSplitRefusalScopeModifiers: negated and internet-service (ISDB)
+// policies are refused — their srcaddr/dstaddr/service lists do not describe
+// the policy's scope, so a split (or fallthrough deny) would change it.
+func TestSplitRefusalScopeModifiers(t *testing.T) {
+	cfg := `config firewall policy
+    edit 7
+        set name "isdb"
+        set srcintf "lan1"
+        set dstintf "wan1"
+        set action accept
+        set srcaddr "all"
+        set internet-service enable
+        set internet-service-name "Google-Web"
+    next
+    edit 8
+        set name "negated"
+        set srcintf "lan1"
+        set dstintf "wan1"
+        set action accept
+        set srcaddr "all"
+        set dstaddr "RFC1918"
+        set dstaddr-negate enable
+        set service "ALL"
+    next
+    edit 9
+        set srcintf "lan1"
+        set dstintf "wan1"
+        set action accept
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set service-negate disable
+    next
+end
+`
+	for id, want := range map[int]string{7: "internet-service", 8: "dstaddr-negate", 9: ""} {
+		p := ParseBackup(cfg, id, "").Policy
+		if p == nil {
+			t.Fatalf("policy %d not parsed", id)
+		}
+		got := splitRefusal(p)
+		if (want == "") != (got == "") || !strings.Contains(got, want) {
+			t.Errorf("policy %d: refusal %q, want mention of %q", id, got, want)
+		}
+	}
+}
+
+// TestAnalyzeBodyCap: an oversized /analyze body is rejected before decoding.
+func TestAnalyzeBodyCap(t *testing.T) {
+	body := `{"prefix":"` + strings.Repeat("a", maxAnalyzeRequestBytes) + `"}`
+	rec := httptest.NewRecorder()
+	(&Extension{}).analyze(rec, httptest.NewRequest(http.MethodPost, "/analyze", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }

@@ -2,8 +2,10 @@ package fgtadmvpnconf
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -248,19 +250,40 @@ func (e *Extension) graylogSweep() error {
 }
 
 func (e *Extension) checkGraylogConfig(c *VpnConfig) error {
+	// The sweep's list can be up to a cycle old: re-read so a deleted, disabled
+	// or edited device is not checked (or alerted) from a stale snapshot.
+	c, err := e.getConfig(c.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !c.GraylogEnabled {
+		return nil
+	}
 	newStatus := e.computeStatus(c)
 
 	// Record when this device was checked (UTC).
 	now := time.Now().UTC()
 
-	// Queue real UP/DOWN transitions, or retry a previously failed delivery.
-	// A newer observation supersedes a pending notification. Unknown/error
-	// observations pause delivery until a reliable UP/DOWN state is available.
-	pending := c.PendingHookwiseStatus
+	// Queue UP/DOWN changes against the last state HookWise was told about, so
+	// an error observation in between cannot swallow a transition. An empty
+	// baseline (first observation or pre-migration row) is seeded without
+	// alerting. A newer observation supersedes a pending notification;
+	// unknown/error observations pause delivery.
 	alertable := newStatus == "online" || newStatus == "offline"
-	prevAlertable := c.LastGraylogStatus == "online" || c.LastGraylogStatus == "offline"
-	if alertable && prevAlertable && newStatus != c.LastGraylogStatus {
-		e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", c.LastGraylogStatus, "to", newStatus)
+	lastAlerted := c.LastAlertedStatus
+	if lastAlerted == "" {
+		if c.LastGraylogStatus == "online" || c.LastGraylogStatus == "offline" {
+			lastAlerted = c.LastGraylogStatus
+		} else if alertable {
+			lastAlerted = newStatus
+		}
+	}
+	pending := c.PendingHookwiseStatus
+	if alertable && newStatus != lastAlerted {
+		e.logger.Info("graylog status transition", "firewall", c.Firewallname, "from", lastAlerted, "to", newStatus)
 		pending = newStatus
 	} else if alertable && pending != "" {
 		pending = newStatus
@@ -280,7 +303,7 @@ func (e *Extension) checkGraylogConfig(c *VpnConfig) error {
 		}
 	}
 
-	if err := e.updateGraylogStatus(c.ID, now, newStatus, unhealthySince, pending); err != nil {
+	if err := e.updateGraylogStatus(c.ID, now, newStatus, unhealthySince, pending, lastAlerted); err != nil {
 		return err
 	}
 	if alertable && pending != "" {

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
 
 // errDiagBusy is returned when an on-demand port query cannot start because the
@@ -227,7 +229,7 @@ func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail 
 	defer func() { _ = client.Close() }()
 
 	start := time.Now()
-	now := start.Format("2006-01-02 15:04:05")
+	now := start.UTC().Format(storageTimeLayout)
 	switches, macs := 0, 0
 	base := "diagnose switch-controller switch-info "
 	// Live sweeps gate `poe summary` on the switches known PoE-capable from the
@@ -362,14 +364,21 @@ func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail 
 		}
 		// Live routing egress summary: which interface/tunnel carries how many
 		// installed routes (and the live default) — reality vs the config's routes.
-		if serr := e.storeLiveRoutes(fwID, parseRoutes(run("get router info routing-table all")), now); serr != nil {
-			e.logger.Warn("fgt diag: live-routes store failed", "fw_id", fwID, "err", serr)
-			storeErr = errors.Join(storeErr, serr)
+		// Snapshot tables (routes, SD-WAN, MAC violations) are wipe-and-replace, so
+		// they are stored only when the command completed: a timed-out or broken
+		// session must not erase the last good data.
+		if raw := run("get router info routing-table all"); commandCompleted(raw) {
+			if serr := e.storeLiveRoutes(fwID, parseRoutes(raw), now); serr != nil {
+				e.logger.Warn("fgt diag: live-routes store failed", "fw_id", fwID, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
+			}
 		}
 		// SD-WAN member SLA: live per-WAN loss/latency/jitter/state.
-		if serr := e.storeSdwanHealth(fwID, parseSdwanHealth(run("diagnose sys sdwan health-check")), now); serr != nil {
-			e.logger.Warn("fgt diag: sdwan store failed", "fw_id", fwID, "err", serr)
-			storeErr = errors.Join(storeErr, serr)
+		if raw := run("diagnose sys sdwan health-check"); commandCompleted(raw) {
+			if serr := e.storeSdwanHealth(fwID, parseSdwanHealth(raw), now); serr != nil {
+				e.logger.Warn("fgt diag: sdwan store failed", "fw_id", fwID, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
+			}
 		}
 		// Interface throughput: byte-counter delta → live Mbps per FGT interface.
 		if serr := e.storeIfaceThroughput(fwID, parseNetlinkIfaces(run("diagnose netlink interface list")), now); serr != nil {
@@ -386,9 +395,11 @@ func (e *Extension) collectDiag(fwID int, withStatic bool, progress func(detail 
 			}
 		}
 		// Port-security (MAC-limit) violations across the whole fabric — one command.
-		if serr := e.storeMacViolations(fwID, parseMacLimitViolations(run(base+"mac-limit-violations all")), now); serr != nil {
-			e.logger.Warn("fgt diag: mac-violations store failed", "fw_id", fwID, "err", serr)
-			storeErr = errors.Join(storeErr, serr)
+		if raw := run(base + "mac-limit-violations all"); commandCompleted(raw) {
+			if serr := e.storeMacViolations(fwID, parseMacLimitViolations(raw), now); serr != nil {
+				e.logger.Warn("fgt diag: mac-violations store failed", "fw_id", fwID, "err", serr)
+				storeErr = errors.Join(storeErr, serr)
+			}
 		}
 	})
 	if serr := e.storeDiagStatus(fwID, CollectionStatus{
@@ -423,7 +434,7 @@ func dialSSHDiag(host, user, pass string, port int, timeout time.Duration, hostK
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         timeout,
 	}
-	return ssh.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)), cfg)
+	return sshhostkey.Dial(net.JoinHostPort(host, strconv.Itoa(port)), cfg)
 }
 
 // runSSHShell opens an interactive shell and hands fn a prompt-synchronized
@@ -552,6 +563,13 @@ func runSSHShell(client *ssh.Client, overall time.Duration, fn func(run func(str
 func isFortiPrompt(s string) bool {
 	s = strings.TrimRight(s, " \r\n")
 	return strings.HasSuffix(s, "$") || strings.HasSuffix(s, "#")
+}
+
+// commandCompleted reports whether run() returned a full command result: empty
+// (session broken / deadline) or prompt-less (truncated by a timeout) output
+// must not replace a stored snapshot.
+func commandCompleted(raw string) bool {
+	return raw != "" && isFortiPrompt(raw)
 }
 
 // portDiagCommands are the per-port switch-info subcommands run on demand. All

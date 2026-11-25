@@ -47,7 +47,7 @@ type Service struct {
 
 	sem                chan struct{}              // bounds concurrent backups (#28)
 	hook               atomic.Pointer[StatusHook] // set once at startup, read from job goroutines
-	fwMu               sync.Map                   // fwID(int) -> *sync.Mutex: serialises runs per firewall
+	queued             sync.Map                   // fwID(int) -> struct{}: a run is queued or running
 	committedMu        sync.RWMutex
 	committedObservers []func(models.Backup)
 	committedGetter    committedBackupGetter
@@ -211,23 +211,29 @@ func (s *Service) publishCommitted(fwID int, filename, checksum string) {
 	s.logger.Warn("committed backup event row no longer available", "fw_id", fwID)
 }
 
-// fwLock returns the per-firewall mutex, creating it on first use.
-func (s *Service) fwLock(fwID int) *sync.Mutex {
-	m, _ := s.fwMu.LoadOrStore(fwID, &sync.Mutex{})
-	return m.(*sync.Mutex)
+// claim marks a run for fwID as queued; it reports false when one is already
+// queued or running, so repeated triggers coalesce instead of stacking full runs.
+func (s *Service) claim(fwID int) bool {
+	_, loaded := s.queued.LoadOrStore(fwID, struct{}{})
+	return !loaded
 }
 
 // Backup runs a single backup cycle for the firewall, blocking until a worker
-// slot is free. Runs for the same firewall are serialised so a manual "Backup
-// Now" cannot collide with a scheduled run on the same timestamped file. Safe to
-// call from the scheduler (already in its own goroutine).
+// slot is free. It is a no-op while another run for the same firewall is queued
+// or running, so a manual "Backup Now" cannot collide with a scheduled run on
+// the same timestamped file. Safe to call from the scheduler (already in its own
+// goroutine).
 func (s *Service) Backup(fwID int) {
-	// Serialise per firewall first (a duplicate request then waits here without
-	// occupying a worker slot), then take a worker slot. All callers acquire in
-	// this order, so there is no deadlock.
-	l := s.fwLock(fwID)
-	l.Lock()
-	defer l.Unlock()
+	if !s.claim(fwID) {
+		s.logger.Info("Backup already queued or running, skipping", "fw_id", fwID)
+		return
+	}
+	s.run(fwID)
+}
+
+// run performs a claimed backup and releases the claim when done.
+func (s *Service) run(fwID int) {
+	defer s.queued.Delete(fwID)
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
 
@@ -242,10 +248,16 @@ func (s *Service) Backup(fwID int) {
 }
 
 // Enqueue triggers an asynchronous backup and returns immediately, marking the
-// firewall as in progress. Used by the manual "Backup Now" handler.
+// firewall as in progress. Used by the manual "Backup Now" handler. Claiming
+// before writing the status keeps a duplicate click from re-marking a run that
+// is just finishing as "In Progress".
 func (s *Service) Enqueue(fwID int) {
+	if !s.claim(fwID) {
+		s.logger.Info("Backup already queued or running, skipping", "fw_id", fwID)
+		return
+	}
 	s.persistStatus(fwID, "In Progress")
-	go s.Backup(fwID)
+	go s.run(fwID)
 }
 
 // persistStatus writes a status to the store and notifies the hook (best effort).

@@ -4,7 +4,6 @@
 package config
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -474,24 +473,6 @@ func intenv(key string, def int) int {
 		}
 	}
 	return def
-}
-
-const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-
-// randomBase32 mirrors pyotp.random_base32(): a random Base32 key of the given
-// length. Used when TOTP_SECRET is not supplied.
-func randomBase32(length int) string {
-	buf := make([]byte, length)
-	if _, err := rand.Read(buf); err != nil {
-		// Fail closed: never fall back to a predictable constant secret, which
-		// would silently weaken TOTP for anyone who did not set TOTP_SECRET.
-		panic("config: crypto/rand unavailable for TOTP secret: " + err.Error())
-	}
-	out := make([]byte, length)
-	for i, b := range buf {
-		out[i] = base32Alphabet[int(b)%len(base32Alphabet)]
-	}
-	return string(out)
 }
 
 // deriveOrNil returns the raw bytes of a session secret, or nil when unset so

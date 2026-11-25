@@ -445,3 +445,34 @@ func TestParseBackupExampleConf(t *testing.T) {
 		t.Errorf("tcp/443 = %v", got)
 	}
 }
+
+// TestParseBackupSkipsInterfaceBoundAddress: an address bound to an interface
+// is never offered for reuse (FortiOS rejects it on other interfaces), but its
+// name stays reserved.
+func TestParseBackupSkipsInterfaceBoundAddress(t *testing.T) {
+	cfg := `config firewall address
+    edit "bound-host"
+        set associated-interface "port9"
+        set subnet 10.1.1.1 255.255.255.255
+    next
+    edit "free-host"
+        set subnet 10.2.2.2 255.255.255.255
+    next
+end
+config firewall policy
+    edit 1
+        set action accept
+    next
+end
+`
+	pb := ParseBackup(cfg, 1, "")
+	if got := pb.AddrByCIDR["10.1.1.1/32"]; len(got) != 0 {
+		t.Errorf("interface-bound object offered for reuse: %v", got)
+	}
+	if got := pb.AddrByCIDR["10.2.2.2/32"]; len(got) != 1 {
+		t.Errorf("unbound object not indexed: %v", got)
+	}
+	if !pb.TakenNames["bound-host"] {
+		t.Error("interface-bound name must stay reserved")
+	}
+}
