@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -172,7 +173,11 @@ func TestStoreIntegration(t *testing.T) {
 	if len(latestForFw) != 1 || latestForFw[0].Filename != "x.conf" {
 		t.Fatalf("latest backups for firewall = %+v", latestForFw)
 	}
-	if _, err := store.pool.Exec(ctx, `DELETE FROM backups WHERE filename = 'legacy.conf'`); err != nil {
+	allNames, err := store.ListAllBackupFilenames(ctx)
+	if err != nil || !slices.Contains(allNames, "x.conf") || !slices.Contains(allNames, "legacy.conf") {
+		t.Fatalf("all backup filenames = %v, err %v", allNames, err)
+	}
+	if _, err := store.pool.Exec(ctx, `DELETE FROM backups WHERE fw_id = $1 AND filename = 'legacy.conf'`, id); err != nil {
 		t.Fatalf("delete legacy backup: %v", err)
 	}
 

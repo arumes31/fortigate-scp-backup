@@ -12,7 +12,6 @@ import (
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
-	"github.com/arumes31/fortigate-scp-backup/internal/models"
 )
 
 func testService(t *testing.T, key []byte) *Service {
@@ -149,30 +148,51 @@ func TestFinalizeFileNeverOverwritesExistingBackup(t *testing.T) {
 	}
 }
 
-func TestMissingBackupRowsKeepsRowsWhenVolumeLooksUnmounted(t *testing.T) {
-	s := testService(t, make([]byte, 32))
-	s.cfg.BackupDir = t.TempDir()
-	if err := os.MkdirAll(filepath.Join(s.cfg.BackupDir, "1"), 0o750); err != nil {
+// checkStorage must refuse an empty replacement volume (even after an earlier
+// refused run) and accept a volume that holds a recorded backup.
+func TestCheckStorageDetectsMissingVolume(t *testing.T) {
+	recorded := func(names ...string) func() ([]string, error) {
+		return func() ([]string, error) { return names, nil }
+	}
+	marker := func(dir string) bool {
+		_, err := os.Stat(filepath.Join(dir, storageMarker))
+		return err == nil
+	}
+
+	empty := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(empty, "1"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	write := func(name string) {
-		if err := os.WriteFile(filepath.Join(s.cfg.BackupDir, filepath.FromSlash(name)), []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
+	if err := os.WriteFile(filepath.Join(empty, "1", "20261125_120000Z.conf"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err) // a file from an earlier run on the replacement volume, not a recorded one
+	}
+	for range 2 {
+		if err := checkStorage(empty, recorded("1/old1.conf", "1/old2.conf")); err == nil {
+			t.Fatal("empty replacement volume accepted")
 		}
 	}
-	rows := []models.Backup{{ID: 3, Filename: "1/new.conf"}, {ID: 2, Filename: "1/old2.conf"}, {ID: 1, Filename: "1/old1.conf"}}
-
-	// Only the just-written file exists: every earlier file vanished at once.
-	write("1/new.conf")
-	if got := s.missingBackupRows(1, rows, "1/new.conf"); len(got) != 0 {
-		t.Fatalf("rows deleted although the volume looks unmounted: %+v", got)
+	if marker(empty) {
+		t.Fatal("marker written on a refused volume")
 	}
 
-	// Another earlier file exists, so the missing one really is gone.
-	write("1/old2.conf")
-	got := s.missingBackupRows(1, rows, "1/new.conf")
-	if len(got) != 1 || got[0].ID != 1 {
-		t.Fatalf("missingBackupRows = %+v, want only row 1", got)
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "1", "old2.conf"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStorage(real, recorded("1/old1.conf", "1/old2.conf")); err != nil || !marker(real) {
+		t.Fatalf("real volume: err=%v marker=%t", err, marker(real))
+	}
+	// Once marked, the volume is accepted without consulting the database.
+	if err := checkStorage(real, func() ([]string, error) { return nil, errors.New("db down") }); err != nil {
+		t.Fatalf("marked volume rejected: %v", err)
+	}
+
+	fresh := t.TempDir()
+	if err := checkStorage(fresh, recorded()); err != nil || !marker(fresh) {
+		t.Fatalf("fresh install: err=%v marker=%t", err, marker(fresh))
 	}
 }
 

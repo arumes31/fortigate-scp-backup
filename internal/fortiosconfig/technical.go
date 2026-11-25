@@ -104,7 +104,7 @@ func technical(doc *document, findings []reportmodel.Finding) ([]reportmodel.Sec
 	// a default static route.
 	defaultRouteDevices := map[string]bool{}
 	for _, route := range doc.objects("router static") {
-		if dst := route.get("dst"); route.get("device") != "" && (dst == "" || strings.HasPrefix(dst, "0.0.0.0")) {
+		if route.get("device") != "" && IsDefaultRouteDst(route.get("dst")) {
 			defaultRouteDevices[route.get("device")] = true
 		}
 	}
@@ -174,4 +174,14 @@ func reportVDOM(n *node) string {
 	default:
 		return display(n.vdom())
 	}
+}
+
+// IsDefaultRouteDst reports whether a static route dst is the default route;
+// an omitted dst means 0.0.0.0/0. A prefix match would also take 0.0.0.0/8.
+func IsDefaultRouteDst(dst string) bool {
+	switch strings.Join(strings.Fields(dst), " ") {
+	case "", "0.0.0.0 0.0.0.0", "0.0.0.0/0":
+		return true
+	}
+	return false
 }

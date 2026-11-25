@@ -73,8 +73,11 @@ func parseCfg(cfg string) *cfgDoc {
 			quote = fortiosconfig.QuoteState(raw, quote)
 			continue
 		}
-		quote = fortiosconfig.QuoteState(raw, 0)
 		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "#") { // an apostrophe in a comment opens no value
+			continue
+		}
+		quote = fortiosconfig.QuoteState(raw, 0)
 		lower := strings.ToLower(trimmed)
 		switch {
 		case strings.HasPrefix(lower, "config "):
@@ -172,8 +175,11 @@ func (d *cfgDoc) findDirect(b cfgBlock, prefix string) (int, string, bool) {
 			quote = fortiosconfig.QuoteState(d.lines[i], quote)
 			continue
 		}
-		quote = fortiosconfig.QuoteState(d.lines[i], 0)
 		trimmed := strings.TrimSpace(d.lines[i])
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		quote = fortiosconfig.QuoteState(d.lines[i], 0)
 		lower := strings.ToLower(trimmed)
 		switch {
 		case strings.HasPrefix(lower, "config ") || strings.HasPrefix(lower, "edit "):

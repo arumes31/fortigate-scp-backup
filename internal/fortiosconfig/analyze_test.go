@@ -451,3 +451,14 @@ end
 		})
 	}
 }
+
+func TestIsDefaultRouteDst(t *testing.T) {
+	for dst, want := range map[string]bool{
+		"": true, "0.0.0.0 0.0.0.0": true, "0.0.0.0/0": true, "0.0.0.0  0.0.0.0": true,
+		"0.0.0.0 255.0.0.0": false, "0.0.0.0/8": false, "10.0.0.0 255.0.0.0": false,
+	} {
+		if got := IsDefaultRouteDst(dst); got != want {
+			t.Errorf("IsDefaultRouteDst(%q) = %t, want %t", dst, got, want)
+		}
+	}
+}

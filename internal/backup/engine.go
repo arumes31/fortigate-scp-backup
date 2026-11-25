@@ -132,7 +132,14 @@ func (s *Service) backup(fwID int) {
 		)
 	}
 
-	for attempt := 1; attempt <= retries; attempt++ {
+	// Refuse to write, prune or delete anything while the backup volume is missing.
+	storageErr := s.ensureStorage()
+	if storageErr != nil {
+		status = "Failed: " + storageErr.Error()
+		s.logger.Error("Backup storage unavailable", "fw_id", fwID, "err", storageErr)
+		failureEmail(storageErr.Error())
+	}
+	for attempt := 1; storageErr == nil && attempt <= retries; attempt++ {
 		s.logger.Debug("Starting backup attempt",
 			"fw_id", fwID, "fqdn", fw.FQDN, "port", fw.SSHPort, "attempt", attempt, "retries", retries)
 
@@ -180,12 +187,8 @@ func (s *Service) backup(fwID int) {
 		s.setStage(fwID, "storing & pruning retention")
 		if dbErr := s.recordSuccess(fwID, fw.RetentionCount, now, dbFilename, fwDir, size, checksum); dbErr != nil {
 			status = "Failed: " + dbErr.Error()
-			if errors.Is(dbErr, errBackupNotRecorded) {
-				// No row points at the file and nothing sweeps orphans, so drop it now.
-				_ = os.Remove(localPath)
-			} else {
-				removeIfEmpty(localPath)
-			}
+			// Keep a non-empty file: a failed insert may still have committed its row.
+			removeIfEmpty(localPath)
 			failureEmail(dbErr.Error())
 			break
 		}
@@ -244,9 +247,6 @@ func (s *Service) removePlaintext(path string) {
 	}
 }
 
-// errBackupNotRecorded marks a recordSuccess failure before the backup row existed.
-var errBackupNotRecorded = errors.New("backup row not recorded")
-
 // recordSuccess inserts the backup row, prunes retention overflow, runs cleanup
 // and records the successful backup time and status.
 func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilename, fwDir string, size int64, checksum string) error {
@@ -254,7 +254,7 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 	defer cancel()
 
 	if err := s.store.InsertBackup(ctx, fwID, ts, dbFilename, size, checksum); err != nil {
-		return fmt.Errorf("%w: %w", errBackupNotRecorded, err)
+		return err
 	}
 
 	all, err := s.store.ListBackupFilenames(ctx, fwID)
@@ -290,7 +290,7 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 		}
 	}
 
-	s.cleanNonexistentBackups(ctx, fwID, fwDir, dbFilename)
+	s.cleanNonexistentBackups(ctx, fwID, fwDir)
 
 	if err := s.store.UpdateFirewallSuccess(ctx, fwID, ts, "Success"); err != nil {
 		return err
@@ -302,13 +302,13 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 // app's own leftover temp files. Other files without a row are kept: deleting
 // them could wipe history whenever the database and volume disagree. Never
 // fails the caller.
-func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir, current string) {
+func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir string) {
 	backups, err := s.store.ListBackupIDFilenames(ctx, fwID, 0)
 	if err != nil {
 		s.logger.Error("Failed to clean non-existent backups", "fw_id", fwID, "err", err)
 		return
 	}
-	for _, b := range s.missingBackupRows(fwID, backups, current) {
+	for _, b := range s.missingBackupRows(backups) {
 		s.logger.Warn("Removing non-existent backup entry", "filename", b.Filename)
 		if delErr := s.store.DeleteBackupByID(ctx, b.ID); delErr != nil {
 			s.logger.Error("Failed to remove backup entry", "id", b.ID, "err", delErr)
@@ -317,12 +317,10 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir, 
 	s.sweepTempFiles(fwDir)
 }
 
-// missingBackupRows returns the rows whose file no longer exists. It returns
-// none when no file other than the just-written current one is present: that
-// points to an unmounted or replaced backup volume, not to deleted backups.
-func (s *Service) missingBackupRows(fwID int, backups []models.Backup, current string) []models.Backup {
+// missingBackupRows returns the rows whose file no longer exists. ensureStorage
+// has already confirmed the backup volume is the one these rows refer to.
+func (s *Service) missingBackupRows(backups []models.Backup) []models.Backup {
 	var missing []models.Backup
-	othersPresent := false
 	for _, b := range backups {
 		diskPath, pathErr := appsecurity.JoinWithin(s.cfg.BackupDir, b.Filename)
 		if pathErr != nil {
@@ -331,16 +329,54 @@ func (s *Service) missingBackupRows(fwID int, backups []models.Backup, current s
 		}
 		if _, statErr := os.Stat(diskPath); errors.Is(statErr, os.ErrNotExist) {
 			missing = append(missing, b)
-		} else if b.Filename != current {
-			othersPresent = true
 		}
 	}
-	if len(missing) > 0 && !othersPresent {
-		s.logger.Error("No earlier backup files found on disk; backup volume may be unmounted, keeping database rows",
-			"fw_id", fwID, "missing", len(missing))
-		return nil
-	}
 	return missing
+}
+
+// storageMarker sits in BACKUP_DIR so an unmounted or replaced volume is detected
+// before any backup is written, pruned or has its row deleted.
+const storageMarker = ".fortisafe-storage"
+
+func (s *Service) ensureStorage() error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	defer cancel()
+	return checkStorage(s.cfg.BackupDir, func() ([]string, error) { return s.store.ListAllBackupFilenames(ctx) })
+}
+
+// checkStorage accepts dir when its marker exists, or when it holds at least one
+// recorded backup (or none are recorded yet) and then writes the marker. A dir
+// without the marker and without any recorded file is not the backup volume.
+func checkStorage(dir string, recorded func() ([]string, error)) error {
+	marker := filepath.Join(dir, storageMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("backup storage check: %w", err)
+	}
+	names, err := recorded()
+	if err != nil {
+		return fmt.Errorf("backup storage check: %w", err)
+	}
+	found := len(names) == 0
+	for _, name := range names {
+		if p, pathErr := appsecurity.JoinWithin(dir, name); pathErr == nil {
+			if _, statErr := os.Stat(p); statErr == nil {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return fmt.Errorf("backup storage %s has no %s marker and none of the %d recorded backup files; mount the backup volume, or create the marker if the old backups are intentionally gone", dir, storageMarker, len(names))
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("backup storage check: %w", err)
+	}
+	if err := os.WriteFile(marker, []byte("FortiSafe backup storage marker. Do not delete.\n"), 0o640); err != nil {
+		return fmt.Errorf("backup storage marker: %w", err)
+	}
+	return nil
 }
 
 // sweepTempFiles removes leftover download (.part) and encryption temp files.

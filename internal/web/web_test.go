@@ -1568,6 +1568,24 @@ func TestLoginLimiter(t *testing.T) {
 	}
 }
 
+// A blocked IP must not allocate a per-account bucket for each new username.
+func TestBlockedIPAllocatesNoAccountBuckets(t *testing.T) {
+	srv := testServer(t)
+	for srv.ipLimiter.acquire("ip|198.51.100.7") {
+	}
+	for i := range 50 {
+		if srv.acquireLoginAttempt(fmt.Sprintf("acct|user-%d", i), "ip|198.51.100.7") {
+			t.Fatal("blocked IP admitted an attempt")
+		}
+	}
+	srv.limiter.mu.Lock()
+	n := len(srv.limiter.attempts)
+	srv.limiter.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("blocked IP allocated %d account buckets, want 0", n)
+	}
+}
+
 // TestLoginLimiterAdmitsOnlyMaxParallelAttempts guards the check-then-verify
 // race: concurrent attempts are counted before verification.
 func TestLoginLimiterAdmitsOnlyMaxParallelAttempts(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -329,12 +330,19 @@ func TestEndpointEditResetsDNSCheck(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			markOK()
+			before := load()
 			if err := tt.edit(load()); err != nil {
 				t.Fatal(err)
 			}
 			c := load()
-			if reset := c.LastDnsCheck == nil && c.LastDnsStatus == dnsStatusUnknown && c.LastDnsResolved == ""; reset != tt.reset {
-				t.Fatalf("reset = %v, want %v (check=%v status=%q resolved=%q)", reset, tt.reset, c.LastDnsCheck, c.LastDnsStatus, c.LastDnsResolved)
+			if tt.reset {
+				if c.LastDnsCheck != nil || c.LastDnsStatus != dnsStatusUnknown || c.LastDnsResolved != "" {
+					t.Fatalf("not reset: check=%v status=%q resolved=%q", c.LastDnsCheck, c.LastDnsStatus, c.LastDnsResolved)
+				}
+				return
+			}
+			if !reflect.DeepEqual(c.LastDnsCheck, before.LastDnsCheck) || c.LastDnsStatus != before.LastDnsStatus || c.LastDnsResolved != before.LastDnsResolved {
+				t.Fatalf("cached DNS fields changed: check=%v status=%q resolved=%q", c.LastDnsCheck, c.LastDnsStatus, c.LastDnsResolved)
 			}
 		})
 	}

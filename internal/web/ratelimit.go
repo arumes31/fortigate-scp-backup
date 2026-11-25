@@ -82,6 +82,10 @@ func (l *loginLimiter) release(key string) {
 	if a.count > 0 {
 		a.count--
 	}
+	if a.count == 0 {
+		delete(l.attempts, key)
+		return
+	}
 	if a.count < l.max {
 		a.blocked = time.Time{}
 	}

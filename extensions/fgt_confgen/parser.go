@@ -223,7 +223,7 @@ func ParseConfig(content string) ParsedConfig {
 			continue
 		}
 		line := strings.TrimSpace(rawLine)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") { // an apostrophe in a comment opens no value
 			continue
 		}
 		quote = fortiosconfig.QuoteState(line, 0)

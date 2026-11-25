@@ -131,3 +131,16 @@ end
 		t.Errorf("addresses = %v, want [net-a]", parsed.Addresses)
 	}
 }
+
+// An apostrophe in a `#` comment must not open a quoted value.
+func TestParseConfigCommentApostrophe(t *testing.T) {
+	parsed := ParseConfig(`# don't change
+config system interface
+    edit "port2"
+    next
+end
+`)
+	if len(parsed.Interfaces) != 1 || parsed.Interfaces[0] != "port2" {
+		t.Errorf("interfaces = %v, want [port2]", parsed.Interfaces)
+	}
+}

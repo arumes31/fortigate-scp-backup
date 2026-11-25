@@ -222,6 +222,8 @@ function sdwanLabel(s) {
     const parts = [s.state === "dead" ? "⚠ dead" : "alive"];
     if (s.loss) parts.push("loss " + s.loss + "%");
     if (s.latency) parts.push(Math.round(s.latency) + "ms");
+    // updated_at is stored UTC; a failed check keeps the previous snapshot, so show its time.
+    if (s.updated_at) parts.push("@ " + new Date(s.updated_at.replace(" ", "T") + "Z").toTimeString().slice(0, 5));
     return parts.join(" · ");
 }
 

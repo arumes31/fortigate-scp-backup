@@ -36,7 +36,7 @@ func TestTOTPSecretEncryptedAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close) // registered first so it runs after the reset below
 	t.Cleanup(func() {
 		_, _ = store.pool.Exec(context.Background(), `UPDATE users SET totp_secret = NULL WHERE username = 'admin'`)
 	})

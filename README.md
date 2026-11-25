@@ -327,7 +327,7 @@ FortiSafe is configured entirely via environment variables.
 | `TZ` | `Europe/Vienna` | Timezone location used by the scheduler. |
 | `PORT` | `8521` | HTTP port the application web server listens on. |
 | `LOG_LEVEL` | `info` | Logging verbosity: `debug` \| `info` \| `warn` \| `error`. |
-| `BACKUP_DIR` | `backups` | Storage directory for configuration backups. |
+| `BACKUP_DIR` | `backups` | Storage directory for configuration backups. Holds a `.fortisafe-storage` marker; if it is missing and none of the recorded backup files are present (e.g. the volume is not mounted), backups fail instead of writing or pruning. Create the marker by hand only if the old backups are intentionally gone. |
 | `DATA_DIR` | `/app/data` | Storage directory for SQLite extension data. |
 | `ACTIVITY_LOG_RETENTION_DAYS` | `0` | Auto-prune the audited activity trail older than N days (0 = keep forever). |
 

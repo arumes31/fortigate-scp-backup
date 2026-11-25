@@ -596,11 +596,20 @@ func (s *Server) handleAuditCustomRule(w http.ResponseWriter, r *http.Request) {
 
 	action := r.FormValue("action")
 	var details string
+	// One transaction: a failed cache clear must not leave a saved rule that a
+	// retry would insert twice.
+	tx, err := db.Begin()
+	if err != nil {
+		s.logger.Error("failed to save audit custom rule", "action", action, "err", err)
+		http.Error(w, "failed to save custom rule", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
 	if action == "delete" {
 		idStr := r.FormValue("id")
 		id, _ := strconv.Atoi(idStr)
 		details = "deleted custom rule " + strconv.Itoa(id)
-		_, err = db.Exec("DELETE FROM custom_rules WHERE id = ?", id)
+		_, err = tx.Exec("DELETE FROM custom_rules WHERE id = ?", id)
 	} else {
 		name := r.FormValue("name")
 		pattern := r.FormValue("pattern")
@@ -608,12 +617,15 @@ func (s *Server) handleAuditCustomRule(w http.ResponseWriter, r *http.Request) {
 		remediation := r.FormValue("remediation")
 
 		details = "added custom rule " + name
-		_, err = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES (?, ?, ?, ?)",
+		_, err = tx.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES (?, ?, ?, ?)",
 			name, pattern, severity, remediation)
 	}
 	if err == nil {
 		// Custom rules feed into the cached raw findings: recompute on next read.
-		_, err = db.Exec("DELETE FROM audit_cache")
+		_, err = tx.Exec("DELETE FROM audit_cache")
+	}
+	if err == nil {
+		err = tx.Commit()
 	}
 	if err != nil {
 		s.logger.Error("failed to save audit custom rule", "action", action, "err", err)

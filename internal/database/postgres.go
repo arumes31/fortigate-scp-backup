@@ -922,6 +922,24 @@ func (s *Store) ListBackupFilenames(ctx context.Context, fwID int) ([]string, er
 	return out, rows.Err()
 }
 
+// ListAllBackupFilenames returns every recorded backup filename (all firewalls).
+func (s *Store) ListAllBackupFilenames(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT filename FROM backups`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // DeleteBackupByFilename removes a backup row by filename.
 func (s *Store) DeleteBackupByFilename(ctx context.Context, filename string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM backups WHERE filename = $1`, filename)

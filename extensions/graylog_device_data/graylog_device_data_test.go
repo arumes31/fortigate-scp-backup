@@ -1089,3 +1089,18 @@ func TestPruneDeletedFirewalls(t *testing.T) {
 		t.Fatalf("after prune: fw1=%d fw2=%d rows, want 3/0", count(1), count(2))
 	}
 }
+
+// A kept SD-WAN snapshot carries its own collection time for the UI.
+func TestListSdwanHealthReturnsSnapshotTime(t *testing.T) {
+	e := testExt(t, "")
+	if err := e.storeSdwanHealth(1, []SdwanHealth{{Member: "wan1", State: "alive"}}, "2026-11-25 10:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.listSdwanHealth(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UpdatedAt != "2026-11-25 10:00:00" {
+		t.Fatalf("listSdwanHealth = %+v, want one row stamped 2026-11-25 10:00:00", got)
+	}
+}

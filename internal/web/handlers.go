@@ -332,11 +332,12 @@ func validTOTPCode(code string) bool {
 // acquireLoginAttempt reserves one attempt in both rate-limit buckets before
 // credentials are checked, so parallel requests cannot exceed the limit.
 func (s *Server) acquireLoginAttempt(rlKey, ipKey string) bool {
-	if !s.limiter.acquire(rlKey) {
+	// IP first: a blocked IP must not allocate an account bucket per username.
+	if !s.ipLimiter.acquire(ipKey) {
 		return false
 	}
-	if !s.ipLimiter.acquire(ipKey) {
-		s.limiter.release(rlKey)
+	if !s.limiter.acquire(rlKey) {
+		s.ipLimiter.release(ipKey)
 		return false
 	}
 	return true

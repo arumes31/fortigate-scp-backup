@@ -42,3 +42,22 @@ end`
 		t.Fatalf("expected only port2 under system interface, got %+v", ifaces)
 	}
 }
+
+// An apostrophe in a `#` comment must not open a quoted value.
+func TestParseCfgCommentApostrophe(t *testing.T) {
+	cfg := `#config-version=FGT90G:user=don't
+config system interface
+edit "port2"
+# don't touch
+set allowaccess ping
+next
+end`
+	doc := parseCfg(cfg)
+	ifaces := doc.blocksUnder("config system interface")
+	if len(ifaces) != 1 || ifaces[0].Name != "port2" {
+		t.Fatalf("expected port2 under system interface, got %+v", ifaces)
+	}
+	if v, _, ok := doc.settingDirect(ifaces[0], "allowaccess"); !ok || v != "ping" {
+		t.Fatalf("allowaccess after comment: v=%q ok=%t", v, ok)
+	}
+}

@@ -1581,7 +1581,7 @@ func (e *Extension) storeSdwanHealth(fwID int, hs []SdwanHealth, now string) err
 
 // listSdwanHealth returns the firewall's per-member SD-WAN SLA.
 func (e *Extension) listSdwanHealth(fwID int) ([]SdwanHealth, error) {
-	rows, err := e.db.Query(`SELECT member, state, loss, latency, jitter FROM sdwan_health WHERE fw_id = ? ORDER BY member`, fwID)
+	rows, err := e.db.Query(`SELECT member, state, loss, latency, jitter, COALESCE(updated_at, '') FROM sdwan_health WHERE fw_id = ? ORDER BY member`, fwID)
 	if err != nil {
 		return nil, err
 	}
@@ -1589,7 +1589,7 @@ func (e *Extension) listSdwanHealth(fwID int) ([]SdwanHealth, error) {
 	var out []SdwanHealth
 	for rows.Next() {
 		var h SdwanHealth
-		if scanErr := rows.Scan(&h.Member, &h.State, &h.Loss, &h.Latency, &h.Jitter); scanErr != nil {
+		if scanErr := rows.Scan(&h.Member, &h.State, &h.Loss, &h.Latency, &h.Jitter, &h.UpdatedAt); scanErr != nil {
 			return nil, scanErr
 		}
 		out = append(out, h)
