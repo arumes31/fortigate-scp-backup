@@ -100,3 +100,34 @@ func TestParseConfigExampleConf(t *testing.T) {
 		t.Errorf("only %d addresses parsed from example.conf", len(parsed.Addresses))
 	}
 }
+
+// TestParseConfigMultiLineQuotedValue: an automation script embedding
+// interface CLI must not add a phantom interface or break later sections.
+func TestParseConfigMultiLineQuotedValue(t *testing.T) {
+	parsed := ParseConfig(`config system automation-action
+    edit "shut"
+        set script "
+config system interface
+edit port1
+set status down
+next
+end
+"
+    next
+end
+config system interface
+    edit "port2"
+    next
+end
+config firewall address
+    edit "net-a"
+    next
+end
+`)
+	if len(parsed.Interfaces) != 1 || parsed.Interfaces[0] != "port2" {
+		t.Errorf("interfaces = %v, want [port2]", parsed.Interfaces)
+	}
+	if len(parsed.Addresses) != 1 || parsed.Addresses[0] != "net-a" {
+		t.Errorf("addresses = %v, want [net-a]", parsed.Addresses)
+	}
+}

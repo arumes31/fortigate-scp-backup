@@ -1915,9 +1915,11 @@ func (s *store) prune(ctx context.Context, now time.Time, retentionDays int) (in
 		JOIN outbox ON outbox.chain_id = chains.id
 		WHERE chains.state = 'sealed' AND (
 			(outbox.state = 'accepted' AND outbox.accepted_at_ns > 0 AND outbox.accepted_at_ns < ?) OR
-			(outbox.state = 'cleared' AND outbox.updated_at_ns > 0 AND outbox.updated_at_ns < ?)
+			(outbox.state = 'cleared' AND outbox.updated_at_ns > 0 AND outbox.updated_at_ns < ?) OR
+			-- failed rows are retried (and updated_at_ns bumped) every few hours, so age them by seal time
+			(outbox.state = 'failed' AND chains.sealed_at_ns > 0 AND chains.sealed_at_ns < ?)
 		)
-	)`, unixNanos(cutoff), unixNanos(cutoff))
+	)`, unixNanos(cutoff), unixNanos(cutoff), unixNanos(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("prune terminal conftail history: %w", err)
 	}

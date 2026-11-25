@@ -627,6 +627,19 @@ func TestAuditTicketEndpoint(t *testing.T) {
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d", rr.Code)
 	}
+
+	// A failed write is reported instead of silently redirecting.
+	db, _ := srv.insightsDB()
+	if _, err := db.Exec("DROP TABLE change_tickets"); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/audit/ticket", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = httptest.NewRecorder()
+	srv.handleAuditTicket(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("failed write: want 500, got %d", rr.Code)
+	}
 }
 
 func TestExemptionAndRuleDelete(t *testing.T) {

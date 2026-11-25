@@ -2,6 +2,8 @@ package web
 
 import (
 	"strings"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
 )
 
 // This file implements a small structural scanner for FortiGate configuration
@@ -62,7 +64,16 @@ func parseCfg(cfg string) *cfgDoc {
 		})
 	}
 
+	var quote byte
 	for i, raw := range lines {
+		// Continuation lines of a multi-line quoted value (automation
+		// scripts, certificates) may look like `edit`/`end` and must not
+		// change the nesting.
+		if quote != 0 {
+			quote = fortiosconfig.QuoteState(raw, quote)
+			continue
+		}
+		quote = fortiosconfig.QuoteState(raw, 0)
 		trimmed := strings.TrimSpace(raw)
 		lower := strings.ToLower(trimmed)
 		switch {
@@ -155,7 +166,13 @@ func (d *cfgDoc) blocksUnder(path string) []cfgBlock {
 // Returns the 0-based line index.
 func (d *cfgDoc) findDirect(b cfgBlock, prefix string) (int, string, bool) {
 	depth := 0
+	var quote byte
 	for i := b.Start + 1; i < b.End && i < len(d.lines); i++ {
+		if quote != 0 { // continuation of a multi-line value, as in parseCfg
+			quote = fortiosconfig.QuoteState(d.lines[i], quote)
+			continue
+		}
+		quote = fortiosconfig.QuoteState(d.lines[i], 0)
 		trimmed := strings.TrimSpace(d.lines[i])
 		lower := strings.ToLower(trimmed)
 		switch {

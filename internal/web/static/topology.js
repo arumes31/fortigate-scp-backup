@@ -1073,7 +1073,7 @@ function buildTree(data) {
             (data.ha ? `\nHA: ${data.ha.mode}${data.ha.group_name ? " · " + data.ha.group_name : ""}` : "") +
             (devices.length ? `\n${tt("topo.devices")}: ${devices.length}` : "") +
             (topoFwHealth ? `\n${topoFwHealth}` : "") +
-            (topoDiagStatus && topoDiagStatus.last_run ? `\n${tt("topo.ssh_collected")}: ${topoDiagStatus.switches} sw · ${(topoDiagStatus.duration_ms / 1000).toFixed(1)}s${topoDiagStatus.static ? " · full" : ""} @ ${(topoDiagStatus.last_run || "").slice(11, 16)}` : ""),
+            (topoDiagStatus && topoDiagStatus.last_run ? `\n${tt("topo.ssh_collected")}: ${topoDiagStatus.switches} sw · ${(topoDiagStatus.duration_ms / 1000).toFixed(1)}s${topoDiagStatus.static ? " · full" : ""} @ ${new Date(topoDiagStatus.last_run.replace(" ", "T") + "Z").toTimeString().slice(0, 5)}` : ""), // last_run is stored UTC
         badge: data.model || null,
         children: fwChildren
     }];

@@ -118,3 +118,24 @@ func TestRunPipeline_SingleRecipeStillWorks(t *testing.T) {
 		t.Errorf("applied order = %v", result.AppliedOrder)
 	}
 }
+
+// TestRunPipeline_RefusesMultiVDOM: the model is not VDOM-aware, so a vdom=1
+// header or a `config vdom` block makes the pipeline refuse before any recipe.
+func TestRunPipeline_RefusesMultiVDOM(t *testing.T) {
+	for name, content := range map[string]string{
+		"header": "#config-version=FGT90G-7.6.7-FW-build3704-260601:opmode=0:vdom=1:user=admin\n",
+		"block":  "config vdom\nedit root\nconfig system interface\nedit \"port1\"\nnext\nend\nnext\nend\n",
+	} {
+		cfg := ParseConfig(content)
+		if !cfg.MultiVDOM {
+			t.Errorf("%s: MultiVDOM not detected", name)
+		}
+		_, err := RunPipeline(cfg, []RecipeSelection{{Key: RecipeKeyZone}})
+		if err == nil || !strings.Contains(err.Error(), "multi-VDOM") {
+			t.Errorf("%s: err = %v, want multi-VDOM refusal", name, err)
+		}
+	}
+	if ParseConfig(testConfig).MultiVDOM {
+		t.Error("vdom=0 config flagged as multi-VDOM")
+	}
+}

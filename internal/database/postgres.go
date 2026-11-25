@@ -196,13 +196,14 @@ func (s *Store) InitSchema(ctx context.Context, totpEnabled bool, totpSecret, bo
 	}
 
 	if totpEnabled {
-		// Only seed the secret when admin has none yet. Overwriting on every
-		// boot would invalidate an already-enrolled authenticator whenever
-		// TOTP_SECRET is unset (config generates a fresh random one per start),
-		// locking the admin out after every restart.
+		// TOTP_SECRET is required when TOTP is enabled, so it is authoritative:
+		// apply it on every boot so rotating it takes effect.
+		encrypted, err := s.cipher.EncryptString(totpSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt admin totp: %w", err)
+		}
 		if _, err := s.pool.Exec(ctx,
-			`UPDATE users SET totp_secret = $1
-			 WHERE username = 'admin' AND (totp_secret IS NULL OR totp_secret = '')`, totpSecret); err != nil {
+			`UPDATE users SET totp_secret = $1 WHERE username = 'admin'`, encrypted); err != nil {
 			return fmt.Errorf("set admin totp: %w", err)
 		}
 	} else {
@@ -299,6 +300,63 @@ func (s *Store) MigrateFirewallEncryption(ctx context.Context) (int, error) {
 	return migrated, nil
 }
 
+// MigrateTOTPEncryption encrypts legacy plaintext users.totp_secret values and
+// verifies existing envelopes in one transaction, like MigrateFirewallEncryption.
+func (s *Store) MigrateTOTPEncryption(ctx context.Context) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin totp encryption migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	type secret struct {
+		id    int
+		value string
+	}
+	rows, err := tx.Query(ctx, `SELECT id, totp_secret FROM users WHERE totp_secret <> '' ORDER BY id FOR UPDATE`)
+	if err != nil {
+		return 0, fmt.Errorf("list totp secrets for encryption migration: %w", err)
+	}
+	var secrets []secret
+	for rows.Next() {
+		var item secret
+		if err := rows.Scan(&item.id, &item.value); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan totp secret for encryption migration: %w", err)
+		}
+		secrets = append(secrets, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate totp secrets for encryption migration: %w", err)
+	}
+
+	migrated := 0
+	for _, item := range secrets {
+		if crypto.IsEncryptedString(item.value) {
+			if _, err := s.cipher.DecryptString(item.value); err != nil {
+				return 0, fmt.Errorf("verify encrypted totp secret for user %d: %w", item.id, err)
+			}
+			continue
+		}
+		encrypted, err := s.cipher.EncryptString(item.value)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt totp secret for user %d: %w", item.id, err)
+		}
+		if !crypto.IsEncryptedString(encrypted) {
+			return 0, errors.New("totp encryption migration requires an enabled cipher")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET totp_secret = $1 WHERE id = $2`, encrypted, item.id); err != nil {
+			return 0, fmt.Errorf("store encrypted totp secret for user %d: %w", item.id, err)
+		}
+		migrated++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit totp encryption migration: %w", err)
+	}
+	return migrated, nil
+}
+
 // LogActivity records a user action. Fire-and-forget: failures are logged, not
 // returned, matching the original best-effort behavior.
 func (s *Store) LogActivity(username, action, details string) {
@@ -327,8 +385,10 @@ func (s *Store) GetUserForLogin(ctx context.Context, username string) (*models.U
 		return nil, err
 	}
 	u.Username = username
-	if totpSecret != nil {
-		u.TOTPSecret = *totpSecret
+	if totpSecret != nil && *totpSecret != "" {
+		if u.TOTPSecret, err = s.cipher.DecryptString(*totpSecret); err != nil {
+			return nil, fmt.Errorf("decrypt totp secret: %w", err)
+		}
 	}
 	return &u, nil
 }
@@ -549,20 +609,43 @@ func (s *Store) DeleteFirewall(ctx context.Context, id int) (string, error) {
 func (s *Store) ListBackups(ctx context.Context, fwID int) ([]models.Backup, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT id, fw_id, timestamp, filename, size_bytes, checksum
-		 FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`, fwID)
+		 FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC NULLS LAST`, fwID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanBackupRows(rows)
+}
+
+// LatestBackups returns the newest backup of every firewall in one query,
+// ordered by fw_id. Equal timestamps are broken by the higher row ID.
+func (s *Store) LatestBackups(ctx context.Context) ([]models.Backup, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (fw_id) id, fw_id, timestamp, filename, size_bytes, checksum
+		 FROM backups ORDER BY fw_id, timestamp DESC NULLS LAST, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBackupRows(rows)
+}
+
+// scanBackupRows scans (id, fw_id, timestamp, filename, size_bytes, checksum)
+// rows. Legacy rows can have a NULL timestamp; it is left as the zero time.
+func scanBackupRows(rows pgx.Rows) ([]models.Backup, error) {
 	var out []models.Backup
 	for rows.Next() {
 		var (
 			b    models.Backup
+			ts   *time.Time
 			size *int64
 			sum  *string
 		)
-		if err := rows.Scan(&b.ID, &b.FwID, &b.Timestamp, &b.Filename, &size, &sum); err != nil {
+		if err := rows.Scan(&b.ID, &b.FwID, &ts, &b.Filename, &size, &sum); err != nil {
 			return nil, err
+		}
+		if ts != nil {
+			b.Timestamp = *ts
 		}
 		if size != nil {
 			b.SizeBytes = *size
@@ -773,23 +856,27 @@ func (s *Store) ListSchedules(ctx context.Context) ([]models.FirewallSchedule, e
 
 // LastBackupTime returns the newest backup time for a firewall.
 func (s *Store) LastBackupTime(ctx context.Context, fwID int) (time.Time, bool, error) {
-	var ts time.Time
+	var ts *time.Time
 	err := s.pool.QueryRow(ctx,
-		`SELECT timestamp FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC LIMIT 1`, fwID).Scan(&ts)
+		`SELECT timestamp FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC NULLS LAST LIMIT 1`, fwID).Scan(&ts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	return ts, true, nil
+	// Only legacy rows without a timestamp: no known backup time.
+	if ts == nil {
+		return time.Time{}, false, nil
+	}
+	return *ts, true, nil
 }
 
 // LastBackupTimes returns the newest successful-backup timestamp per firewall
 // in one query (the backups table only ever holds successes). Firewalls
 // without any backup are simply absent from the map.
 func (s *Store) LastBackupTimes(ctx context.Context) (map[int]time.Time, error) {
-	rows, err := s.pool.Query(ctx, `SELECT fw_id, MAX(timestamp) FROM backups GROUP BY fw_id`)
+	rows, err := s.pool.Query(ctx, `SELECT fw_id, MAX(timestamp) FROM backups WHERE timestamp IS NOT NULL GROUP BY fw_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -819,7 +906,7 @@ func (s *Store) InsertBackup(ctx context.Context, fwID int, ts time.Time, filena
 // ListBackupFilenames returns all backup filenames for a firewall, newest first.
 func (s *Store) ListBackupFilenames(ctx context.Context, fwID int) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`, fwID)
+		`SELECT filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC NULLS LAST`, fwID)
 	if err != nil {
 		return nil, err
 	}
@@ -846,7 +933,7 @@ func (s *Store) DeleteBackupByFilename(ctx context.Context, filename string) err
 // see the complete set, otherwise valid files whose rows fall outside the page
 // would be misclassified as orphans and deleted.
 func (s *Store) ListBackupIDFilenames(ctx context.Context, fwID, limit int) ([]models.Backup, error) {
-	query := `SELECT id, filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC`
+	query := `SELECT id, filename FROM backups WHERE fw_id = $1 ORDER BY timestamp DESC NULLS LAST`
 	args := []any{fwID}
 	if limit > 0 {
 		query += ` LIMIT $2`

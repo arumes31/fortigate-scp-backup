@@ -194,3 +194,46 @@ func TestPendingTOTP_ExpiresAndIsClearedByLogin(t *testing.T) {
 		t.Fatalf("Current() after Login = %+v, want logged-in admin", current)
 	}
 }
+
+// TestLoginRequiredEnforcesAbsoluteLifetime covers sessions kept alive past
+// the absolute limit by continuous activity.
+func TestLoginRequiredEnforcesAbsoluteLifetime(t *testing.T) {
+	t.Parallel()
+
+	manager := New([]byte("0123456789abcdef0123456789abcdef"), false, false)
+	loginRequest := httptest.NewRequest(http.MethodPost, "/login", nil)
+	loginRequest.RemoteAddr = "192.0.2.40:1234"
+	loginResponse := httptest.NewRecorder()
+	if err := manager.Login(loginResponse, loginRequest, "admin", false, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	protected := manager.LoginRequired(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	serve := func(cookie *http.Cookie) int {
+		request := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		request.RemoteAddr = loginRequest.RemoteAddr
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		protected.ServeHTTP(response, request)
+		return response.Code
+	}
+	if code := serve(loginResponse.Result().Cookies()[0]); code != http.StatusNoContent {
+		t.Fatalf("fresh session status = %d, want 204", code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	request.AddCookie(loginResponse.Result().Cookies()[0])
+	sess, err := manager.store.Get(request, sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Values[keyLoginAt] = time.Now().Add(-absoluteTimeout - time.Minute).Unix()
+	agedResponse := httptest.NewRecorder()
+	if err := sess.Save(request, agedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if code := serve(agedResponse.Result().Cookies()[0]); code != http.StatusFound {
+		t.Fatalf("aged session status = %d, want 302 to /login", code)
+	}
+}

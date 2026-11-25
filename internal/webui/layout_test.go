@@ -112,6 +112,15 @@ func TestNavigationGroupsAreDataDriven(t *testing.T) {
 	}
 }
 
+func TestNavigationHideSearchOmitsSearch(t *testing.T) {
+	t.Parallel()
+	items := flattenItems(Navigation(NavigationOptions{Lang: "en", HideSearch: true}))
+	if _, ok := items["search"]; ok {
+		t.Fatal("search navigation item shown with HideSearch")
+	}
+	assertNavItem(t, items, "audit", "/audit", false)
+}
+
 func TestNavigationLocalizesGermanLabels(t *testing.T) {
 	t.Parallel()
 	groups := Navigation(NavigationOptions{Lang: "de", AdmVPN: true})

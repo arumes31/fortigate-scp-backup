@@ -117,9 +117,12 @@ func tokens(text string) (out []string, incomplete bool) {
 	return out, false
 }
 
-// quoteState scans each physical line once. Re-tokenizing the accumulated
-// multiline value after every line would make an adversarial script quadratic.
-func quoteState(text string, quote byte) byte {
+// QuoteState returns the quote byte still open after scanning text from the
+// given state (0 = none). Other config scanners use it to skip the
+// continuation lines of multi-line values. It scans each physical line once;
+// re-tokenizing the accumulated multiline value after every line would make
+// an adversarial script quadratic.
+func QuoteState(text string, quote byte) byte {
 	for i := 0; i < len(text); i++ {
 		if quote != 0 {
 			if text[i] == '\\' {
@@ -171,7 +174,7 @@ func parse(ctx context.Context, plain []byte) (*document, error) {
 		if len(line) > 1<<20 {
 			return nil, fmt.Errorf("configuration value at line %d exceeds the 1 MiB limit", lineNumber)
 		}
-		if quote := quoteState(line, 0); quote != 0 {
+		if quote := QuoteState(line, 0); quote != 0 {
 			var value strings.Builder
 			value.WriteString(line)
 			for quote != 0 && i+1 < len(lines) {
@@ -184,7 +187,7 @@ func parse(ctx context.Context, plain []byte) (*document, error) {
 				}
 				value.WriteByte('\n')
 				value.WriteString(lines[i])
-				quote = quoteState(lines[i], quote)
+				quote = QuoteState(lines[i], quote)
 			}
 			line = value.String()
 		}
@@ -215,6 +218,13 @@ func parse(ctx context.Context, plain []byte) (*document, error) {
 			want := "edit"
 			if fields[0] == "end" {
 				want = "config"
+				// Multi-VDOM backups close each `config vdom` / `edit <name>`
+				// body with a bare `end` (no `next`): pop both frames.
+				if len(fields) == 1 && current.kind == "edit" && current.parent.kind == "config" && current.parent.name == "vdom" && current.parent.parent == root {
+					current.end = i + 1
+					current = current.parent
+					stack = stack[:len(stack)-1]
+				}
 			}
 			if len(fields) != 1 || current.kind != want {
 				return nil, fmt.Errorf("unbalanced block terminator at line %d", lineNumber)

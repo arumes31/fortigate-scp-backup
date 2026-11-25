@@ -27,6 +27,7 @@ const ReportMaxConfigBytes = 16 << 20
 type ReportSourceStore interface {
 	ListFirewallRefs(context.Context) ([]models.FirewallRef, error)
 	ListBackups(context.Context, int) ([]models.Backup, error)
+	LatestBackups(context.Context) ([]models.Backup, error)
 }
 
 // ReportSources provides immutable source selection for configuration reports.
@@ -54,27 +55,25 @@ func (r *ReportSources) List(ctx context.Context) ([]reportmodel.Source, error) 
 	if err != nil {
 		return nil, err
 	}
+	rows, err := r.store.LatestBackups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest := make(map[int]models.Backup, len(rows))
+	for _, b := range rows {
+		if b.ID <= 0 {
+			continue
+		}
+		cur, ok := latest[b.FwID]
+		if !ok || b.Timestamp.After(cur.Timestamp) ||
+			(b.Timestamp.Equal(cur.Timestamp) && b.ID > cur.ID) {
+			latest[b.FwID] = b
+		}
+	}
 	var out []reportmodel.Source
 	for _, fw := range refs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		rows, err := r.store.ListBackups(ctx, fw.ID)
-		if err != nil {
-			return nil, err
-		}
-		var latest models.Backup
-		for _, b := range rows {
-			if b.FwID != fw.ID || b.ID <= 0 {
-				continue
-			}
-			if latest.ID == 0 || b.Timestamp.After(latest.Timestamp) ||
-				(b.Timestamp.Equal(latest.Timestamp) && b.ID > latest.ID) {
-				latest = b
-			}
-		}
-		if latest.ID > 0 {
-			out = append(out, reportSource(fw, latest))
+		if b, ok := latest[fw.ID]; ok {
+			out = append(out, reportSource(fw, b))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FirewallID < out[j].FirewallID })

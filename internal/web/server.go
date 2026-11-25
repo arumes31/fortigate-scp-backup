@@ -25,6 +25,7 @@ import (
 	"github.com/arumes31/fortigate-scp-backup/internal/backup"
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	"github.com/arumes31/fortigate-scp-backup/internal/scheduler"
 	"github.com/arumes31/fortigate-scp-backup/internal/session"
 	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
@@ -396,6 +397,8 @@ func (s *Server) PageBase(r *http.Request, title, active string) webui.BaseData 
 		ConfConv: s.cfg.ExtFgtConfConv,
 		ConfTail: s.cfg.ExtFgtConfTail,
 		Reports:  s.cfg.ExtFgtReports && s.CanReadReports(r),
+		// Mirrors viewerMayAccess, which denies /search to viewers.
+		HideSearch: d.Role == models.RoleViewer,
 	})
 	return base
 }

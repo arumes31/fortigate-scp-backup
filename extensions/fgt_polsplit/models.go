@@ -92,6 +92,10 @@ type OrigPolicy struct {
 	NAT      string   `json:"nat"`
 	Status   string   `json:"status"` // "" = enable (FortiOS default)
 	Comments string   `json:"comments"`
+	// ScopeModifiers are the enabled negate / internet-service keys
+	// (e.g. "srcaddr-negate", "internet-service"): they change what
+	// srcaddr/dstaddr/service mean, so such policies cannot be split.
+	ScopeModifiers []string `json:"scope_modifiers,omitempty"`
 
 	// CloneLines are verbatim `set …` lines (srcintf/dstintf/action/schedule/
 	// NAT/UTM profiles/…) carried unchanged into every split policy.

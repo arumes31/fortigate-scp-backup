@@ -11,15 +11,20 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/crypto"
 	"github.com/arumes31/fortigate-scp-backup/internal/database"
+	"github.com/arumes31/fortigate-scp-backup/internal/models"
 	appsecurity "github.com/arumes31/fortigate-scp-backup/internal/security"
 )
 
 // dbOpTimeout bounds each individual store operation.
 const dbOpTimeout = 30 * time.Second
+
+// partSuffix marks an in-progress plaintext download next to its final name.
+const partSuffix = ".part"
 
 // retries mirrors the default retries=3 of the original backup_firewall.
 const retries = 3
@@ -88,8 +93,12 @@ func (s *Service) backup(fwID int) {
 	if mkErr := os.MkdirAll(fwDir, 0o750); mkErr != nil {
 		s.logger.Error("Failed to create backup directory", "dir", fwDir, "err", mkErr)
 	}
-	filename := timestamp + ".conf"
+	// UTC so the repeated DST hour cannot reuse an earlier backup's filename.
+	filename := now.UTC().Format(database.BackupTimeLayout) + ".conf"
 	localPath := filepath.Join(fwDir, filename)
+	// Download to a side file; finalizeFile moves the encrypted result to
+	// localPath, so plaintext never sits under the final name.
+	partPath := localPath + partSuffix
 	// Stored DB filename uses forward slashes: "<fwID>/<timestamp>.conf".
 	dbFilename := path.Join(strconv.Itoa(fwID), filename)
 	status := "Success"
@@ -127,12 +136,12 @@ func (s *Service) backup(fwID int) {
 			"fw_id", fwID, "fqdn", fw.FQDN, "port", fw.SSHPort, "attempt", attempt, "retries", retries)
 
 		s.setStage(fwID, fmt.Sprintf("downloading configuration (attempt %d/%d)", attempt, retries))
-		if tErr := s.transfer(fw.FQDN, fw.Username, fw.Password, fw.SSHPort, s.cfg.FortigateConfigPath, localPath, s.cfg.SCPTimeout); tErr != nil {
+		if tErr := s.transfer(fw.FQDN, fw.Username, fw.Password, fw.SSHPort, s.cfg.FortigateConfigPath, partPath, s.cfg.SCPTimeout); tErr != nil {
 			s.logger.Error("Backup attempt failed", "attempt", attempt, "retries", retries, "fqdn", fw.FQDN, "err", tErr)
 			// Always discard a partially written config before retrying or failing,
 			// so a truncated (non-empty) file never lingers on disk.
-			if rmErr := os.Remove(localPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-				s.logger.Warn("Failed to remove partial backup file", "path", localPath, "err", rmErr)
+			if rmErr := os.Remove(partPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				s.logger.Warn("Failed to remove partial backup file", "path", partPath, "err", rmErr)
 			}
 			if attempt == retries {
 				status = "Failed: " + tErr.Error()
@@ -144,15 +153,15 @@ func (s *Service) backup(fwID int) {
 		}
 
 		// From here, errors mirror Python's generic except: mark failed and break.
-		info, statErr := os.Stat(localPath)
+		info, statErr := os.Stat(partPath)
 		if statErr != nil {
 			status = "Failed: Backup file was not created"
-			removeIfEmpty(localPath)
+			removeIfEmpty(partPath)
 			failureEmail("Backup file was not created")
 			break
 		}
 		if info.Size() == 0 {
-			_ = os.Remove(localPath)
+			_ = os.Remove(partPath)
 			status = "Failed: Backup file is empty"
 			failureEmail("Backup file is empty")
 			break
@@ -160,7 +169,7 @@ func (s *Service) backup(fwID int) {
 
 		// Compute size/checksum on the plaintext config, then encrypt at rest.
 		s.setStage(fwID, "verifying & encrypting")
-		size, checksum, finErr := s.finalizeFile(localPath)
+		size, checksum, finErr := s.finalizeFile(partPath, localPath)
 		if finErr != nil {
 			status = "Failed: " + finErr.Error()
 			failureEmail(finErr.Error())
@@ -170,7 +179,12 @@ func (s *Service) backup(fwID int) {
 		s.setStage(fwID, "storing & pruning retention")
 		if dbErr := s.recordSuccess(fwID, fw.RetentionCount, now, dbFilename, fwDir, size, checksum); dbErr != nil {
 			status = "Failed: " + dbErr.Error()
-			removeIfEmpty(localPath)
+			if errors.Is(dbErr, errBackupNotRecorded) {
+				// No row points at the file and nothing sweeps orphans, so drop it now.
+				_ = os.Remove(localPath)
+			} else {
+				removeIfEmpty(localPath)
+			}
 			failureEmail(dbErr.Error())
 			break
 		}
@@ -192,11 +206,13 @@ func (s *Service) backup(fwID int) {
 	}
 }
 
-// finalizeFile computes the size and SHA-256 checksum of the plaintext backup,
-// then atomically replaces the file on disk with ciphertext.
+// finalizeFile computes the size and SHA-256 checksum of the plaintext backup
+// at partPath, atomically writes the ciphertext to localPath and always removes
+// partPath. An existing localPath is never overwritten.
 // The returned size/checksum always describe the plaintext config.
-func (s *Service) finalizeFile(localPath string) (int64, string, error) {
-	plain, err := os.ReadFile(localPath)
+func (s *Service) finalizeFile(partPath, localPath string) (int64, string, error) {
+	defer s.removePlaintext(partPath)
+	plain, err := os.ReadFile(partPath)
 	if err != nil {
 		return 0, "", fmt.Errorf("read backup: %w", err)
 	}
@@ -206,15 +222,16 @@ func (s *Service) finalizeFile(localPath string) (int64, string, error) {
 
 	enc, err := s.encrypt(plain)
 	if err != nil {
-		s.removePlaintext(localPath)
 		return 0, "", fmt.Errorf("encrypt backup: %w", err)
 	}
 	if !crypto.HasHeader(enc) {
-		s.removePlaintext(localPath)
 		return 0, "", errors.New("backup encryption requires an enabled cipher")
 	}
+	// Pre-UTC filenames used local time, so a new name can match an older backup.
+	if _, err := os.Lstat(localPath); err == nil {
+		return 0, "", fmt.Errorf("backup file %s already exists", filepath.Base(localPath))
+	}
 	if err := s.replaceFile(localPath, enc); err != nil {
-		s.removePlaintext(localPath)
 		return 0, "", fmt.Errorf("write encrypted backup: %w", err)
 	}
 	return size, checksum, nil
@@ -226,6 +243,9 @@ func (s *Service) removePlaintext(path string) {
 	}
 }
 
+// errBackupNotRecorded marks a recordSuccess failure before the backup row existed.
+var errBackupNotRecorded = errors.New("backup row not recorded")
+
 // recordSuccess inserts the backup row, prunes retention overflow, runs cleanup
 // and records the successful backup time and status.
 func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilename, fwDir string, size int64, checksum string) error {
@@ -233,7 +253,7 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 	defer cancel()
 
 	if err := s.store.InsertBackup(ctx, fwID, ts, dbFilename, size, checksum); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errBackupNotRecorded, err)
 	}
 
 	all, err := s.store.ListBackupFilenames(ctx, fwID)
@@ -269,7 +289,7 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 		}
 	}
 
-	s.cleanNonexistentBackups(ctx, fwID, fwDir)
+	s.cleanNonexistentBackups(ctx, fwID, fwDir, dbFilename)
 
 	if err := s.store.UpdateFirewallSuccess(ctx, fwID, ts, "Success"); err != nil {
 		return err
@@ -277,23 +297,31 @@ func (s *Service) recordSuccess(fwID, retentionCount int, ts time.Time, dbFilena
 	return nil
 }
 
-// cleanNonexistentBackups removes database rows whose file is gone and deletes
-// files on disk with no database row. Never fails the caller.
-func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir string) {
-	// Fetch every row (limit 0 = unlimited): the orphan sweep below deletes any
-	// on-disk file not present in this set, so a capped/partial list would delete
-	// valid backups whose rows fall outside the page.
+// cleanNonexistentBackups removes database rows whose file is gone and the
+// app's own leftover temp files. Other files without a row are kept: deleting
+// them could wipe history whenever the database and volume disagree. Never
+// fails the caller.
+func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir, current string) {
 	backups, err := s.store.ListBackupIDFilenames(ctx, fwID, 0)
 	if err != nil {
 		s.logger.Error("Failed to clean non-existent backups", "fw_id", fwID, "err", err)
 		return
 	}
-
-	dbFilenames := make(map[string]struct{}, len(backups))
-	for _, b := range backups {
-		dbFilenames[b.Filename] = struct{}{}
+	for _, b := range s.missingBackupRows(fwID, backups, current) {
+		s.logger.Warn("Removing non-existent backup entry", "filename", b.Filename)
+		if delErr := s.store.DeleteBackupByID(ctx, b.ID); delErr != nil {
+			s.logger.Error("Failed to remove backup entry", "id", b.ID, "err", delErr)
+		}
 	}
+	s.sweepTempFiles(fwDir)
+}
 
+// missingBackupRows returns the rows whose file no longer exists. It returns
+// none when no file other than the just-written current one is present: that
+// points to an unmounted or replaced backup volume, not to deleted backups.
+func (s *Service) missingBackupRows(fwID int, backups []models.Backup, current string) []models.Backup {
+	var missing []models.Backup
+	othersPresent := false
 	for _, b := range backups {
 		diskPath, pathErr := appsecurity.JoinWithin(s.cfg.BackupDir, b.Filename)
 		if pathErr != nil {
@@ -301,31 +329,38 @@ func (s *Service) cleanNonexistentBackups(ctx context.Context, fwID int, fwDir s
 			continue
 		}
 		if _, statErr := os.Stat(diskPath); errors.Is(statErr, os.ErrNotExist) {
-			s.logger.Warn("Removing non-existent backup entry", "filename", b.Filename)
-			if delErr := s.store.DeleteBackupByID(ctx, b.ID); delErr != nil {
-				s.logger.Error("Failed to remove backup entry", "id", b.ID, "err", delErr)
-			}
+			missing = append(missing, b)
+		} else if b.Filename != current {
+			othersPresent = true
 		}
 	}
+	if len(missing) > 0 && !othersPresent {
+		s.logger.Error("No earlier backup files found on disk; backup volume may be unmounted, keeping database rows",
+			"fw_id", fwID, "missing", len(missing))
+		return nil
+	}
+	return missing
+}
 
+// sweepTempFiles removes leftover download (.part) and encryption temp files.
+func (s *Service) sweepTempFiles(fwDir string) {
 	entries, err := os.ReadDir(fwDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			s.logger.Error("Failed to scan firewall directory for orphans", "dir", fwDir, "err", err)
+			s.logger.Error("Failed to scan firewall directory for temp files", "dir", fwDir, "err", err)
 		}
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
+		name := entry.Name()
+		isTemp := strings.HasPrefix(name, encryptTempPrefix) || strings.HasSuffix(name, partSuffix)
+		if !entry.Type().IsRegular() || !isTemp {
 			continue
 		}
-		rel := path.Join(strconv.Itoa(fwID), entry.Name())
-		if _, ok := dbFilenames[rel]; !ok {
-			orphan := filepath.Join(fwDir, entry.Name())
-			s.logger.Warn("Removing orphaned file", "path", orphan)
-			if rmErr := os.Remove(orphan); rmErr != nil {
-				s.logger.Error("Failed to remove orphaned file", "path", orphan, "err", rmErr)
-			}
+		p := filepath.Join(fwDir, name)
+		s.logger.Warn("Removing leftover temp file", "path", p)
+		if rmErr := os.Remove(p); rmErr != nil {
+			s.logger.Error("Failed to remove leftover temp file", "path", p, "err", rmErr)
 		}
 	}
 }

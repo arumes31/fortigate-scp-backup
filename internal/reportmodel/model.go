@@ -4,7 +4,8 @@ package reportmodel
 import "time"
 
 const (
-	Version       = "3"
+	// Version 4: WAN-management finding also covers default-route devices and SNMP.
+	Version       = "4"
 	SchemaVersion = 2
 )
 

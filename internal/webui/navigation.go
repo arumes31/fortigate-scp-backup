@@ -1,5 +1,7 @@
 package webui
 
+import "slices"
+
 // NavGroup is one named group in the permanent desktop navigation rail.
 type NavGroup struct {
 	Key   string
@@ -27,6 +29,8 @@ type NavigationOptions struct {
 	ConfConv bool
 	ConfTail bool
 	Reports  bool
+	// HideSearch omits configuration search for roles that may not read secrets.
+	HideSearch bool
 }
 
 // Navigation builds a fresh grouped navigation model for one request.
@@ -48,6 +52,9 @@ func Navigation(options NavigationOptions) []NavGroup {
 			current("licenses", labels.licenses, "/licenses", "nav-licenses"),
 			current("activity", labels.activity, "/activity_log", "nav-activity"),
 		}},
+	}
+	if options.HideSearch {
+		groups[0].Items = slices.DeleteFunc(groups[0].Items, func(item NavItem) bool { return item.Key == "search" })
 	}
 	if options.Reports {
 		groups[0].Items = append(groups[0].Items, current("reports", labels.reports, "/reports/", "nav-activity"))

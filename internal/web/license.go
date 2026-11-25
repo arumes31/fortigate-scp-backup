@@ -36,6 +36,7 @@ import (
 
 	graylogdevicedata "github.com/arumes31/fortigate-scp-backup/extensions/graylog_device_data"
 	"github.com/arumes31/fortigate-scp-backup/internal/models"
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
 
 // licenseWarnDays / licenseCritDays classify how soon an entitlement expiry
@@ -107,7 +108,7 @@ func sshRunCommands(fw models.Firewall, hostKey ssh.HostKeyCallback, cmds []stri
 		Timeout:         10 * time.Second,
 	}
 	addr := net.JoinHostPort(fw.FQDN, strconv.Itoa(fw.SSHPort))
-	client, err := ssh.Dial("tcp", addr, cfg)
+	client, err := sshhostkey.Dial(addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("ssh connect: %w", err)
 	}

@@ -1411,3 +1411,40 @@ func chainIDForUser(t *testing.T, s *store, user string) string {
 	}
 	return chainID
 }
+
+// TestPruneRetentionIncludesUndeliverableHistory: a permanently failed ticket is
+// retried every few hours (bumping updated_at_ns), so it ages by seal time and
+// is pruned with its events; transient retries are kept.
+func TestPruneRetentionIncludesUndeliverableHistory(t *testing.T) {
+	base := time.Date(2026, time.September, 9, 10, 0, 0, 0, time.UTC)
+	s := newTestStore(t, base)
+	if _, err := s.applyPoll(context.Background(), pollBatch{
+		EndedAt: base.Add(30 * time.Minute),
+		Events: []Event{
+			testEvent(1, "fw-a", "failed", "prune-failed", base),
+			testEvent(1, "fw-a", "retry", "prune-retry", base),
+		},
+	}, 30*time.Minute, maxTicketDescriptionBytes); err != nil {
+		t.Fatal(err)
+	}
+	recent := base.Add(39 * 24 * time.Hour)
+	for user, state := range map[string]string{"failed": deliveryStateFailed, "retry": deliveryStateRetry} {
+		if err := s.markDeliveryFailure(context.Background(), chainIDForUser(t, s, user), state,
+			recent.Add(time.Hour), context.Canceled, recent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := s.prune(context.Background(), base.Add(40*24*time.Hour), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 || countRowsWhere(t, s, "chains", "user = 'failed'") != 0 {
+		t.Fatalf("pruned = %d, failed chains left = %d", deleted, countRowsWhere(t, s, "chains", "user = 'failed'"))
+	}
+	if got := countRowsWhere(t, s, "events", "user = 'failed'"); got != 0 {
+		t.Fatalf("events of pruned failed chain remain: %d", got)
+	}
+	if got := countRowsWhere(t, s, "chains", "user = 'retry'"); got != 1 {
+		t.Fatalf("retry chain was pruned: %d", got)
+	}
+}

@@ -295,3 +295,47 @@ func TestListDNSIssues(t *testing.T) {
 		t.Errorf("site fallback = %q, want %q", is.Site, "cust")
 	}
 }
+
+// TestEndpointEditResetsDNSCheck: changing dns_name_full or remoteip_full via
+// edit or CSV import drops the old verdict so the worker re-checks at once;
+// an edit that keeps both leaves the result alone.
+func TestEndpointEditResetsDNSCheck(t *testing.T) {
+	e, ids := newBulkTestExtension(t, 1)
+	id := ids[0]
+	markOK := func() {
+		t.Helper()
+		if _, err := e.db.Exec(`UPDATE vpn_config SET dns_name_full = 'fw.adm.example',
+			last_dns_check = '2026-01-01 00:00:00', last_dns_status = 'ok', last_dns_resolved = '10.105.1.1' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load := func() *VpnConfig {
+		t.Helper()
+		c, err := e.getConfig(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	for _, tt := range []struct {
+		name  string
+		edit  func(c *VpnConfig) error
+		reset bool
+	}{
+		{"edit without endpoint change", func(c *VpnConfig) error { c.Standort = "moved"; return e.updateConfigFull(c) }, false},
+		{"edit dns name", func(c *VpnConfig) error { c.DnsNameFull = "new.adm.example"; return e.updateConfigFull(c) }, true},
+		{"import remote ip", func(c *VpnConfig) error { c.RemoteipFull = "10.105.1.9"; return e.updateConfigImport(id, c) }, true},
+		{"import without endpoint change", func(c *VpnConfig) error { return e.updateConfigImport(id, c) }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			markOK()
+			if err := tt.edit(load()); err != nil {
+				t.Fatal(err)
+			}
+			c := load()
+			if reset := c.LastDnsCheck == nil && c.LastDnsStatus == dnsStatusUnknown && c.LastDnsResolved == ""; reset != tt.reset {
+				t.Fatalf("reset = %v, want %v (check=%v status=%q resolved=%q)", reset, tt.reset, c.LastDnsCheck, c.LastDnsStatus, c.LastDnsResolved)
+			}
+		})
+	}
+}

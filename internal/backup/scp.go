@@ -11,6 +11,8 @@ import (
 
 	scp "github.com/bramvdbogaerde/go-scp"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/sshhostkey"
 )
 
 // transfer establishes an SSH connection to the firewall, performs a best-effort
@@ -28,7 +30,7 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	}
 
 	addr := net.JoinHostPort(fqdn, strconv.Itoa(sshPort))
-	conn, err := ssh.Dial("tcp", addr, clientConfig)
+	conn, err := sshhostkey.Dial(addr, clientConfig)
 	if err != nil {
 		return fmt.Errorf("ssh connect: %w", err)
 	}
@@ -54,7 +56,13 @@ func (s *Service) transfer(fqdn, username, password string, sshPort int, remoteP
 	s.logger.Debug("SSH connection established with keep-alive", "fqdn", fqdn)
 
 	// Best-effort remote file check (non-fatal), mirroring `ls REMOTE_CONFIG_PATH`.
+	// A session has no timeout of its own, so closing the connection is the only
+	// way to unblock an `ls` the device never answers.
+	lsTimer := time.AfterFunc(clientConfig.Timeout, func() { _ = conn.Close() })
 	s.remoteCheck(conn, remotePath, fqdn)
+	if !lsTimer.Stop() {
+		return fmt.Errorf("remote file check timed out after %s", clientConfig.Timeout)
+	}
 
 	client, err := scp.NewClientBySSH(conn)
 	if err != nil {
@@ -104,11 +112,14 @@ func (s *Service) TestConnection(fwID int) (string, error) {
 		Timeout:         time.Duration(s.cfg.SCPTimeout) * time.Second,
 	}
 	addr := net.JoinHostPort(fw.FQDN, strconv.Itoa(fw.SSHPort))
-	conn, err := ssh.Dial("tcp", addr, clientConfig)
+	conn, err := sshhostkey.Dial(addr, clientConfig)
 	if err != nil {
 		return "", fmt.Errorf("SSH connection failed: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
+	// Bound the session and `ls` below, which have no timeout of their own.
+	killer := time.AfterFunc(clientConfig.Timeout, func() { _ = conn.Close() })
+	defer killer.Stop()
 
 	session, err := conn.NewSession()
 	if err != nil {

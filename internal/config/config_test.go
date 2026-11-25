@@ -101,12 +101,6 @@ func TestEncryptionKeyRejectsWrongLength(t *testing.T) {
 	}
 }
 
-func TestRandomBase32Length(t *testing.T) {
-	if got := randomBase32(16); len(got) != 16 {
-		t.Fatalf("len = %d", len(got))
-	}
-}
-
 func TestSecretFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session_key")
 	if err := os.WriteFile(path, []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {

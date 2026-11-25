@@ -336,12 +336,13 @@ func GenerateOutput2(p Policy) (string, error) {
 		return "", fmt.Errorf("no services defined for this policy")
 	}
 	var sb strings.Builder
+	taken := map[string]bool{}
 	for _, svc := range filteredServices {
 		name := svc.Name
 		if svc.Type == "custom" {
 			name = "custom_" + svc.Name
 		}
-		policyName := limitString(fmt.Sprintf("%s-%s", p.PolicyName, name), 32)
+		policyName := uniquePolicyName(taken, fmt.Sprintf("%s-%s", p.PolicyName, name))
 		cli, err := generateSinglePolicyCLI(p, policyName, []Service{svc})
 		if err != nil {
 			return "", err
@@ -391,6 +392,7 @@ func GenerateOutput3(p Policy) (string, error) {
 	}
 
 	var sb strings.Builder
+	taken := map[string]bool{}
 	for _, src := range srcIntfs {
 		for _, dst := range dstIntfs {
 			pCopy := p
@@ -398,7 +400,7 @@ func GenerateOutput3(p Policy) (string, error) {
 			pCopy.DstInterfaces = []string{dst}
 
 			if dstISDBActive {
-				policyName := limitString(fmt.Sprintf("%s-%s-%s", p.PolicyName, src, dst), 32)
+				policyName := uniquePolicyName(taken, fmt.Sprintf("%s-%s-%s", p.PolicyName, src, dst))
 				cli, err := generateSinglePolicyCLI(pCopy, policyName, nil)
 				if err != nil {
 					return "", err
@@ -412,7 +414,7 @@ func GenerateOutput3(p Policy) (string, error) {
 				if svc.Type == "custom" {
 					name = "custom_" + svc.Name
 				}
-				policyName := limitString(fmt.Sprintf("%s-%s-%s-%s", p.PolicyName, src, dst, name), 32)
+				policyName := uniquePolicyName(taken, fmt.Sprintf("%s-%s-%s-%s", p.PolicyName, src, dst, name))
 
 				cli, err := generateSinglePolicyCLI(pCopy, policyName, []Service{svc})
 				if err != nil {
@@ -713,6 +715,21 @@ func generateSinglePolicyCLI(p Policy, policyName string, services []Service) (s
 
 	sb.WriteString("next\nend\n")
 	return sb.String(), nil
+}
+
+// uniquePolicyName truncates base to FortiOS's 32-byte policy-name limit and,
+// like polsplit's namer, appends _2, _3, … when that name is already taken in
+// this batch: FortiOS requires unique policy names per VDOM, and truncation
+// can map different splits onto the same prefix.
+func uniquePolicyName(taken map[string]bool, base string) string {
+	const maxLen = 32
+	name := limitString(base, maxLen)
+	for i := 2; taken[strings.ToLower(name)]; i++ {
+		suffix := fmt.Sprintf("_%d", i)
+		name = limitString(base, maxLen-len(suffix)) + suffix
+	}
+	taken[strings.ToLower(name)] = true
+	return name
 }
 
 // limitString truncates s to at most limit BYTES without splitting a

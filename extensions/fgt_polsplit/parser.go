@@ -8,6 +8,15 @@ import (
 	"strings"
 )
 
+// scopeModifierKeys invert or replace the srcaddr/dstaddr/service match, so
+// the parsed address/service lists no longer describe the policy's scope.
+var scopeModifierKeys = map[string]bool{
+	"srcaddr-negate": true, "dstaddr-negate": true, "service-negate": true,
+	"srcaddr6-negate": true, "dstaddr6-negate": true,
+	"internet-service": true, "internet-service-src": true,
+	"internet-service6": true, "internet-service6-src": true,
+}
+
 // clonePolicyKeys are the `set` keys copied verbatim from the original policy
 // into every split policy: interfaces, action/schedule, NAT and UTM/shaping
 // settings. Deliberately absent: name/uuid/srcaddr/dstaddr/service (replaced
@@ -89,6 +98,7 @@ type addrEntry struct {
 	subnet  string // "ip mask"
 	startIP string
 	endIP   string
+	intf    string // associated-interface: object only usable on that interface
 }
 
 type svcEntry struct {
@@ -213,7 +223,9 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 		}
 		inv := getInv(currentVDOM())
 		inv.takenNames[strings.ToLower(addr.name)] = true
-		if cidr := addr.cidr(); cidr != "" {
+		// An interface-bound object is rejected by FortiOS in policies on
+		// other interfaces, so it is never offered for reuse.
+		if cidr := addr.cidr(); cidr != "" && addr.intf == "" {
 			inv.addrByCIDR[cidr] = append(inv.addrByCIDR[cidr], addr.name)
 		}
 		addr = nil
@@ -417,6 +429,8 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 					addr.startIP = val
 				case "end-ip":
 					addr.endIP = val
+				case "associated-interface":
+					addr.intf = strings.Trim(val, `"`)
 				}
 			case grp != nil && (f.section == "firewall addrgrp" || f.section == "firewall service group"):
 				if key == "member" {
@@ -461,6 +475,9 @@ func ParseBackup(content string, policyID int, targetVDOM string) *ParsedBackup 
 					pol.pol.Status = val
 				case "comments":
 					pol.pol.Comments = strings.Trim(val, `"`)
+				}
+				if scopeModifierKeys[key] && val == "enable" {
+					pol.pol.ScopeModifiers = append(pol.pol.ScopeModifiers, key)
 				}
 			}
 		}

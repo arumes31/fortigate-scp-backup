@@ -143,6 +143,38 @@ func TestStoreIntegration(t *testing.T) {
 	if time.Since(last) > time.Hour {
 		t.Fatalf("last backup time looks wrong: %v", last)
 	}
+	// A legacy NULL-timestamp row must sort last and not break scans.
+	if _, err := store.pool.Exec(ctx, `INSERT INTO backups (fw_id, timestamp, filename) VALUES ($1, NULL, 'legacy.conf')`, id); err != nil {
+		t.Fatalf("insert legacy backup: %v", err)
+	}
+	if list, err := store.ListBackups(ctx, id); err != nil || len(list) != 2 || list[0].Filename != "x.conf" {
+		t.Fatalf("list backups with NULL timestamp = %+v, %v", list, err)
+	}
+	if names, err := store.ListBackupFilenames(ctx, id); err != nil || len(names) != 2 || names[0] != "x.conf" {
+		t.Fatalf("list backup filenames with NULL timestamp = %v, %v", names, err)
+	}
+	if rows, err := store.ListBackupIDFilenames(ctx, id, 1); err != nil || len(rows) != 1 || rows[0].Filename != "x.conf" {
+		t.Fatalf("list backup id/filenames with NULL timestamp = %+v, %v", rows, err)
+	}
+	if last2, ok, err := store.LastBackupTime(ctx, id); err != nil || !ok || !last2.Equal(last) {
+		t.Fatalf("last backup with NULL timestamp row: %v ok=%v err=%v", last2, ok, err)
+	}
+	latest, err := store.LatestBackups(ctx)
+	if err != nil {
+		t.Fatalf("latest backups: %v", err)
+	}
+	var latestForFw []models.Backup
+	for _, b := range latest {
+		if b.FwID == id {
+			latestForFw = append(latestForFw, b)
+		}
+	}
+	if len(latestForFw) != 1 || latestForFw[0].Filename != "x.conf" {
+		t.Fatalf("latest backups for firewall = %+v", latestForFw)
+	}
+	if _, err := store.pool.Exec(ctx, `DELETE FROM backups WHERE filename = 'legacy.conf'`); err != nil {
+		t.Fatalf("delete legacy backup: %v", err)
+	}
 
 	if _, err := store.DashboardStats(ctx); err != nil {
 		t.Fatalf("dashboard stats: %v", err)

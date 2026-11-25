@@ -6,6 +6,8 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/md5" //nolint:gosec // RFC 3579 mandates HMAC-MD5 for Message-Authenticator.
 	"log/slog"
 	"math"
 	"net"
@@ -16,6 +18,7 @@ import (
 	"github.com/pquerna/otp/hotp"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2869"
 
 	"github.com/arumes31/fortigate-scp-backup/internal/config"
 )
@@ -48,6 +51,8 @@ func (a *Authenticator) VerifyRadius(username, password string) ([]string, bool)
 	defer cancel()
 
 	packet := radius.New(radius.CodeAccessRequest, []byte(a.cfg.RadiusSecret))
+	// Placeholder first (BlastRADIUS guidance); signed once all attributes are set.
+	packet.Add(rfc2869.MessageAuthenticator_Type, make(radius.Attribute, 16))
 	if err := rfc2865.UserName_SetString(packet, username); err != nil {
 		a.logger.Error("radius: set username", "err", err)
 		return nil, false
@@ -56,6 +61,12 @@ func (a *Authenticator) VerifyRadius(username, password string) ([]string, bool)
 		a.logger.Error("radius: set password", "err", err)
 		return nil, false
 	}
+	mac, err := messageAuthenticator(packet, packet.Authenticator)
+	if err != nil {
+		a.logger.Error("radius: sign request", "err", err)
+		return nil, false
+	}
+	packet.Set(rfc2869.MessageAuthenticator_Type, mac)
 
 	addr := net.JoinHostPort(a.cfg.RadiusServer, strconv.Itoa(a.cfg.RadiusPort))
 	response, err := radius.Exchange(ctx, packet, addr)
@@ -64,10 +75,48 @@ func (a *Authenticator) VerifyRadius(username, password string) ([]string, bool)
 		return nil, false
 	}
 	if response.Code == radius.CodeAccessAccept {
+		if !validResponseAuthenticator(response, packet.Authenticator) {
+			a.logger.Warn("radius: Access-Accept without a valid Message-Authenticator rejected", "user", username, "server", addr)
+			return nil, false
+		}
 		return radiusGroups(response), true
 	}
 	a.logger.Debug("radius: rejected", "user", username, "code", response.Code)
 	return nil, false
+}
+
+// messageAuthenticator computes the RFC 3579 §3.2 Message-Authenticator: an
+// HMAC-MD5, keyed with the shared secret, over p's wire form with the given
+// authenticator in the header and the Message-Authenticator value zeroed.
+func messageAuthenticator(p *radius.Packet, authenticator [16]byte) (radius.Attribute, error) {
+	q := *p
+	q.Authenticator = authenticator
+	q.Attributes = make(radius.Attributes, len(p.Attributes))
+	for i, avp := range p.Attributes {
+		if avp.Type == rfc2869.MessageAuthenticator_Type {
+			avp = &radius.AVP{Type: avp.Type, Attribute: make(radius.Attribute, 16)}
+		}
+		q.Attributes[i] = avp
+	}
+	// MarshalBinary keeps the header authenticator; Encode would recompute it.
+	wire, err := q.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	mac := hmac.New(md5.New, p.Secret)
+	mac.Write(wire)
+	return mac.Sum(nil), nil
+}
+
+// validResponseAuthenticator reports whether a response carries exactly one
+// Message-Authenticator computed over it with the request's authenticator.
+func validResponseAuthenticator(response *radius.Packet, requestAuthenticator [16]byte) bool {
+	values, err := rfc2869.MessageAuthenticator_Gets(response)
+	if err != nil || len(values) != 1 || len(values[0]) != 16 {
+		return false
+	}
+	want, err := messageAuthenticator(response, requestAuthenticator)
+	return err == nil && hmac.Equal(values[0], want)
 }
 
 // radiusGroups collects the Filter-Id and Class values of an Access-Accept.

@@ -135,6 +135,23 @@ func TestChangePasswordErrorDoesNotEchoValues(t *testing.T) {
 	}
 }
 
+func TestChangePasswordRateLimitsWrongCurrentPassword(t *testing.T) {
+	store := &passwordStore{ok: false}
+	srv := testServer(t)
+	srv.store = store
+	form := url.Values{
+		"old_password":     {"wrong-current-value"},
+		"new_password":     {"new-password-value"},
+		"confirm_password": {"new-password-value"},
+	}
+	for range srv.limiter.max + 2 {
+		srv.handleChangePassword(httptest.NewRecorder(), passwordRequest(http.MethodPost, "/change_password", form, false))
+	}
+	if len(store.calls) != srv.limiter.max {
+		t.Fatalf("store calls = %d, want %d before blocking", len(store.calls), srv.limiter.max)
+	}
+}
+
 func TestChangePasswordBlocksRadiusUsers(t *testing.T) {
 	store := &passwordStore{ok: true}
 	srv := testServer(t)

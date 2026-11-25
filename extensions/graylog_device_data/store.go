@@ -43,6 +43,9 @@ func (e *Extension) switchFirewalls() ([]firewallRef, error) {
 		}
 		all = append(all, fw)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	withSwitches, err := e.switchCapableIDs()
 	if err != nil {
@@ -60,6 +63,59 @@ func (e *Extension) switchFirewalls() ([]firewallRef, error) {
 		}
 	}
 	return out, nil
+}
+
+// existingFirewallIDs lists every firewall id in the shared store. Pruning keys
+// on this rather than switchFirewalls(): a partly rebuilt audit cache would
+// make live firewalls look switch-less and wipe their history.
+func (e *Extension) existingFirewallIDs() ([]int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	rows, err := e.pool.Query(ctx, `SELECT id FROM firewalls`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, scanErr
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// perFirewallTables are every table keyed by fw_id (see Mount's schema list).
+var perFirewallTables = []string{
+	"devices", "stp_ports", "stp_events", "mac_sightings", "switch_edges", "wifi_clients",
+	"vpn_status", "ha_status", "mac_enrich", "switch_health", "live_routes", "sdwan_health",
+	"iface_stats", "diag_status", "ap_location", "port_counters", "mac_violations",
+}
+
+// pruneDeletedFirewalls drops rows of firewalls no longer in liveIDs. An empty
+// list is a no-op: a failed or empty firewall listing must never wipe everything.
+func (e *Extension) pruneDeletedFirewalls(liveIDs []int) error {
+	if len(liveIDs) == 0 {
+		return nil
+	}
+	args := make([]any, len(liveIDs))
+	for i, id := range liveIDs {
+		args[i] = id
+	}
+	notIn := "fw_id NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(liveIDs)), ",") + ")"
+	tx, err := e.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, table := range perFirewallTables {
+		if _, err := tx.Exec("DELETE FROM "+table+" WHERE "+notIn, args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // vpnConfigSources resolves the Graylog `source` name(s) for a firewall from
@@ -184,7 +240,7 @@ func (e *Extension) switchCapableIDs() (map[int]bool, error) {
 // package's results_json probe (switchCapableIDs) has been verified against.
 // When bumping auditSchemaVersion in internal/web/audit_cache.go, confirm the
 // "switches" key still decodes here and raise this constant.
-const auditCacheMaxKnownSchema = 8
+const auditCacheMaxKnownSchema = 9
 
 // deviceRetention bounds how long a device row survives without being seen
 // again. Retaining rows across refreshes (instead of wiping them) preserves
@@ -464,7 +520,7 @@ func (e *Extension) storeLiveStpCheck(fwID int, sw, port, role, state, guard str
 
 	// last_change must be RFC3339 (matching blockedPortIsToday's parsing
 	// contract and every Graylog-sourced row); updated_at keeps the
-	// space-separated local layout the retention prune's lexicographic
+	// space-separated UTC storageTimeLayout the retention prune's lexicographic
 	// comparison against other rows relies on.
 	nowUpdatedAt := now.UTC().Format(storageTimeLayout)
 	lastChange := now.UTC().Format(time.RFC3339)
@@ -926,7 +982,7 @@ func (e *Extension) storeMacSightings(fwID int, ports []MacPort, now string) err
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM mac_sightings WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -997,16 +1053,16 @@ const dualHomeAccessMax = 4
 const dualHomeFreshWindow = 3 * time.Hour
 
 // dualHomeFresh reports whether sighting ts is recent enough, relative to the
-// MAC's newest sighting, to count as a live attachment. Timestamps use the fixed
-// "2006-01-02 15:04:05" layout; an unparseable one is treated as fresh (fail
-// open — never hide a real attachment on a parse glitch).
+// MAC's newest sighting, to count as a live attachment. Timestamps are stored
+// UTC in storageTimeLayout; an unparseable one is treated as fresh (fail open —
+// never hide a real attachment on a parse glitch). Rows written in local time
+// before the UTC switch can misjudge freshness until the next sweep rewrites them.
 func dualHomeFresh(ts, newest string) bool {
 	if ts == "" || ts == newest {
 		return true
 	}
-	const layout = "2006-01-02 15:04:05"
-	t, e1 := time.ParseInLocation(layout, ts, time.Local)
-	n, e2 := time.ParseInLocation(layout, newest, time.Local)
+	t, e1 := time.ParseInLocation(storageTimeLayout, ts, time.UTC)
+	n, e2 := time.ParseInLocation(storageTimeLayout, newest, time.UTC)
 	if e1 != nil || e2 != nil {
 		return true
 	}
@@ -1280,7 +1336,7 @@ func (e *Extension) storeSwitchEdges(fwID int, edges []SwitchEdge, now string) e
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM switch_edges WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1333,7 +1389,7 @@ func (e *Extension) storeWifi(fwID int, clients []WifiClient, now string) error 
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM wifi_clients WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1361,7 +1417,7 @@ func (e *Extension) storeVpn(fwID int, statuses []VpnStatus, now string) error {
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM vpn_status WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1392,7 +1448,7 @@ func (e *Extension) storeMacEnrichArp(fwID int, arps []arpEntry, now string) err
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM mac_enrich WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1476,7 +1532,7 @@ func (e *Extension) storeSwitchHealth(fwID int, hs []SwitchHealth, now string) e
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM switch_health WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1556,18 +1612,17 @@ func (e *Extension) storeIfaceThroughput(fwID int, counters []ifaceCounter, now 
 	// One sample instant for the whole batch: the counters were just read over
 	// SSH, so nowT is when they were sampled. Store nowT (sampleTs) as the delta
 	// baseline — not the collection-start `now`, which on a large fabric can be
-	// minutes stale — and parse the previous baseline in the SAME location. `ts`
-	// is written from local time, so parsing it as UTC (time.Parse) would skew
-	// the delta by the zone offset — negative dt in any non-UTC deployment, which
-	// pins every rate at 0.
-	nowT := time.Now()
-	sampleTs := nowT.Format("2006-01-02 15:04:05")
+	// minutes stale — and parse the previous baseline in the SAME location (UTC,
+	// like every stored timestamp); a mismatched zone would skew dt by the offset
+	// and pin every rate at 0. A pre-UTC local `ts` yields one skewed sample, then heals.
+	nowT := time.Now().UTC()
+	sampleTs := nowT.Format(storageTimeLayout)
 	for _, c := range counters {
 		var prevRx, prevTx int64
 		var prevTs string
 		_ = tx.QueryRow("SELECT rxb, txb, ts FROM iface_stats WHERE fw_id = ? AND iface = ?", fwID, c.Iface).Scan(&prevRx, &prevTx, &prevTs)
 		rxMbps, txMbps := 0.0, 0.0
-		if t, perr := time.ParseInLocation("2006-01-02 15:04:05", prevTs, time.Local); perr == nil {
+		if t, perr := time.ParseInLocation(storageTimeLayout, prevTs, time.UTC); perr == nil {
 			if dt := nowT.Sub(t).Seconds(); dt >= 1 && c.RxB >= prevRx && c.TxB >= prevTx {
 				rxMbps = float64(c.RxB-prevRx) * 8 / dt / 1e6
 				txMbps = float64(c.TxB-prevTx) * 8 / dt / 1e6
@@ -1582,7 +1637,7 @@ func (e *Extension) storeIfaceThroughput(fwID int, counters []ifaceCounter, now 
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM iface_stats WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}
@@ -1640,7 +1695,7 @@ func (e *Extension) storePortCounters(fwID int, sw, portStatsRaw, now string) ma
 			return deltas
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	_, _ = tx.Exec("DELETE FROM port_counters WHERE fw_id = ? AND updated_at < ?", fwID, cutoff)
 	_ = tx.Commit()
 	return deltas
@@ -1792,7 +1847,7 @@ func (e *Extension) storeApLocation(fwID int, aps []ApLocation, now string) erro
 			return err
 		}
 	}
-	cutoff := time.Now().Add(-deviceRetention).Format("2006-01-02 15:04:05")
+	_, cutoff := retentionTimestamps(time.Now(), deviceRetention)
 	if _, err := tx.Exec("DELETE FROM ap_location WHERE fw_id = ? AND updated_at < ?", fwID, cutoff); err != nil {
 		return err
 	}

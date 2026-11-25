@@ -136,7 +136,8 @@ func (e *Extension) renameTemplateInDB(username, oldName, newName, oldURL, newUR
 // unmarshal partially and silently prefill the UI with wrong data. A
 // mismatch is treated as "no stored config" (the row is derived — the user
 // simply re-parses a config), which every caller already tolerates.
-const lastConfigSchema = 1
+// v2: multi-line quoted values no longer add phantom objects.
+const lastConfigSchema = 2
 
 // storedLastConfig wraps the parsed config with its storage-shape version.
 // Pre-versioning rows (raw ParsedConfig JSON) decode with Schema 0 and are

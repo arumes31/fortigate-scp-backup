@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/arumes31/fortigate-scp-backup/internal/fortiosconfig"
 )
 
 // editRe extracts the quoted name from `edit "name"`. Unquoted edits
@@ -163,6 +165,7 @@ func ParseConfig(content string) *FGConfig {
 	}
 	if v, ok := ParseFortiOSVersion(content); ok {
 		cfg.Version = v
+		cfg.MultiVDOM = strings.Contains(v.Raw, ":vdom=1")
 	}
 
 	var stack []stackElem
@@ -177,11 +180,22 @@ func ParseConfig(content string) *FGConfig {
 	var curRule *SDWANRule
 
 	lines := strings.Split(content, "\n")
+	var quote byte
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
+		// Continuation lines of a multi-line quoted value (automation
+		// scripts, certificates) may look like `edit`/`end`; skip them.
+		if quote != 0 {
+			quote = fortiosconfig.QuoteState(raw, quote)
+			if curIface != nil {
+				curIface.Raw = append(curIface.Raw, raw)
+			}
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		quote = fortiosconfig.QuoteState(line, 0)
 
 		// Accumulate the verbatim body of the interface currently being parsed
 		// (nested blocks and the closing `next` included). The opening `edit`
@@ -191,6 +205,9 @@ func ParseConfig(content string) *FGConfig {
 		}
 
 		if strings.HasPrefix(line, "config ") {
+			if len(stack) == 0 && line == "config vdom" {
+				cfg.MultiVDOM = true
+			}
 			stack = append(stack, stackElem{isConfig: true, name: strings.TrimSpace(strings.TrimPrefix(line, "config "))})
 			continue
 		}

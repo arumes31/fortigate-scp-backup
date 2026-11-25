@@ -110,6 +110,7 @@
                             <dialog class="ui-dialog" id="acceptHostKey{{$firewall.ID}}" data-ui-dialog aria-labelledby="acceptHostKeyTitle{{$firewall.ID}}">
                                 <form method="post" action="/ssh_host_key/accept/{{$firewall.ID}}" class="ui-dialog__body">
                                     {{template "csrf" $root.Base.CSRFToken}}
+                                    <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
                                     <h2 id="acceptHostKeyTitle{{$firewall.ID}}">{{L $root.Base.Lang "Accept SSH host key for"}} {{$firewall.FQDN}}</h2>
                                     <p>{{L $root.Base.Lang "Confirm fingerprint"}} <code>{{.Fingerprint}}</code> {{L $root.Base.Lang "before replacing the trusted key."}}</p>
                                     <div class="ui-dialog__actions"><button type="button" class="btn" data-dialog-close>{{L $root.Base.Lang "Cancel"}}</button><button type="submit" class="btn btn-danger">{{L $root.Base.Lang "Accept new SSH key"}}</button></div>

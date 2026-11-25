@@ -171,6 +171,43 @@ func TestVDOMObjectAndPolicyNamespaces(t *testing.T) {
 	}
 }
 
+// TestVDOMBareEndLayout: multi-VDOM backups that close each `config vdom` /
+// `edit <name>` body with a bare `end` parse like the `next` layout, while a
+// bare `end` on an ordinary open edit is still rejected.
+func TestVDOMBareEndLayout(t *testing.T) {
+	header := strings.Replace(testHeader, "vdom=0", "vdom=1", 1)
+	body := func(name, ip string) string {
+		return "edit " + name + "\n" + strings.ReplaceAll(testObjects, "10.10.20.15", ip) + "config firewall policy\n" + testPolicy("20", "accept", "all", "Portal", "") + "end\n"
+	}
+	layouts := map[string]string{
+		"bare-end": header + "config vdom\n" + body("First", "10.10.20.15") + "end\nconfig vdom\n" + body("Second", "10.20.20.15") + "end\n",
+		"next":     header + "config vdom\n" + body("First", "10.10.20.15") + "next\n" + body("Second", "10.20.20.15") + "next\nend\n",
+	}
+	for name, configuration := range layouts {
+		result := assessment(t, configuration)
+		if len(result.Exposures) != 2 || result.Exposures[0].VDOM != "First" || result.Exposures[1].VDOM != "Second" {
+			t.Errorf("%s layout: %+v", name, result.Exposures)
+		}
+	}
+	if _, err := Analyze(context.Background(), []byte(testHeader+"config firewall address\nedit a\nend\n")); err == nil {
+		t.Error("bare end on an ordinary edit must stay rejected")
+	}
+}
+
+// TestWANManagementMatchesAudit: like the audit's intf-wan-mgmt check, a
+// default-route device counts as WAN and SNMP counts as management.
+func TestWANManagementMatchesAudit(t *testing.T) {
+	configuration := testHeader + "config system interface\nedit port9\nset allowaccess ping snmp\nnext\nedit port8\nset allowaccess ping snmp\nnext\nend\n" +
+		"config router static\nedit 1\nset gateway 203.0.113.1\nset device port9\nnext\nend\n"
+	got := map[string]bool{}
+	for _, f := range assessment(t, configuration).Findings {
+		got[f.ID] = true
+	}
+	if !got["management:root:port9"] || got["management:root:port8"] {
+		t.Fatalf("WAN management findings = %v, want only port9", got)
+	}
+}
+
 func TestVIPGroupReferencesAndCyclicServices(t *testing.T) {
 	groups := `config firewall vipgrp
 edit PublicationGroup

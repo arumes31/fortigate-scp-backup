@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,7 +98,9 @@ func TestGraylogNotificationRetriesDoNotChangeHealth(t *testing.T) {
 		{"recovery supersedes pending outage", "online", "UP", "", false},
 		{"new outage delivers normally", "offline", "DOWN", "", false},
 		{"check error is not an outage notification", "error", "", "", false},
-		{"recovery from error alone does not notify", "online", "", "", false},
+		{"recovery across an error still notifies", "online", "UP", "", false},
+		{"check error between states", "error", "", "", false},
+		{"outage across an error still notifies", "offline", "DOWN", "", false},
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			// Reopen the database and worker between checks to simulate a restart.
@@ -173,11 +176,13 @@ func TestGraylogNotificationRetriesDoNotChangeHealth(t *testing.T) {
 
 func TestGraylogPersistenceFailureDoesNotSendNotification(t *testing.T) {
 	e, ids := newBulkTestExtension(t, 1)
+	if _, err := e.db.Exec("UPDATE vpn_config SET last_graylog_status = 'offline' WHERE id = ?", ids[0]); err != nil {
+		t.Fatal(err)
+	}
 	c, err := e.getConfig(ids[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.LastGraylogStatus = "offline"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Error("notification sent before the check was durably recorded")
@@ -187,7 +192,9 @@ func TestGraylogPersistenceFailureDoesNotSendNotification(t *testing.T) {
 	defer server.Close()
 	e.cfg = &config.Config{GraylogURL: server.URL, GraylogToken: "synthetic-token",
 		HookwiseURL: server.URL, HookwiseToken: "synthetic-token"}
-	if err := e.db.Close(); err != nil {
+	// Only the status write fails; the re-read at the top of the check still works.
+	if _, err := e.db.Exec(`CREATE TRIGGER fail_status BEFORE UPDATE ON vpn_config
+		BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.checkGraylogConfig(c); err == nil {
@@ -261,5 +268,43 @@ func TestGraylogDisplayedQueriesMatchRequests(t *testing.T) {
 				t.Errorf("got %d requests, %d displayed queries; want %d", requests, len(row.GraylogQueries), len(tt.want))
 			}
 		})
+	}
+}
+
+// TestGraylogCheckRereadsRow: the sweep's snapshot may be stale, so a device
+// deleted or disabled since the list was read is skipped without a query.
+func TestGraylogCheckRereadsRow(t *testing.T) {
+	e, ids := newBulkTestExtension(t, 2)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = fmt.Fprint(w, `{"total_results":1}`)
+	}))
+	defer server.Close()
+	e.cfg = &config.Config{GraylogURL: server.URL, GraylogToken: "synthetic-token"}
+	deleted, err := e.getConfig(ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := e.getConfig(ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.deleteConfig(ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Exec("UPDATE vpn_config SET graylog_enabled = 0 WHERE id = ?", ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*VpnConfig{deleted, disabled} {
+		if err := e.checkGraylogConfig(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("stale configs triggered %d Graylog queries", n)
+	}
+	if c, err := e.getConfig(ids[1]); err != nil || c.LastGraylogCheck != nil {
+		t.Fatalf("disabled device was checked: %v %v", c, err)
 	}
 }

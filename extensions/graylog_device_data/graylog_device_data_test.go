@@ -298,6 +298,7 @@ func testExt(t *testing.T, graylogURL string) *Extension {
 		createMacSightingsSQL, createSwitchEdgesSQL, createWifiSQL, createVpnStatusSQL, createHaStatusSQL,
 		createMacEnrichSQL, createSwitchHealthSQL, createLiveRoutesSQL,
 		createSdwanHealthSQL, createIfaceStatsSQL, createDiagStatusSQL,
+		createApLocationSQL, createPortCountersSQL, createMacViolationsSQL,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -1031,5 +1032,60 @@ func TestRecheckBlockedPort_NoCooldownButSingleFlight(t *testing.T) {
 	_, err = e.recheckBlockedPort(2, "SW1", "port1")
 	if !errors.Is(err, errDiagBusy) {
 		t.Fatalf("expected errDiagBusy while a run is already in flight, got %v", err)
+	}
+}
+
+func TestCommandCompleted(t *testing.T) {
+	for _, tt := range []struct {
+		raw  string
+		want bool
+	}{
+		{"", false}, // session broken / overall deadline
+		{"get router info routing-table all\r\nS* 0.0.0.0/0 [10/0] via 192.0.2.1, wan1\r\n", false}, // truncated
+		{"diagnose sys sdwan health-check\r\n\r\nFGT-TEST # ", true},
+		{"FGT-TEST $ ", true}, // empty result still completes
+	} {
+		if got := commandCompleted(tt.raw); got != tt.want {
+			t.Errorf("commandCompleted(%q) = %v, want %v", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestPruneDeletedFirewalls(t *testing.T) {
+	e := testExt(t, "")
+	for _, fw := range []int{1, 2} {
+		for _, q := range []string{
+			"INSERT INTO live_routes (fw_id, device, routes, is_default, updated_at) VALUES (?, 'wan1', 1, 0, '')",
+			"INSERT INTO diag_status (fw_id, updated_at) VALUES (?, '')",
+			"INSERT INTO ha_status (fw_id, updated_at) VALUES (?, '')",
+		} {
+			if _, err := e.db.Exec(q, fw); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	count := func(fw int) int {
+		n := 0
+		for _, table := range []string{"live_routes", "diag_status", "ha_status"} {
+			var c int
+			if err := e.db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE fw_id = ?", fw).Scan(&c); err != nil {
+				t.Fatal(err)
+			}
+			n += c
+		}
+		return n
+	}
+	// An empty listing (error/no firewalls) must not wipe anything.
+	if err := e.pruneDeletedFirewalls(nil); err != nil {
+		t.Fatal(err)
+	}
+	if count(1) != 3 || count(2) != 3 {
+		t.Fatal("empty firewall list pruned rows")
+	}
+	if err := e.pruneDeletedFirewalls([]int{1}); err != nil {
+		t.Fatal(err)
+	}
+	if count(1) != 3 || count(2) != 0 {
+		t.Fatalf("after prune: fw1=%d fw2=%d rows, want 3/0", count(1), count(2))
 	}
 }

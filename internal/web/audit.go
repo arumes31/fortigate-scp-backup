@@ -544,11 +544,13 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := r.FormValue("action")
+	var details string
 	switch action {
 	case "delete":
 		idStr := r.FormValue("id")
 		id, _ := strconv.Atoi(idStr)
-		_, _ = db.Exec("DELETE FROM exemptions WHERE id = ?", id)
+		details = "deleted exemption " + strconv.Itoa(id)
+		_, err = db.Exec("DELETE FROM exemptions WHERE id = ?", id)
 	case "set_scope":
 		idStr := r.FormValue("id")
 		id, _ := strconv.Atoi(idStr)
@@ -556,7 +558,8 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("scope") == "global" {
 			scope = "global"
 		}
-		_, _ = db.Exec("UPDATE exemptions SET scope = ? WHERE id = ?", scope, id)
+		details = "exemption " + strconv.Itoa(id) + " scope " + scope
+		_, err = db.Exec("UPDATE exemptions SET scope = ? WHERE id = ?", scope, id)
 	default:
 		fwIDStr := r.FormValue("fw_id")
 		fwID, _ := strconv.Atoi(fwIDStr)
@@ -565,9 +568,16 @@ func (s *Server) handleAuditExemption(w http.ResponseWriter, r *http.Request) {
 		reason := r.FormValue("reason")
 		createdAt := time.Now().Format(insightsTimeLayout)
 
-		_, _ = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+		details = "fw_id " + strconv.Itoa(fwID) + " exempted " + findingKey + ": " + reason
+		_, err = db.Exec("INSERT INTO exemptions (fw_id, finding_key, finding_text, reason, created_at) VALUES (?, ?, ?, ?, ?)",
 			fwID, findingKey, findingText, reason, createdAt)
 	}
+	if err != nil {
+		s.logger.Error("failed to save audit exemption", "action", action, "err", err)
+		http.Error(w, "failed to save exemption", http.StatusInternalServerError)
+		return
+	}
+	s.store.LogActivity(s.sess.User(r).Username, "Audit Exemption", details)
 
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
 }
@@ -585,22 +595,32 @@ func (s *Server) handleAuditCustomRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := r.FormValue("action")
+	var details string
 	if action == "delete" {
 		idStr := r.FormValue("id")
 		id, _ := strconv.Atoi(idStr)
-		_, _ = db.Exec("DELETE FROM custom_rules WHERE id = ?", id)
+		details = "deleted custom rule " + strconv.Itoa(id)
+		_, err = db.Exec("DELETE FROM custom_rules WHERE id = ?", id)
 	} else {
 		name := r.FormValue("name")
 		pattern := r.FormValue("pattern")
 		severity := r.FormValue("severity")
 		remediation := r.FormValue("remediation")
 
-		_, _ = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES (?, ?, ?, ?)",
+		details = "added custom rule " + name
+		_, err = db.Exec("INSERT INTO custom_rules (name, pattern, severity, remediation) VALUES (?, ?, ?, ?)",
 			name, pattern, severity, remediation)
 	}
-
-	// Custom rules feed into the cached raw findings: recompute on next read.
-	_, _ = db.Exec("DELETE FROM audit_cache")
+	if err == nil {
+		// Custom rules feed into the cached raw findings: recompute on next read.
+		_, err = db.Exec("DELETE FROM audit_cache")
+	}
+	if err != nil {
+		s.logger.Error("failed to save audit custom rule", "action", action, "err", err)
+		http.Error(w, "failed to save custom rule", http.StatusInternalServerError)
+		return
+	}
+	s.store.LogActivity(s.sess.User(r).Username, "Audit Custom Rule", details)
 
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
 }
@@ -621,10 +641,15 @@ func (s *Server) handleAuditTicket(w http.ResponseWriter, r *http.Request) {
 	ticketID := r.FormValue("ticket_id")
 	details := r.FormValue("details")
 
-	_, _ = db.Exec(`INSERT INTO change_tickets (backup_filename, ticket_id, details)
+	if _, err := db.Exec(`INSERT INTO change_tickets (backup_filename, ticket_id, details)
 		VALUES (?, ?, ?)
 		ON CONFLICT(backup_filename) DO UPDATE SET ticket_id = excluded.ticket_id, details = excluded.details`,
-		filename, ticketID, details)
+		filename, ticketID, details); err != nil {
+		s.logger.Error("failed to save audit change ticket", "err", err)
+		http.Error(w, "failed to save change ticket", http.StatusInternalServerError)
+		return
+	}
+	s.store.LogActivity(s.sess.User(r).Username, "Audit Change Ticket", filename+" ticket "+ticketID)
 
 	http.Redirect(w, r, "/audit", http.StatusSeeOther)
 }

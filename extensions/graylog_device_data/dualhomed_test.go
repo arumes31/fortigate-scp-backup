@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestListDualHomed(t *testing.T) {
@@ -123,5 +124,25 @@ func TestListSuspectedTeams(t *testing.T) {
 	if tm.Attachments[0].Switch != "SW-CORE01" || tm.Attachments[0].Port != "port26" ||
 		tm.Attachments[1].Switch != "SW-CORE02" || tm.Attachments[1].Port != "port26" {
 		t.Fatalf("wrong attachments: %+v", tm.Attachments)
+	}
+}
+
+// TestDualHomeFreshUsesUTC pins parsing to UTC: under a DST zone the same pair
+// parsed as local time spans one hour less across spring-forward and would
+// wrongly count a 3h30 lag as fresh.
+func TestDualHomeFreshUsesUTC(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = orig })
+
+	if dualHomeFresh("2026-03-29 00:00:00", "2026-03-29 03:30:00") {
+		t.Fatal("3h30 UTC lag counted as fresh")
+	}
+	if !dualHomeFresh("2026-03-29 00:30:00", "2026-03-29 03:20:00") {
+		t.Fatal("2h50 UTC lag counted as stale")
 	}
 }

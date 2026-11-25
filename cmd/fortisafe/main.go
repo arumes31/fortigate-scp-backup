@@ -122,6 +122,12 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
+	totpMigrations, err := runStartupPhase(logger, "totp_encryption", startupHeartbeatInterval, func() (int, error) {
+		return store.MigrateTOTPEncryption(startupCtx)
+	})
+	if err != nil {
+		os.Exit(1)
+	}
 	if cfg.ActivityLogRetentionDays > 0 {
 		go pruneActivityLogs(store, cfg.ActivityLogRetentionDays, logger)
 	}
@@ -139,7 +145,7 @@ func main() {
 	}
 	cipher.RequireEncrypted()
 	logger.Info("encryption migration verified",
-		"credentials_migrated", credentialMigrations, "backups_migrated", backupMigrations)
+		"credentials_migrated", credentialMigrations, "totp_secrets_migrated", totpMigrations, "backups_migrated", backupMigrations)
 
 	// Core services.
 	mail := mailer.New(cfg, logger)

@@ -68,11 +68,11 @@ graph TD
 - 🛡️ **Firewall Management**: Register and monitor multiple firewalls, each with its own credentials, SSH port, retention count, and backup schedule. Add them individually or in bulk via CSV.
 - ⏰ **Automated Scheduling**: Cron or interval-based backups, with staggered runs on startup to avoid traffic spikes. Trigger any backup on demand and test connectivity from the UI.
 - 🔐 **Hardened Security**:
-  - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup and firewall SSH password, including startup migration of legacy plaintext data.
+  - **AES-256-GCM at rest**: Mandatory authenticated encryption for every stored backup, firewall SSH password and admin TOTP secret, including startup migration of legacy plaintext data.
   - **Persistent SSH identities**: Unknown FortiGate keys are learned on first use and stored in an application-managed OpenSSH `known_hosts` file. Changed keys require explicit acceptance in the firewall UI by default. Set `SSH_AUTO_ACCEPT_CHANGED_KEYS=true` to automatically accept, persist, and log changed keys, including HA failover and failback. Automatic acceptance also trusts unexpected replacement keys and does not protect against server impersonation through a changed key.
   - **Local passwords hashed with bcrypt**, plus a forced password change on first login.
-  - **Session guard**: Signed sessions, idle timeouts, and X-Forwarded-For pinning.
-  - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts.
+  - **Session guard**: Signed sessions, 1 h idle and 12 h absolute timeouts, and X-Forwarded-For pinning.
+  - **Multi-factor auth**: Optional TOTP and RADIUS (PAP). The login screen surfaces a mobile-approval hint and allows up to 60 s for push/MFA prompts. Access-Accepts must carry a valid Message-Authenticator (RFC 3579).
   - **Brute-force lockout**: Per-IP + username rate limiting with a configurable lockout window.
 - 🔎 **Configuration Search**: Full-text, wildcard search across the newest saved configuration of every firewall, with a built-in library of example queries (hostnames, policies, VPN, admin/security review, and more).
 - 🧾 **Configuration Change Sessions**: The optional `fgt_conftail` extension groups Graylog configuration events by registered firewall and exact administrator, then opens one Hookwise ticket after that administrator has stopped editing the firewall.
@@ -302,7 +302,7 @@ in the Access-Accept (`Filter-Id` or `Class` attribute, matched exactly):
 * `RADIUS_OPERATOR_GROUP` grants the full `operator` role only to members of the
   group. Every other accepted RADIUS user signs in as a read-only `viewer`, who
   can browse dashboards and reports but cannot change data, approve SSH host
-  keys, create share links, or download configuration backups, diffs, VPN
+  keys, create share links, search configurations, or download configuration backups, diffs, VPN
   exports and generated bundles (HTTP 403).
 
 Without either variable, every identity the RADIUS server accepts keeps the
