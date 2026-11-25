@@ -223,7 +223,11 @@ function sdwanLabel(s) {
     if (s.loss) parts.push("loss " + s.loss + "%");
     if (s.latency) parts.push(Math.round(s.latency) + "ms");
     // updated_at is stored UTC; a failed check keeps the previous snapshot, so show its time.
-    if (s.updated_at) parts.push("@ " + new Date(s.updated_at.replace(" ", "T") + "Z").toTimeString().slice(0, 5));
+    if (s.updated_at) {
+        const at = new Date(s.updated_at.replace(" ", "T") + "Z");
+        const day = at.toDateString() === new Date().toDateString() ? "" : at.toLocaleDateString() + " ";
+        parts.push("@ " + day + at.toTimeString().slice(0, 5));
+    }
     return parts.join(" · ");
 }
 
