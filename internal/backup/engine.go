@@ -93,8 +93,9 @@ func (s *Service) backup(fwID int) {
 	if mkErr := os.MkdirAll(fwDir, 0o750); mkErr != nil {
 		s.logger.Error("Failed to create backup directory", "dir", fwDir, "err", mkErr)
 	}
-	// UTC so the repeated DST hour cannot reuse an earlier backup's filename.
-	filename := now.UTC().Format(database.BackupTimeLayout) + ".conf"
+	// UTC so the repeated DST hour cannot reuse a filename; the Z keeps these
+	// distinct from older local-time names, which finalizeFile refuses to overwrite.
+	filename := now.UTC().Format(database.BackupTimeLayout) + "Z.conf"
 	localPath := filepath.Join(fwDir, filename)
 	// Download to a side file; finalizeFile moves the encrypted result to
 	// localPath, so plaintext never sits under the final name.

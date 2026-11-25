@@ -57,3 +57,33 @@ func TestValidResponseAuthenticator(t *testing.T) {
 		t.Fatal("response without Message-Authenticator accepted")
 	}
 }
+
+// The HMAC must cover attributes in wire order, including duplicates and a
+// Message-Authenticator that is not last.
+func TestValidResponseAuthenticatorWireOrder(t *testing.T) {
+	secret := []byte("shared-secret-0123456789")
+	requestAuth := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}
+	attr := func(typ byte, v string) []byte { return append([]byte{typ, byte(2 + len(v))}, v...) }
+	attrs := []byte{80, 18}
+	attrs = append(attrs, make([]byte, 16)...)
+	attrs = append(attrs, attr(25, "class-z")...)
+	attrs = append(attrs, attr(11, "fortisafe-ops")...)
+	attrs = append(attrs, attr(11, "another-group")...)
+	attrs = append(attrs, attr(25, "class-a")...)
+	b := make([]byte, 20, 20+len(attrs))
+	b[0], b[1] = byte(radius.CodeAccessAccept), 3
+	binary.BigEndian.PutUint16(b[2:4], uint16(20+len(attrs)))
+	copy(b[4:20], requestAuth[:])
+	b = append(b, attrs...)
+	mac := hmac.New(md5.New, secret)
+	mac.Write(b)
+	copy(b[22:38], mac.Sum(nil))
+	copy(b[4:20], []byte("response-auth-16"))
+	p, err := radius.Parse(b, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validResponseAuthenticator(p, requestAuth) {
+		t.Fatal("valid Message-Authenticator with reordered attributes rejected")
+	}
+}
